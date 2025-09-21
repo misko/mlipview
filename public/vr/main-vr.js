@@ -82,82 +82,7 @@ export async function initVRApp() {
   createVRInstructions(scene);
     console.log("[VR] 📋 VR instructions panel created");
     
-    // Add trigger for native VR controls
-    setTimeout(() => {
-      console.log('[VR] Triggering native browser VR controls...');
-      
-      // Try to make browser show native VR button
-      if (navigator.xr && vrHelper.baseExperience) {
-        console.log('[VR] WebXR session manager available');
-        
-        // Try to create the proper entry point for native VR button
-        try {
-          // Ensure the enter VR function is available globally
-          window.enterVR = async () => {
-            try {
-              if (vrHelper.baseExperience && vrHelper.baseExperience.enterXRAsync) {
-                console.log('[VR] Entering VR via native button...');
-                await vrHelper.baseExperience.enterXRAsync('immersive-vr', 'local-floor');
-                console.log('[VR] Successfully entered VR mode');
-              }
-            } catch (error) {
-              console.error('[VR] Failed to enter VR:', error);
-            }
-          };
-          
-          // Method 1: Dispatch WebXR ready event
-          window.dispatchEvent(new CustomEvent('webxr-ready', {
-            detail: { 
-              supported: true, 
-              helper: vrHelper,
-              enterVR: window.enterVR
-            }
-          }));
-          
-          // Method 2: Try to trigger session availability
-          if (vrHelper.baseExperience.sessionManager) {
-            console.log('[VR] Session manager ready - native VR button should appear');
-            
-            // Force check that triggers browser VR UI
-            navigator.xr.isSessionSupported('immersive-vr').then(supported => {
-              if (supported) {
-                console.log('[VR] ✅ Immersive VR confirmed - browser should show Enter VR button');
-                
-                // Set up a proper XR session request handler
-                if (!window.xrSessionHandler) {
-                  window.xrSessionHandler = true;
-                  
-                  // Listen for user gesture and enable VR button
-                  const enableVRButton = () => {
-                    console.log('[VR] User gesture detected - VR button should be enabled');
-                    document.removeEventListener('click', enableVRButton);
-                    document.removeEventListener('touchstart', enableVRButton);
-                  };
-                  
-                  document.addEventListener('click', enableVRButton);
-                  document.addEventListener('touchstart', enableVRButton);
-                }
-                
-                // Try to trigger the browser's native UI state
-                const event = new Event('xr-session-supported');
-                document.dispatchEvent(event);
-                
-                // Also dispatch on the canvas
-                const canvas = scene.getEngine().getRenderingCanvas();
-                if (canvas) {
-                  canvas.dispatchEvent(event);
-                }
-              }
-            }).catch(err => {
-              console.warn('[VR] Session support check failed:', err);
-            });
-          }
-          
-        } catch (error) {
-          console.log('[VR] Native button trigger failed:', error.message);
-        }
-      }
-    }, 1000);
+    // Native VR button trigger is handled centrally in vr-setup.js; duplicate logic removed here
     
   console.log("[VR] Step 4: Creating VR UI...");
   // Create VR UI (lite: energy-only)
@@ -359,6 +284,4 @@ function createVRInstructions(scene) {
   }
 }
 
-function showVRTextPanel(text) {
-  console.log("VR Text Panel would show:", text);
-}
+// showVRTextPanel removed (unused)
