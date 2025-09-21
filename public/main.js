@@ -123,12 +123,21 @@ hud.innerHTML = `
   <div style="display:flex; gap:6px; flex-wrap:wrap;">
     <button id="btnForces">Forces: OFF</button>
     <button id="btnLenMode" title="Toggle between normalized length and true magnitude">Length: Normalized</button>
+    <button id="btnPlot">Plot: OFF</button>
   </div>
 `;
 document.body.appendChild(hud);
 const energyVal = hud.querySelector("#energyVal");
 const btnForces = hud.querySelector("#btnForces");
 const btnLenMode = hud.querySelector("#btnLenMode");
+const btnPlot = hud.querySelector("#btnPlot");
+
+console.log("[DEBUG] HUD elements found:", {
+  energyVal: !!energyVal,
+  btnForces: !!btnForces,
+  btnLenMode: !!btnLenMode,
+  btnPlot: !!btnPlot
+});
 
 let showForces = false;
 btnForces.onclick = () => {
@@ -145,8 +154,167 @@ btnLenMode.onclick = () => {
   btnLenMode.textContent = `Length: ${lengthMode === "normalized" ? "Normalized" : "True"}`;
 };
 
+// Energy plot setup
+const plotContainer = document.getElementById("plotContainer");
+const energyChart = document.getElementById("energyChart");
+console.log("[DEBUG] Plot container found:", !!plotContainer);
+console.log("[DEBUG] Energy chart canvas found:", !!energyChart);
+console.log("[DEBUG] Chart.js available:", typeof Chart !== 'undefined');
+
+let showPlot = false;
+let chart = null;
+let lastRotationCount = 0; // Track the number of rotations
+const maxDataPoints = 100; // Keep last 100 points
+
+function initializeChart() {
+  console.log("[DEBUG] Initializing chart...");
+  
+  // Check if Chart.js is available
+  if (typeof Chart === 'undefined') {
+    console.error("[ERROR] Chart.js is not loaded!");
+    return;
+  }
+  
+  if (!energyChart) {
+    console.error("[ERROR] Energy chart canvas not found!");
+    return;
+  }
+  
+  const ctx = energyChart.getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        label: 'Energy',
+        data: [],
+        borderColor: '#f5ffd1',
+        backgroundColor: 'rgba(245, 255, 209, 0.1)',
+        borderWidth: 2,
+        fill: false,
+        tension: 0.1
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          title: {
+            display: true,
+            text: 'Bond Rotations',
+            color: '#a4b0c0'
+          },
+          ticks: {
+            color: '#a4b0c0'
+          },
+          grid: {
+            color: 'rgba(164, 176, 192, 0.2)'
+          }
+        },
+        y: {
+          title: {
+            display: true,
+            text: 'Energy',
+            color: '#a4b0c0'
+          },
+          ticks: {
+            color: '#a4b0c0'
+          },
+          grid: {
+            color: 'rgba(164, 176, 192, 0.2)'
+          }
+        }
+      },
+      plugins: {
+        legend: {
+          labels: {
+            color: '#f5ffd1'
+          }
+        }
+      },
+      animation: false // Disable animations for real-time updates
+    }
+  });
+  console.log("[DEBUG] Chart initialized:", !!chart);
+}
+
+function updateChart(energy) {
+  if (!chart) return;
+  
+  // Get current rotation count from state - access rotations array directly
+  const currentRotationCount = state.rotations.length;
+  
+  // Only update chart if we have a new rotation
+  if (currentRotationCount > lastRotationCount) {
+    lastRotationCount = currentRotationCount;
+    
+    // Add new data point using rotation count as x-axis
+    chart.data.labels.push(currentRotationCount);
+    chart.data.datasets[0].data.push(energy);
+    
+    // Remove old data points if we exceed maxDataPoints
+    if (chart.data.labels.length > maxDataPoints) {
+      chart.data.labels.shift();
+      chart.data.datasets[0].data.shift();
+    }
+    
+    chart.update('none'); // Update without animation
+    
+    console.log("[DEBUG] Chart updated, rotation count:", currentRotationCount, "energy:", energy);
+  }
+}
+
+btnPlot.onclick = () => {
+  console.log("[DEBUG] Plot button clicked, current showPlot:", showPlot);
+  showPlot = !showPlot;
+  plotContainer.style.display = showPlot ? "block" : "none";
+  btnPlot.textContent = `Plot: ${showPlot ? "ON" : "OFF"}`;
+  console.log("[DEBUG] Plot container display set to:", plotContainer.style.display);
+  
+  if (showPlot && !chart) {
+    console.log("[DEBUG] Attempting to initialize chart...");
+    initializeChart();
+    
+    // Add initial data point at rotation count 0
+    if (chart) {
+      const currentRotationCount = state.rotations.length;
+      const { energy } = mlip.compute();
+      chart.data.labels.push(currentRotationCount);
+      chart.data.datasets[0].data.push(energy);
+      lastRotationCount = currentRotationCount;
+      chart.update('none');
+      console.log("[DEBUG] Added initial data point at rotation:", currentRotationCount, "energy:", energy);
+    }
+  }
+};
+
+// Clear plot button
+document.getElementById("clearPlot").onclick = () => {
+  console.log("[DEBUG] Clear plot button clicked");
+  if (chart) {
+    chart.data.labels = [];
+    chart.data.datasets[0].data = [];
+    lastRotationCount = state.rotations.length; // Reset to current rotation count
+    chart.update();
+    console.log("[DEBUG] Plot data cleared, reset to rotation count:", lastRotationCount);
+  } else {
+    console.log("[DEBUG] No chart to clear");
+  }
+};
+
 // Optional: tune true-length scale at runtime from console
 window.setForceScale = (s) => forceVis.setScaleTrue(s);
+
+// Optional: clear the energy plot
+window.clearEnergyPlot = () => {
+  if (chart) {
+    chart.data.labels = [];
+    chart.data.datasets[0].data = [];
+    lastRotationCount = state.rotations.length; // Reset to current rotation count
+    chart.update();
+  }
+};
 
 // Optional: tiny state bar to rebuild & export XYZ
 const stateBar = document.createElement("div");
@@ -191,6 +359,10 @@ engine.runRenderLoop(() => {
 
   if (showForces) {
     forceVis.setForces(forces);
+  }
+
+  if (showPlot) {
+    updateChart(energy);
   }
 
   scene.render();
