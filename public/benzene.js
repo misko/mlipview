@@ -1,15 +1,13 @@
 import { quatYto, setThinInstanceMatrices } from "./helpers.js";
 
-export function buildBenzene(
-  scene,
-  {
+export function buildBenzene(scene, opts = {}) {
+  const {
     carbonRingRadius = 1.9,
     hydrogenRadius = 3.1,
     bondRadius = 0.08,
-    debugAlwaysActive = true,
-    addGroundGrid = false
-  } = {}
-) {
+    debugAlwaysActive = true
+  } = opts;
+
   const n = 6;
 
   // Materials
@@ -25,7 +23,7 @@ export function buildBenzene(
   matBond.diffuseColor  = new BABYLON.Color3(0.78, 0.82, 0.90);
   matBond.emissiveColor = new BABYLON.Color3(0.04, 0.04, 0.05);
 
-  // Planar positions (mutable: we'll update when dragging)
+  // Positions (mutable)
   const carbons = [], hydrogens = [];
   for (let i = 0; i < n; i++) {
     const a = (i * 2 * Math.PI) / n;
@@ -33,14 +31,18 @@ export function buildBenzene(
     hydrogens.push(new BABYLON.Vector3(hydrogenRadius * Math.cos(a), 0, hydrogenRadius * Math.sin(a)));
   }
 
-  // Masters at identity (keep visible so instances render)
+  // Masters at identity + names + pickable
   const baseC = BABYLON.MeshBuilder.CreateSphere("baseC", { diameter: 0.7, segments: 24 }, scene);
   baseC.material = matC;
+  baseC.isPickable = true;
+  baseC.thinInstanceEnablePicking = true;
 
   const baseH = BABYLON.MeshBuilder.CreateSphere("baseH", { diameter: 0.45, segments: 20 }, scene);
   baseH.material = matH;
+  baseH.isPickable = true;
+  baseH.thinInstanceEnablePicking = true;
 
-  // Instance matrices for atoms
+  // Instances
   setThinInstanceMatrices(
     baseC,
     carbons.map(p => BABYLON.Matrix.Compose(BABYLON.Vector3.One(), BABYLON.Quaternion.Identity(), p))
@@ -52,7 +54,9 @@ export function buildBenzene(
 
   // Bonds
   const bondUnit = BABYLON.MeshBuilder.CreateCylinder("bondUnit", { height: 1, diameter: 1, tessellation: 16 }, scene);
+  bondUnit.name = "bondUnit";
   bondUnit.material = matBond;
+  bondUnit.isPickable = false; // not draggable
 
   function bondMatrix(aPos, bPos) {
     const mid = aPos.add(bPos).scale(0.5);
@@ -70,7 +74,6 @@ export function buildBenzene(
 
   const bonds = [...ringPairs, ...chPairs].map(([ta, ia, tb, ib]) => ({ a: { type: ta, index: ia }, b: { type: tb, index: ib } }));
 
-  // Build bond matrices
   const bondMatrices = bonds.map(({ a, b }) => {
     const aPos = (a.type === "C" ? carbons[a.index] : hydrogens[a.index]);
     const bPos = (b.type === "C" ? carbons[b.index] : hydrogens[b.index]);
@@ -78,24 +81,17 @@ export function buildBenzene(
   });
   setThinInstanceMatrices(bondUnit, bondMatrices);
 
-  // Enable picking on thin instances
-  baseC.thinInstanceEnablePicking = true;
-  baseH.thinInstanceEnablePicking = true;
-  bondUnit.thinInstanceEnablePicking = false; // bonds not draggable
-
   if (debugAlwaysActive) {
     baseC.alwaysSelectAsActiveMesh = true;
     baseH.alwaysSelectAsActiveMesh = true;
     bondUnit.alwaysSelectAsActiveMesh = true;
   }
 
-  // Expose a tiny API the interaction module can use:
   const atoms = [
     ...carbons.map((p, i) => ({ mesh: baseC, type: "C", index: i, pos: p })),
     ...hydrogens.map((p, i) => ({ mesh: baseH, type: "H", index: i, pos: p }))
   ];
 
-  // Bond updater: call after any atom position changes
   function refreshBonds() {
     bonds.forEach((bond, bi) => {
       const aPos = (bond.a.type === "C" ? carbons[bond.a.index] : hydrogens[bond.a.index]);

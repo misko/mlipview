@@ -1,0 +1,7 @@
+# ROY.BONDS — rotatable bond declarations for ROY (0-based indices from roy.xyz)
+
+# Anilide N—C link (side chain swings)
+ROTATABLE i=13 j=15 side=j label=Tau1_N13-C15 step=5 min=-180 max=180
+
+# Next single bond down the chain (C15—C16)
+ROTATABLE i=15 j=16 side=j label=Tau2_C15-C16 step=5 min=-180 max=180
