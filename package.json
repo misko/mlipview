@@ -1,0 +1,13 @@
+{
+  "name": "babylon-benzene-webxr",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal Babylon.js + WebXR benzene demo with a tiny Node static server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
