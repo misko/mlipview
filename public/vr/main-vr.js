@@ -78,9 +78,7 @@ export async function initVRApp() {
     window.vrMlip = mlip;
     console.log("[VR] 🌐 VR helper and molecular systems stored globally for interaction");
     
-  // Add VR instructions panel
-  createVRInstructions(scene);
-    console.log("[VR] 📋 VR instructions panel created");
+  // Instructions panel removed (prefer 2D HUD overlay only)
     
     // Native VR button trigger is handled centrally in vr-setup.js; duplicate logic removed here
     
@@ -89,43 +87,28 @@ export async function initVRApp() {
   const vrUI = createVRUI(scene);
   console.log("[VR] VR UI created (energy panel)");
 
-  // Optional minimal bond rotation controls: a tiny 3D panel with -/+ buttons
+  // Bond rotation controls via 2D HUD overlay (bottom bar)
   try {
-    const manager = new BABYLON.GUI.GUI3DManager(scene);
-    const panel = new BABYLON.GUI.PlanePanel();
-    panel.margin = 0.2;
-    panel.rows = 1;
-    panel.columns = 3;
-    panel.position = new BABYLON.Vector3(0.0, 1.2, 1.4);
-    manager.addControl(panel);
+    const uiState = vrUI?.bond?.state || { side: 'j', step: 5, recompute: false };
+    window.vrBondUI = uiState;
+    const bondBar = vrUI?.bond?.bar;
+    const bondLabel = vrUI?.bond?.label;
+    const btnMinus = vrUI?.bond?.btnMinus;
+    const btnPlus  = vrUI?.bond?.btnPlus;
 
-    const mkButton = (id, text, onClick) => {
-      const b = new BABYLON.GUI.HolographicButton(id);
-      b.text = text;
-      b.onPointerUpObservable.add(onClick);
-      b.isVisible = true;
-      return b;
-    };
-    const minus = mkButton("bondMinus", "−", () => rotateSelectedBond(scene, -1));
-    const label = mkButton("bondLabel", "Bond", () => {});
-    const plus  = mkButton("bondPlus",  "+", () => rotateSelectedBond(scene, +1));
-    label.isEnabled = false;
-    label.isPointerBlocker = false;
-    panel.addControl(minus);
-    panel.addControl(label);
-    panel.addControl(plus);
+    // Wire clicks to rotation
+    btnMinus?.onPointerUpObservable.add(() => rotateSelectedBond(scene, -1));
+    btnPlus?.onPointerUpObservable.add(() => rotateSelectedBond(scene, +1));
 
-    // Update label visibility based on selection
+    // Toggle visibility and update label based on selection
     scene.onBeforeRenderObservable.add(() => {
       const sel = window.vrSelection;
-      const show = sel && sel.kind === 'bond';
-      panel.isVisible = !!show;
-      if (show) {
-        label.text = `Bond ${sel.data.i}-${sel.data.j}`;
-      }
+      const show = !!(sel && sel.kind === 'bond');
+      if (bondBar) bondBar.isVisible = show;
+      if (show && bondLabel) bondLabel.text = `Bond ${sel.data.i}-${sel.data.j}`;
     });
   } catch (e) {
-    console.warn('[VR] Bond control panel failed:', e?.message);
+    console.warn('[VR] Overlay bond controls failed:', e?.message);
   }
     
     // VR-specific state
@@ -191,24 +174,55 @@ export async function initVRApp() {
             lastEnergyUpdate = frameCount;
           }
 
-          // Handle right-stick bond rotation when a bond is selected
+          // Handle LEFT-stick bond rotation (up/down) when a bond is selected
           try {
             const sel = window.vrSelection;
             if (sel && sel.kind === 'bond') {
               const helper = window.vrHelper;
               const controllers = helper?.input?.controllers || [];
               const deadzone = 0.25; // require intent
-              let rightX = 0;
-              for (const c of controllers) {
-                const gp = c.inputSource?.gamepad;
-                if (!gp || !gp.axes) continue;
-                // Prefer right stick X at index 2 if present, else fallback
-                const ax = gp.axes.length >= 4 ? gp.axes[2] : (gp.axes[0] || 0);
-                if (Math.abs(ax) > Math.abs(rightX)) rightX = ax;
+              // Throttle to avoid too-fast repeats
+              if (!window.__vrBondStickNext) window.__vrBondStickNext = 0;
+              const now = performance.now();
+              const repeatMs = 130; // step roughly ~7.5/s when held
+              let leftY = 0;
+              // Prefer LEFT-hand motionController thumbstick component if present
+              let leftCtrl = controllers.find(c => c?.inputSource?.handedness === 'left');
+              const thumb = leftCtrl?.motionController?.getComponent?.('xr-standard-thumbstick');
+              if (thumb && thumb.axes && typeof thumb.axes.y === 'number') {
+                leftY = thumb.axes.y;
+                if (typeof console !== 'undefined' && console.debug) {
+                  console.debug('[VR Stick] Left thumbstick axes (motionController):', { x: thumb.axes.x, y: thumb.axes.y });
+                }
+              } else if (leftCtrl?.inputSource?.gamepad?.axes) {
+                const gp = leftCtrl.inputSource.gamepad;
+                leftY = gp.axes.length >= 2 ? gp.axes[1] : 0;
+                if (typeof console !== 'undefined' && console.debug) {
+                  console.debug('[VR Stick] Left controller axes (gamepad):', JSON.stringify(Array.from(gp.axes)));
+                }
+              } else {
+                // Fallback: pick any controller with strongest vertical axis
+                for (const c of controllers) {
+                  const gp = c.inputSource?.gamepad;
+                  if (!gp || !gp.axes) continue;
+                  const ay = gp.axes.length >= 2 ? gp.axes[1] : 0;
+                  if (Math.abs(ay) > Math.abs(leftY)) leftY = ay;
+                }
+                if (typeof console !== 'undefined' && console.debug) {
+                  const axDump = controllers.map(c => Array.from(c.inputSource?.gamepad?.axes || []) );
+                  console.debug('[VR Stick] Fallback axes dump:', JSON.stringify(axDump));
+                }
               }
-              if (Math.abs(rightX) > deadzone) {
-                const sign = rightX > 0 ? +1 : -1;
+              if (Math.abs(leftY) > deadzone && now >= window.__vrBondStickNext) {
+                const sign = leftY < 0 ? +1 : -1; // up is negative Y: rotate +, down is positive Y: rotate -
+                if (typeof console !== 'undefined') {
+                  console.log('[VR Stick] Rotate via left stick', { leftY: +leftY.toFixed(3), sign });
+                }
                 rotateSelectedBond(scene, sign);
+                window.__vrBondStickNext = now + repeatMs;
+              } else if (Math.abs(leftY) <= deadzone) {
+                // Reset throttle quickly when stick returns to center
+                window.__vrBondStickNext = 0;
               }
             }
           } catch {}
@@ -287,10 +301,17 @@ function rotateSelectedBond(scene, sign) {
   const sel = window.vrSelection;
   const torsion = window.vrTorsion;
   if (!sel || sel.kind !== 'bond' || !torsion) return;
-  const step = 5; // degrees per click
+  const ui = window.vrBondUI || { side: 'j', step: 5, recompute: false };
+  const step = Math.abs(ui.step || 5);
   try {
-    torsion.rotateAroundBond({ i: sel.data.i, j: sel.data.j, side: 'j', angleDeg: sign * step, recompute: false });
+    if (typeof console !== 'undefined') {
+      console.log('[VR] rotateSelectedBond', { i: sel.data.i, j: sel.data.j, side: ui.side, step, sign, recompute: !!ui.recompute });
+    }
+    torsion.rotateAroundBond({ i: sel.data.i, j: sel.data.j, side: ui.side || 'j', angleDeg: sign * step, recompute: !!ui.recompute });
     if (typeof window.vrMol?.markChanged === 'function') window.vrMol.markChanged();
+    // One-shot recompute like desktop: reset flag after use
+    if (ui.recompute) ui.recompute = false;
+    // Keep bond selected: do not clear window.vrSelection here.
   } catch (e) {
     console.warn('[VR] rotateSelectedBond failed:', e?.message);
   }
@@ -318,6 +339,7 @@ function createVRInstructions(scene) {
       "✋ Grab box: Move/rotate the molecule",
       "🤲 Two hands: Pinch to scale",
       " Tap trigger: Select bond/atom",
+      " ⬆️⬇️ Left stick: Rotate selected bond",
       "👉 Hold trigger + rotate wrist (fallback)",
       "👀 Move your head to look around",
       "",
