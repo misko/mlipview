@@ -121,9 +121,9 @@ hud.innerHTML = `
   <div style="font-size:12px; color:#a4b0c0; margin-bottom:4px">Mock Energy</div>
   <div id="energyVal" style="font-weight:700; font-size:22px; letter-spacing:0.4px; margin-bottom:8px;">0.000</div>
   <div style="display:flex; gap:6px; flex-wrap:wrap;">
-    <button id="btnForces">Forces: OFF</button>
+    <button id="btnForces">Forces: ON</button>
     <button id="btnLenMode" title="Toggle between normalized length and true magnitude">Length: Normalized</button>
-    <button id="btnPlot">Plot: OFF</button>
+    <button id="btnPlot">Plot: ON</button>
   </div>
 `;
 document.body.appendChild(hud);
@@ -139,12 +139,15 @@ console.log("[DEBUG] HUD elements found:", {
   btnPlot: !!btnPlot
 });
 
-let showForces = false;
+let showForces = true; // Default to ON
 btnForces.onclick = () => {
   showForces = !showForces;
   forceVis.setEnabled(showForces);
   btnForces.textContent = `Forces: ${showForces ? "ON" : "OFF"}`;
 };
+
+// Initialize forces as enabled
+forceVis.setEnabled(showForces);
 
 // Length mode toggle (normalized <-> true)
 let lengthMode = "normalized";
@@ -161,10 +164,13 @@ console.log("[DEBUG] Plot container found:", !!plotContainer);
 console.log("[DEBUG] Energy chart canvas found:", !!energyChart);
 console.log("[DEBUG] Chart.js available:", typeof Chart !== 'undefined');
 
-let showPlot = false;
+let showPlot = true; // Default to ON
 let chart = null;
 let lastRotationCount = 0; // Track the number of rotations
 const maxDataPoints = 100; // Keep last 100 points
+
+// Initialize plot as visible since it's on by default
+plotContainer.style.display = showPlot ? "block" : "none";
 
 function initializeChart() {
   console.log("[DEBUG] Initializing chart...");
@@ -237,6 +243,23 @@ function initializeChart() {
     }
   });
   console.log("[DEBUG] Chart initialized:", !!chart);
+}
+
+// Initialize chart since plot is on by default
+if (showPlot) {
+  console.log("[DEBUG] Initializing chart on startup...");
+  initializeChart();
+  
+  // Add initial data point
+  if (chart) {
+    const currentRotationCount = state.rotations.length;
+    const { energy } = mlip.compute();
+    chart.data.labels.push(currentRotationCount);
+    chart.data.datasets[0].data.push(energy);
+    lastRotationCount = currentRotationCount;
+    chart.update('none');
+    console.log("[DEBUG] Added initial data point at startup - rotation:", currentRotationCount, "energy:", energy);
+  }
 }
 
 function updateChart(energy) {
