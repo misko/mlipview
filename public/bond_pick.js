@@ -2,6 +2,9 @@
 // Click-to-select bond + big buttons to rotate via torsion controller.
 // Deselect on background click and reattach camera so orbit/pan/zoom work again.
 
+import { makePicker } from "./selection.js";
+import { registerBondClear, selectBond, clearSelection as clearGlobalSelection, isAtomDragging } from "./selection_state.js";
+
 export function enableBondPicking(
   scene,
   { molecule, torsion, rotatableSpec = [], strict = false }
@@ -110,6 +113,11 @@ export function enableBondPicking(
     if (cam && canvas) cam.attachControl(canvas, true);
   }
 
+  // Register how to clear bond selection so atom selection can invoke it
+  registerBondClear(() => {
+    clearSelection();
+  });
+
   function applyRotation(sign) {
     if (!selected) return;
     torsion.rotateAroundBond({
@@ -140,23 +148,22 @@ export function enableBondPicking(
 
   // Helpers
   const groupByKey = molecule.bondGroups;
+  const picker = makePicker(scene, molecule);
   function pickBondAtPointer() {
-    const pick = scene.pick(scene.pointerX, scene.pointerY, (m) => m.name?.startsWith("bond_"));
-    if (pick?.hit && pick.pickedMesh && pick.thinInstanceIndex != null && pick.thinInstanceIndex >= 0) {
-      const mesh = pick.pickedMesh;
-      const key  = mesh.name.replace(/^bond_/, "");
-      const idx  = pick.thinInstanceIndex;
-      return { key, mesh, index: idx };
-    }
+    const res = picker.pickBondAtPointer();
+    if (res) return { key: res.key, mesh: res.mesh, index: res.index };
     return null;
   }
-  function isAtomMesh(mesh) { return !!mesh?.name && mesh.name.startsWith("base_"); }
+  function isAtomMesh(mesh) { return picker.isAtomMesh(mesh); }
 
   // Pointer logic:
   scene.onPointerObservable.add((pi) => {
     if (pi.type !== BABYLON.PointerEventTypes.POINTERDOWN) return;
 
-    const bondHit = pickBondAtPointer();
+  // Do not allow bond selection while atom is being dragged
+  if (isAtomDragging && isAtomDragging()) return;
+
+  const bondHit = pickBondAtPointer();
     if (bondHit) {
       const group = groupByKey.get(bondHit.key);
       const pair = group?.indices[bondHit.index];
@@ -172,13 +179,15 @@ export function enableBondPicking(
       selected = { i: spec.i, j: spec.j, side: spec.side || "j", step: spec.step || 5, label: spec.label };
       updateLabel(!allowed);
       orientBondMarker(i, j);
+      // Announce bond selection to clear any atom selection
+      selectBond();
       return;
     }
 
     // Not a bond: if it's not an atom either, deselect & reattach camera
     const anyPick = scene.pick(scene.pointerX, scene.pointerY);
     if (!anyPick?.hit || !isAtomMesh(anyPick.pickedMesh)) {
-      clearSelection();
+      clearGlobalSelection();
     }
   });
 }

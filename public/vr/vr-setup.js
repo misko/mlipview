@@ -1,4 +1,6 @@
 // vr/vr-setup.js - VR initialization and controller setup
+import { makePicker } from "../selection.js";
+
 export async function setupVR(engine, scene) {
   console.log('[VR Setup] 🔧 Initializing WebXR...');
   console.log('[VR Setup] Engine ready:', !!engine);
@@ -134,6 +136,10 @@ function setupVRFeatures(xrHelper, scene) {
   try { getMoleculeMasters(scene); } catch (e) { console.warn('[VR] Could not collect molecule masters:', e?.message); }
   // Track last two-hand center for dual-trigger translation
   let lastTwoHandCenter = null;
+  // Shared picker for consistent selection logic with desktop
+  const molRef = () => (window.vrMol || window.mol || null);
+  let picker = null;
+  try { const m = molRef(); if (m) picker = makePicker(scene, m); } catch {}
   // Selection state (bond or atom) and visual markers
   const selection = { kind: null, data: null }; // kind: 'bond' | 'atom' | null
   try { window.vrSelection = selection; } catch {}
@@ -597,60 +603,38 @@ function setupVRFeatures(xrHelper, scene) {
               if (pos) ray = new BABYLON.Ray(pos, dir, 100.0);
             }
             if (ray) {
-              // Prefer bonds; if none, try atoms
-              const pickBond = scene.pickWithRay(ray, (m) => m && m.name && m.name.startsWith('bond_'));
-              if (pickBond?.hit && pickBond.pickedMesh && pickBond.thinInstanceIndex != null && pickBond.thinInstanceIndex >= 0) {
-                const mesh = pickBond.pickedMesh;
-                const key = mesh.name.replace(/^bond_/, '');
-                const idx = pickBond.thinInstanceIndex;
-                const mol = window.vrMol || window.mol || null;
-                const group = mol?.bondGroups?.get ? mol.bondGroups.get(key) : null;
-                const pair = group?.indices ? group.indices[idx] : null;
-                if (pair) {
+              // Prefer bonds; if none, try atoms, using shared picker
+              const ensurePicker = () => { if (!picker) { const m = molRef(); if (m) picker = makePicker(scene, m); } };
+              ensurePicker();
+              let handled = false;
+              if (picker) {
+                const b = picker.pickBondWithRay(ray);
+                if (b) {
                   selection.kind = 'bond';
-                  selection.data = { key, index: idx, i: pair.i, j: pair.j };
-                  // Visualize in world space (respect VR transforms)
-                  const ai = mol.atoms[pair.i].pos; const aj = mol.atoms[pair.j].pos;
-                  const aW = transformLocalToWorld(ai);
-                  const bW = transformLocalToWorld(aj);
-                  orientBondMarkerWorld(aW, bW);
+                  selection.data = { key: b.key, index: b.index, i: b.i, j: b.j };
+                  const m = molRef();
+                  const ai = m.atoms[b.i].pos, aj = m.atoms[b.j].pos;
+                  orientBondMarkerWorld(transformLocalToWorld(ai), transformLocalToWorld(aj));
                   if (atomSelMesh) atomSelMesh.setEnabled(false);
-                  console.log(`[VR Select] Bond ${pair.i}-${pair.j} (group ${key}, ti ${idx})`);
-                }
-                st.tapHandled = true;
-              } else {
-                const pickAtom = scene.pickWithRay(ray, (m) => m && m.name && m.name.startsWith('base_'));
-                if (pickAtom?.hit && pickAtom.pickedMesh && pickAtom.thinInstanceIndex != null && pickAtom.thinInstanceIndex >= 0) {
-                  const mesh = pickAtom.pickedMesh;
-                  const elem = mesh.name.replace(/^base_/, '');
-                  const perIdx = pickAtom.thinInstanceIndex;
-                  const mol = window.vrMol || window.mol || null;
-                  let found = null;
-                  if (mol && Array.isArray(mol.atoms)) {
-                    for (let k = 0; k < mol.atoms.length; k++) {
-                      const a = mol.atoms[k];
-                      if (a.type === elem && a.mesh === mesh && a.index === perIdx) { found = { a, globalIndex: k }; break; }
-                    }
-                  }
-                  if (found) {
-                    selection.kind = 'atom';
-                    selection.data = { idx: found.globalIndex, type: elem };
-                    const aW = transformLocalToWorld(found.a.pos);
-                    // Visual diameter in world = atom.scale (visual) * global molecule scale
-                    const m = getAnyMaster();
-                    const scl = m?.scaling || new BABYLON.Vector3(1,1,1);
-                    const uni = (Math.abs(scl.x - scl.y) < 1e-6 && Math.abs(scl.x - scl.z) < 1e-6) ? scl.x : scl.length()/Math.sqrt(3);
-                    const visD = (found.a.scale || 1) * uni;
-                    showAtomMarkerAtWorld(aW, visD);
-                    if (bondSelMesh) bondSelMesh.setEnabled(false);
-                    console.log(`[VR Select] Atom #${found.globalIndex} (${elem})`);
-                  }
-                  st.tapHandled = true;
+                  console.log(`[VR Select] Bond ${b.i}-${b.j} (group ${b.key}, ti ${b.index})`);
+                  handled = true;
                 } else {
-                  // Background: clear selection
-                  clearSelection();
+                  const a = picker.pickAtomWithRay(ray);
+                  if (a) {
+                    selection.kind = 'atom';
+                    selection.data = { idx: a.idx, type: a.type };
+                    const aW = transformLocalToWorld(a.atom.pos);
+                    const m0 = getAnyMaster();
+                    const scl = m0?.scaling || new BABYLON.Vector3(1,1,1);
+                    const uni = (Math.abs(scl.x - scl.y) < 1e-6 && Math.abs(scl.x - scl.z) < 1e-6) ? scl.x : scl.length()/Math.sqrt(3);
+                    showAtomMarkerAtWorld(aW, (a.atom.scale || 1) * uni);
+                    if (bondSelMesh) bondSelMesh.setEnabled(false);
+                    console.log(`[VR Select] Atom #${a.idx} (${a.type})`);
+                    handled = true;
+                  }
                 }
               }
+              if (!handled) clearSelection();
             }
           } catch (selErr) {
             console.warn('[VR Select] Selection failed:', selErr?.message || selErr);

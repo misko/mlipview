@@ -88,6 +88,45 @@ export async function initVRApp() {
   // Create VR UI (lite: energy-only)
   const vrUI = createVRUI(scene);
   console.log("[VR] VR UI created (energy panel)");
+
+  // Optional minimal bond rotation controls: a tiny 3D panel with -/+ buttons
+  try {
+    const manager = new BABYLON.GUI.GUI3DManager(scene);
+    const panel = new BABYLON.GUI.PlanePanel();
+    panel.margin = 0.2;
+    panel.rows = 1;
+    panel.columns = 3;
+    panel.position = new BABYLON.Vector3(0.0, 1.2, 1.4);
+    manager.addControl(panel);
+
+    const mkButton = (id, text, onClick) => {
+      const b = new BABYLON.GUI.HolographicButton(id);
+      b.text = text;
+      b.onPointerUpObservable.add(onClick);
+      b.isVisible = true;
+      return b;
+    };
+    const minus = mkButton("bondMinus", "−", () => rotateSelectedBond(scene, -1));
+    const label = mkButton("bondLabel", "Bond", () => {});
+    const plus  = mkButton("bondPlus",  "+", () => rotateSelectedBond(scene, +1));
+    label.isEnabled = false;
+    label.isPointerBlocker = false;
+    panel.addControl(minus);
+    panel.addControl(label);
+    panel.addControl(plus);
+
+    // Update label visibility based on selection
+    scene.onBeforeRenderObservable.add(() => {
+      const sel = window.vrSelection;
+      const show = sel && sel.kind === 'bond';
+      panel.isVisible = !!show;
+      if (show) {
+        label.text = `Bond ${sel.data.i}-${sel.data.j}`;
+      }
+    });
+  } catch (e) {
+    console.warn('[VR] Bond control panel failed:', e?.message);
+  }
     
     // VR-specific state
     // Lite mode: remove advanced UI control wiring (forces, plot, export)
@@ -151,6 +190,28 @@ export async function initVRApp() {
             vrUI.energyValue.text = cachedEnergy.toFixed(3);
             lastEnergyUpdate = frameCount;
           }
+
+          // Handle right-stick bond rotation when a bond is selected
+          try {
+            const sel = window.vrSelection;
+            if (sel && sel.kind === 'bond') {
+              const helper = window.vrHelper;
+              const controllers = helper?.input?.controllers || [];
+              const deadzone = 0.25; // require intent
+              let rightX = 0;
+              for (const c of controllers) {
+                const gp = c.inputSource?.gamepad;
+                if (!gp || !gp.axes) continue;
+                // Prefer right stick X at index 2 if present, else fallback
+                const ax = gp.axes.length >= 4 ? gp.axes[2] : (gp.axes[0] || 0);
+                if (Math.abs(ax) > Math.abs(rightX)) rightX = ax;
+              }
+              if (Math.abs(rightX) > deadzone) {
+                const sign = rightX > 0 ? +1 : -1;
+                rotateSelectedBond(scene, sign);
+              }
+            }
+          } catch {}
           
           // Update forces if enabled (using cached forces) - skip in lite mode
           // Forces disabled in lite mode
@@ -218,6 +279,20 @@ export async function initVRApp() {
   } catch (error) {
     console.error("[VR] Failed to initialize VR app:", error);
     return null;
+  }
+}
+
+// Rotate the currently selected bond by a fixed step via torsion controller
+function rotateSelectedBond(scene, sign) {
+  const sel = window.vrSelection;
+  const torsion = window.vrTorsion;
+  if (!sel || sel.kind !== 'bond' || !torsion) return;
+  const step = 5; // degrees per click
+  try {
+    torsion.rotateAroundBond({ i: sel.data.i, j: sel.data.j, side: 'j', angleDeg: sign * step, recompute: false });
+    if (typeof window.vrMol?.markChanged === 'function') window.vrMol.markChanged();
+  } catch (e) {
+    console.warn('[VR] rotateSelectedBond failed:', e?.message);
   }
 }
 
