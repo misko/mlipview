@@ -70,7 +70,22 @@
         <h3>🥽 VR Molecular Viewer</h3>
         <p id="statusText">Checking VR support...</p>
         <button id="enterVRBtn" class="vr-button" disabled>Enter VR</button>
+        <button id="enterVRLiteBtn" class="vr-button" disabled>VR Lite Mode</button>
         <button id="fallbackBtn" class="vr-button">Desktop Mode</button>
+        <button id="debugBtn" class="vr-button">Show Debug</button>
+    </div>
+    
+    <!-- Debug Console Overlay -->
+    <div id="debugConsole" style="position: absolute; top: 50px; right: 20px; width: 400px; max-height: 400px; background: rgba(0,0,0,0.9); color: #00ff00; font-family: monospace; font-size: 12px; padding: 10px; border-radius: 8px; z-index: 2000; display: none; overflow-y: auto;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h4 style="margin: 0; color: #00ff00;">🐛 Debug Console</h4>
+            <div style="display: flex; gap: 5px;">
+                <button id="clearDebug" style="background: #333; color: #fff; border: none; padding: 2px 6px; border-radius: 3px; cursor: pointer;">Clear</button>
+                <button id="toggleFPS" style="background: #333; color: #fff; border: none; padding: 2px 6px; border-radius: 3px; cursor: pointer;">FPS</button>
+            </div>
+        </div>
+        <div id="fpsDisplay" style="color: #ffff00; margin-bottom: 5px; display: none;">FPS: --</div>
+        <div id="debugOutput"></div>
     </div>
     
     <div id="vrInstructions">
@@ -105,61 +120,352 @@
     
     <script type="module">
         import { initVRApp } from './vr/main-vr.js';
-        import { initApp } from './main.js'; // Fallback to desktop
+        import { initApp } from './main.js'; // Only for fallback to desktop
         
         let vrApp = null;
         let desktopApp = null;
         let isInitialized = false;
         
+        // Prevent main.js from auto-starting desktop mode
+        window.vrMode = true;
+        
         const statusText = document.getElementById('statusText');
         const enterVRBtn = document.getElementById('enterVRBtn');
+        const enterVRLiteBtn = document.getElementById('enterVRLiteBtn');
         const fallbackBtn = document.getElementById('fallbackBtn');
+        const debugBtn = document.getElementById('debugBtn');
         const vrInstructions = document.getElementById('vrInstructions');
+        const debugConsole = document.getElementById('debugConsole');
+        const debugOutput = document.getElementById('debugOutput');
+        const clearDebug = document.getElementById('clearDebug');
+        const toggleFPS = document.getElementById('toggleFPS');
+        const fpsDisplay = document.getElementById('fpsDisplay');
+        
+        // FPS monitoring
+        let showFPS = false;
+        let fpsInterval;
+        
+        function startFPSMonitoring() {
+            if (fpsInterval) return;
+            
+            fpsInterval = setInterval(() => {
+                if (window.vrDebug && window.vrDebug.engine) {
+                    const fps = window.vrDebug.engine.getFps();
+                    const drawCalls = window.vrDebug.engine.drawCalls || 0;
+                    fpsDisplay.textContent = `FPS: ${fps.toFixed(1)} | Draw Calls: ${drawCalls}`;
+                } else {
+                    fpsDisplay.textContent = 'FPS: Engine not available';
+                }
+            }, 500); // Update every 500ms
+        }
+        
+        function stopFPSMonitoring() {
+            if (fpsInterval) {
+                clearInterval(fpsInterval);
+                fpsInterval = null;
+            }
+        }
+        
+        // Debug logging system
+        function debugLog(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const color = type === 'error' ? '#ff4444' : type === 'warning' ? '#ffaa00' : '#00ff00';
+            const logEntry = `<div style="color: ${color}; margin: 2px 0;">[${timestamp}] ${message}</div>`;
+            debugOutput.innerHTML += logEntry;
+            debugOutput.scrollTop = debugOutput.scrollHeight;
+            console.log(`[VR Debug] ${message}`);
+        }
+        
+        // Global error handler
+        window.addEventListener('error', (e) => {
+            debugLog(`JS Error: ${e.message} at ${e.filename}:${e.lineno}`, 'error');
+        });
+        
+        // VR-specific debugging
+        window.vrDebug = {
+            scene: null,
+            engine: null,
+            camera: null,
+            lights: [],
+            meshes: [],
+            materials: [],
+            // Helper to inspect object methods
+            inspectObject: (obj, name) => {
+                if (!obj) {
+                    debugLog(`${name} is null/undefined`, 'warning');
+                    return;
+                }
+                debugLog(`=== ${name} METHODS ===`);
+                const methods = Object.getOwnPropertyNames(obj)
+                    .filter(prop => typeof obj[prop] === 'function')
+                    .slice(0, 10); // Show first 10 methods
+                methods.forEach(method => debugLog(`- ${method}()`));
+                if (Object.getOwnPropertyNames(obj).length > 10) {
+                    debugLog(`... and ${Object.getOwnPropertyNames(obj).length - 10} more`);
+                }
+                debugLog(`=== END ${name} ===`);
+            }
+        };
         
         async function checkVRSupport() {
+            console.log('Checking VR support...');
+            console.log('User Agent:', navigator.userAgent);
+            console.log('Has navigator.xr:', 'xr' in navigator);
+            
+            // Check if we're on HTTPS (required for WebXR)
+            if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+                statusText.textContent = '⚠️ HTTPS required for VR. Please use https://';
+                vrInstructions.innerHTML = '<p><strong>VR Requirements:</strong> WebXR requires HTTPS. Please access this page via HTTPS or use localhost for testing.</p>';
+                return false;
+            }
+            
             if ('xr' in navigator) {
                 try {
+                    // More comprehensive VR support check
+                    console.log('Checking immersive-vr session support...');
                     const isSupported = await navigator.xr.isSessionSupported('immersive-vr');
+                    console.log('immersive-vr supported:', isSupported);
+                    
                     if (isSupported) {
                         statusText.textContent = '✅ VR supported! Ready to enter VR.';
                         enterVRBtn.disabled = false;
+                        enterVRLiteBtn.disabled = false;
+                        enterVRLiteBtn.textContent = 'VR Lite (Performance)';
                         return true;
+                    } else {
+                        // Try checking for inline sessions as fallback
+                        console.log('Checking inline session support...');
+                        const inlineSupported = await navigator.xr.isSessionSupported('inline');
+                        console.log('inline supported:', inlineSupported);
+                        
+                        if (inlineSupported) {
+                            statusText.textContent = '⚠️ VR hardware not detected, but WebXR is available.';
+                            enterVRBtn.disabled = false;
+                            enterVRLiteBtn.disabled = false;
+                            return true;
+                        }
                     }
                 } catch (e) {
-                    console.warn('VR check failed:', e);
+                    console.error('VR check failed:', e);
+                    statusText.textContent = '❌ VR check failed: ' + e.message;
                 }
             }
             
-            statusText.textContent = '❌ VR not supported on this device/browser.';
-            vrInstructions.innerHTML = '<p><strong>VR Requirements:</strong> Chrome/Edge on Meta Quest, or desktop with VR headset. <a href="https://immersiveweb.dev/" target="_blank">Learn more about WebXR</a></p>';
+            // Check if we might be on a VR-capable device
+            const userAgent = navigator.userAgent.toLowerCase();
+            const isQuest = userAgent.includes('quest') || userAgent.includes('oculus');
+            const isVRBrowser = userAgent.includes('oculusbrowser') || userAgent.includes('vrbrowser');
+            
+            if (isQuest || isVRBrowser) {
+                statusText.textContent = '🔄 VR device detected but WebXR not available. Try enabling VR in browser settings.';
+                vrInstructions.innerHTML = `
+                    <p><strong>Meta Quest Setup:</strong></p>
+                    <ol>
+                        <li>Make sure you're using the latest Oculus Browser</li>
+                        <li>Enable "WebXR" in browser experimental features</li>
+                        <li>Access via HTTPS (required for WebXR)</li>
+                        <li>Allow location/camera permissions if prompted</li>
+                    </ol>
+                    <p><a href="https://immersiveweb.dev/" target="_blank">Learn more about WebXR support</a></p>
+                `;
+                // Still enable the button in case it works
+                enterVRBtn.disabled = false;
+                enterVRLiteBtn.disabled = false;
+            } else {
+                statusText.textContent = '❌ VR not supported on this device/browser.';
+                vrInstructions.innerHTML = '<p><strong>VR Requirements:</strong> Chrome/Edge on Meta Quest, or desktop with VR headset. <a href="https://immersiveweb.dev/" target="_blank">Learn more about WebXR</a></p>';
+            }
+            
             return false;
         }
         
-        async function initVR() {
+        async function initVR(liteMode = false) {
             if (isInitialized) {
-                console.log('Application already initialized');
+                debugLog('Application already initialized', 'warning');
                 return;
             }
             
             try {
-                statusText.textContent = '🚀 Initializing VR...';
+                debugLog(`Starting VR initialization${liteMode ? ' (Lite Mode)' : ''}...`);
+                statusText.textContent = `🚀 Initializing VR${liteMode ? ' Lite' : ''}...`;
                 enterVRBtn.disabled = true;
+                enterVRLiteBtn.disabled = true;
                 
+                if (liteMode) {
+                    debugLog('Lite Mode: Disabling expensive features for performance');
+                    // Set global flags for lite mode
+                    window.vrLiteMode = true;
+                    window.vrDisableForces = true;
+                    window.vrDisablePlot = true;
+                }
+                
+                debugLog('Pre-init VR support check...');
+                
+                // Force a VR support recheck before initialization
+                if ('xr' in navigator) {
+                    try {
+                        const vrSupported = await navigator.xr.isSessionSupported('immersive-vr');
+                        debugLog(`VR Support Check Result: ${vrSupported}`);
+                        
+                        if (!vrSupported) {
+                            debugLog('Attempting to request VR session to trigger permissions...');
+                            try {
+                                const session = await navigator.xr.requestSession('immersive-vr');
+                                session.end();
+                                debugLog('VR session request successful - proceeding with initialization');
+                            } catch (sessionError) {
+                                debugLog(`VR session request failed: ${sessionError.message}`, 'error');
+                                throw new Error('VR session not available: ' + sessionError.message);
+                            }
+                        }
+                    } catch (checkError) {
+                        debugLog(`VR support recheck failed: ${checkError.message}`, 'error');
+                        throw checkError;
+                    }
+                }
+                
+                debugLog('✅ VR support confirmed - calling initVRApp()...');
                 vrApp = await initVRApp();
+                debugLog('✅ initVRApp() completed successfully');
                 
                 if (vrApp && vrApp.vrHelper) {
+                    debugLog('✅ VR Helper confirmed - VR system ready');
                     isInitialized = true;
-                    statusText.textContent = '🥽 VR Ready! Use your controller to interact.';
+                    statusText.textContent = '✅ VR Ready! Look for Enter VR button in bottom-right corner.';
+                    
+                    // Store debug references
+                    if (vrApp.scene) {
+                        window.vrDebug.scene = vrApp.scene;
+                        window.vrDebug.engine = vrApp.engine;
+                        window.vrDebug.camera = vrApp.scene.activeCamera;
+                        window.vrDebug.lights = vrApp.scene.lights;
+                        window.vrDebug.meshes = vrApp.scene.meshes;
+                        window.vrDebug.materials = vrApp.scene.materials;
+                        
+                        debugLog(`Scene loaded: ${vrApp.scene.meshes.length} meshes, ${vrApp.scene.lights.length} lights`);
+                        debugLog(`Camera: ${vrApp.scene.activeCamera?.constructor.name}, Position: ${vrApp.scene.activeCamera?.position}`);
+                        
+                        // Check for common black screen issues
+                        if (vrApp.scene.lights.length === 0) {
+                            debugLog('WARNING: No lights in scene - this will cause black screen!', 'error');
+                        }
+                        
+                        if (vrApp.scene.meshes.length === 0) {
+                            debugLog('WARNING: No meshes in scene - nothing to render!', 'warning');
+                        }
+                        
+                        // Add VR session monitoring
+                        vrApp.vrHelper.baseExperience.sessionManager.onXRSessionInit.add(() => {
+                            debugLog('VR Session Started Successfully');
+                            setTimeout(() => {
+                                debugScene();
+                            }, 1000);
+                        });
+                        
+                        vrApp.vrHelper.baseExperience.sessionManager.onXRSessionEnded.add(() => {
+                            debugLog('VR Session Ended');
+                        });
+                    }
+                    
+                    // Check immediately if native VR button is available
+                    setTimeout(() => {
+                        navigator.xr.isSessionSupported('immersive-vr').then(supported => {
+                            if (supported) {
+                                debugLog('🎯 NATIVE VR BUTTON should now be visible in browser bottom-right');
+                                statusText.textContent = '🎯 VR Ready! Click VR button in bottom-right to enter full VR.';
+                            } else {
+                                debugLog('❌ VR support lost after initialization', 'error');
+                            }
+                        });
+                    }, 1000);
+                    
                     document.getElementById('vrStatus').style.display = 'none';
                     vrInstructions.style.display = 'none';
+                    debugLog('✅ VR application successfully initialized');
+                    
                 } else {
-                    throw new Error('VR initialization failed');
+                    debugLog('❌ VR Helper not found - initialization failed', 'error');
+                    throw new Error('VR initialization failed - no VR helper created');
                 }
             } catch (error) {
+                debugLog(`VR init error: ${error.message}`, 'error');
                 console.error('VR init error:', error);
-                statusText.textContent = '❌ VR failed to start. Using desktop mode.';
-                initDesktop();
+                
+                // Provide more specific error messages
+                let errorMessage = '❌ VR failed to start: ';
+                if (error.message.includes('not supported')) {
+                    errorMessage += 'WebXR not supported in this browser.';
+                } else if (error.message.includes('permission')) {
+                    errorMessage += 'VR permissions denied. Please allow VR access.';
+                } else if (error.message.includes('session')) {
+                    errorMessage += 'Could not create VR session. Check headset connection.';
+                } else {
+                    errorMessage += error.message;
+                }
+                
+                statusText.textContent = errorMessage;
+                enterVRBtn.disabled = false; // Re-enable for retry
+                enterVRLiteBtn.disabled = false; // Re-enable for retry
+                
+                // Show fallback options
+                setTimeout(() => {
+                    statusText.textContent += ' Falling back to desktop mode...';
+                    initDesktop();
+                }, 2000);
             }
+        }
+        
+        function debugScene() {
+            if (!window.vrDebug.scene) {
+                debugLog('No scene available for debugging', 'error');
+                return;
+            }
+            
+            const scene = window.vrDebug.scene;
+            debugLog('=== SCENE DEBUG INFO ===');
+            debugLog(`Meshes: ${scene.meshes.length}`);
+            debugLog(`Lights: ${scene.lights.length}`);
+            debugLog(`Materials: ${scene.materials.length}`);
+            debugLog(`Active Camera: ${scene.activeCamera?.constructor.name}`);
+            
+            if (scene.activeCamera) {
+                debugLog(`Camera Position: (${scene.activeCamera.position.x.toFixed(2)}, ${scene.activeCamera.position.y.toFixed(2)}, ${scene.activeCamera.position.z.toFixed(2)})`);
+                debugLog(`Camera Target: (${scene.activeCamera.target?.x?.toFixed(2) || 'N/A'}, ${scene.activeCamera.target?.y?.toFixed(2) || 'N/A'}, ${scene.activeCamera.target?.z?.toFixed(2) || 'N/A'})`);
+            }
+            
+            // Check VR state
+            if (window.vrHelper) {
+                debugLog('=== VR HELPER DEBUG ===');
+                debugLog(`VR Helper available: ${!!window.vrHelper}`);
+                debugLog(`Base Experience: ${!!window.vrHelper.baseExperience}`);
+                debugLog(`Session Manager: ${!!window.vrHelper.baseExperience?.sessionManager}`);
+                debugLog(`In XR Session: ${window.vrHelper.baseExperience?.sessionManager?.currentSession ? 'YES' : 'NO'}`);
+                
+                // Check if browser should show native VR button
+                if (navigator.xr) {
+                    navigator.xr.isSessionSupported('immersive-vr').then(supported => {
+                        debugLog(`WebXR Immersive-VR Supported: ${supported}`);
+                        if (supported && !window.vrHelper.baseExperience?.sessionManager?.currentSession) {
+                            debugLog('⚠️ VR is supported but no active session - native VR button should be visible');
+                        }
+                    });
+                }
+            } else {
+                debugLog('❌ No VR Helper found - VR not initialized');
+            }
+            
+            // Check lighting
+            scene.lights.forEach((light, i) => {
+                debugLog(`Light ${i}: ${light.constructor.name}, Intensity: ${light.intensity}, Enabled: ${light.isEnabled()}`);
+            });
+            
+            // Check visible meshes
+            const visibleMeshes = scene.meshes.filter(m => m.isVisible && m.isEnabled());
+            debugLog(`Visible Meshes: ${visibleMeshes.length}/${scene.meshes.length}`);
+            
+            // Check rendering
+            debugLog(`Render calls this frame: ${scene.getEngine().drawCalls}`);
+            debugLog('=== END DEBUG INFO ===');
         }
         
         async function initDesktop() {
@@ -195,10 +501,124 @@
         }
         
         // Event listeners
-        enterVRBtn.addEventListener('click', initVR);
-        fallbackBtn.addEventListener('click', initDesktop);
+        enterVRBtn.addEventListener('click', () => {
+            debugLog('🎮 VR button clicked - starting full VR mode');
+            initVR(false);
+        });
+        
+        enterVRLiteBtn.addEventListener('click', () => {
+            debugLog('⚡ VR Lite button clicked - starting VR lite mode');
+            initVR(true);
+        });
+        
+        fallbackBtn.addEventListener('click', () => {
+            debugLog('🖥️ Desktop fallback button clicked');
+            initDesktop();
+        });
+        debugBtn.addEventListener('click', () => {
+            debugConsole.style.display = debugConsole.style.display === 'none' ? 'block' : 'none';
+        });
+        clearDebug.addEventListener('click', () => {
+            debugOutput.innerHTML = '';
+        });
+        
+        toggleFPS.addEventListener('click', () => {
+            showFPS = !showFPS;
+            if (showFPS) {
+                fpsDisplay.style.display = 'block';
+                startFPSMonitoring();
+                toggleFPS.textContent = 'Hide FPS';
+            } else {
+                fpsDisplay.style.display = 'none';
+                stopFPSMonitoring();
+                toggleFPS.textContent = 'FPS';
+            }
+        });
+        
+        // Add debug hotkeys
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I')) {
+                debugConsole.style.display = debugConsole.style.display === 'none' ? 'block' : 'none';
+            }
+            if (e.ctrlKey && e.key === 'd') {
+                e.preventDefault();
+                debugScene();
+            }
+            if (e.ctrlKey && e.key === 'v') {
+                e.preventDefault();
+                debugLog('=== FORCE VR BUTTON TRIGGER ===');
+                forceVRButton();
+            }
+        });
+        
+        // Function to force trigger native VR button
+        function forceVRButton() {
+            if (!window.vrHelper) {
+                debugLog('❌ No VR helper available', 'error');
+                return;
+            }
+            
+            debugLog('Attempting to force native VR button...');
+            
+            try {
+                // Method 1: Try to request a session directly
+                if (navigator.xr) {
+                    navigator.xr.isSessionSupported('immersive-vr').then(async (supported) => {
+                        if (supported) {
+                            debugLog('✅ VR supported, attempting to trigger native button');
+                            
+                            // Try different approaches to make browser show VR button
+                            
+                            // Approach 1: Simulate user activation
+                            const canvas = window.vrScene?.getEngine().getRenderingCanvas();
+                            if (canvas) {
+                                const event = new PointerEvent('pointerdown', {
+                                    bubbles: true,
+                                    cancelable: true,
+                                    pointerId: 1,
+                                    button: 0
+                                });
+                                canvas.dispatchEvent(event);
+                                
+                                setTimeout(() => {
+                                    const upEvent = new PointerEvent('pointerup', {
+                                        bubbles: true,
+                                        cancelable: true,
+                                        pointerId: 1,
+                                        button: 0
+                                    });
+                                    canvas.dispatchEvent(upEvent);
+                                }, 100);
+                                
+                                debugLog('Triggered canvas pointer events');
+                            }
+                            
+                            // Approach 2: Try to create a temporary session
+                            try {
+                                const session = await navigator.xr.requestSession('immersive-vr');
+                                debugLog('✅ VR session created successfully');
+                                setTimeout(() => {
+                                    session.end();
+                                    debugLog('VR session ended - native button should now be available');
+                                }, 1000);
+                            } catch (sessionError) {
+                                debugLog(`Session request failed: ${sessionError.message}`, 'warning');
+                            }
+                            
+                        } else {
+                            debugLog('❌ VR not supported', 'error');
+                        }
+                    });
+                } else {
+                    debugLog('❌ WebXR not available', 'error');
+                }
+            } catch (error) {
+                debugLog(`Force VR button failed: ${error.message}`, 'error');
+            }
+        }
         
         // Initialize
+        debugLog('Starting VR application...');
         checkVRSupport();
     </script>
 </body>

@@ -34,6 +34,9 @@ const BOND_MAX = 6.0; // ignore silly long bonds
 export function createMockMLIP(molecule) {
   const atoms = molecule.atoms; // [{type, pos, ...}] order = global index
   const n = atoms.length;
+  
+  // Performance tracking
+  let computeCount = 0;
 
   // Map initial bond length r0 for harmonic term
   const r0 = new Map(); // key "i-j" (sorted) -> number
@@ -49,6 +52,9 @@ export function createMockMLIP(molecule) {
   }
 
   function compute() {
+    computeCount++;
+    console.log(`[MLIP DEBUG] compute() called (#${computeCount}) - this should only happen when atoms move or bonds rotate!`);
+    
     const forces = Array.from({ length: n }, () => new BABYLON.Vector3(0, 0, 0));
     let E = 0.0;
 

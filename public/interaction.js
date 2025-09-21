@@ -114,7 +114,7 @@ export function enableAtomDragging(scene, { atoms, refreshBonds, molecule }) {
     molecule.updateAtomMatrixByElement(dragging.atom.type, dragging.index, mat);
     dragging.atom.pos.copyFrom(targetCenter);
 
-    // Fast bond follow
+    // Fast bond follow (don't mark as changed during drag, only at the end)
     if (typeof refreshBonds === "function") refreshBonds();
   });
 
@@ -136,6 +136,12 @@ export function enableAtomDragging(scene, { atoms, refreshBonds, molecule }) {
           finalCenter
         );
         molecule.updateAtomMatrixByElement(dragging.atom.type, dragging.index, m);
+        
+        // Mark molecule as changed for physics cache invalidation
+        if (molecule.markChanged) {
+          molecule.markChanged();
+        }
+        
         if (typeof refreshBonds === "function") refreshBonds();
 
         console.log("[pick] DROP @", finalCenter.toString(), "mesh:", dragging.mesh.name, "index:", dragging.index);

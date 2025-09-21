@@ -49,6 +49,11 @@ export function createTorsionController(molecule, stateStore = null) {
 
     molecule.refreshBonds();
 
+    // Mark molecule as changed for physics cache invalidation
+    if (molecule.markChanged) {
+      molecule.markChanged();
+    }
+
     if (record && stateStore) {
       stateStore.recordRotation({ i, j, side, angleDeg });
     }

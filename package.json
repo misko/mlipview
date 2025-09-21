@@ -5,7 +5,10 @@
   "description": "Minimal Babylon.js + WebXR benzene demo with a tiny Node static server",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node server.js",
+    "generate-certs": "./generate-certs.sh",
+    "https": "npm run generate-certs && npm start"
   },
   "dependencies": {
     "express": "^4.19.2"

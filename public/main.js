@@ -101,18 +101,69 @@ function setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, mli
 }
 
 function startRenderLoop(engine, scene, mlip, energyVal, forceControls, energyPlot, state) {
+  // Cache physics results - only recompute when molecular structure changes
+  let cachedEnergy = null;
+  let cachedForces = null;
+  let lastChangeCounter = -1;
+  let frameCount = 0;
+  let lastEnergyUpdate = 0;
+  let lastForceUpdate = 0;
+  let lastPlotUpdate = 0;
+  
+  // Function to check if molecular structure has changed
+  function hasStructureChanged() {
+    const molecule = state.molecule;
+    if (molecule && molecule.changeCounter !== lastChangeCounter) {
+      lastChangeCounter = molecule.changeCounter;
+      return true;
+    }
+    return false;
+  }
+  
+  // Function to update cached physics if needed
+  function updatePhysicsCache() {
+    if (hasStructureChanged() || cachedEnergy === null) {
+      console.log("[Desktop] Molecular structure changed - recomputing physics");
+      const result = mlip.compute();
+      cachedEnergy = result.energy;
+      cachedForces = result.forces;
+      return true;
+    }
+    return false;
+  }
+  
+  // Throttle UI updates
+  const ENERGY_UPDATE_INTERVAL = 2;  // Update energy display every 2 frames
+  const FORCE_UPDATE_INTERVAL = 3;   // Update forces every 3 frames  
+  const PLOT_UPDATE_INTERVAL = 5;    // Update plot every 5 frames
+  
   engine.runRenderLoop(() => {
-    const { energy, forces } = mlip.compute();
+    frameCount++;
     
-    // Update energy display
-    energyVal.textContent = energy.toFixed(3);
+    // Check if we need to recompute physics (only when structure changes)
+    const physicsUpdated = updatePhysicsCache();
     
-    // Update forces if enabled
-    forceControls.updateForces(forces);
+    // Determine what UI elements need updating
+    const needsEnergyUpdate = physicsUpdated || (frameCount - lastEnergyUpdate >= ENERGY_UPDATE_INTERVAL);
+    const needsForceUpdate = physicsUpdated || (frameCount - lastForceUpdate >= FORCE_UPDATE_INTERVAL);
+    const needsPlotUpdate = physicsUpdated || (frameCount - lastPlotUpdate >= PLOT_UPDATE_INTERVAL);
     
-    // Update plot if enabled
-    if (energyPlot.isEnabled()) {
-      energyPlot.updateChart(energy, state);
+    // Update energy display (using cached energy)
+    if (needsEnergyUpdate && cachedEnergy !== null) {
+      energyVal.textContent = cachedEnergy.toFixed(3);
+      lastEnergyUpdate = frameCount;
+    }
+    
+    // Update forces if enabled (using cached forces)
+    if (needsForceUpdate && cachedForces) {
+      forceControls.updateForces(cachedForces);
+      lastForceUpdate = frameCount;
+    }
+    
+    // Update plot if enabled (using cached energy)
+    if (needsPlotUpdate && energyPlot.isEnabled() && cachedEnergy !== null) {
+      energyPlot.updateChart(cachedEnergy, state);
+      lastPlotUpdate = frameCount;
     }
     
     scene.render();
@@ -122,5 +173,9 @@ function startRenderLoop(engine, scene, mlip, energyVal, forceControls, energyPl
 // Export for use in other modules (like VR mode)
 export { initApp };
 
-// Start the application
-initApp().catch(console.error);
+// Only start the application if we're not in VR mode
+// VR mode will be handled by vr.html and main-vr.js
+if (!window.location.pathname.includes('vr.html')) {
+  // Start the application
+  initApp().catch(console.error);
+}

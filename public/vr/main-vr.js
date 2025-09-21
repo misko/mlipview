@@ -7,31 +7,173 @@ import { create3DEnergyPlot } from './vr-plot.js';
 import { setupScene, setupMolecule } from '../setup/app-setup.js';
 
 export async function initVRApp() {
-  console.log("[VR] Starting VR molecular viewer...");
+  console.log("[VR] 🚀 Starting VR molecular viewer...");
+  console.log("[VR] Desktop app should NOT be running - checking...");
+  
+  // Ensure we're in VR mode, not desktop mode
+  if (window.location.pathname.includes('vr.html')) {
+    console.log("[VR] ✅ Confirmed we're in VR mode");
+  } else {
+    console.warn("[VR] ⚠️ Not in VR mode - this might cause conflicts");
+  }
+  
+  const liteMode = window.vrLiteMode || false;
+  if (liteMode) {
+    console.log("[VR] LITE MODE ENABLED - Performance optimizations active");
+  }
   
   try {
-    // Create Babylon.js app using existing setup
-    const { canvas, engine, scene } = await setupScene();
+    console.log("[VR] Step 1: Setting up scene...");
+    // Create Babylon.js app using existing setup with VR optimizations
+    const { canvas, engine, scene } = await setupScene(true); // true = VR mode
+    console.log("[VR] Scene setup complete:", {
+      canvas: !!canvas,
+      engine: !!engine,
+      scene: !!scene,
+      meshCount: scene.meshes.length,
+      lightCount: scene.lights.length
+    });
     
+    console.log("[VR] Step 2: Setting up molecule...");
     // Setup molecule and related systems using existing setup
     const { mol, atoms, state, torsion, mlip, forceVis } = await setupMolecule(scene);
+    console.log("[VR] Molecule setup complete:", {
+      mol: !!mol,
+      atoms: atoms?.length || 0,
+      state: !!state,
+      torsion: !!torsion,
+      mlip: !!mlip,
+      forceVis: !!forceVis
+    });
     
+    // Debug scene state before VR initialization
+    console.log("[VR] Pre-VR scene debug:");
+    console.log("- Scene meshes:", scene.meshes.length);
+    console.log("- Scene lights:", scene.lights.length);
+    console.log("- Active camera:", scene.activeCamera?.constructor.name);
+    
+    // Check for molecules/atoms
+    const atomMeshes = scene.meshes.filter(m => m.name && m.name.includes('atom'));
+    const bondMeshes = scene.meshes.filter(m => m.name && m.name.includes('bond'));
+    console.log(`- Atom meshes: ${atomMeshes.length}`);
+    console.log(`- Bond meshes: ${bondMeshes.length}`);
+    
+    console.log("[VR] Step 3: Initializing VR...");
     // Initialize VR
     const vrHelper = await setupVR(engine, scene);
     
     if (!vrHelper) {
-      console.error("VR not available. Falling back to desktop mode.");
+      console.error("[VR] ❌ VR not available. setupVR returned null.");
       return null;
     }
     
+    console.log("[VR] ✅ VR helper created successfully");
+    
+    // CRITICAL: Make the VR helper globally accessible for browser native VR button
+    window.vrHelper = vrHelper;
+    window.vrScene = scene;
+    
+    // CRITICAL: Make state and torsion system globally available for VR interaction
+    window.appState = state;
+    window.vrTorsion = torsion;
+    window.vrMlip = mlip;
+    console.log("[VR] 🌐 VR helper and molecular systems stored globally for interaction");
+    
+    // Add VR instructions panel
+    createVRInstructions(scene);
+    console.log("[VR] 📋 VR instructions panel created");
+    
+    // Add trigger for native VR controls
+    setTimeout(() => {
+      console.log('[VR] Triggering native browser VR controls...');
+      
+      // Try to make browser show native VR button
+      if (navigator.xr && vrHelper.baseExperience) {
+        console.log('[VR] WebXR session manager available');
+        
+        // Try to create the proper entry point for native VR button
+        try {
+          // Ensure the enter VR function is available globally
+          window.enterVR = async () => {
+            try {
+              if (vrHelper.baseExperience && vrHelper.baseExperience.enterXRAsync) {
+                console.log('[VR] Entering VR via native button...');
+                await vrHelper.baseExperience.enterXRAsync('immersive-vr', 'local-floor');
+                console.log('[VR] Successfully entered VR mode');
+              }
+            } catch (error) {
+              console.error('[VR] Failed to enter VR:', error);
+            }
+          };
+          
+          // Method 1: Dispatch WebXR ready event
+          window.dispatchEvent(new CustomEvent('webxr-ready', {
+            detail: { 
+              supported: true, 
+              helper: vrHelper,
+              enterVR: window.enterVR
+            }
+          }));
+          
+          // Method 2: Try to trigger session availability
+          if (vrHelper.baseExperience.sessionManager) {
+            console.log('[VR] Session manager ready - native VR button should appear');
+            
+            // Force check that triggers browser VR UI
+            navigator.xr.isSessionSupported('immersive-vr').then(supported => {
+              if (supported) {
+                console.log('[VR] ✅ Immersive VR confirmed - browser should show Enter VR button');
+                
+                // Set up a proper XR session request handler
+                if (!window.xrSessionHandler) {
+                  window.xrSessionHandler = true;
+                  
+                  // Listen for user gesture and enable VR button
+                  const enableVRButton = () => {
+                    console.log('[VR] User gesture detected - VR button should be enabled');
+                    document.removeEventListener('click', enableVRButton);
+                    document.removeEventListener('touchstart', enableVRButton);
+                  };
+                  
+                  document.addEventListener('click', enableVRButton);
+                  document.addEventListener('touchstart', enableVRButton);
+                }
+                
+                // Try to trigger the browser's native UI state
+                const event = new Event('xr-session-supported');
+                document.dispatchEvent(event);
+                
+                // Also dispatch on the canvas
+                const canvas = scene.getEngine().getRenderingCanvas();
+                if (canvas) {
+                  canvas.dispatchEvent(event);
+                }
+              }
+            }).catch(err => {
+              console.warn('[VR] Session support check failed:', err);
+            });
+          }
+          
+        } catch (error) {
+          console.log('[VR] Native button trigger failed:', error.message);
+        }
+      }
+    }, 1000);
+    
+    console.log("[VR] Step 4: Creating VR UI...");
     // Create VR UI components
     const vrUI = createVRUI(scene);
     const vr3DPlot = create3DEnergyPlot(scene);
+    console.log("[VR] VR UI components created");
     
     // VR-specific state
     let vrUIVisible = true;
-    let vrPlotVisible = true;
-    let vrForcesVisible = true;
+    let vrPlotVisible = !window.vrDisablePlot; // Disabled in lite mode
+    let vrForcesVisible = !window.vrDisableForces; // Disabled in lite mode
+    
+    if (liteMode) {
+      console.log("[VR] Lite mode: Forces and plots disabled for performance");
+    }
     
     // Connect VR UI buttons to functionality
     vrUI.buttons.forces.onPointerClickObservable.add(() => {
@@ -76,25 +218,79 @@ export async function initVRApp() {
       }
     }
     
-    // Render loop
+    // Render loop with cached physics results
     function startVRRenderLoop() {
+      let frameCount = 0;
+      let lastEnergyUpdate = 0;
+      let lastForceUpdate = 0;
+      let lastPlotUpdate = 0;
+      
+      // Cache physics results - only recompute when molecular structure changes
+      let cachedEnergy = null;
+      let cachedForces = null;
+      let lastChangeCounter = -1;
+      
+      // Function to check if molecular structure has changed
+      function hasStructureChanged() {
+        if (mol && mol.changeCounter !== lastChangeCounter) {
+          lastChangeCounter = mol.changeCounter;
+          return true;
+        }
+        return false;
+      }
+      
+      // Function to update cached physics if needed
+      function updatePhysicsCache() {
+        if (hasStructureChanged() || cachedEnergy === null) {
+          console.log("[VR] Molecular structure changed - recomputing physics");
+          const result = mlip.compute();
+          cachedEnergy = result.energy;
+          cachedForces = result.forces;
+          return true;
+        }
+        return false;
+      }
+      
+      // Throttle UI updates (less aggressive now since physics is cached)
+      const ENERGY_UPDATE_INTERVAL = liteMode ? 5 : 2;   // Update energy display every 5/2 frames
+      const FORCE_UPDATE_INTERVAL = liteMode ? 10 : 3;   // Update forces every 10/3 frames
+      const PLOT_UPDATE_INTERVAL = liteMode ? 15 : 5;    // Update plot every 15/5 frames
+      
       engine.runRenderLoop(() => {
-        const { energy, forces } = mlip.compute();
-        
-        // Update VR energy display
-        vrUI.energyValue.text = energy.toFixed(3);
-        
-        // Update forces if enabled
-        if (vrForcesVisible) {
-          forceVis.updateForces(forces);
+        try {
+          frameCount++;
+          
+          // Check if we need to recompute physics (only when structure changes)
+          const physicsUpdated = updatePhysicsCache();
+          
+          // Determine what UI elements need updating
+          const needsEnergyUpdate = physicsUpdated || (frameCount - lastEnergyUpdate >= ENERGY_UPDATE_INTERVAL);
+          const needsForceUpdate = physicsUpdated || (vrForcesVisible && (frameCount - lastForceUpdate >= FORCE_UPDATE_INTERVAL));
+          const needsPlotUpdate = physicsUpdated || (vrPlotVisible && (frameCount - lastPlotUpdate >= PLOT_UPDATE_INTERVAL));
+          
+          // Update VR energy display (using cached energy)
+          if (needsEnergyUpdate && vrUI && vrUI.energyValue && cachedEnergy !== null) {
+            vrUI.energyValue.text = cachedEnergy.toFixed(3);
+            lastEnergyUpdate = frameCount;
+          }
+          
+          // Update forces if enabled (using cached forces) - skip in lite mode
+          if (!liteMode && needsForceUpdate && forceVis && forceVis.setForces && cachedForces) {
+            forceVis.setForces(cachedForces);
+            lastForceUpdate = frameCount;
+          }
+          
+          // Update plot if enabled (using cached energy) - skip in lite mode
+          if (!liteMode && needsPlotUpdate && vr3DPlot && vr3DPlot.addDataPoint && cachedEnergy !== null) {
+            vr3DPlot.addDataPoint(state.rotations.length, cachedEnergy);
+            lastPlotUpdate = frameCount;
+          }
+          
+          scene.render();
+        } catch (error) {
+          console.error('[VR Render Loop] Error:', error);
+          // Don't break the render loop, just log the error
         }
-        
-        // Update plot if enabled
-        if (vrPlotVisible) {
-          vr3DPlot.addDataPoint(state.rotations.length, energy);
-        }
-        
-        scene.render();
       });
     }
     
@@ -110,6 +306,36 @@ export async function initVRApp() {
     
     console.log("[VR] VR molecular viewer initialized successfully!");
     
+    // Final debug check
+    console.log("[VR] Final scene state:");
+    console.log(`- Total meshes: ${scene.meshes.length}`);
+    console.log(`- Visible meshes: ${scene.meshes.filter(m => m.isVisible).length}`);
+    console.log(`- Total lights: ${scene.lights.length}`);
+    console.log(`- Enabled lights: ${scene.lights.filter(l => l.isEnabled()).length}`);
+    console.log(`- Camera position: ${scene.activeCamera?.position}`);
+    
+    // Expose debug info globally for Quest console access
+    window.vrDebug = {
+      scene,
+      engine,
+      vrHelper,
+      mol,
+      state,
+      forceVis,
+      vrUI,
+      vr3DPlot,
+      mlip, // Add MLIP for debugging
+      debugInfo: () => {
+        console.log("=== VR DEBUG INFO ===");
+        console.log("Scene meshes:", scene.meshes.map(m => `${m.name} (visible: ${m.isVisible})`));
+        console.log("Scene lights:", scene.lights.map(l => `${l.constructor.name} (intensity: ${l.intensity}, enabled: ${l.isEnabled()})`));
+        console.log("Camera:", scene.activeCamera);
+        console.log("VR Session active:", vrHelper.baseExperience.sessionManager.currentSession !== null);
+        console.log("Molecule change counter:", mol.changeCounter);
+        console.log("=== END DEBUG ===");
+      }
+    };
+    
     return {
       engine,
       scene,
@@ -123,6 +349,70 @@ export async function initVRApp() {
   } catch (error) {
     console.error("[VR] Failed to initialize VR app:", error);
     return null;
+  }
+}
+
+function createVRInstructions(scene) {
+  try {
+    // Create a 3D text panel with VR instructions
+    const manager = new BABYLON.GUI.GUI3DManager(scene);
+    
+    // Create a panel
+    const panel = new BABYLON.GUI.CylinderPanel();
+    panel.margin = 0.2;
+    
+    // Position the panel in front of the user
+    panel.position.z = 2;
+    panel.position.y = 1.5;
+    panel.radius = 3;
+    
+    manager.addControl(panel);
+    
+    // Create instruction text
+    const instructions = [
+      "🎮 VR Molecular Viewer Controls:",
+      "",
+      "� Trigger + Drag: Rotate camera around molecule",
+      "� Quick Trigger: Select bonds for rotation", 
+      "🕹️ Thumbstick Up/Down: Zoom in/out",
+      "✋ Squeeze: Menu (coming soon)",
+      "",
+      "🧪 Molecule: ROY Crystal Structure"
+    ];
+    
+    instructions.forEach((text, index) => {
+      const button = new BABYLON.GUI.HolographicButton("instruction_" + index);
+      panel.addControl(button);
+      
+      button.text = text;
+      button.fontSize = 24;
+      button.color = "white";
+      button.background = "rgba(0, 100, 200, 0.8)";
+      
+      // Make it non-interactive for pure display
+      button.isPointerBlocker = false;
+      button.isEnabled = false;
+    });
+    
+    // Make the panel fade out after 10 seconds
+    setTimeout(() => {
+      let alpha = 1;
+      const fadeInterval = setInterval(() => {
+        alpha -= 0.05;
+        panel.scaling = new BABYLON.Vector3(alpha, alpha, alpha);
+        
+        if (alpha <= 0) {
+          clearInterval(fadeInterval);
+          manager.removeControl(panel);
+          panel.dispose();
+        }
+      }, 100);
+    }, 10000);
+    
+    console.log("[VR] Instructions panel created and will auto-hide in 10 seconds");
+    
+  } catch (error) {
+    console.warn("[VR] Could not create instructions panel:", error.message);
   }
 }
 
