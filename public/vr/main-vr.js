@@ -241,8 +241,9 @@ function createVRInstructions(scene) {
       "🎮 VR Controls (Lite):",
       "",
       "✋ Grab box: Move/rotate the molecule",
-      "� Two hands: Pinch to scale",
-      "�👉 Or Hold Trigger + rotate wrist (fallback)",
+      "🤲 Two hands: Pinch to scale",
+      " Tap trigger: Select bond/atom",
+      "👉 Hold trigger + rotate wrist (fallback)",
       "👀 Move your head to look around",
       "",
       "🧪 Molecule: ROY Crystal Structure"

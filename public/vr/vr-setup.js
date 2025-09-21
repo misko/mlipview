@@ -134,6 +134,97 @@ function setupVRFeatures(xrHelper, scene) {
   try { getMoleculeMasters(scene); } catch (e) { console.warn('[VR] Could not collect molecule masters:', e?.message); }
   // Track last two-hand center for dual-trigger translation
   let lastTwoHandCenter = null;
+  // Selection state (bond or atom) and visual markers
+  const selection = { kind: null, data: null }; // kind: 'bond' | 'atom' | null
+  try { window.vrSelection = selection; } catch {}
+  let bondSelMesh = null;   // cylinder highlighting selected bond (world-aligned)
+  let atomSelMesh = null;   // sphere highlighting selected atom
+  // Helper: get current molecule transform from any master mesh (uniform across masters)
+  function getAnyMaster() {
+    const masters = getMoleculeMasters(scene);
+    return masters && masters.length ? masters[0] : null;
+  }
+  function transformLocalToWorld(pos) {
+    const m = getAnyMaster();
+    if (!m) return pos.clone();
+    // world = rotation * (pos * scale) + translation
+    const rot = m.rotationQuaternion || BABYLON.Quaternion.Identity();
+    const scl = m.scaling || new BABYLON.Vector3(1,1,1);
+    const uni = (Math.abs(scl.x - scl.y) < 1e-6 && Math.abs(scl.x - scl.z) < 1e-6) ? scl.x : scl.length()/Math.sqrt(3);
+    const p = pos.scale(uni);
+    // Rotate p by quaternion 'rot'
+    const rotMat = new BABYLON.Matrix();
+    if (BABYLON.Matrix.FromQuaternionToRef) {
+      BABYLON.Matrix.FromQuaternionToRef(rot, rotMat);
+    } else if (rot.toRotationMatrix) {
+      rot.toRotationMatrix(rotMat);
+    }
+    const out = new BABYLON.Vector3();
+    BABYLON.Vector3.TransformCoordinatesToRef(p, rotMat, out);
+    return out.addInPlace(m.position || BABYLON.Vector3.Zero());
+  }
+  function ensureBondMarker() {
+    if (bondSelMesh) return bondSelMesh;
+    const selMat = new BABYLON.StandardMaterial("vrBondSelMat", scene);
+    selMat.diffuseColor = new BABYLON.Color3(0.1, 0.9, 1.0);
+    selMat.emissiveColor = new BABYLON.Color3(0.05, 0.5, 0.6);
+    const cyl = BABYLON.MeshBuilder.CreateCylinder("vrBondSel", { height: 1, diameter: 1.25, tessellation: 32 }, scene);
+    cyl.material = selMat;
+    cyl.isPickable = false;
+    cyl.alwaysSelectAsActiveMesh = true;
+    cyl.setEnabled(false);
+    bondSelMesh = cyl;
+    return cyl;
+  }
+  function ensureAtomMarker() {
+    if (atomSelMesh) return atomSelMesh;
+    const mat = new BABYLON.StandardMaterial("vrAtomSelMat", scene);
+    mat.diffuseColor = new BABYLON.Color3(0.0, 0.0, 0.0);
+    mat.emissiveColor = new BABYLON.Color3(0.1, 0.9, 1.0);
+    mat.alpha = 0.85;
+    const sph = BABYLON.MeshBuilder.CreateSphere("vrAtomSel", { diameter: 1, segments: 24 }, scene);
+    sph.material = mat;
+    sph.isPickable = false;
+    sph.visibility = 0.85;
+    sph.setEnabled(false);
+    atomSelMesh = sph;
+    return sph;
+  }
+  function clearSelection() {
+    selection.kind = null;
+    selection.data = null;
+    if (bondSelMesh) bondSelMesh.setEnabled(false);
+    if (atomSelMesh) atomSelMesh.setEnabled(false);
+  }
+  function orientBondMarkerWorld(aWorld, bWorld) {
+    const cyl = ensureBondMarker();
+    const mid = aWorld.add(bWorld).scale(0.5);
+    const v = bWorld.subtract(aWorld);
+    const len = v.length();
+    if (len < 1e-6) { cyl.setEnabled(false); return; }
+    const up = BABYLON.Vector3.Up();
+    const d = v.normalizeToNew();
+    const dot = BABYLON.Vector3.Dot(up, d);
+    let rot;
+    if (dot > 0.9999) rot = BABYLON.Quaternion.Identity();
+    else if (dot < -0.9999) rot = BABYLON.Quaternion.RotationAxis(BABYLON.Vector3.Right(), Math.PI);
+    else {
+      const axis = BABYLON.Vector3.Cross(up, d).normalize();
+      rot = BABYLON.Quaternion.RotationAxis(axis, Math.acos(dot));
+    }
+    cyl.scaling.setAll(1);
+    cyl.scaling.y = len;
+    cyl.position.copyFrom(mid);
+    cyl.rotationQuaternion = rot;
+    cyl.setEnabled(true);
+  }
+  function showAtomMarkerAtWorld(centerWorld, visualDiameterWorld) {
+    const sph = ensureAtomMarker();
+    sph.position.copyFrom(centerWorld);
+    const d = Math.max(0.1, visualDiameterWorld * 1.25);
+    sph.scaling.copyFromFloats(d, d, d);
+    sph.setEnabled(true);
+  }
   
   // Disable automatic locomotion features - we'll use manual trigger + rotate behavior
   if (xrHelper.baseExperience.featuresManager) {
@@ -341,6 +432,11 @@ function setupVRFeatures(xrHelper, scene) {
       console.warn('[VR Setup] XR behaviors setup failed; using fallback trigger-rotate:', bx?.message);
       scene._behaviorsActive = false;
     }
+
+    // Prepare selection markers on session start
+    ensureBondMarker();
+    ensureAtomMarker();
+    clearSelection();
   });
   
   xrHelper.baseExperience.sessionManager.onXRSessionEnded.add(() => {
@@ -353,6 +449,10 @@ function setupVRFeatures(xrHelper, scene) {
       if (scene._behaviorObserver) {
         scene.onBeforeRenderObservable.remove(scene._behaviorObserver);
       }
+      // Hide any selection markers
+      try {
+        if (typeof clearSelection === 'function') clearSelection();
+      } catch {}
       delete scene._molWrapper;
       delete scene._behaviorObserver;
       delete scene._molRotation;
@@ -439,7 +539,7 @@ function setupVRFeatures(xrHelper, scene) {
 
   xrHelper.input.onControllerAddedObservable.add((controller) => {
     console.log('VR Controller added:', controller.inputSource.handedness, controller.inputSource.profiles);
-    controllerState.set(controller, { pressed: false, lastYaw: 0, lastPitch: 0 });
+    controllerState.set(controller, { pressed: false, lastYaw: 0, lastPitch: 0, downTime: 0, tapHandled: false });
   });
 
   // Scene-level polling loop
@@ -461,20 +561,101 @@ function setupVRFeatures(xrHelper, scene) {
     const twoHandMode = pressedWithPos.length >= 2;
     for (const controller of inputs) {
       let st = controllerState.get(controller);
-      if (!st) { st = { pressed: false, lastYaw: 0, lastPitch: 0 }; controllerState.set(controller, st); }
+      if (!st) { st = { pressed: false, lastYaw: 0, lastPitch: 0, downTime: 0, tapHandled: false }; controllerState.set(controller, st); }
       const pressed = isTriggerPressed(controller);
       if (pressed && !st.pressed) {
         // Edge: press start
         const { yaw, pitch } = getYawPitchForController(controller, xrHelper);
         st.lastYaw = yaw; st.lastPitch = pitch; st.pressed = true;
+        st.downTime = performance.now ? performance.now() : Date.now();
+        st.tapHandled = false;
         // mark global dragging so we accumulate deltas
         isDragging = true;
         // console.log('[VR] trigger down', controller.inputSource.handedness || 'unknown');
       } else if (!pressed && st.pressed) {
         // Edge: press end
+        const upTime = performance.now ? performance.now() : Date.now();
+        const duration = upTime - (st.downTime || upTime);
         st.pressed = false;
         isDragging = false;
         // console.log('[VR] trigger up');
+        // Trigger-tap = selection (avoid during two-hand mode or while grabbing behaviors)
+        if (!scene._grabActive && !twoHandMode && duration <= 300 && !st.tapHandled) {
+          try {
+            // Cast a pick ray from this controller
+            const node = getControllerNode(controller);
+            let ray = null;
+            if (node && node.getDirection && node.getAbsolutePosition) {
+              const origin = node.getAbsolutePosition();
+              const dir = node.getDirection(BABYLON.Vector3.Forward()).normalize();
+              ray = new BABYLON.Ray(origin, dir, 100.0);
+            } else {
+              // Fallback via pose
+              const pos = getControllerWorldPosition(controller, xrHelper);
+              const { yaw, pitch } = getYawPitchForController(controller, xrHelper);
+              const dir = new BABYLON.Vector3(Math.sin(yaw), -Math.sin(pitch), Math.cos(yaw)).normalize();
+              if (pos) ray = new BABYLON.Ray(pos, dir, 100.0);
+            }
+            if (ray) {
+              // Prefer bonds; if none, try atoms
+              const pickBond = scene.pickWithRay(ray, (m) => m && m.name && m.name.startsWith('bond_'));
+              if (pickBond?.hit && pickBond.pickedMesh && pickBond.thinInstanceIndex != null && pickBond.thinInstanceIndex >= 0) {
+                const mesh = pickBond.pickedMesh;
+                const key = mesh.name.replace(/^bond_/, '');
+                const idx = pickBond.thinInstanceIndex;
+                const mol = window.vrMol || window.mol || null;
+                const group = mol?.bondGroups?.get ? mol.bondGroups.get(key) : null;
+                const pair = group?.indices ? group.indices[idx] : null;
+                if (pair) {
+                  selection.kind = 'bond';
+                  selection.data = { key, index: idx, i: pair.i, j: pair.j };
+                  // Visualize in world space (respect VR transforms)
+                  const ai = mol.atoms[pair.i].pos; const aj = mol.atoms[pair.j].pos;
+                  const aW = transformLocalToWorld(ai);
+                  const bW = transformLocalToWorld(aj);
+                  orientBondMarkerWorld(aW, bW);
+                  if (atomSelMesh) atomSelMesh.setEnabled(false);
+                  console.log(`[VR Select] Bond ${pair.i}-${pair.j} (group ${key}, ti ${idx})`);
+                }
+                st.tapHandled = true;
+              } else {
+                const pickAtom = scene.pickWithRay(ray, (m) => m && m.name && m.name.startsWith('base_'));
+                if (pickAtom?.hit && pickAtom.pickedMesh && pickAtom.thinInstanceIndex != null && pickAtom.thinInstanceIndex >= 0) {
+                  const mesh = pickAtom.pickedMesh;
+                  const elem = mesh.name.replace(/^base_/, '');
+                  const perIdx = pickAtom.thinInstanceIndex;
+                  const mol = window.vrMol || window.mol || null;
+                  let found = null;
+                  if (mol && Array.isArray(mol.atoms)) {
+                    for (let k = 0; k < mol.atoms.length; k++) {
+                      const a = mol.atoms[k];
+                      if (a.type === elem && a.mesh === mesh && a.index === perIdx) { found = { a, globalIndex: k }; break; }
+                    }
+                  }
+                  if (found) {
+                    selection.kind = 'atom';
+                    selection.data = { idx: found.globalIndex, type: elem };
+                    const aW = transformLocalToWorld(found.a.pos);
+                    // Visual diameter in world = atom.scale (visual) * global molecule scale
+                    const m = getAnyMaster();
+                    const scl = m?.scaling || new BABYLON.Vector3(1,1,1);
+                    const uni = (Math.abs(scl.x - scl.y) < 1e-6 && Math.abs(scl.x - scl.z) < 1e-6) ? scl.x : scl.length()/Math.sqrt(3);
+                    const visD = (found.a.scale || 1) * uni;
+                    showAtomMarkerAtWorld(aW, visD);
+                    if (bondSelMesh) bondSelMesh.setEnabled(false);
+                    console.log(`[VR Select] Atom #${found.globalIndex} (${elem})`);
+                  }
+                  st.tapHandled = true;
+                } else {
+                  // Background: clear selection
+                  clearSelection();
+                }
+              }
+            }
+          } catch (selErr) {
+            console.warn('[VR Select] Selection failed:', selErr?.message || selErr);
+          }
+        }
       }
       if (st.pressed && !twoHandMode) {
         const sensitivity = 0.9;
@@ -539,7 +720,7 @@ function setupVRFeatures(xrHelper, scene) {
       lastTwoHandCenter = null;
     }
 
-    // Joystick pan and zoom (when not grabbing and not pressing trigger)
+  // Joystick pan and zoom (when not grabbing and not pressing trigger)
     try {
       const deadzone = 0.1;
       const diag = getMoleculeDiag(scene);
@@ -589,6 +770,24 @@ function setupVRFeatures(xrHelper, scene) {
             const s = m.scaling || new BABYLON.Vector3(1,1,1);
             m.scaling = new BABYLON.Vector3(s.x * clamped, s.y * clamped, s.z * clamped);
           }
+        }
+      }
+    } catch {}
+
+    // Keep selection markers in sync with molecule transforms
+    try {
+      const mol = window.vrMol || window.mol || null;
+      if (selection.kind === 'bond' && mol && selection.data) {
+        const ai = mol.atoms[selection.data.i]?.pos;
+        const aj = mol.atoms[selection.data.j]?.pos;
+        if (ai && aj) orientBondMarkerWorld(transformLocalToWorld(ai), transformLocalToWorld(aj));
+      } else if (selection.kind === 'atom' && mol && selection.data) {
+        const a = mol.atoms[selection.data.idx];
+        if (a) {
+          const m0 = getAnyMaster();
+          const scl = m0?.scaling || new BABYLON.Vector3(1,1,1);
+          const uni = (Math.abs(scl.x - scl.y) < 1e-6 && Math.abs(scl.x - scl.z) < 1e-6) ? scl.x : scl.length()/Math.sqrt(3);
+          showAtomMarkerAtWorld(transformLocalToWorld(a.pos), (a.scale || 1) * uni);
         }
       }
     } catch {}
