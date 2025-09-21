@@ -22,7 +22,7 @@ export function createEnergyPlot() {
 
   let showPlot = true; // Default to ON
   let chart = null;
-  let lastRotationCount = 0;
+  let lastStepCount = 0;
   const maxDataPoints = 100;
 
   // Initialize plot as visible since it's on by default
@@ -109,13 +109,12 @@ export function createEnergyPlot() {
 
   function updateChart(energy, state) {
     if (!chart) return;
-    
-    const currentRotationCount = state.rotations.length;
-    
-    if (currentRotationCount > lastRotationCount) {
-      lastRotationCount = currentRotationCount;
-      
-      chart.data.labels.push(currentRotationCount);
+    // Use monotonic rotationSteps counter so compaction doesn't stall the plot
+    const steps = (typeof state.getRotationSteps === 'function') ? state.getRotationSteps() : state.rotations.length;
+    if (steps > lastStepCount) {
+      lastStepCount = steps;
+
+      chart.data.labels.push(steps);
       chart.data.datasets[0].data.push(energy);
       
       if (chart.data.labels.length > maxDataPoints) {
@@ -124,7 +123,7 @@ export function createEnergyPlot() {
       }
       
       chart.update('none');
-      console.log("[DEBUG] Chart updated, rotation count:", currentRotationCount, "energy:", energy);
+      console.log("[DEBUG] Chart updated, step:", steps, "energy:", energy);
     }
   }
 
@@ -141,12 +140,12 @@ export function createEnergyPlot() {
 
   function addInitialDataPoint(energy, state) {
     if (chart) {
-      const currentRotationCount = state.rotations.length;
-      chart.data.labels.push(currentRotationCount);
+      const steps = (typeof state.getRotationSteps === 'function') ? state.getRotationSteps() : state.rotations.length;
+      chart.data.labels.push(steps);
       chart.data.datasets[0].data.push(energy);
-      lastRotationCount = currentRotationCount;
+      lastStepCount = steps;
       chart.update('none');
-      console.log("[DEBUG] Added initial data point - rotation:", currentRotationCount, "energy:", energy);
+      console.log("[DEBUG] Added initial data point - step:", steps, "energy:", energy);
     }
   }
 
@@ -154,9 +153,9 @@ export function createEnergyPlot() {
     if (chart) {
       chart.data.labels = [];
       chart.data.datasets[0].data = [];
-      lastRotationCount = state.rotations.length;
+      lastStepCount = (typeof state.getRotationSteps === 'function') ? state.getRotationSteps() : state.rotations.length;
       chart.update();
-      console.log("[DEBUG] Plot data cleared, reset to rotation count:", lastRotationCount);
+      console.log("[DEBUG] Plot data cleared, reset to step:", lastStepCount);
     }
   }
 

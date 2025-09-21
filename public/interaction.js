@@ -4,7 +4,7 @@
 import { makePicker } from "./selection.js";
 import { registerAtomClear, selectAtom, clearSelection as clearGlobalSelection, setAtomDragging } from "./selection_state.js";
 
-export function enableAtomDragging(scene, { atoms, refreshBonds, molecule }) {
+export function enableAtomDragging(scene, { atoms, refreshBonds, molecule, state }) {
   const canvas = scene.getEngine().getRenderingCanvas();
   const camera = scene.activeCamera;
 
@@ -119,7 +119,7 @@ export function enableAtomDragging(scene, { atoms, refreshBonds, molecule }) {
   }
 
   // Drag session state
-  let dragging = null; // { atom, mesh, index, dragPlane, grabOffset }
+  let dragging = null; // { atom, mesh, index, dragPlane, grabOffset, startPos }
   let selected = null; // { atom, mesh, index, globalIndex }
   let pointerDown = null; // { x, y, pick }
   function setCursor(s) { canvas.style.cursor = s; }
@@ -159,7 +159,7 @@ export function enableAtomDragging(scene, { atoms, refreshBonds, molecule }) {
     const hit = intersectRayPlane(ray, plane);
     const grabOffset = hit ? hit.subtract(res.atom.pos) : BABYLON.Vector3.Zero();
 
-  dragging = { atom: res.atom, mesh: res.mesh, index: res.index, dragPlane: plane, grabOffset };
+  dragging = { atom: res.atom, mesh: res.mesh, index: res.index, dragPlane: plane, grabOffset, startPos: res.atom.pos.clone() };
   setAtomDragging(true);
 
     // Show plane + marker
@@ -259,6 +259,25 @@ export function enableAtomDragging(scene, { atoms, refreshBonds, molecule }) {
         }
         
         if (typeof refreshBonds === "function") refreshBonds();
+
+        // Record translation delta into state ops if available and commit float64 rebuild
+        try {
+          if (state && typeof state.recordAtomTranslation === 'function') {
+            const dx = finalCenter.x - dragging.startPos.x;
+            const dy = finalCenter.y - dragging.startPos.y;
+            const dz = finalCenter.z - dragging.startPos.z;
+            // Only record if not a click-like micro move
+            const mag2 = dx*dx + dy*dy + dz*dz;
+            if (mag2 > 1e-10) {
+              const kIdx = (pointerDown?.pick?.globalIndex ?? -1);
+              if (kIdx >= 0) {
+                state.recordAtomTranslation({ k: kIdx, dx, dy, dz });
+                if (typeof state.recomputeAndCommit === 'function') state.recomputeAndCommit();
+                if (typeof state.debugPrint === 'function') state.debugPrint('[drag end]');
+              }
+            }
+          }
+        } catch {}
 
         console.log("[pick] DROP @", finalCenter.toString(), "mesh:", dragging.mesh.name, "index:", dragging.index);
       } else {

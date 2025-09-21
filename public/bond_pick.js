@@ -126,6 +126,12 @@ export function enableBondPicking(
       recompute: doRecompute
     });
     doRecompute = false;
+    try {
+      // Snap to float64 authoritative positions and force energy recompute
+      if (window.appState?.recomputeAndCommit) window.appState.recomputeAndCommit();
+      if (typeof molecule?.markChanged === 'function') molecule.markChanged();
+      if (typeof window.appState?.debugPrint === 'function') window.appState.debugPrint('[desktop rotate]');
+    } catch {}
     orientBondMarker(selected.i, selected.j);
   }
 

@@ -70,8 +70,8 @@ export async function setupMolecule(scene) {
   // Persistent state (records torsions & can reconstruct/export)
   const state = createStateStore(mol);
   
-  // Drag interaction
-  enableAtomDragging(scene, { atoms, refreshBonds, molecule: mol });
+  // Drag interaction (records atom translations in state)
+  enableAtomDragging(scene, { atoms, refreshBonds, molecule: mol, state });
   
   // Torsion controller (records into state)
   const torsion = createTorsionController(mol, state);
@@ -118,4 +118,9 @@ export function setupGlobalFunctions(state, torsion) {
   window.stateExportXYZ = (name) => state.exportXYZ(name);
   window.rotateBond = (i, j, side = "j", angleDeg = 5, recompute = false) =>
     torsion.rotateAroundBond({ i, j, side, angleDeg, recompute });
+  // Debug helpers
+  window.stateOps = () => state.getOps();
+  window.stateLen = () => state.getOps().length;
+  window.stateLast = () => { const a = state.getOps(); return a.length ? a[a.length - 1] : null; };
+  window.stateDebug = (tag) => state.debugPrint(tag);
 }

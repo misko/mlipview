@@ -97,8 +97,8 @@ export async function initVRApp() {
   let btnPlus  = vrUI?.bond?.btnPlus;
 
   // Wire clicks to rotation (with debug)
-  btnMinus?.onPointerUpObservable.add(() => { console.log('[HUD] (-) pressed'); rotateSelectedBond(scene, -1); });
-  btnPlus?.onPointerUpObservable.add(() => { console.log('[HUD] (+) pressed'); rotateSelectedBond(scene, +1); });
+  btnMinus?.onPointerUpObservable.add(() => { console.log('[HUD] (-) pressed'); rotateSelectedBond(scene, -1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e); } catch {} });
+  btnPlus?.onPointerUpObservable.add(() => { console.log('[HUD] (+) pressed'); rotateSelectedBond(scene, +1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e); } catch {} });
 
     // Update label based on selection (bar stays visible to make HUD obvious)
     const __updateBondHud = () => {
@@ -115,7 +115,7 @@ export async function initVRApp() {
         if (!xrCam) return;
         if (xrHud && xrHud.advancedTexture) { try { xrHud.advancedTexture.dispose(); } catch {} }
         if (xrHud && xrHud.rootMesh) { try { xrHud.rootMesh.dispose(); } catch {} }
-        xrHud = createVRUIOnCamera(scene, xrCam);
+  xrHud = createVRUIOnCamera(scene, xrCam);
         // Rebind button handlers to XR HUD controls
         btnMinus = xrHud?.bond?.btnMinus || btnMinus;
         btnPlus  = xrHud?.bond?.btnPlus  || btnPlus;
@@ -133,8 +133,13 @@ export async function initVRApp() {
             if (xrHud.bond.btnRec?.textBlock) xrHud.bond.btnRec.textBlock.text = `recompute: ${window.vrBondUI.recompute ? 'on' : 'off'}`;
           }
         } catch {}
-        btnMinus?.onPointerUpObservable.add(() => { console.log('[HUD XR] (-) pressed'); rotateSelectedBond(scene, -1); });
-        btnPlus?.onPointerUpObservable.add(() => { console.log('[HUD XR] (+) pressed'); rotateSelectedBond(scene, +1); });
+  btnMinus?.onPointerUpObservable.add(() => { console.log('[HUD XR] (-) pressed'); rotateSelectedBond(scene, -1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e); } catch {} });
+  btnPlus?.onPointerUpObservable.add(() => { console.log('[HUD XR] (+) pressed'); rotateSelectedBond(scene, +1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e); } catch {} });
+        // Seed the plot with current energy so it's immediately visible
+        try {
+          const e0 = mlip.compute()?.energy;
+          if (xrHud?.plot && isFinite(e0)) xrHud.plot.addPoint(e0);
+        } catch {}
       } catch {}
       console.log('[VR] Created camera-anchored HUD for XR session');
     });
@@ -166,8 +171,9 @@ export async function initVRApp() {
       let lastEnergyUpdate = 0;
   // Removed: force and plot update trackers
       
-      // Cache physics results - only recompute when molecular structure changes
+  // Cache physics results - only recompute when molecular structure changes
       let cachedEnergy = null;
+  let rotationCount = 0;
   // Removed: cached forces (not used in lite mode)
       let lastChangeCounter = -1;
       
@@ -256,6 +262,14 @@ export async function initVRApp() {
                   console.log('[VR Stick] Rotate via left stick', { leftY: +leftY.toFixed(3), sign });
                 }
                 rotateSelectedBond(scene, sign);
+                rotationCount += 1;
+                // Push a point to XR HUD plot if present (energy vs step)
+                try {
+                  const e = (cachedEnergy !== null) ? cachedEnergy : (mlip.compute()?.energy ?? null);
+                  if (xrHud?.plot && e !== null && isFinite(e)) {
+                    xrHud.plot.addPoint(e);
+                  }
+                } catch {}
                 window.__vrBondStickNext = now + repeatMs;
               } else if (Math.abs(leftY) <= deadzone) {
                 // Reset throttle quickly when stick returns to center
@@ -348,6 +362,13 @@ function rotateSelectedBond(scene, sign) {
     }
     torsion.rotateAroundBond({ i: sel.data.i, j: sel.data.j, side: ui.side || 'j', angleDeg: sign * step, recompute: !!ui.recompute });
     if (typeof window.vrMol?.markChanged === 'function') window.vrMol.markChanged();
+    // Snap positions to exact state by replaying ops from initial to avoid drift; print debug
+    try {
+      if (window.appState?.recomputeAndCommit) {
+        window.appState.recomputeAndCommit();
+      }
+      if (window.appState?.debugPrint) window.appState.debugPrint('[VR rotate]');
+    } catch {}
     // One-shot recompute like desktop: reset flag after use
     if (ui.recompute) ui.recompute = false;
     // Keep bond selected: do not clear window.vrSelection here.

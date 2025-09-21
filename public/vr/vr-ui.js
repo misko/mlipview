@@ -135,7 +135,8 @@ export function createVRUIOnCamera(scene, xrCamera) {
   // Runtime overrides for quick tuning on device
   const cfg = (typeof window !== 'undefined' && window.vrHudConfig) ? window.vrHudConfig : {};
   const fontScale = cfg.fontScale || 1.2;
-  const pos = cfg.position || { x: 0, y: -0.15, z: 1.1 };
+  // Move HUD slightly lower by default (can override via window.vrHudConfig.position)
+  const pos = cfg.position || { x: 0, y: -0.25, z: 1.1 };
 
   // Root transform, parented to camera
   const hudRoot = new BABYLON.TransformNode('vrHudRoot', scene);
@@ -199,6 +200,98 @@ export function createVRUIOnCamera(scene, xrCamera) {
   try { energy.rect.addControl(energyTitle); } catch {}
   const energyValue = energy.txt;
 
+  // ---- Mini energy vs step plot (top-left) ----
+  function createHudPlot(scene, parent, opts = {}) {
+    const w = opts.width || 0.52;   // meters
+    const h = opts.height || 0.22;  // meters
+    const origin = opts.position || new BABYLON.Vector3(-0.35, 0.22, 0.001);
+    const maxPoints = opts.maxPoints || 100;
+    const root = new BABYLON.TransformNode('hudPlotRoot', scene);
+    root.parent = parent;
+    root.position = origin.clone();
+
+    // Background plane with dynamic texture for plot
+    const bg = BABYLON.MeshBuilder.CreatePlane('hudPlotBg', { width: w, height: h, sideOrientation: BABYLON.Mesh.DOUBLESIDE }, scene);
+    bg.parent = root;
+    bg.position = new BABYLON.Vector3(0, 0, 0);
+    bg.isPickable = false;
+    bg.renderingGroupId = 3;
+    const mat = new BABYLON.StandardMaterial('hudPlotMat', scene);
+    mat.disableLighting = true;
+    mat.backFaceCulling = false;
+    mat.alpha = 0.98;
+    // Draw onto a high-res dynamic texture for crisp lines
+    const texW = 1024, texH = 512;
+    const dyn = new BABYLON.DynamicTexture('hudPlotDT', { width: texW, height: texH }, scene, false);
+    dyn.hasAlpha = true;
+    mat.emissiveTexture = dyn;
+    mat.diffuseTexture = dyn;
+    bg.material = mat;
+
+    // Data buffer
+    let data = [];
+    let minY = Infinity, maxY = -Infinity;
+
+    function redraw() {
+      const ctx = dyn.getContext();
+      // Clear
+      ctx.clearRect(0, 0, texW, texH);
+      // Background
+      ctx.fillStyle = 'rgba(26, 32, 44, 0.92)';
+      ctx.fillRect(0, 0, texW, texH);
+      // Axes
+      ctx.strokeStyle = 'rgba(200, 200, 200, 0.7)';
+      ctx.lineWidth = 2;
+      // Padding inside texture
+      const padL = 60, padR = 20, padT = 20, padB = 40;
+      const x0 = padL, x1 = texW - padR, y0 = texH - padB, y1 = padT;
+      // X-axis
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y0);
+      ctx.stroke();
+      // Y-axis
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x0, y1);
+      ctx.stroke();
+      // Plot line
+      if (data.length >= 2) {
+        minY = Math.min(...data);
+        maxY = Math.max(...data);
+        if (minY === maxY) { minY -= 1; maxY += 1; }
+        const n = data.length;
+        ctx.strokeStyle = 'rgba(245, 255, 209, 1)';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        for (let i = 0; i < n; i++) {
+          const t = n > 1 ? i / (n - 1) : 0;
+          const x = x0 + t * (x1 - x0);
+          const ny = (data[i] - minY) / (maxY - minY);
+          const y = y0 - ny * (y0 - y1);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+      dyn.update(false);
+    }
+
+    function addPoint(v) {
+      data.push(v);
+      if (data.length > maxPoints) data.shift();
+      redraw();
+    }
+    function reset() { data = []; redraw(); }
+    function setVisible(visible) { bg.setEnabled(!!visible); }
+
+    // Initial draw
+    redraw();
+
+    return { addPoint, reset, setVisible, root };
+  }
+
+  const hudPlot = createHudPlot(scene, hudRoot);
+
   // Layout sizes in meters
   const hBtn = 0.10; // 10 cm
   const wBtn = 0.22; // 22 cm
@@ -261,6 +354,7 @@ export function createVRUIOnCamera(scene, xrCamera) {
     advancedTexture: null, // per-mesh ADTs; no single texture
     rootMesh: hudRoot,
     energyValue,
+    plot: hudPlot,
     bond: {
       label: label.txt,
       btnMinus: minus.btn,
