@@ -69,8 +69,8 @@
     <div id="vrStatus">
         <h3>🥽 VR Molecular Viewer</h3>
         <p id="statusText">Checking VR support...</p>
-        <button id="enterVRBtn" class="vr-button" disabled>Enter VR</button>
-        <button id="enterVRLiteBtn" class="vr-button" disabled>VR Lite Mode</button>
+    <!-- Full VR removed; Lite-only -->
+    <button id="enterVRLiteBtn" class="vr-button" disabled>Enter VR</button>
         <button id="fallbackBtn" class="vr-button">Desktop Mode</button>
         <button id="debugBtn" class="vr-button">Show Debug</button>
     </div>
@@ -89,14 +89,15 @@
     </div>
     
     <div id="vrInstructions">
-        <h4>🎮 VR Controls:</h4>
+        <h4>🎮 VR Controls (Lite):</h4>
         <ul>
-            <li><strong>Trigger:</strong> Select and rotate bonds</li>
-            <li><strong>Squeeze:</strong> Toggle UI menu</li>
-            <li><strong>Thumbstick Y:</strong> Adjust rotation sensitivity</li>
-            <li><strong>Point at UI:</strong> Interact with buttons and displays</li>
+            <li><strong>Grab the molecule box:</strong> Move/rotate with one hand</li>
+            <li><strong>Two hands on the box:</strong> Pinch apart/together to scale</li>
+            <li><strong>Or Hold Trigger + Rotate wrist:</strong> Rotate molecule (fallback)</li>
+            <li><strong>Move head:</strong> Look around</li>
         </ul>
-        <p><strong>Tips:</strong> Look for the floating energy plot and control panel. Bond rotation works the same as desktop - point at a bond, hold trigger, and rotate your controller!</p>
+        <p style="opacity: 0.85;">Note: The molecule has an invisible grab box around it. If grabbing is not available in your browser, use Trigger + wrist rotation instead.</p>
+        <p><strong>Tip:</strong> Energy value is shown in the HUD. Advanced UI and plots are disabled in Lite mode.</p>
     </div>
     
     <canvas id="renderCanvas"></canvas>
@@ -119,8 +120,8 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
     <script type="module">
-        import { initVRApp } from './vr/main-vr.js';
-        import { initApp } from './main.js'; // Only for fallback to desktop
+    import { initVRApp } from './vr/main-vr.js';
+    import { initApp } from './main.js'; // Only for fallback to desktop
         
         let vrApp = null;
         let desktopApp = null;
@@ -130,7 +131,6 @@
         window.vrMode = true;
         
         const statusText = document.getElementById('statusText');
-        const enterVRBtn = document.getElementById('enterVRBtn');
         const enterVRLiteBtn = document.getElementById('enterVRLiteBtn');
         const fallbackBtn = document.getElementById('fallbackBtn');
         const debugBtn = document.getElementById('debugBtn');
@@ -227,10 +227,9 @@
                     console.log('immersive-vr supported:', isSupported);
                     
                     if (isSupported) {
-                        statusText.textContent = '✅ VR supported! Ready to enter VR.';
-                        enterVRBtn.disabled = false;
+                        statusText.textContent = '✅ VR supported! Ready to enter VR (Lite).';
                         enterVRLiteBtn.disabled = false;
-                        enterVRLiteBtn.textContent = 'VR Lite (Performance)';
+                        enterVRLiteBtn.textContent = 'Enter VR';
                         return true;
                     } else {
                         // Try checking for inline sessions as fallback
@@ -269,7 +268,6 @@
                     <p><a href="https://immersiveweb.dev/" target="_blank">Learn more about WebXR support</a></p>
                 `;
                 // Still enable the button in case it works
-                enterVRBtn.disabled = false;
                 enterVRLiteBtn.disabled = false;
             } else {
                 statusText.textContent = '❌ VR not supported on this device/browser.';
@@ -279,7 +277,7 @@
             return false;
         }
         
-        async function initVR(liteMode = false) {
+    async function initVR(liteMode = true) {
             if (isInitialized) {
                 debugLog('Application already initialized', 'warning');
                 return;
@@ -288,16 +286,13 @@
             try {
                 debugLog(`Starting VR initialization${liteMode ? ' (Lite Mode)' : ''}...`);
                 statusText.textContent = `🚀 Initializing VR${liteMode ? ' Lite' : ''}...`;
-                enterVRBtn.disabled = true;
                 enterVRLiteBtn.disabled = true;
                 
-                if (liteMode) {
-                    debugLog('Lite Mode: Disabling expensive features for performance');
-                    // Set global flags for lite mode
-                    window.vrLiteMode = true;
-                    window.vrDisableForces = true;
-                    window.vrDisablePlot = true;
-                }
+                // Lite-only; set flags unconditionally
+                debugLog('Lite Mode: Disabling expensive features for performance');
+                window.vrLiteMode = true;
+                window.vrDisableForces = true;
+                window.vrDisablePlot = true;
                 
                 debugLog('Pre-init VR support check...');
                 
@@ -368,16 +363,7 @@
                     }
                     
                     // Check immediately if native VR button is available
-                    setTimeout(() => {
-                        navigator.xr.isSessionSupported('immersive-vr').then(supported => {
-                            if (supported) {
-                                debugLog('🎯 NATIVE VR BUTTON should now be visible in browser bottom-right');
-                                statusText.textContent = '🎯 VR Ready! Click VR button in bottom-right to enter full VR.';
-                            } else {
-                                debugLog('❌ VR support lost after initialization', 'error');
-                            }
-                        });
-                    }, 1000);
+                    // Native VR button prompt removed in Lite-only mode
                     
                     document.getElementById('vrStatus').style.display = 'none';
                     vrInstructions.style.display = 'none';
@@ -501,11 +487,6 @@
         }
         
         // Event listeners
-        enterVRBtn.addEventListener('click', () => {
-            debugLog('🎮 VR button clicked - starting full VR mode');
-            initVR(false);
-        });
-        
         enterVRLiteBtn.addEventListener('click', () => {
             debugLog('⚡ VR Lite button clicked - starting VR lite mode');
             initVR(true);

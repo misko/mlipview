@@ -1,7 +1,7 @@
 // vr/main-vr.js - VR-enabled version of the molecular viewer
 import { setupVR } from './vr-setup.js';
 import { createVRUI } from './vr-ui.js';
-import { create3DEnergyPlot } from './vr-plot.js';
+// Plot disabled in VR Lite mode
 
 // Import existing modules
 import { setupScene, setupMolecule } from '../setup/app-setup.js';
@@ -17,10 +17,8 @@ export async function initVRApp() {
     console.warn("[VR] ⚠️ Not in VR mode - this might cause conflicts");
   }
   
-  const liteMode = window.vrLiteMode || false;
-  if (liteMode) {
-    console.log("[VR] LITE MODE ENABLED - Performance optimizations active");
-  }
+  const liteMode = true; // Force VR Lite mode only
+  console.log("[VR] LITE MODE ENABLED - Performance optimizations active");
   
   try {
     console.log("[VR] Step 1: Setting up scene...");
@@ -73,14 +71,15 @@ export async function initVRApp() {
     window.vrHelper = vrHelper;
     window.vrScene = scene;
     
-    // CRITICAL: Make state and torsion system globally available for VR interaction
+  // CRITICAL: Make state, molecule, and torsion system globally available for VR interaction
     window.appState = state;
+  window.vrMol = mol;
     window.vrTorsion = torsion;
     window.vrMlip = mlip;
     console.log("[VR] 🌐 VR helper and molecular systems stored globally for interaction");
     
-    // Add VR instructions panel
-    createVRInstructions(scene);
+  // Add VR instructions panel
+  createVRInstructions(scene);
     console.log("[VR] 📋 VR instructions panel created");
     
     // Add trigger for native VR controls
@@ -160,74 +159,32 @@ export async function initVRApp() {
       }
     }, 1000);
     
-    console.log("[VR] Step 4: Creating VR UI...");
-    // Create VR UI components
-    const vrUI = createVRUI(scene);
-    const vr3DPlot = create3DEnergyPlot(scene);
-    console.log("[VR] VR UI components created");
+  console.log("[VR] Step 4: Creating VR UI...");
+  // Create VR UI (lite: energy-only)
+  const vrUI = createVRUI(scene);
+  console.log("[VR] VR UI created (energy panel)");
     
     // VR-specific state
+    // Lite mode: remove advanced UI control wiring (forces, plot, export)
     let vrUIVisible = true;
-    let vrPlotVisible = !window.vrDisablePlot; // Disabled in lite mode
-    let vrForcesVisible = !window.vrDisableForces; // Disabled in lite mode
-    
-    if (liteMode) {
-      console.log("[VR] Lite mode: Forces and plots disabled for performance");
-    }
-    
-    // Connect VR UI buttons to functionality
-    vrUI.buttons.forces.onPointerClickObservable.add(() => {
-      vrForcesVisible = !vrForcesVisible;
-      vrUI.buttons.forces.textBlock.text = `Forces: ${vrForcesVisible ? 'ON' : 'OFF'}`;
-      forceVis.setEnabled(vrForcesVisible);
-    });
-    
-    vrUI.buttons.plot.onPointerClickObservable.add(() => {
-      vrPlotVisible = !vrPlotVisible;
-      vrUI.buttons.plot.textBlock.text = `Plot: ${vrPlotVisible ? 'ON' : 'OFF'}`;
-      vr3DPlot.toggle(vrPlotVisible);
-    });
-    
-    vrUI.buttons.length.onPointerClickObservable.add(() => {
-      // Toggle between normalized and true force lengths
-      const currentMode = forceVis.getLengthMode();
-      const newMode = currentMode === "normalized" ? "true" : "normalized";
-      forceVis.setLengthMode(newMode);
-      vrUI.buttons.length.textBlock.text = `Length: ${newMode === 'true' ? 'True' : 'Normalized'}`;
-    });
-    
-    vrUI.buttons.rebuild.onPointerClickObservable.add(() => {
-      console.log("[VR] Rebuilding from rotations...");
-      state.recomputeAndCommit();
-      updateVREnergy();
-    });
-    
-    vrUI.buttons.export.onPointerClickObservable.add(() => {
-      const xyz = state.exportXYZ("VR_EXPORT");
-      console.log("[VR] XYZ Export:", xyz);
-      showVRTextPanel(xyz);
-    });
     
     // Update energy display in VR
     function updateVREnergy() {
       const { energy } = mlip.compute();
       vrUI.energyValue.text = energy.toFixed(3);
       
-      if (vrPlotVisible) {
-        vr3DPlot.addDataPoint(state.rotations.length, energy);
-      }
+      // Plot disabled in lite mode
     }
     
     // Render loop with cached physics results
     function startVRRenderLoop() {
       let frameCount = 0;
       let lastEnergyUpdate = 0;
-      let lastForceUpdate = 0;
-      let lastPlotUpdate = 0;
+  // Removed: force and plot update trackers
       
       // Cache physics results - only recompute when molecular structure changes
       let cachedEnergy = null;
-      let cachedForces = null;
+  // Removed: cached forces (not used in lite mode)
       let lastChangeCounter = -1;
       
       // Function to check if molecular structure has changed
@@ -245,16 +202,13 @@ export async function initVRApp() {
           console.log("[VR] Molecular structure changed - recomputing physics");
           const result = mlip.compute();
           cachedEnergy = result.energy;
-          cachedForces = result.forces;
           return true;
         }
         return false;
       }
       
       // Throttle UI updates (less aggressive now since physics is cached)
-      const ENERGY_UPDATE_INTERVAL = liteMode ? 5 : 2;   // Update energy display every 5/2 frames
-      const FORCE_UPDATE_INTERVAL = liteMode ? 10 : 3;   // Update forces every 10/3 frames
-      const PLOT_UPDATE_INTERVAL = liteMode ? 15 : 5;    // Update plot every 15/5 frames
+  const ENERGY_UPDATE_INTERVAL = 5;   // Update energy display every 5 frames in lite mode
       
       engine.runRenderLoop(() => {
         try {
@@ -265,8 +219,7 @@ export async function initVRApp() {
           
           // Determine what UI elements need updating
           const needsEnergyUpdate = physicsUpdated || (frameCount - lastEnergyUpdate >= ENERGY_UPDATE_INTERVAL);
-          const needsForceUpdate = physicsUpdated || (vrForcesVisible && (frameCount - lastForceUpdate >= FORCE_UPDATE_INTERVAL));
-          const needsPlotUpdate = physicsUpdated || (vrPlotVisible && (frameCount - lastPlotUpdate >= PLOT_UPDATE_INTERVAL));
+          // Lite mode: only energy update used
           
           // Update VR energy display (using cached energy)
           if (needsEnergyUpdate && vrUI && vrUI.energyValue && cachedEnergy !== null) {
@@ -275,16 +228,10 @@ export async function initVRApp() {
           }
           
           // Update forces if enabled (using cached forces) - skip in lite mode
-          if (!liteMode && needsForceUpdate && forceVis && forceVis.setForces && cachedForces) {
-            forceVis.setForces(cachedForces);
-            lastForceUpdate = frameCount;
-          }
+          // Forces disabled in lite mode
           
           // Update plot if enabled (using cached energy) - skip in lite mode
-          if (!liteMode && needsPlotUpdate && vr3DPlot && vr3DPlot.addDataPoint && cachedEnergy !== null) {
-            vr3DPlot.addDataPoint(state.rotations.length, cachedEnergy);
-            lastPlotUpdate = frameCount;
-          }
+          // Plot disabled in lite mode
           
           scene.render();
         } catch (error) {
@@ -295,9 +242,8 @@ export async function initVRApp() {
     }
     
     // Initialize default state
-    forceVis.setEnabled(vrForcesVisible);
-    vr3DPlot.toggle(vrPlotVisible);
-    updateVREnergy();
+  // Lite mode: forces/plot disabled
+  updateVREnergy();
     
     startVRRenderLoop();
     
@@ -321,9 +267,8 @@ export async function initVRApp() {
       vrHelper,
       mol,
       state,
-      forceVis,
-      vrUI,
-      vr3DPlot,
+  forceVis,
+  vrUI,
       mlip, // Add MLIP for debugging
       debugInfo: () => {
         console.log("=== VR DEBUG INFO ===");
@@ -342,8 +287,7 @@ export async function initVRApp() {
       mol,
       state,
       vrHelper,
-      vrUI,
-      vr3DPlot
+      vrUI
     };
     
   } catch (error) {
@@ -368,14 +312,13 @@ function createVRInstructions(scene) {
     
     manager.addControl(panel);
     
-    // Create instruction text
     const instructions = [
-      "🎮 VR Molecular Viewer Controls:",
+      "🎮 VR Controls (Lite):",
       "",
-      "� Trigger + Drag: Rotate camera around molecule",
-      "� Quick Trigger: Select bonds for rotation", 
-      "🕹️ Thumbstick Up/Down: Zoom in/out",
-      "✋ Squeeze: Menu (coming soon)",
+      "✋ Grab box: Move/rotate the molecule",
+      "� Two hands: Pinch to scale",
+      "�👉 Or Hold Trigger + rotate wrist (fallback)",
+      "👀 Move your head to look around",
       "",
       "🧪 Molecule: ROY Crystal Structure"
     ];

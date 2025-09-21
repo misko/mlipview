@@ -36,7 +36,7 @@ export async function setupVR(engine, scene) {
     
     // Fallback to scene method
     console.log('[VR Setup] Creating default XR experience via scene...');
-    const xrHelper = await scene.createDefaultXRExperienceAsync({
+  const xrHelper = await scene.createDefaultXRExperienceAsync({
       floorMeshes: [], // No floor mesh needed for molecular viewer
       // Completely disable optional features to prevent errors
       optionalFeatures: [], // No optional features at all
@@ -50,7 +50,7 @@ export async function setupVR(engine, scene) {
       },
       // Performance optimizations
       disableTeleportation: true, // We don't need teleportation for molecular viewing
-      useStablePlugins: true      // Use stable, tested plugins only
+      useStablePlugins: false     // Avoid enabling optional stable plugins automatically
     });
     
     console.log('[VR Setup] XR helper created:', !!xrHelper);
@@ -91,73 +91,28 @@ export async function setupVR(engine, scene) {
   }
 }
 
+// Module-scope rotation state used by the polling-based trigger+rotate behavior
+let isDragging = false;  // true while a controller trigger is held
+let accYaw = 0;          // accumulated yaw rotation (radians)
+let accPitch = 0;        // accumulated pitch rotation (radians)
+
+// Helper: get molecule master meshes (atoms and bonds) to rotate directly
+function getMoleculeMasters(scene) {
+  if (scene._vrMasters && scene._vrMasters.length) return scene._vrMasters;
+  const masters = scene.meshes.filter(m => m && m.name && (m.name.startsWith('base_') || m.name.startsWith('bond_')));
+  scene._vrMasters = masters;
+  console.log('[VR] Found masters to rotate:', masters.map(m => m.name));
+  return masters;
+}
+
 function setupVRFeatures(xrHelper, scene) {
   console.log('[VR Setup] Configuring VR features...');
+  // Cache masters list for rotation-based controls
+  try { getMoleculeMasters(scene); } catch (e) { console.warn('[VR] Could not collect molecule masters:', e?.message); }
   
-  // Disable automatic locomotion features - we'll use manual trigger + drag camera control
+  // Disable automatic locomotion features - we'll use manual trigger + rotate behavior
   if (xrHelper.baseExperience.featuresManager) {
-    console.log('[VR Setup] Skipping automatic locomotion - using manual trigger + drag camera control...');
-    
-    // Note: We're intentionally NOT enabling teleportation or movement features
-    // to avoid conflicts with our manual camera control system
-    
-    try {
-      // Add pointer selection for better bond interaction
-      const pointerFeature = xrHelper.baseExperience.featuresManager.enableFeature(BABYLON.WebXRFeatureName.POINTER_SELECTION, "stable", {
-        xrInput: xrHelper.input,
-        enablePointerSelectionOnAllControllers: true,
-        preferredHandedness: "none", // Enable on both hands
-        disablePointerUpOnTouchDown: false
-      });
-      
-      if (pointerFeature) {
-        console.log('[VR Setup] ✅ Pointer selection enabled - point and click to select bonds');
-        
-        // Set up pointer selection events
-        pointerFeature.onPointerPickObservable.add((pickingInfo) => {
-          if (pickingInfo.hit && pickingInfo.pickedMesh) {
-            console.log('[VR] 🎯 Pointer picked:', pickingInfo.pickedMesh.name);
-            
-            // Check if it's a bond
-            if (pickingInfo.pickedMesh.name && pickingInfo.pickedMesh.name.startsWith("bond_")) {
-              handleBondSelection(pickingInfo.pickedMesh);
-            }
-          }
-        });
-        
-        // Also add selection events
-        pointerFeature.onPointerSelectionObservable.add((selectionInfo) => {
-          if (selectionInfo.hit && selectionInfo.pickedMesh) {
-            console.log('[VR] 🎯 Selection event:', selectionInfo.pickedMesh.name);
-            
-            // Check if it's a bond
-            if (selectionInfo.pickedMesh.name && selectionInfo.pickedMesh.name.startsWith("bond_")) {
-              handleBondSelection(selectionInfo.pickedMesh);
-            }
-          }
-        });
-      }
-    } catch (pointerError) {
-      console.warn('[VR Setup] ⚠️ Pointer selection feature failed:', pointerError.message);
-      console.log('[VR Setup] Will use manual controller interaction as fallback');
-    }
-    
-    // Add physics controller interaction as backup
-    try {
-      const physicsFeature = xrHelper.baseExperience.featuresManager.enableFeature(BABYLON.WebXRFeatureName.PHYSICS_CONTROLLERS, "stable", {
-        xrInput: xrHelper.input,
-        physicsProperties: {
-          restitution: 0.5,
-          impostorSize: 0.1
-        }
-      });
-      
-      if (physicsFeature) {
-        console.log('[VR Setup] ✅ Physics controllers enabled for interaction');
-      }
-    } catch (physicsError) {
-      console.warn('[VR Setup] ⚠️ Physics controllers failed:', physicsError.message);
-    }
+    console.log('[VR Setup] Skipping optional locomotion/plugins; using simple trigger+rotate molecule control');
     
   } else {
     console.warn('[VR Setup] ⚠️ Features manager not available - using basic VR only');
@@ -338,24 +293,120 @@ function setupVRFeatures(xrHelper, scene) {
     
     // Show the browser's native VR button by triggering WebXR state
     console.log('[VR Debug] VR session active - native VR controls should be available');
+
+    // Try enabling engine-provided grab+scale behaviors ("standard" interaction)
+    try {
+      if (window && window.vrDisableBehaviors) {
+        console.log('[VR Setup] XR behaviors disabled via flag');
+      }
+      const activated = !window?.vrDisableBehaviors && enableStandardXRInteractions(scene, xrHelper);
+      if (activated) {
+        scene._behaviorsActive = true;
+        console.log('[VR Setup] ✅ Standard XR behaviors active: Grab to rotate/move, two hands to scale');
+      } else {
+        console.log('[VR Setup] ℹ️ Standard XR behaviors not activated; falling back to trigger-rotate');
+      }
+    } catch (bx) {
+      console.warn('[VR Setup] XR behaviors setup failed; using fallback trigger-rotate:', bx?.message);
+      scene._behaviorsActive = false;
+    }
   });
   
   xrHelper.baseExperience.sessionManager.onXRSessionEnded.add(() => {
     console.log("VR Session ended");
   });
   
-  // Enhanced hand controller setup for Meta Quest with error handling
-  xrHelper.input.onControllerAddedObservable.add((controller) => {
-    console.log("VR Controller added:", controller.inputSource.handedness, controller.inputSource.profiles);
-    
-    controller.onMotionControllerInitObservable.add((motionController) => {
-      console.log('Motion controller initialized:', motionController.profile);
-      try {
-        setupControllerInteraction(motionController, scene);
-      } catch (controllerError) {
-        console.warn('Controller setup failed, but VR will still work:', controllerError);
+  // Per-controller polling fallback (works even when observables/components are missing)
+  const controllerState = new WeakMap(); // controller -> { pressed, lastYaw, lastPitch }
+  const getControllerNode = (controller) => controller.pointer || controller.grip || controller.pointer?.parent || null;
+  const getYawPitchForController = (controller, xrHelper) => {
+    const node = getControllerNode(controller);
+    if (node && node.getDirection) {
+      const f = node.getDirection(BABYLON.Vector3.Forward()).normalize();
+      return { yaw: Math.atan2(f.x, f.z), pitch: Math.asin(-Math.max(-1, Math.min(1, f.y))) };
+    }
+    // Fallback: WebXR pose from targetRaySpace
+    try {
+      const inputSource = controller.inputSource;
+      const sessionMan = xrHelper.baseExperience.sessionManager;
+      const frame = sessionMan.currentFrame;
+      const ref = sessionMan.referenceSpace;
+      if (inputSource?.targetRaySpace && frame && ref) {
+        const pose = frame.getPose(inputSource.targetRaySpace, ref);
+        if (pose?.transform?.matrix) {
+          const m = pose.transform.matrix;
+          const dir = new BABYLON.Vector3(-m[8], -m[9], -m[10]); // -Z is forward
+          const f = dir.normalize();
+          return { yaw: Math.atan2(f.x, f.z), pitch: Math.asin(-Math.max(-1, Math.min(1, f.y))) };
+        }
       }
-    });
+    } catch {}
+    return { yaw: 0, pitch: 0 };
+  };
+
+  const isTriggerPressed = (controller) => {
+    try {
+      const mc = controller.motionController || null;
+      if (mc && mc.getComponent) {
+        const trig = mc.getComponent('xr-standard-trigger');
+        if (trig && typeof trig.pressed === 'boolean') return trig.pressed;
+      }
+      const gp = controller.inputSource?.gamepad;
+      if (gp && gp.buttons && gp.buttons.length > 0) {
+        // Heuristic: button[0] is trigger on many controllers
+        return !!gp.buttons[0]?.pressed;
+      }
+    } catch {}
+    return false;
+  };
+
+  xrHelper.input.onControllerAddedObservable.add((controller) => {
+    console.log('VR Controller added:', controller.inputSource.handedness, controller.inputSource.profiles);
+    controllerState.set(controller, { pressed: false, lastYaw: 0, lastPitch: 0 });
+  });
+
+  // Scene-level polling loop
+  scene.onBeforeRenderObservable.add(() => {
+    // Skip polling-based rotation only while behaviors are actively dragging/scaling
+    if (scene._behaviorsActive && scene._grabActive) return;
+    const masters = getMoleculeMasters(scene);
+    if (!masters || masters.length === 0) return;
+    const inputs = xrHelper.input?.controllers || [];
+    for (const controller of inputs) {
+      let st = controllerState.get(controller);
+      if (!st) { st = { pressed: false, lastYaw: 0, lastPitch: 0 }; controllerState.set(controller, st); }
+      const pressed = isTriggerPressed(controller);
+      if (pressed && !st.pressed) {
+        // Edge: press start
+        const { yaw, pitch } = getYawPitchForController(controller, xrHelper);
+        st.lastYaw = yaw; st.lastPitch = pitch; st.pressed = true;
+        // mark global dragging so we accumulate deltas
+        isDragging = true;
+        // console.log('[VR] trigger down', controller.inputSource.handedness || 'unknown');
+      } else if (!pressed && st.pressed) {
+        // Edge: press end
+        st.pressed = false;
+        isDragging = false;
+        // console.log('[VR] trigger up');
+      }
+      if (st.pressed) {
+        const sensitivity = 0.9;
+        const { yaw, pitch } = getYawPitchForController(controller, xrHelper);
+        let dYaw = yaw - st.lastYaw;
+        let dPitch = pitch - st.lastPitch;
+        if (dYaw > Math.PI) dYaw -= 2 * Math.PI; else if (dYaw < -Math.PI) dYaw += 2 * Math.PI;
+        if (dPitch > Math.PI) dPitch -= 2 * Math.PI; else if (dPitch < -Math.PI) dPitch += 2 * Math.PI;
+        const maxStep = 0.05;
+        dYaw = Math.max(-maxStep, Math.min(maxStep, dYaw));
+        dPitch = Math.max(-maxStep, Math.min(maxStep, dPitch));
+        accYaw += -dYaw * sensitivity;
+        accPitch += -dPitch * sensitivity;
+        const q = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Y, accYaw).multiply(
+                  BABYLON.Quaternion.RotationAxis(BABYLON.Axis.X, accPitch));
+        for (const m of masters) m.rotationQuaternion = q.clone();
+        st.lastYaw = yaw; st.lastPitch = pitch;
+      }
+    }
   });
   
   // Add error handling for missing features - but don't try to enable hand tracking
@@ -422,565 +473,137 @@ function setupVRFeatures(xrHelper, scene) {
   return xrHelper;
 }
 
-// Global camera drag state (shared across controller functions)
-let isDragging = false;
-let lastControllerPosition = null;
-let lastControllerRotation = null;
-
-function setupControllerInteraction(motionController, scene) {
-  console.log('[VR] Setting up controller interaction for:', motionController.profile);
-  console.log('[VR] Controller properties:', {
-    rootMesh: !!motionController.rootMesh,
-    mesh: !!motionController.mesh,
-    inputSource: !!motionController.inputSource,
-    hasComponents: !!motionController.getComponent
-  });
-  
-  try {
-    // Get the main trigger component
-    const triggerComponent = motionController.getComponent("xr-standard-trigger");
-    const squeezeComponent = motionController.getComponent("xr-standard-squeeze");
-    
-    if (triggerComponent) {
-      console.log('[VR] ✅ Trigger component found - will use for camera control + bond selection');
-      
-      // Trigger for camera control (drag) and bond selection (quick press)
-      let triggerPressTime = 0;
-      let triggerStartPosition = null;
-      
-      triggerComponent.onButtonStateChangedObservable.add((component) => {
-        if (component.pressed) {
-          triggerPressTime = Date.now();
-          isDragging = true;
-          
-          // Get initial controller position for drag calculation
-          const controllerMesh = motionController.rootMesh || motionController.mesh;
-          if (controllerMesh) {
-            triggerStartPosition = controllerMesh.absolutePosition?.clone() || controllerMesh.position?.clone();
-            lastControllerPosition = triggerStartPosition?.clone();
-            lastControllerRotation = controllerMesh.rotationQuaternion?.clone() || 
-              BABYLON.Quaternion.FromEulerAngles(controllerMesh.rotation.x, controllerMesh.rotation.y, controllerMesh.rotation.z);
-          }
-          
-          console.log('[VR] 🎯 Trigger pressed - starting camera drag or bond selection');
-          
-        } else {
-          // Trigger released
-          const pressDuration = Date.now() - triggerPressTime;
-          const controllerMesh = motionController.rootMesh || motionController.mesh;
-          
-          isDragging = false;
-          
-          // If it was a quick press (< 300ms) and minimal movement, treat as bond selection
-          if (pressDuration < 300) {
-            let totalMovement = 0;
-            if (triggerStartPosition && controllerMesh) {
-              const currentPos = controllerMesh.absolutePosition || controllerMesh.position;
-              totalMovement = BABYLON.Vector3.Distance(triggerStartPosition, currentPos);
-            }
-            
-            if (totalMovement < 0.1) { // Less than 10cm movement = selection
-              console.log('[VR] 🎯 Quick trigger press - attempting bond selection');
-              performBondSelection(motionController, scene);
-            } else {
-              console.log('[VR] 📹 Trigger drag completed - camera moved');
-            }
-          } else {
-            console.log('[VR] 📹 Long trigger press - camera drag completed');
-          }
-          
-          // Reset tracking variables
-          triggerStartPosition = null;
-          lastControllerPosition = null;
-          lastControllerRotation = null;
-        }
-      });
-    } else {
-      console.warn('[VR] ⚠️ No trigger component found on controller');
-    }
-    
-    if (squeezeComponent) {
-      console.log('[VR] ✅ Squeeze component found - will use for menu');
-      // Squeeze for menu activation
-      squeezeComponent.onButtonStateChangedObservable.add((component) => {
-        if (component.pressed) {
-          console.log('[VR] 🎯 Squeeze pressed - toggling menu');
-          toggleVRMenu(motionController, scene);
-        }
-      });
-    } else {
-      console.warn('[VR] ⚠️ No squeeze component found on controller');
-    }
-    
-    // Thumbstick for zoom control instead of movement
-    const thumbstickComponent = motionController.getComponent("xr-standard-thumbstick");
-    if (thumbstickComponent) {
-      console.log('[VR] ✅ Thumbstick component found - will use for zoom control');
-      thumbstickComponent.onAxisValueChangedObservable.add((axes) => {
-        // Use thumbstick Y-axis for zoom (camera distance from target)
-        if (Math.abs(axes.y) > 0.1) { // Dead zone
-          const camera = scene.activeCamera;
-          if (camera && camera.position) {
-            // Calculate zoom direction (towards/away from origin)
-            const zoomDirection = camera.position.normalize();
-            const zoomAmount = axes.y * 0.1; // Zoom speed
-            
-            // Move camera position
-            camera.position.addInPlace(zoomDirection.scale(zoomAmount));
-            
-            // Ensure minimum distance to avoid going through the molecule
-            const minDistance = 2.0;
-            if (camera.position.length() < minDistance) {
-              camera.position = camera.position.normalize().scale(minDistance);
-            }
-            
-            console.log('[VR] 🔍 Zoom:', axes.y > 0 ? 'OUT' : 'IN', 'Distance:', camera.position.length().toFixed(2));
-          }
-        }
-      });
-    } else {
-      console.warn('[VR] ⚠️ No thumbstick component found on controller');
-    }
-    
-    // Set up continuous camera drag update during trigger hold
-    const cameraUpdateInterval = setInterval(() => {
-      if (isDragging && lastControllerPosition) {
-        updateCameraFromDrag(motionController, scene);
-      }
-    }, 16); // ~60fps
-    
-    // Clean up interval when controller is removed
-    motionController.onDisposeObservable.addOnce(() => {
-      clearInterval(cameraUpdateInterval);
-    });
-    
-    console.log('[VR] ✅ Controller interaction setup complete with trigger + drag camera control');
-    
-  } catch (error) {
-    console.error('[VR] ❌ Error setting up controller interaction:', error);
-  }
-}
-
-function performBondSelection(motionController, scene) {
-  console.log('[VR] 🎯 performBondSelection called');
-  console.log('[VR] Controller details:', {
-    profile: motionController.profile,
-    rootMesh: !!motionController.rootMesh,
-    mesh: !!motionController.mesh,
-    inputSource: !!motionController.inputSource
-  });
-  
-  try {
-    // Check if motion controller is available
-    if (!motionController) {
-      console.warn('[VR] ❌ Motion controller not available for bond selection');
-      return;
-    }
-    
-    // Method 1: Use WebXR input source directly
-    if (motionController.inputSource && motionController.inputSource.targetRaySpace) {
-      console.log('[VR] Method 1 - Using WebXR targetRaySpace');
-      
-      // Get the WebXR session and frame
-      const xrHelper = window.vrHelper;
-      if (xrHelper && xrHelper.baseExperience.sessionManager.currentFrame) {
-        const frame = xrHelper.baseExperience.sessionManager.currentFrame;
-        const referenceSpace = xrHelper.baseExperience.sessionManager.referenceSpace;
-        
-        if (frame && referenceSpace) {
-          try {
-            const pose = frame.getPose(motionController.inputSource.targetRaySpace, referenceSpace);
-            if (pose) {
-              const matrix = pose.transform.matrix;
-              
-              // Extract position and direction from WebXR pose matrix
-              const position = new BABYLON.Vector3(matrix[12], matrix[13], matrix[14]);
-              const direction = new BABYLON.Vector3(-matrix[8], -matrix[9], -matrix[10]); // Forward is -Z
-              
-              console.log('[VR] WebXR Controller position:', position);
-              console.log('[VR] WebXR Controller direction:', direction);
-              
-              const ray = new BABYLON.Ray(position, direction);
-              performRaycast(ray, scene);
-              return;
-            }
-          } catch (poseError) {
-            console.warn('[VR] WebXR pose extraction failed:', poseError.message);
-          }
-        }
-      }
-    }
-    
-    // Method 2: Try to get controller mesh for raycasting
-    let controllerMesh = motionController.rootMesh;
-    console.log('[VR] Method 2 - rootMesh:', !!controllerMesh);
-    
-    if (!controllerMesh && motionController.getComponentOfType) {
-      // Method 3: Try to get pointer component
-      const pointer = motionController.getComponentOfType("pointer");
-      console.log('[VR] Method 3 - pointer component:', !!pointer);
-      if (pointer && pointer.mesh) {
-        controllerMesh = pointer.mesh;
-        console.log('[VR] Method 3 - pointer.mesh:', !!controllerMesh);
-      }
-    }
-    
-    if (!controllerMesh && motionController.mesh) {
-      // Method 4: Try direct mesh property
-      controllerMesh = motionController.mesh;
-      console.log('[VR] Method 4 - direct mesh:', !!controllerMesh);
-    }
-    
-    // Method 5: Use controller mesh if available
-    if (controllerMesh) {
-      console.log('[VR] Method 5 - Creating ray from controller mesh');
-      const controllerPosition = controllerMesh.absolutePosition || controllerMesh.position || new BABYLON.Vector3(0, 1.6, 0);
-      
-      // Get the forward direction of the controller
-      let controllerDirection = new BABYLON.Vector3(0, 0, -1);
-      if (controllerMesh.forward) {
-        controllerDirection = controllerMesh.forward;
-      } else if (controllerMesh.getDirection) {
-        controllerDirection = controllerMesh.getDirection(BABYLON.Vector3.Forward());
-      }
-      
-      console.log('[VR] Controller position:', controllerPosition);
-      console.log('[VR] Controller direction:', controllerDirection);
-      
-      const ray = new BABYLON.Ray(controllerPosition, controllerDirection);
-      performRaycast(ray, scene);
-      return;
-    }
-    
-    // Method 6: Camera fallback
-    console.log('[VR] Method 6 - Using camera fallback for raycast');
-    const camera = scene.activeCamera;
-    if (camera) {
-      console.log('[VR] Using camera position for bond selection');
-      const ray = camera.getForwardRay();
-      performRaycast(ray, scene);
-      return;
-    }
-    
-    console.warn('[VR] ❌ No method available for controller raycast');
-    
-  } catch (error) {
-    console.warn('[VR] ❌ Bond selection error:', error.message);
-    console.warn('[VR] Attempting camera fallback...');
-    
-    // Emergency fallback: use camera
-    try {
-      const camera = scene.activeCamera;
-      if (camera) {
-        const ray = camera.getForwardRay();
-        performRaycast(ray, scene);
-      }
-    } catch (fallbackError) {
-      console.error('[VR] ❌ Fallback raycast also failed:', fallbackError.message);
-    }
-  }
-}
-
-function performRaycast(ray, scene) {
-  console.log('[VR] 🎯 Performing raycast...');
-  console.log('[VR] Ray origin:', ray.origin);
-  console.log('[VR] Ray direction:', ray.direction);
-  
-  // Add visual debug ray (optional - remove in production)
-  const rayHelper = new BABYLON.RayHelper(ray);
-  rayHelper.show(scene, new BABYLON.Color3(1, 1, 0)); // Yellow ray
-  setTimeout(() => rayHelper.hide(), 1000); // Hide after 1 second
-  
-  try {
-    // Count potential targets
-    const bondMeshes = scene.meshes.filter(m => m.name && m.name.startsWith("bond_"));
-    console.log('[VR] Found', bondMeshes.length, 'bond meshes to check');
-    
-    if (bondMeshes.length === 0) {
-      console.warn('[VR] ⚠️ No bond meshes found in scene!');
-      console.log('[VR] Available meshes:', scene.meshes.map(m => m.name).filter(Boolean));
-    }
-    
-    // Ray cast against bond cylinders
-    const pickResult = scene.pickWithRay(ray, (mesh) => {
-      return mesh.name && mesh.name.startsWith("bond_");
-    });
-    
-    console.log('[VR] Raycast result:', {
-      hit: pickResult.hit,
-      pickedMesh: pickResult.pickedMesh?.name,
-      distance: pickResult.distance
-    });
-    
-    if (pickResult.hit && pickResult.pickedMesh) {
-      // Extract bond indices from mesh name
-      const bondName = pickResult.pickedMesh.name;
-      const match = bondName.match(/bond_(\d+)_(\d+)/);
-      
-      if (match) {
-        const i = parseInt(match[1]);
-        const j = parseInt(match[2]);
-        
-        console.log(`[VR] ✅ Selected bond ${i}-${j}`);
-        
-        // Visual feedback
-        highlightBond(pickResult.pickedMesh);
-        
-        // Try to access global torsion system if available
-        if (window.appState && window.appState.torsion) {
-          console.log(`[VR] 🔄 Starting torsion rotation for bond ${i}-${j}`);
-          window.appState.torsion.startRotation(i, j);
-        } else if (window.vrTorsion) {
-          console.log(`[VR] 🔄 Using VR torsion system for bond ${i}-${j}`);
-          window.vrTorsion.startRotation(i, j);
-        } else {
-          console.warn(`[VR] ⚠️ No torsion system available - bond selected but no rotation possible`);
-          console.log('[VR] Available globals:', {
-            appState: !!window.appState,
-            vrTorsion: !!window.vrTorsion,
-            vrHelper: !!window.vrHelper
-          });
-        }
-      } else {
-        console.warn('[VR] ⚠️ Could not parse bond indices from:', bondName);
-      }
-    } else {
-      console.log('[VR] ❌ No bond selected - ray missed all targets');
-      
-      // Debug: Try a general pick to see what we might hit
-      const generalPick = scene.pickWithRay(ray);
-      if (generalPick.hit) {
-        console.log('[VR] Ray would have hit:', generalPick.pickedMesh?.name, 'at distance:', generalPick.distance);
-      } else {
-        console.log('[VR] Ray hit nothing at all');
-      }
-    }
-  } catch (error) {
-    console.warn('[VR] ❌ Raycast error:', error.message);
-  }
-}
-
-function highlightBond(bondMesh) {
-  // Create temporary highlight effect
-  const originalColor = bondMesh.material.diffuseColor.clone();
-  bondMesh.material.diffuseColor = new BABYLON.Color3(1, 0.5, 0); // Orange highlight
-  
-  setTimeout(() => {
-    bondMesh.material.diffuseColor = originalColor;
-  }, 500);
-}
-
-function startVRBondRotation(i, j, controller) {
-  try {
-    console.log(`[VR] Starting bond rotation for bond ${i}-${j}`);
-    
-    // Check if controller is available
-    if (!controller) {
-      console.warn('[VR] Controller not available for bond rotation');
-      return;
-    }
-    
-    // Use global torsion system if available
-    if (window.appState && window.appState.torsion) {
-      console.log(`[VR] Using global torsion system for bond ${i}-${j}`);
-      window.appState.torsion.startRotation(i, j);
-      
-      // Set up controller tracking for rotation
-      let initialControllerRotation = null;
-      let isRotating = true;
-      
-      // Try to get controller mesh for tracking
-      const controllerMesh = controller.rootMesh || controller.mesh;
-      if (controllerMesh) {
-        initialControllerRotation = controllerMesh.rotationQuaternion ? 
-          controllerMesh.rotationQuaternion.clone() : 
-          BABYLON.Quaternion.FromEulerAngles(controllerMesh.rotation.x, controllerMesh.rotation.y, controllerMesh.rotation.z);
-      }
-      
-      // Set up rotation update mechanism
-      const updateRotation = () => {
-        if (!isRotating || !controllerMesh) return;
-        
-        const currentRotation = controllerMesh.rotationQuaternion ? 
-          controllerMesh.rotationQuaternion : 
-          BABYLON.Quaternion.FromEulerAngles(controllerMesh.rotation.x, controllerMesh.rotation.y, controllerMesh.rotation.z);
-        
-        if (initialControllerRotation) {
-          // Calculate rotation delta
-          const deltaRotation = currentRotation.subtract(initialControllerRotation);
-          const rotationAmount = deltaRotation.y * (window.vrRotationSensitivity || 1.0);
-          
-          // Apply rotation to torsion system
-          if (window.appState.torsion) {
-            window.appState.torsion.updateRotation(rotationAmount);
-          }
-        }
-      };
-      
-      // Start rotation tracking
-      const rotationInterval = setInterval(updateRotation, 16); // ~60fps
-      
-      // Stop rotation after 5 seconds or when trigger is released
-      setTimeout(() => {
-        isRotating = false;
-        clearInterval(rotationInterval);
-        if (window.appState.torsion) {
-          window.appState.torsion.stopRotation();
-        }
-        console.log(`[VR] Bond rotation ended for bond ${i}-${j}`);
-      }, 5000);
-      
-    } else {
-      console.warn('[VR] Global torsion system not available');
-    }
-    
-  } catch (error) {
-    console.warn('[VR] Bond rotation error:', error.message);
-  }
-}
-
-function toggleVRMenu(controller, scene) {
-  // Toggle floating menu panel
-  console.log("[VR] Toggle menu");
-  // This would show/hide the VR UI panel created in vr-ui.js
-}
-
-function updateCameraFromDrag(motionController, scene) {
-  try {
-    const controllerMesh = motionController.rootMesh || motionController.mesh;
-    const camera = scene.activeCamera;
-    
-    if (!controllerMesh || !camera || !lastControllerPosition) {
-      return;
-    }
-    
-    // Get current controller position
-    const currentPosition = controllerMesh.absolutePosition || controllerMesh.position;
-    
-    // Calculate movement delta
-    const deltaPosition = currentPosition.subtract(lastControllerPosition);
-    
-    // Only apply movement if delta is significant enough (increased threshold)
-    if (deltaPosition.length() < 0.005) {
-      return;
-    }
-    
-    // Cap maximum delta to prevent crazy jumps
-    const maxDelta = 0.1;
-    if (deltaPosition.length() > maxDelta) {
-      console.log('[VR] 📹 Capping excessive movement delta:', deltaPosition.length().toFixed(4));
-      deltaPosition.normalize();
-      deltaPosition.scaleInPlace(maxDelta);
-    }
-    
-    console.log('[VR] 📹 Camera drag update - Delta:', deltaPosition.length().toFixed(4));
-    
-    // Convert controller movement to camera orbital movement
-    // Similar to mouse drag on desktop - horizontal movement rotates around Y axis
-    // Vertical movement rotates around local X axis (up/down)
-    
-    const sensitivity = 0.1; // Much lower sensitivity for VR controllers
-    
-    // Get camera's current position relative to target (assumed to be origin)
-    const cameraTarget = new BABYLON.Vector3(0, 0, 0); // Molecule center
-    const cameraDirection = camera.position.subtract(cameraTarget);
-    const distance = cameraDirection.length();
-    
-    // Convert controller delta to spherical coordinate changes
-    const horizontalDelta = deltaPosition.x * sensitivity;
-    const verticalDelta = deltaPosition.y * sensitivity;
-    
-    // Cap rotation deltas to prevent violent spinning
-    const maxRotation = 0.05; // Maximum rotation per frame (~3 degrees)
-    const clampedHorizontal = Math.max(-maxRotation, Math.min(maxRotation, horizontalDelta));
-    const clampedVertical = Math.max(-maxRotation, Math.min(maxRotation, verticalDelta));
-    
-    console.log('[VR] 📹 Rotation deltas - H:', clampedHorizontal.toFixed(3), 'V:', clampedVertical.toFixed(3));
-    
-    // Create rotation around Y axis (horizontal movement)
-    const horizontalRotation = BABYLON.Matrix.RotationY(clampedHorizontal);
-    
-    // Create rotation around camera's local right vector (vertical movement)
-    const cameraForward = cameraDirection.normalize();
-    const cameraRight = BABYLON.Vector3.Cross(cameraForward, BABYLON.Vector3.Up()).normalize();
-    const verticalRotation = BABYLON.Matrix.RotationAxis(cameraRight, clampedVertical);
-    
-    // Apply rotations to camera direction
-    let newDirection = BABYLON.Vector3.TransformCoordinates(cameraDirection, horizontalRotation);
-    newDirection = BABYLON.Vector3.TransformCoordinates(newDirection, verticalRotation);
-    
-    // Maintain the same distance from target
-    newDirection = newDirection.normalize().scale(distance);
-    
-    // Update camera position
-    camera.position = cameraTarget.add(newDirection);
-    
-    // Ensure camera looks at the target
-    if (camera.setTarget) {
-      camera.setTarget(cameraTarget);
-    }
-    
-    // Update last position for next frame
-    lastControllerPosition = currentPosition.clone();
-    
-  } catch (error) {
-    console.warn('[VR] Camera drag update error:', error.message);
-  }
-}
-
-function handleBondSelection(bondMesh) {
-  console.log('[VR] 🎯 Bond selected via pointer:', bondMesh.name);
-  
-  try {
-    // Extract bond indices from mesh name
-    const bondName = bondMesh.name;
-    const match = bondName.match(/bond_(\d+)_(\d+)/);
-    
-    if (match) {
-      const i = parseInt(match[1]);
-      const j = parseInt(match[2]);
-      
-      console.log(`[VR] ✅ Parsed bond indices: ${i}-${j}`);
-      
-      // Visual feedback
-      highlightBond(bondMesh);
-      
-      // Try to access global torsion system
-      if (window.appState && window.appState.torsion) {
-        console.log(`[VR] 🔄 Starting torsion rotation for bond ${i}-${j}`);
-        window.appState.torsion.startRotation(i, j);
-        
-        // Show feedback to user
-        console.log('[VR] 🎮 Bond rotation started - you can now rotate the molecule');
-        
-        // Optional: Add visual indicator that rotation is active
-        if (bondMesh.material) {
-          const originalEmissive = bondMesh.material.emissiveColor?.clone() || new BABYLON.Color3(0, 0, 0);
-          bondMesh.material.emissiveColor = new BABYLON.Color3(0, 1, 0); // Green for active
-          
-          setTimeout(() => {
-            bondMesh.material.emissiveColor = originalEmissive;
-          }, 2000);
-        }
-        
-      } else if (window.vrTorsion) {
-        console.log(`[VR] 🔄 Using VR torsion system for bond ${i}-${j}`);
-        window.vrTorsion.startRotation(i, j);
-      } else {
-        console.warn(`[VR] ⚠️ No torsion system available for rotation`);
-        console.log('[VR] Available globals:', {
-          appState: !!window.appState,
-          vrTorsion: !!window.vrTorsion,
-          vrHelper: !!window.vrHelper
-        });
-      }
-    } else {
-      console.warn('[VR] ⚠️ Could not parse bond indices from mesh name:', bondName);
-    }
-  } catch (error) {
-    console.error('[VR] ❌ Bond selection error:', error.message);
-  }
-}
-
 // Export the main setup function
 export { setupVRFeatures };
+
+// ===========
+// XR Behaviors (optional): Grab to rotate, two-hand pinch to scale
+// ===========
+function enableStandardXRInteractions(scene, xrHelper) {
+  try {
+    const fm = xrHelper?.baseExperience?.featuresManager;
+    if (!fm) {
+      console.warn('[VR Behaviors] No featuresManager; cannot enable pointer selection');
+      return false;
+    }
+    // Try to enable pointer selection for controller rays
+    try {
+      fm.enableFeature(BABYLON.WebXRFeatureName.POINTER_SELECTION, 'latest', {
+        xrInput: xrHelper.input,
+        forceGazeMode: false,
+        disableScenePointerVectorUpdate: false
+      });
+      // Near interaction can improve grabbing with close controllers (optional)
+      try { fm.enableFeature(BABYLON.WebXRFeatureName.NEAR_INTERACTION, 'latest'); } catch {}
+    } catch (pfErr) {
+      console.warn('[VR Behaviors] Pointer selection enable failed:', pfErr?.message);
+      return false;
+    }
+
+    // Build an invisible wrapper box around the molecule to act as a grab target
+    const masters = getMoleculeMasters(scene);
+    if (!masters || masters.length === 0) return false;
+
+    // Compute molecule bounds in world space
+    let min = new BABYLON.Vector3(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY);
+    let max = new BABYLON.Vector3(Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY);
+    for (const m of masters) {
+      try {
+        m.refreshBoundingInfo && m.refreshBoundingInfo();
+        const bi = m.getBoundingInfo();
+        const bmin = bi.boundingBox.minimumWorld;
+        const bmax = bi.boundingBox.maximumWorld;
+        min = BABYLON.Vector3.Minimize(min, bmin);
+        max = BABYLON.Vector3.Maximize(max, bmax);
+      } catch {}
+    }
+    const center = min.add(max).scale(0.5);
+    const size = max.subtract(min);
+    const diag = Math.max(size.x, size.y, size.z) || 1;
+
+    const wrapper = BABYLON.MeshBuilder.CreateBox('molWrapper', {
+      width: size.x || 0.1,
+      height: size.y || 0.1,
+      depth: size.z || 0.1
+    }, scene);
+    wrapper.position.copyFrom(center);
+    wrapper.rotationQuaternion = BABYLON.Quaternion.Identity();
+    wrapper.isPickable = true;
+    wrapper.visibility = 0.02; // almost invisible but grabbable; set to 0 to hide completely
+    wrapper.alwaysSelectAsActiveMesh = true;
+    wrapper.checkCollisions = false;
+
+    // Add grab (6DoF) and two-hand scale behaviors
+    const sixDof = new BABYLON.SixDofDragBehavior();
+    wrapper.addBehavior(sixDof);
+    const scaler = new BABYLON.MultiPointerScaleBehavior();
+    wrapper.addBehavior(scaler);
+
+    // Accumulated molecule transform
+  let molRotation = BABYLON.Quaternion.Identity();
+  let molScale = 1;
+  let currentCenter = center.clone();
+  let prevWrapperPos = wrapper.position.clone();
+
+    // Initialize masters with rotationQuaternion
+    for (const m of masters) {
+      if (!m.rotationQuaternion) m.rotationQuaternion = BABYLON.Quaternion.Identity();
+      m.scaling = new BABYLON.Vector3(molScale, molScale, molScale);
+    }
+
+    // Use a per-frame poll of wrapper deltas to update masters, then reset wrapper
+    const epsilon = 1e-6;
+    scene.onBeforeRenderObservable.add(() => {
+      let activeThisFrame = false;
+      // Rotation delta
+      if (wrapper.rotationQuaternion) {
+        const rq = wrapper.rotationQuaternion;
+        if (Math.abs(1 - rq.length()) > epsilon || Math.abs(rq.x) > epsilon || Math.abs(rq.y) > epsilon || Math.abs(rq.z) > epsilon) {
+          // Apply delta then reset wrapper rotation
+          molRotation = rq.multiply(molRotation);
+          for (const m of masters) m.rotationQuaternion = molRotation.clone();
+          wrapper.rotationQuaternion = BABYLON.Quaternion.Identity();
+          activeThisFrame = true;
+        }
+      }
+      // Translation delta
+      if (wrapper.position && prevWrapperPos) {
+        const delta = wrapper.position.subtract(prevWrapperPos);
+        if (delta.lengthSquared() > 1e-6) {
+          currentCenter.addInPlace(delta);
+          for (const m of masters) m.position.addInPlace(delta);
+          prevWrapperPos.copyFrom(wrapper.position);
+          activeThisFrame = true;
+        }
+        // Keep wrapper centered on molecule after applying
+        if (!wrapper.position.equalsWithEpsilon(currentCenter, 1e-6)) {
+          wrapper.position.copyFrom(currentCenter);
+          prevWrapperPos.copyFrom(currentCenter);
+        }
+      }
+      // Scale delta (use X as representative; assume uniform)
+      const s = wrapper.scaling;
+      if (s && (Math.abs(s.x - 1) > 0.001 || Math.abs(s.y - 1) > 0.001 || Math.abs(s.z - 1) > 0.001)) {
+        const scaleFactor = Math.max(0.25, Math.min(4, molScale * s.x));
+        molScale = scaleFactor;
+        const sv = new BABYLON.Vector3(molScale, molScale, molScale);
+        for (const m of masters) m.scaling = sv;
+        wrapper.scaling.copyFromFloats(1, 1, 1);
+        activeThisFrame = true;
+      }
+      // Expose whether behaviors were actively manipulating this frame
+      scene._grabActive = !!activeThisFrame;
+    });
+
+    // Store on scene for debug
+    scene._molWrapper = wrapper;
+    scene._molRotation = () => molRotation.clone();
+    scene._molScale = () => molScale;
+    window.vrBehaviorsActive = true;
+    return true;
+  } catch (err) {
+    console.warn('[VR Behaviors] Setup failed:', err?.message || err);
+    window.vrBehaviorsActive = false;
+    return false;
+  }
+}
