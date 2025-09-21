@@ -8,6 +8,7 @@ import { createTorsionController } from "./torsion.js";
 import { createMockMLIP } from "./physics_mock.js";
 import { createForceRenderer } from "./forces.js";
 import { enableBondPicking } from "./bond_pick.js";
+import { createStateStore } from "./state.js";
 
 // --- fallback benzene in case ROY.xyz is missing ---
 function makeBenzeneAtoms() {
@@ -75,22 +76,23 @@ const scene = createBasicScene(engine, canvas, { /* ground: false */ });
 const mol = await buildDefault(scene);
 const { atoms, refreshBonds } = mol;
 
-// Drag interaction
-enableAtomDragging(scene, {
-  atoms,
-  refreshBonds,
-  molecule: mol
-});
+// --- Persistent state (records torsions & can reconstruct/export)
+const state = createStateStore(mol);
+window.stateJson = () => state.getStateJSON();
+window.stateExportXYZ = (name) => state.exportXYZ(name);
 
-// Torsion controller + console helper
-const torsion = createTorsionController(mol);
+// Drag interaction
+enableAtomDragging(scene, { atoms, refreshBonds, molecule: mol });
+
+// Torsion controller (records into state)
+const torsion = createTorsionController(mol, state);
 window.rotateBond = (i, j, side = "j", angleDeg = 5, recompute = false) =>
   torsion.rotateAroundBond({ i, j, side, angleDeg, recompute });
 
-// Load rotatable bonds spec (ROY.BONDS) if present
+// Rotatable bonds spec (optional)
 const rotatable = await loadRotatableSpec();
 
-// Enable bond picking + big controller-friendly UI
+// Bond picking + big controller-friendly UI (default: allow any bond)
 enableBondPicking(scene, {
   molecule: mol,
   torsion,
@@ -101,8 +103,7 @@ enableBondPicking(scene, {
 // --- Mock MLIP + force visualization ---
 const mlip = createMockMLIP(mol); // compute() => { energy, forces }
 const forceVis = createForceRenderer(scene, atoms, {
-  color: new BABYLON.Color3(1, 0.2, 0.9)
-  // starts in "normalized" length mode; toggle in HUD
+  color: new BABYLON.Color3(1, 0.2, 0.9)   // magenta-ish; length mode toggle below
 });
 
 // Energy HUD + Forces/Length toggles
@@ -144,8 +145,43 @@ btnLenMode.onclick = () => {
   btnLenMode.textContent = `Length: ${lengthMode === "normalized" ? "Normalized" : "True"}`;
 };
 
-// Optional console helper to tune true-length scale at runtime
+// Optional: tune true-length scale at runtime from console
 window.setForceScale = (s) => forceVis.setScaleTrue(s);
+
+// Optional: tiny state bar to rebuild & export XYZ
+const stateBar = document.createElement("div");
+stateBar.style.position = "absolute";
+stateBar.style.top = "12px";
+stateBar.style.left = "50%";
+stateBar.style.transform = "translateX(-50%)";
+stateBar.style.background = "rgba(15,18,24,0.7)";
+stateBar.style.border = "1px solid rgba(255,255,255,0.08)";
+stateBar.style.borderRadius = "8px";
+stateBar.style.padding = "6px 8px";
+stateBar.style.display = "flex";
+stateBar.style.gap = "8px";
+stateBar.style.color = "#cfe3ff";
+stateBar.style.font = "12px system-ui,-apple-system,Segoe UI,Roboto,sans-serif";
+stateBar.innerHTML = `
+  <button id="btnRebuild">Rebuild from rotations</button>
+  <button id="btnExport">Export XYZ</button>
+`;
+document.body.appendChild(stateBar);
+
+stateBar.querySelector("#btnRebuild").onclick = () => {
+  state.recomputeAndCommit();
+};
+
+stateBar.querySelector("#btnExport").onclick = () => {
+  const xyz = state.exportXYZ("ROY_from_rotations");
+  const blob = new Blob([xyz], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "reconstructed.xyz";
+  a.click();
+  URL.revokeObjectURL(url);
+};
 
 // Render loop: compute E,F; update energy always; update force arrows when enabled
 engine.runRenderLoop(() => {

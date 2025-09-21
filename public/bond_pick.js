@@ -1,14 +1,12 @@
 // public/bond_pick.js
 // Click-to-select bond + big buttons to rotate via torsion controller.
-// Now allows any bond by default (spec is only enforced if strict=true).
+// Deselect on background click and reattach camera so orbit/pan/zoom work again.
 
 export function enableBondPicking(
   scene,
-  { molecule, torsion, rotatableSpec = [], strict = false } // <-- strict OFF by default
+  { molecule, torsion, rotatableSpec = [], strict = false }
 ) {
-  const canvas = scene.getEngine().getRenderingCanvas();
-
-  // Build a quick "allowed" set if a spec is present
+  // Build whitelist if strict mode enabled
   const allow = new Set();
   if (rotatableSpec && rotatableSpec.length) {
     for (const r of rotatableSpec) {
@@ -16,14 +14,9 @@ export function enableBondPicking(
       allow.add(`${a}-${b}`);
     }
   }
+  const isAllowed = (i, j) => !strict || allow.has(`${Math.min(i, j)}-${Math.max(i, j)}`);
 
-  function isAllowed(i, j) {
-    if (!strict) return true; // default: allow any bond
-    const a = Math.min(i, j), b = Math.max(i, j);
-    return allow.has(`${a}-${b}`);
-  }
-
-  // Visual marker for selected bond (slightly thicker cyan cylinder)
+  // Selected-bond visual marker (cyan, slightly thicker)
   const selMat = new BABYLON.StandardMaterial("bondSelMat", scene);
   selMat.diffuseColor = new BABYLON.Color3(0.1, 0.9, 1.0);
   selMat.emissiveColor = new BABYLON.Color3(0.05, 0.4, 0.5);
@@ -36,12 +29,11 @@ export function enableBondPicking(
   selMesh.setEnabled(false);
 
   function orientBondMarker(i, j) {
-    const ai = molecule.atoms[i].pos;
-    const aj = molecule.atoms[j].pos;
+    const ai = molecule.atoms[i].pos, aj = molecule.atoms[j].pos;
     const mid = ai.add(aj).scale(0.5);
     const v = aj.subtract(ai);
     const len = v.length();
-    if (len < 1e-6) return selMesh.setEnabled(false);
+    if (len < 1e-6) { selMesh.setEnabled(false); return; }
 
     const up = BABYLON.Vector3.Up();
     const d = v.normalizeToNew();
@@ -60,7 +52,7 @@ export function enableBondPicking(
     selMesh.setEnabled(true);
   }
 
-  // UI: big VR-friendly buttons
+  // Controller-friendly UI
   const ui = document.createElement("div");
   ui.style.position = "absolute";
   ui.style.bottom = "12px";
@@ -96,7 +88,7 @@ export function enableBondPicking(
   let selected = null; // { i, j, side, step, label }
   let doRecompute = false;
 
-  function updateLabel(warnNotInSpec = false) {
+  function updateLabel(warn = false) {
     if (!selected) {
       labelEl.textContent = "Select a bond…";
       btnSide.textContent = "Side: j";
@@ -104,16 +96,24 @@ export function enableBondPicking(
     }
     const { i, j, side, step, label } = selected;
     const base = `${label || `bond ${i}-${j}`} (step ${step}°)`;
-    labelEl.textContent = warnNotInSpec ? `${base} — not in ROY.BONDS` : base;
+    labelEl.textContent = warn ? `${base} — not in ROY.BONDS` : base;
     btnSide.textContent = `Side: ${side}`;
+  }
+
+  function clearSelection() {
+    selected = null;
+    selMesh.setEnabled(false);
+    updateLabel(false);
+    // ensure camera reattaches so orbit/pan work immediately
+    const cam = scene.activeCamera;
+    const canvas = scene.getEngine().getRenderingCanvas();
+    if (cam && canvas) cam.attachControl(canvas, true);
   }
 
   function applyRotation(sign) {
     if (!selected) return;
     torsion.rotateAroundBond({
-      i: selected.i,
-      j: selected.j,
-      side: selected.side,
+      i: selected.i, j: selected.j, side: selected.side,
       angleDeg: sign * Math.abs(selected.step || 5),
       recompute: doRecompute
     });
@@ -130,13 +130,16 @@ export function enableBondPicking(
   };
   btnRec.onclick = () => { doRecompute = true; };
 
-  // Keyboard shortcuts: [ / ] / S
+  // Shortcuts (desktop)
   window.addEventListener("keydown", (e) => {
     if (e.key === "[") applyRotation(-1);
     else if (e.key === "]") applyRotation(+1);
     else if (e.key.toLowerCase() === "s") btnSide.click();
+    else if (e.key === "Escape") clearSelection();
   });
 
+  // Helpers
+  const groupByKey = molecule.bondGroups;
   function pickBondAtPointer() {
     const pick = scene.pick(scene.pointerX, scene.pointerY, (m) => m.name?.startsWith("bond_"));
     if (pick?.hit && pick.pickedMesh && pick.thinInstanceIndex != null && pick.thinInstanceIndex >= 0) {
@@ -147,40 +150,35 @@ export function enableBondPicking(
     }
     return null;
   }
+  function isAtomMesh(mesh) { return !!mesh?.name && mesh.name.startsWith("base_"); }
 
-  const groupByKey = molecule.bondGroups;
-
+  // Pointer logic:
   scene.onPointerObservable.add((pi) => {
     if (pi.type !== BABYLON.PointerEventTypes.POINTERDOWN) return;
-    const res = pickBondAtPointer();
-    if (!res) return;
 
-    const group = groupByKey.get(res.key);
-    if (!group) return;
-    const pair = group.indices[res.index];
-    if (!pair) return;
+    const bondHit = pickBondAtPointer();
+    if (bondHit) {
+      const group = groupByKey.get(bondHit.key);
+      const pair = group?.indices[bondHit.index];
+      if (!pair) return;
 
-    const { i, j } = pair;
+      const { i, j } = pair;
+      console.log(`[bond-pick] Selected bond i=${i} j=${j} (pairKey=${bondHit.key})`);
 
-    // Log indices to help authoring ROY.BONDS
-    console.log(`[bond-pick] Selected bond i=${i} j=${j} (pairKey=${res.key})`);
+      const allowed = isAllowed(i, j);
+      let spec = rotatableSpec.find(r => (r.i === i && r.j === j) || (r.i === j && r.j === i));
+      if (!spec) spec = { i, j, side: "j", step: 5, label: `bond ${i}-${j}` };
 
-    const allowed = isAllowed(i, j);
-    if (!allowed) {
-      // Show marker but warn; still select (since strict=true would block rotation anyway)
+      selected = { i: spec.i, j: spec.j, side: spec.side || "j", step: spec.step || 5, label: spec.label };
+      updateLabel(!allowed);
       orientBondMarker(i, j);
-      // Use a default step and side so user can flip side if needed
-      selected = { i, j, side: "j", step: 5, label: `bond ${i}-${j}` };
-      updateLabel(true);
       return;
     }
 
-    // If spec has a matching entry, use it; else sensible defaults
-    let spec = rotatableSpec.find(r => (r.i === i && r.j === j) || (r.i === j && r.j === i));
-    if (!spec) spec = { i, j, side: "j", step: 5, label: `bond ${i}-${j}` };
-
-    selected = { i: spec.i, j: spec.j, side: spec.side || "j", step: spec.step || 5, label: spec.label };
-    updateLabel(false);
-    orientBondMarker(i, j);
+    // Not a bond: if it's not an atom either, deselect & reattach camera
+    const anyPick = scene.pick(scene.pointerX, scene.pointerY);
+    if (!anyPick?.hit || !isAtomMesh(anyPick.pickedMesh)) {
+      clearSelection();
+    }
   });
 }

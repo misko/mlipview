@@ -1,24 +1,25 @@
+// public/torsion.js
 import { buildAdjacency, sideAtoms } from "./graph.js";
 
 /**
  * Create a torsion controller for a molecule built with buildMolecule().
- * - Computes adjacency from molecule.bonds
- * - Exposes rotateAroundBond({ i, j, side, angleDeg, recompute=false })
+ * If a stateStore is provided, rotations are recorded and can be replayed to rebuild positions.
  */
-export function createTorsionController(molecule) {
+export function createTorsionController(molecule, stateStore = null) {
   const atomsAPI = molecule.atoms; // [{ mesh, type, index, pos, scale }]
   let adj = buildAdjacency(molecule.bonds, atomsAPI.length);
 
   function refreshGraph() {
     adj = buildAdjacency(molecule.bonds, atomsAPI.length);
+    if (stateStore) stateStore.refreshAdjacency();
   }
 
-  function rotateAroundBond({ i, j, side = "j", angleDeg = 5, recompute = false }) {
+  function rotateAroundBond({ i, j, side = "j", angleDeg = 5, recompute = false, record = true }) {
     if (i === j) return;
     if (i < 0 || j < 0 || i >= atomsAPI.length || j >= atomsAPI.length) return;
 
-    const pivotIdx = side === "j" ? i : j;
-    const movedFrom = side === "j" ? j : i;
+    const pivotIdx  = (side === "j") ? i : j;
+    const movedFrom = (side === "j") ? j : i;
 
     const rotatingSet = sideAtoms(adj, pivotIdx, movedFrom); // set of global atom indices
 
@@ -46,8 +47,11 @@ export function createTorsionController(molecule) {
       a.pos.copyFrom(newPos);
     }
 
-    // Bulk-refresh all bond buffers so cylinders follow immediately
     molecule.refreshBonds();
+
+    if (record && stateStore) {
+      stateStore.recordRotation({ i, j, side, angleDeg });
+    }
 
     if (recompute) {
       molecule.recomputeBonds({ hysteresis: 1.03 });
