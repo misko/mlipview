@@ -587,6 +587,13 @@ function setupVRFeatures(xrHelper, scene) {
         // console.log('[VR] trigger up');
         // Trigger-tap = selection (avoid during two-hand mode or while grabbing behaviors)
         if (!scene._grabActive && !twoHandMode && duration <= 300 && !st.tapHandled) {
+          // If GUI is being interacted with (or within grace period), don't run selection/tap logic
+          const now = Date.now();
+          if (typeof window !== 'undefined' && (window.vrGuiPointerActive || (window.vrGuiActiveUntil && now < window.vrGuiActiveUntil))) {
+            st.tapHandled = true;
+            try { console.debug('[VR Select] Tap ignored due to active GUI interaction'); } catch {}
+            return;
+          }
           try {
             // Cast a pick ray from this controller
             const node = getControllerNode(controller);

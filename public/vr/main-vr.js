@@ -1,6 +1,6 @@
 // vr/main-vr.js - VR-enabled version of the molecular viewer
 import { setupVR } from './vr-setup.js';
-import { createVRUI } from './vr-ui.js';
+import { createVRUI, createVRUIOnCamera } from './vr-ui.js';
 // Plot disabled in VR Lite mode
 
 // Import existing modules
@@ -83,29 +83,66 @@ export async function initVRApp() {
     // Native VR button trigger is handled centrally in vr-setup.js; duplicate logic removed here
     
   console.log("[VR] Step 4: Creating VR UI...");
-  // Create VR UI (lite: energy-only)
-  const vrUI = createVRUI(scene);
+  // Create fullscreen HUD for non-XR; XR HUD will be created when session starts
+  let vrUI = createVRUI(scene);
+  let xrHud = null;
   console.log("[VR] VR UI created (energy panel)");
 
   // Bond rotation controls via 2D HUD overlay (bottom bar)
   try {
-    const uiState = vrUI?.bond?.state || { side: 'j', step: 5, recompute: false };
-    window.vrBondUI = uiState;
-    const bondBar = vrUI?.bond?.bar;
-    const bondLabel = vrUI?.bond?.label;
-    const btnMinus = vrUI?.bond?.btnMinus;
-    const btnPlus  = vrUI?.bond?.btnPlus;
+  const uiState = vrUI?.bond?.state || { side: 'j', step: 5, recompute: false };
+  window.vrBondUI = uiState;
+  let bondLabel = vrUI?.bond?.label;
+  let btnMinus = vrUI?.bond?.btnMinus;
+  let btnPlus  = vrUI?.bond?.btnPlus;
 
-    // Wire clicks to rotation
-    btnMinus?.onPointerUpObservable.add(() => rotateSelectedBond(scene, -1));
-    btnPlus?.onPointerUpObservable.add(() => rotateSelectedBond(scene, +1));
+  // Wire clicks to rotation (with debug)
+  btnMinus?.onPointerUpObservable.add(() => { console.log('[HUD] (-) pressed'); rotateSelectedBond(scene, -1); });
+  btnPlus?.onPointerUpObservable.add(() => { console.log('[HUD] (+) pressed'); rotateSelectedBond(scene, +1); });
 
-    // Toggle visibility and update label based on selection
-    scene.onBeforeRenderObservable.add(() => {
+    // Update label based on selection (bar stays visible to make HUD obvious)
+    const __updateBondHud = () => {
       const sel = window.vrSelection;
-      const show = !!(sel && sel.kind === 'bond');
-      if (bondBar) bondBar.isVisible = show;
-      if (show && bondLabel) bondLabel.text = `Bond ${sel.data.i}-${sel.data.j}`;
+      const label = bondLabel || xrHud?.bond?.label;
+      if (!label) return;
+      if (sel && sel.kind === 'bond') label.text = `Bond ${sel.data.i}-${sel.data.j}`; else label.text = 'Select a bond to rotate';
+    };
+    scene.onBeforeRenderObservable.add(__updateBondHud);
+    // Build a camera-anchored HUD for XR session
+    vrHelper.baseExperience.sessionManager.onXRSessionInit.add(() => {
+      try {
+        const xrCam = vrHelper?.baseExperience?.camera || scene.activeCamera;
+        if (!xrCam) return;
+        if (xrHud && xrHud.advancedTexture) { try { xrHud.advancedTexture.dispose(); } catch {} }
+        if (xrHud && xrHud.rootMesh) { try { xrHud.rootMesh.dispose(); } catch {} }
+        xrHud = createVRUIOnCamera(scene, xrCam);
+        // Rebind button handlers to XR HUD controls
+        btnMinus = xrHud?.bond?.btnMinus || btnMinus;
+        btnPlus  = xrHud?.bond?.btnPlus  || btnPlus;
+        bondLabel = xrHud?.bond?.label   || bondLabel;
+        // Use XR HUD state for torsion controls going forward
+        try {
+          const prev = window.vrBondUI || { side: 'j', step: 5, recompute: false };
+          if (xrHud?.bond?.state) {
+            xrHud.bond.state.side = prev.side || 'j';
+            xrHud.bond.state.step = Math.abs(prev.step || 5);
+            xrHud.bond.state.recompute = !!prev.recompute;
+            window.vrBondUI = xrHud.bond.state;
+            // Sync visible labels for side/recompute
+            if (xrHud.bond.btnSide?.textBlock) xrHud.bond.btnSide.textBlock.text = `Side: ${window.vrBondUI.side}`;
+            if (xrHud.bond.btnRec?.textBlock) xrHud.bond.btnRec.textBlock.text = `recompute: ${window.vrBondUI.recompute ? 'on' : 'off'}`;
+          }
+        } catch {}
+        btnMinus?.onPointerUpObservable.add(() => { console.log('[HUD XR] (-) pressed'); rotateSelectedBond(scene, -1); });
+        btnPlus?.onPointerUpObservable.add(() => { console.log('[HUD XR] (+) pressed'); rotateSelectedBond(scene, +1); });
+      } catch {}
+      console.log('[VR] Created camera-anchored HUD for XR session');
+    });
+    vrHelper.baseExperience.sessionManager.onXRSessionEnded.add(() => {
+      try { if (xrHud?.advancedTexture?.dispose) xrHud.advancedTexture.dispose(); } catch {}
+      try { if (xrHud?.rootMesh?.dispose) xrHud.rootMesh.dispose(); } catch {}
+      xrHud = null;
+      // fullscreen HUD remains available outside XR
     });
   } catch (e) {
     console.warn('[VR] Overlay bond controls failed:', e?.message);
@@ -191,13 +228,13 @@ export async function initVRApp() {
               const thumb = leftCtrl?.motionController?.getComponent?.('xr-standard-thumbstick');
               if (thumb && thumb.axes && typeof thumb.axes.y === 'number') {
                 leftY = thumb.axes.y;
-                if (typeof console !== 'undefined' && console.debug) {
+                if (window && window.vrLogSticks && typeof console !== 'undefined' && console.debug) {
                   console.debug('[VR Stick] Left thumbstick axes (motionController):', { x: thumb.axes.x, y: thumb.axes.y });
                 }
               } else if (leftCtrl?.inputSource?.gamepad?.axes) {
                 const gp = leftCtrl.inputSource.gamepad;
                 leftY = gp.axes.length >= 2 ? gp.axes[1] : 0;
-                if (typeof console !== 'undefined' && console.debug) {
+                if (window && window.vrLogSticks && typeof console !== 'undefined' && console.debug) {
                   console.debug('[VR Stick] Left controller axes (gamepad):', JSON.stringify(Array.from(gp.axes)));
                 }
               } else {
@@ -208,14 +245,14 @@ export async function initVRApp() {
                   const ay = gp.axes.length >= 2 ? gp.axes[1] : 0;
                   if (Math.abs(ay) > Math.abs(leftY)) leftY = ay;
                 }
-                if (typeof console !== 'undefined' && console.debug) {
+                if (window && window.vrLogSticks && typeof console !== 'undefined' && console.debug) {
                   const axDump = controllers.map(c => Array.from(c.inputSource?.gamepad?.axes || []) );
                   console.debug('[VR Stick] Fallback axes dump:', JSON.stringify(axDump));
                 }
               }
               if (Math.abs(leftY) > deadzone && now >= window.__vrBondStickNext) {
                 const sign = leftY < 0 ? +1 : -1; // up is negative Y: rotate +, down is positive Y: rotate -
-                if (typeof console !== 'undefined') {
+                if (window && window.vrLogSticks && typeof console !== 'undefined') {
                   console.log('[VR Stick] Rotate via left stick', { leftY: +leftY.toFixed(3), sign });
                 }
                 rotateSelectedBond(scene, sign);
@@ -300,7 +337,9 @@ export async function initVRApp() {
 function rotateSelectedBond(scene, sign) {
   const sel = window.vrSelection;
   const torsion = window.vrTorsion;
-  if (!sel || sel.kind !== 'bond' || !torsion) return;
+  if (!sel) { console.warn('[VR] rotateSelectedBond called but no selection'); return; }
+  if (sel.kind !== 'bond') { console.warn('[VR] rotateSelectedBond called but selection is not a bond:', sel.kind); return; }
+  if (!torsion) { console.warn('[VR] rotateSelectedBond called but torsion controller missing'); return; }
   const ui = window.vrBondUI || { side: 'j', step: 5, recompute: false };
   const step = Math.abs(ui.step || 5);
   try {
@@ -312,6 +351,8 @@ function rotateSelectedBond(scene, sign) {
     // One-shot recompute like desktop: reset flag after use
     if (ui.recompute) ui.recompute = false;
     // Keep bond selected: do not clear window.vrSelection here.
+    // Re-emit label update by touching a flag (safe no-op)
+    try { scene._lastHudTick = (scene._lastHudTick || 0) + 1; } catch {}
   } catch (e) {
     console.warn('[VR] rotateSelectedBond failed:', e?.message);
   }
