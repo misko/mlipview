@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MLIP Viewer - VR Mode</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #000;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: white;
+        }
+        
+        #renderCanvas {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+            outline: none;
+            touch-action: none;
+        }
+        
+        #vrStatus {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.8);
+            padding: 15px;
+            border-radius: 8px;
+            z-index: 1000;
+        }
+        
+        #vrInstructions {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            padding: 15px;
+            border-radius: 8px;
+            z-index: 1000;
+            max-width: 600px;
+        }
+        
+        .vr-button {
+            background: #0078d4;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        
+        .vr-button:hover {
+            background: #106ebe;
+        }
+        
+        .vr-button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div id="vrStatus">
+        <h3>🥽 VR Molecular Viewer</h3>
+        <p id="statusText">Checking VR support...</p>
+        <button id="enterVRBtn" class="vr-button" disabled>Enter VR</button>
+        <button id="fallbackBtn" class="vr-button">Desktop Mode</button>
+    </div>
+    
+    <div id="vrInstructions">
+        <h4>🎮 VR Controls:</h4>
+        <ul>
+            <li><strong>Trigger:</strong> Select and rotate bonds</li>
+            <li><strong>Squeeze:</strong> Toggle UI menu</li>
+            <li><strong>Thumbstick Y:</strong> Adjust rotation sensitivity</li>
+            <li><strong>Point at UI:</strong> Interact with buttons and displays</li>
+        </ul>
+        <p><strong>Tips:</strong> Look for the floating energy plot and control panel. Bond rotation works the same as desktop - point at a bond, hold trigger, and rotate your controller!</p>
+    </div>
+    
+    <canvas id="renderCanvas"></canvas>
+
+    <!-- Hidden UI elements needed for desktop mode fallback -->
+    <div id="plotContainer" style="position: absolute; bottom: 20px; left: 20px; width: 400px; height: 250px; background: rgba(15,18,24,0.9); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px; display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div style="color: #f5ffd1; font: 12px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;">Energy vs Bond Rotations</div>
+            <button id="clearPlot" style="padding: 2px 6px; font-size: 10px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; color: #f5ffd1; cursor: pointer;">Clear</button>
+        </div>
+        <canvas id="energyChart" width="380" height="200"></canvas>
+    </div>
+
+    <!-- Babylon.js -->
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+    <script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
+    
+    <!-- Chart.js for desktop mode fallback -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <script type="module">
+        import { initVRApp } from './vr/main-vr.js';
+        import { initApp } from './main.js'; // Fallback to desktop
+        
+        let vrApp = null;
+        let desktopApp = null;
+        let isInitialized = false;
+        
+        const statusText = document.getElementById('statusText');
+        const enterVRBtn = document.getElementById('enterVRBtn');
+        const fallbackBtn = document.getElementById('fallbackBtn');
+        const vrInstructions = document.getElementById('vrInstructions');
+        
+        async function checkVRSupport() {
+            if ('xr' in navigator) {
+                try {
+                    const isSupported = await navigator.xr.isSessionSupported('immersive-vr');
+                    if (isSupported) {
+                        statusText.textContent = '✅ VR supported! Ready to enter VR.';
+                        enterVRBtn.disabled = false;
+                        return true;
+                    }
+                } catch (e) {
+                    console.warn('VR check failed:', e);
+                }
+            }
+            
+            statusText.textContent = '❌ VR not supported on this device/browser.';
+            vrInstructions.innerHTML = '<p><strong>VR Requirements:</strong> Chrome/Edge on Meta Quest, or desktop with VR headset. <a href="https://immersiveweb.dev/" target="_blank">Learn more about WebXR</a></p>';
+            return false;
+        }
+        
+        async function initVR() {
+            if (isInitialized) {
+                console.log('Application already initialized');
+                return;
+            }
+            
+            try {
+                statusText.textContent = '🚀 Initializing VR...';
+                enterVRBtn.disabled = true;
+                
+                vrApp = await initVRApp();
+                
+                if (vrApp && vrApp.vrHelper) {
+                    isInitialized = true;
+                    statusText.textContent = '🥽 VR Ready! Use your controller to interact.';
+                    document.getElementById('vrStatus').style.display = 'none';
+                    vrInstructions.style.display = 'none';
+                } else {
+                    throw new Error('VR initialization failed');
+                }
+            } catch (error) {
+                console.error('VR init error:', error);
+                statusText.textContent = '❌ VR failed to start. Using desktop mode.';
+                initDesktop();
+            }
+        }
+        
+        async function initDesktop() {
+            if (isInitialized) {
+                console.log('Desktop mode already initialized');
+                return;
+            }
+            
+            try {
+                statusText.textContent = '🖥️ Loading desktop mode...';
+                document.getElementById('vrInstructions').style.display = 'none';
+                
+                // Cleanup any existing chart first
+                const existingChart = Chart.getChart('energyChart');
+                if (existingChart) {
+                    console.log('Destroying existing chart...');
+                    existingChart.destroy();
+                }
+                
+                desktopApp = await initApp();
+                
+                if (desktopApp) {
+                    isInitialized = true;
+                    statusText.textContent = '✅ Desktop mode active';
+                    setTimeout(() => {
+                        document.getElementById('vrStatus').style.display = 'none';
+                    }, 2000);
+                }
+            } catch (error) {
+                console.error('Desktop init error:', error);
+                statusText.textContent = '❌ Failed to load application';
+            }
+        }
+        
+        // Event listeners
+        enterVRBtn.addEventListener('click', initVR);
+        fallbackBtn.addEventListener('click', initDesktop);
+        
+        // Initialize
+        checkVRSupport();
+    </script>
+</body>
+</html>

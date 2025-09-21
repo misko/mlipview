@@ -7,6 +7,19 @@ export function createEnergyPlot() {
   console.log("[DEBUG] Energy chart canvas found:", !!energyChart);
   console.log("[DEBUG] Chart.js available:", typeof Chart !== 'undefined');
 
+  // Return a no-op implementation if required elements are missing
+  if (!plotContainer || !energyChart) {
+    console.warn("[WARN] Plot elements not found, creating no-op energy plot");
+    return {
+      isEnabled: () => false,
+      toggle: () => false,
+      addInitialDataPoint: () => {},
+      updateChart: () => {},
+      clear: () => {},
+      destroy: () => {}
+    };
+  }
+
   let showPlot = true; // Default to ON
   let chart = null;
   let lastRotationCount = 0;
@@ -26,6 +39,13 @@ export function createEnergyPlot() {
     if (!energyChart) {
       console.error("[ERROR] Energy chart canvas not found!");
       return;
+    }
+    
+    // Destroy existing chart if it exists
+    const existingChart = Chart.getChart(energyChart);
+    if (existingChart) {
+      console.log("[DEBUG] Destroying existing chart...");
+      existingChart.destroy();
     }
     
     const ctx = energyChart.getContext('2d');
@@ -147,10 +167,23 @@ export function createEnergyPlot() {
   }
 
   // Setup clear button handler
-  document.getElementById("clearPlot").onclick = () => {
-    console.log("[DEBUG] Clear plot button clicked");
-    clear(window.appState); // Will be set by main.js
-  };
+  const clearButton = document.getElementById("clearPlot");
+  if (clearButton) {
+    clearButton.onclick = () => {
+      console.log("[DEBUG] Clear plot button clicked");
+      clear(window.appState); // Will be set by main.js
+    };
+  } else {
+    console.warn("[WARN] Clear plot button not found");
+  }
+
+  function destroy() {
+    if (chart) {
+      console.log("[DEBUG] Destroying chart...");
+      chart.destroy();
+      chart = null;
+    }
+  }
 
   return {
     isEnabled: () => showPlot,
@@ -158,6 +191,7 @@ export function createEnergyPlot() {
     updateChart,
     addInitialDataPoint,
     clear,
+    destroy,
     initializeChart
   };
 }

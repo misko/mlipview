@@ -119,5 +119,8 @@ function startRenderLoop(engine, scene, mlip, energyVal, forceControls, energyPl
   });
 }
 
+// Export for use in other modules (like VR mode)
+export { initApp };
+
 // Start the application
 initApp().catch(console.error);
