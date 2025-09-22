@@ -1,5 +1,6 @@
 // vr/vr-setup.js - VR initialization and controller setup
 import { makePicker } from "../selection.js";
+import { getMoleculeMasters, getMoleculeDiag, transformLocalToWorld, getAnyMaster } from "./vr-utils.js";
 
 // Lightweight log helpers (enable by setting window.vrLog = true)
 function vrLog() {
@@ -43,9 +44,7 @@ export async function setupVR(engine, scene) {
       useStablePlugins: false     // Avoid enabling optional stable plugins automatically
     });
     
-  vrDebug('[VR Setup] XR helper created:', !!xrHelper);
-  vrDebug('[VR Setup] Base experience:', !!xrHelper?.baseExperience);
-  vrDebug('[VR Setup] Session manager:', !!xrHelper?.baseExperience?.sessionManager);
+  vrDebug('[VR Setup] XR helper created:', !!xrHelper, 'base:', !!xrHelper?.baseExperience, 'sessionMgr:', !!xrHelper?.baseExperience?.sessionManager);
     
     
     return setupVRFeatures(xrHelper, scene);
@@ -60,38 +59,6 @@ export async function setupVR(engine, scene) {
 let isDragging = false;  // true while a controller trigger is held
 let accYaw = 0;          // accumulated yaw rotation (radians)
 let accPitch = 0;        // accumulated pitch rotation (radians)
-
-// Helper: get molecule master meshes (atoms and bonds) to rotate directly
-function getMoleculeMasters(scene) {
-  if (scene._vrMasters && scene._vrMasters.length) return scene._vrMasters;
-  const masters = scene.meshes.filter(m => m && m.name && (m.name.startsWith('base_') || m.name.startsWith('bond_')));
-  scene._vrMasters = masters;
-  vrDebug('[VR] Found masters to rotate:', masters.map(m => m.name));
-  return masters;
-}
-
-// Helper: estimate molecule diagonal length for input scaling
-function getMoleculeDiag(scene) {
-  if (scene._molDiag) return scene._molDiag;
-  const masters = getMoleculeMasters(scene);
-  if (!masters || masters.length === 0) { scene._molDiag = 1; return 1; }
-  let min = new BABYLON.Vector3(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY);
-  let max = new BABYLON.Vector3(Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY);
-  for (const m of masters) {
-    try {
-      m.refreshBoundingInfo && m.refreshBoundingInfo();
-      const bi = m.getBoundingInfo();
-      const bmin = bi.boundingBox.minimumWorld;
-      const bmax = bi.boundingBox.maximumWorld;
-      min = BABYLON.Vector3.Minimize(min, bmin);
-      max = BABYLON.Vector3.Maximize(max, bmax);
-    } catch {}
-  }
-  const size = max.subtract(min);
-  const diag = Math.max(size.x, size.y, size.z) || 1;
-  scene._molDiag = diag;
-  return diag;
-}
 
 function setupVRFeatures(xrHelper, scene) {
   vrLog('[VR Setup] Configuring VR features...');
@@ -109,29 +76,7 @@ function setupVRFeatures(xrHelper, scene) {
   let bondSelMesh = null;   // cylinder highlighting selected bond (world-aligned)
   let atomSelMesh = null;   // sphere highlighting selected atom
   // Helper: get current molecule transform from any master mesh (uniform across masters)
-  function getAnyMaster() {
-    const masters = getMoleculeMasters(scene);
-    return masters && masters.length ? masters[0] : null;
-  }
-  function transformLocalToWorld(pos) {
-    const m = getAnyMaster();
-    if (!m) return pos.clone();
-    // world = rotation * (pos * scale) + translation
-    const rot = m.rotationQuaternion || BABYLON.Quaternion.Identity();
-    const scl = m.scaling || new BABYLON.Vector3(1,1,1);
-    const uni = (Math.abs(scl.x - scl.y) < 1e-6 && Math.abs(scl.x - scl.z) < 1e-6) ? scl.x : scl.length()/Math.sqrt(3);
-    const p = pos.scale(uni);
-    // Rotate p by quaternion 'rot'
-    const rotMat = new BABYLON.Matrix();
-    if (BABYLON.Matrix.FromQuaternionToRef) {
-      BABYLON.Matrix.FromQuaternionToRef(rot, rotMat);
-    } else if (rot.toRotationMatrix) {
-      rot.toRotationMatrix(rotMat);
-    }
-    const out = new BABYLON.Vector3();
-    BABYLON.Vector3.TransformCoordinatesToRef(p, rotMat, out);
-    return out.addInPlace(m.position || BABYLON.Vector3.Zero());
-  }
+  // getAnyMaster/transformLocalToWorld now provided by vr-utils
   function ensureBondMarker() {
     if (bondSelMesh) return bondSelMesh;
     const selMat = new BABYLON.StandardMaterial("vrBondSelMat", scene);
@@ -197,7 +142,7 @@ function setupVRFeatures(xrHelper, scene) {
   
   // Disable automatic locomotion features - we'll use manual trigger + rotate behavior
   if (xrHelper.baseExperience.featuresManager) {
-  vrDebug('[VR Setup] Skipping optional locomotion/plugins; using simple trigger+rotate molecule control');
+  vrDebug('[VR Setup] Using simple trigger+rotate molecule control (plugins skipped)');
     
   } else {
     console.warn('[VR Setup] ⚠️ Features manager not available - using basic VR only');
@@ -212,7 +157,7 @@ function setupVRFeatures(xrHelper, scene) {
   accPitch = 0;
     scene._behaviorsActive = false;
     scene._grabActive = false;
-  vrLog("VR Session started successfully");
+  vrLog('VR Session started');
     
     // Enhanced debugging for black screen issues
   vrDebug('[VR Debug] Scene state at VR start:');
@@ -224,7 +169,7 @@ function setupVRFeatures(xrHelper, scene) {
     // Check and fix common lighting issues
     let lightIntensityTotal = 0;
     scene.lights.forEach((light, i) => {
-      console.log(`- Light ${i}: ${light.constructor.name}, intensity: ${light.intensity}, enabled: ${light.isEnabled()}`);
+      vrDebug(`- Light ${i}: ${light.constructor.name}, intensity: ${light.intensity}, enabled: ${light.isEnabled()}`);
       lightIntensityTotal += light.intensity;
       
       // Ensure lights are enabled and have adequate intensity for VR
@@ -242,48 +187,10 @@ function setupVRFeatures(xrHelper, scene) {
   scene.render();
   vrDebug('[VR Debug] Forced initial render');
     
-    // Add continuous lighting monitoring to prevent lights being turned off
-    let lightingCheckInterval = setInterval(() => {
-      let currentLightTotal = 0;
-      let enabledLights = 0;
-      scene.lights.forEach(light => {
-        if (light.isEnabled()) {
-          currentLightTotal += light.intensity;
-          enabledLights++;
-        }
-      });
-      
-      if (currentLightTotal < 1.0 || enabledLights === 0) {
-        console.warn(`[VR Debug] Lighting dimmed/disabled! Total: ${currentLightTotal}, Enabled: ${enabledLights} - Restoring...`);
-        
-        // Re-enable and boost all lights
-        scene.lights.forEach(light => {
-          light.setEnabled(true);
-          if (light instanceof BABYLON.HemisphericLight) {
-            light.intensity = Math.max(light.intensity, 1.5);
-          } else if (light instanceof BABYLON.DirectionalLight) {
-            light.intensity = Math.max(light.intensity, 1.2);
-          }
-        });
-        
-        // Add emergency light if needed
-        if (enabledLights === 0) {
-          const emergencyRestore = new BABYLON.HemisphericLight("emergencyRestore_" + Date.now(), new BABYLON.Vector3(0, 1, 0), scene);
-          emergencyRestore.intensity = 2.0;
-          emergencyRestore.diffuse = new BABYLON.Color3(1, 1, 1);
-          console.log('[VR Debug] Added emergency restore light');
-        }
-      }
-    }, 2000); // Check every 2 seconds
-    
-    // Stop monitoring when VR session ends
-    xrHelper.baseExperience.sessionManager.onXRSessionEnded.addOnce(() => {
-      clearInterval(lightingCheckInterval);
-      console.log('[VR Debug] Stopped lighting monitoring');
-    });
+    // Removed continuous lighting monitoring and emergency light workaround
     
     // Show the browser's native VR button by triggering WebXR state
-    console.log('[VR Debug] VR session active - native VR controls should be available');
+  vrDebug('[VR Debug] VR session active');
 
     // Try enabling engine-provided grab+scale behaviors ("standard" interaction)
     try {
@@ -293,9 +200,9 @@ function setupVRFeatures(xrHelper, scene) {
       const activated = !window?.vrDisableBehaviors && enableStandardXRInteractions(scene, xrHelper);
       if (activated) {
         scene._behaviorsActive = true;
-        console.log('[VR Setup] ✅ Standard XR behaviors active: Grab to rotate/move, two hands to scale');
+  vrLog('[VR Setup] ✅ Standard XR behaviors active: Grab to rotate/move, two hands to scale');
       } else {
-        console.log('[VR Setup] ℹ️ Standard XR behaviors not activated; falling back to trigger-rotate');
+  vrDebug('[VR Setup] Standard XR behaviors not activated; falling back to trigger-rotate');
       }
     } catch (bx) {
       console.warn('[VR Setup] XR behaviors setup failed; using fallback trigger-rotate:', bx?.message);
@@ -309,7 +216,7 @@ function setupVRFeatures(xrHelper, scene) {
   });
   
   xrHelper.baseExperience.sessionManager.onXRSessionEnded.add(() => {
-    console.log("VR Session ended");
+  vrLog('VR Session ended');
     // Cleanup behavior wrapper and flags
     try {
       if (scene._molWrapper && scene._molWrapper.dispose) {
@@ -407,7 +314,7 @@ function setupVRFeatures(xrHelper, scene) {
   };
 
   xrHelper.input.onControllerAddedObservable.add((controller) => {
-    console.log('VR Controller added:', controller.inputSource.handedness, controller.inputSource.profiles);
+    vrDebug('VR Controller added:', controller.inputSource.handedness, controller.inputSource.profiles);
     controllerState.set(controller, { pressed: false, lastYaw: 0, lastPitch: 0, downTime: 0, tapHandled: false });
   });
 
@@ -484,22 +391,22 @@ function setupVRFeatures(xrHelper, scene) {
                   selection.data = { key: b.key, index: b.index, i: b.i, j: b.j };
                   const m = molRef();
                   const ai = m.atoms[b.i].pos, aj = m.atoms[b.j].pos;
-                  orientBondMarkerWorld(transformLocalToWorld(ai), transformLocalToWorld(aj));
+                  orientBondMarkerWorld(transformLocalToWorld(scene, ai), transformLocalToWorld(scene, aj));
                   if (atomSelMesh) atomSelMesh.setEnabled(false);
-                  console.log(`[VR Select] Bond ${b.i}-${b.j} (group ${b.key}, ti ${b.index})`);
+                  vrDebug(`[VR Select] Bond ${b.i}-${b.j} (group ${b.key}, ti ${b.index})`);
                   handled = true;
                 } else {
                   const a = picker.pickAtomWithRay(ray);
                   if (a) {
                     selection.kind = 'atom';
                     selection.data = { idx: a.idx, type: a.type };
-                    const aW = transformLocalToWorld(a.atom.pos);
+                    const aW = transformLocalToWorld(scene, a.atom.pos);
                     const m0 = getAnyMaster();
                     const scl = m0?.scaling || new BABYLON.Vector3(1,1,1);
                     const uni = (Math.abs(scl.x - scl.y) < 1e-6 && Math.abs(scl.x - scl.z) < 1e-6) ? scl.x : scl.length()/Math.sqrt(3);
                     showAtomMarkerAtWorld(aW, (a.atom.scale || 1) * uni);
                     if (bondSelMesh) bondSelMesh.setEnabled(false);
-                    console.log(`[VR Select] Atom #${a.idx} (${a.type})`);
+                    vrDebug(`[VR Select] Atom #${a.idx} (${a.type})`);
                     handled = true;
                   }
                 }
@@ -634,14 +541,14 @@ function setupVRFeatures(xrHelper, scene) {
       if (selection.kind === 'bond' && mol && selection.data) {
         const ai = mol.atoms[selection.data.i]?.pos;
         const aj = mol.atoms[selection.data.j]?.pos;
-        if (ai && aj) orientBondMarkerWorld(transformLocalToWorld(ai), transformLocalToWorld(aj));
+  if (ai && aj) orientBondMarkerWorld(transformLocalToWorld(scene, ai), transformLocalToWorld(scene, aj));
       } else if (selection.kind === 'atom' && mol && selection.data) {
         const a = mol.atoms[selection.data.idx];
         if (a) {
-          const m0 = getAnyMaster();
+          const m0 = getAnyMaster(scene);
           const scl = m0?.scaling || new BABYLON.Vector3(1,1,1);
           const uni = (Math.abs(scl.x - scl.y) < 1e-6 && Math.abs(scl.x - scl.z) < 1e-6) ? scl.x : scl.length()/Math.sqrt(3);
-          showAtomMarkerAtWorld(transformLocalToWorld(a.pos), (a.scale || 1) * uni);
+          showAtomMarkerAtWorld(transformLocalToWorld(scene, a.pos), (a.scale || 1) * uni);
         }
       }
     } catch {}
@@ -649,64 +556,13 @@ function setupVRFeatures(xrHelper, scene) {
   
   // Add error handling for missing features - but don't try to enable hand tracking
   if (xrHelper.baseExperience.featuresManager) {
-    console.log('[VR Setup] Features manager available');
+  vrDebug('[VR Setup] Features manager available');
     
     // Skip hand tracking to avoid initialization errors
-    console.log('[VR Setup] Skipping optional features to ensure VR button appears');
+  vrDebug('[VR Setup] Skipping optional features to ensure VR button appears');
   }
   
-  // CRITICAL: Properly set up WebXR for native browser button
-  setTimeout(() => {
-    console.log('[VR Setup] Triggering native VR button availability...');
-    
-    try {
-      // Method 1: Ensure the XR helper is properly attached to the scene
-      if (xrHelper.baseExperience && xrHelper.baseExperience.sessionManager) {
-        console.log('[VR Setup] Session manager properly initialized');
-        
-        // Method 2: Check if browser can detect VR capability
-        if (navigator.xr) {
-          navigator.xr.isSessionSupported('immersive-vr').then(supported => {
-            if (supported) {
-              console.log('[VR Setup] ✅ Immersive VR supported - native Enter VR button should appear');
-              
-              // Method 3: Just ensure user activation without creating sessions
-              console.log('[VR Setup] Ensuring user activation for native VR button...');
-              
-              // The WebXR system is ready, browser should show native button
-              // No need to create temporary sessions that enter VR mode
-              const canvas = scene.getEngine().getRenderingCanvas();
-              if (canvas) {
-                // Add one-time click listener to ensure user activation
-                const activateVR = (event) => {
-                  console.log('[VR Setup] ✅ User interaction detected - native VR button should be active');
-                  canvas.removeEventListener('click', activateVR);
-                  canvas.removeEventListener('touchstart', activateVR);
-                };
-                
-                canvas.addEventListener('click', activateVR, { once: true });
-                canvas.addEventListener('touchstart', activateVR, { once: true });
-                
-                console.log('[VR Setup] 🎯 User activation listeners added - VR button should appear after any interaction');
-              }
-              
-              // Also dispatch a custom event to signal VR readiness
-              window.dispatchEvent(new CustomEvent('webxr-immersive-ready', {
-                detail: { xrHelper, canvas }
-              }));
-              
-            } else {
-              console.warn('[VR Setup] ⚠️ Immersive VR not supported');
-            }
-          }).catch(err => {
-            console.error('[VR Setup] VR support check failed:', err);
-          });
-        }
-      }
-    } catch (error) {
-      console.error('[VR Setup] Native button trigger failed:', error);
-    }
-  }, 2000); // Give WebXR more time to fully initialize
+  // Removed native VR button trigger hack; rely on Babylon's default XR experience
   
   return xrHelper;
 }

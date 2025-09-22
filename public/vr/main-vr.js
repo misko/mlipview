@@ -29,7 +29,6 @@ export async function initVRApp() {
     console.warn("[VR] ⚠️ Not in VR mode - this might cause conflicts");
   }
   
-  const liteMode = true; // Force VR Lite mode only
   vrLog("[VR] LITE MODE ENABLED - Performance optimizations active");
   
   try {
@@ -90,9 +89,7 @@ export async function initVRApp() {
     window.vrMlip = mlip;
   vrLog("[VR] 🌐 VR helper and molecular systems stored globally for interaction");
     
-  // Instructions panel removed (prefer 2D HUD overlay only)
-    
-    // Native VR button trigger is handled centrally in vr-setup.js; duplicate logic removed here
+  // Native VR UI is handled centrally in vr-setup.js
     
   vrLog("[VR] Step 4: Creating VR UI...");
   // Create fullscreen HUD for non-XR; XR HUD will be created when session starts
@@ -100,7 +97,7 @@ export async function initVRApp() {
   let xrHud = null;
   vrLog("[VR] VR UI created (energy panel)");
 
-  // Bond rotation controls via 2D HUD overlay (bottom bar)
+  // Bond rotation controls via 2D HUD overlay
   try {
   const uiState = vrUI?.bond?.state || { side: 'j', step: 5, recompute: false };
   window.vrBondUI = uiState;
@@ -109,10 +106,10 @@ export async function initVRApp() {
   let btnPlus  = vrUI?.bond?.btnPlus;
 
   // Wire clicks to rotation (with debug)
-  btnMinus?.onPointerUpObservable.add(() => { console.log('[HUD] (-) pressed'); rotateSelectedBond(scene, -1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e); } catch {} });
-  btnPlus?.onPointerUpObservable.add(() => { console.log('[HUD] (+) pressed'); rotateSelectedBond(scene, +1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e); } catch {} });
+  btnMinus?.onPointerUpObservable.add(() => { vrDebug('[HUD] (-) pressed'); rotateSelectedBond(scene, -1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e); } catch {} });
+  btnPlus?.onPointerUpObservable.add(() => { vrDebug('[HUD] (+) pressed'); rotateSelectedBond(scene, +1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e); } catch {} });
 
-    // Bond label removed in Lite HUD
+  // Lite HUD: no bond label
     // Build a camera-anchored HUD for XR session
     vrHelper.baseExperience.sessionManager.onXRSessionInit.add(() => {
       try {
@@ -143,7 +140,7 @@ export async function initVRApp() {
           }
         } catch {}
   btnMinus?.onPointerUpObservable.add(() => {
-    console.log('[HUD XR] (-) pressed');
+    vrDebug('[HUD XR] (-) pressed');
     rotateSelectedBond(scene, -1);
     try {
       const e = mlip.compute()?.energy;
@@ -152,7 +149,7 @@ export async function initVRApp() {
     } catch {}
   });
   btnPlus?.onPointerUpObservable.add(() => {
-    console.log('[HUD XR] (+) pressed');
+    vrDebug('[HUD XR] (+) pressed');
     rotateSelectedBond(scene, +1);
     try {
       const e = mlip.compute()?.energy;
@@ -160,7 +157,7 @@ export async function initVRApp() {
       if (xrHud?.energyValue && isFinite(e)) xrHud.energyValue.text = e.toFixed(3);
     } catch {}
   });
-        // Seed the plot with current energy so it's immediately visible
+  // Seed plot with current energy (if present)
         try {
           const e0 = mlip.compute()?.energy;
           if (xrHud?.plot && isFinite(e0)) xrHud.plot.addPoint(e0);
@@ -188,8 +185,7 @@ export async function initVRApp() {
   // Removed: force and plot update trackers
       
   // Cache physics results - only recompute when molecular structure changes
-      let cachedEnergy = null;
-  let rotationCount = 0;
+    let cachedEnergy = null;
   // Removed: cached forces (not used in lite mode)
       let lastChangeCounter = -1;
       
@@ -205,7 +201,7 @@ export async function initVRApp() {
       // Function to update cached physics if needed
       function updatePhysicsCache() {
         if (hasStructureChanged() || cachedEnergy === null) {
-          console.log("[VR] Molecular structure changed - recomputing physics");
+          vrDebug("[VR] Molecular structure changed - recomputing physics");
           const result = mlip.compute();
           cachedEnergy = result.energy;
           return true;
@@ -283,7 +279,6 @@ export async function initVRApp() {
                   vrLog('[VR Stick] Rotate via left stick', { leftY: +leftY.toFixed(3), sign });
                 }
                 rotateSelectedBond(scene, sign);
-                rotationCount += 1;
                 // Push a point to XR HUD plot if present (energy vs step)
                 try {
                   const e = (cachedEnergy !== null) ? cachedEnergy : (mlip.compute()?.energy ?? null);
@@ -320,10 +315,10 @@ export async function initVRApp() {
     if (vrUI?.energyValue) vrUI.energyValue.text = energy.toFixed(3);
   } catch {}
     
-    startVRRenderLoop();
+  startVRRenderLoop();
     
     // Handle window resize
-    addEventListener("resize", () => engine.resize());
+  addEventListener("resize", () => engine.resize());
     
   vrLog("[VR] VR molecular viewer initialized successfully!");
     
@@ -336,6 +331,22 @@ export async function initVRApp() {
   vrDebug(`- Camera position: ${scene.activeCamera?.position}`);
     
     // Expose debug info globally for Quest console access
+    // Provide a teardown to stop VR and dispose HUDs when switching modes
+    async function teardownVR() {
+      try { engine.stopRenderLoop(); } catch {}
+      try { xrHud?.dispose && xrHud.dispose(); } catch {}
+      try { vrUI?.dispose && vrUI.dispose(); } catch {}
+      try {
+        if (vrHelper?.baseExperience?.exitXRAsync) {
+          await vrHelper.baseExperience.exitXRAsync();
+        } else if (vrHelper?.baseExperience?.sessionManager?.endSessionAsync) {
+          await vrHelper.baseExperience.sessionManager.endSessionAsync();
+        }
+      } catch {}
+    }
+    // Expose for page-level fallback to desktop
+    try { window.vrTeardown = teardownVR; } catch {}
+
     window.vrDebug = {
       scene,
       engine,
@@ -362,7 +373,8 @@ export async function initVRApp() {
       mol,
       state,
       vrHelper,
-      vrUI
+      vrUI,
+      dispose: teardownVR
     };
     
   } catch (error) {

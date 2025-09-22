@@ -17,10 +17,3 @@ export function setThinInstanceMatrices(mesh, matrices) {
   mesh.thinInstanceSetBuffer("matrix", buffer, 16, true);
   mesh.thinInstanceRefreshBoundingInfo(true);
 }
-
-// Commit a single thin-instance matrix update and refresh bounds
-export function setThinInstanceMatrix(mesh, index, matrix) {
-  mesh.thinInstanceSetMatrixAt(index, matrix);
-  mesh.thinInstanceBufferUpdated("matrix");
-  mesh.thinInstanceRefreshBoundingInfo(true);
-}

@@ -294,30 +294,7 @@
                 window.vrDisableForces = true;
                 window.vrDisablePlot = true;
                 
-                debugLog('Pre-init VR support check...');
-                
-                // Force a VR support recheck before initialization
-                if ('xr' in navigator) {
-                    try {
-                        const vrSupported = await navigator.xr.isSessionSupported('immersive-vr');
-                        debugLog(`VR Support Check Result: ${vrSupported}`);
-                        
-                        if (!vrSupported) {
-                            debugLog('Attempting to request VR session to trigger permissions...');
-                            try {
-                                const session = await navigator.xr.requestSession('immersive-vr');
-                                session.end();
-                                debugLog('VR session request successful - proceeding with initialization');
-                            } catch (sessionError) {
-                                debugLog(`VR session request failed: ${sessionError.message}`, 'error');
-                                throw new Error('VR session not available: ' + sessionError.message);
-                            }
-                        }
-                    } catch (checkError) {
-                        debugLog(`VR support recheck failed: ${checkError.message}`, 'error');
-                        throw checkError;
-                    }
-                }
+                // Skip pre-init permission hacks; rely on Babylon XR experience
                 
                 debugLog('✅ VR support confirmed - calling initVRApp()...');
                 vrApp = await initVRApp();
@@ -525,78 +502,9 @@
                 e.preventDefault();
                 debugScene();
             }
-            if (e.ctrlKey && e.key === 'v') {
-                e.preventDefault();
-                debugLog('=== FORCE VR BUTTON TRIGGER ===');
-                forceVRButton();
-            }
+            // Removed V hotkey that tried to force native VR button
         });
         
-        // Function to force trigger native VR button
-        function forceVRButton() {
-            if (!window.vrHelper) {
-                debugLog('❌ No VR helper available', 'error');
-                return;
-            }
-            
-            debugLog('Attempting to force native VR button...');
-            
-            try {
-                // Method 1: Try to request a session directly
-                if (navigator.xr) {
-                    navigator.xr.isSessionSupported('immersive-vr').then(async (supported) => {
-                        if (supported) {
-                            debugLog('✅ VR supported, attempting to trigger native button');
-                            
-                            // Try different approaches to make browser show VR button
-                            
-                            // Approach 1: Simulate user activation
-                            const canvas = window.vrScene?.getEngine().getRenderingCanvas();
-                            if (canvas) {
-                                const event = new PointerEvent('pointerdown', {
-                                    bubbles: true,
-                                    cancelable: true,
-                                    pointerId: 1,
-                                    button: 0
-                                });
-                                canvas.dispatchEvent(event);
-                                
-                                setTimeout(() => {
-                                    const upEvent = new PointerEvent('pointerup', {
-                                        bubbles: true,
-                                        cancelable: true,
-                                        pointerId: 1,
-                                        button: 0
-                                    });
-                                    canvas.dispatchEvent(upEvent);
-                                }, 100);
-                                
-                                debugLog('Triggered canvas pointer events');
-                            }
-                            
-                            // Approach 2: Try to create a temporary session
-                            try {
-                                const session = await navigator.xr.requestSession('immersive-vr');
-                                debugLog('✅ VR session created successfully');
-                                setTimeout(() => {
-                                    session.end();
-                                    debugLog('VR session ended - native button should now be available');
-                                }, 1000);
-                            } catch (sessionError) {
-                                debugLog(`Session request failed: ${sessionError.message}`, 'warning');
-                            }
-                            
-                        } else {
-                            debugLog('❌ VR not supported', 'error');
-                        }
-                    });
-                } else {
-                    debugLog('❌ WebXR not available', 'error');
-                }
-            } catch (error) {
-                debugLog(`Force VR button failed: ${error.message}`, 'error');
-            }
-        }
         
         // Initialize
         debugLog('Starting VR application...');
