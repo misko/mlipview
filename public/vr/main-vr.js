@@ -6,25 +6,37 @@ import { createVRUI, createVRUIOnCamera } from './vr-ui.js';
 // Import existing modules
 import { setupScene, setupMolecule } from '../setup/app-setup.js';
 
+// Lightweight logging guards (enable by setting window.vrLog = true in console)
+function vrLog() {
+  try { if (window && window.vrLog) console.log.apply(console, arguments); } catch (_) {}
+}
+function vrDebug() {
+  try {
+    if (window && window.vrLog) {
+      (console.debug || console.log).apply(console, arguments);
+    }
+  } catch (_) {}
+}
+
 export async function initVRApp() {
-  console.log("[VR] 🚀 Starting VR molecular viewer...");
-  console.log("[VR] Desktop app should NOT be running - checking...");
+  vrLog("[VR] 🚀 Starting VR molecular viewer...");
+  vrLog("[VR] Desktop app should NOT be running - checking...");
   
   // Ensure we're in VR mode, not desktop mode
   if (window.location.pathname.includes('vr.html')) {
-    console.log("[VR] ✅ Confirmed we're in VR mode");
+    vrLog("[VR] ✅ Confirmed we're in VR mode");
   } else {
     console.warn("[VR] ⚠️ Not in VR mode - this might cause conflicts");
   }
   
   const liteMode = true; // Force VR Lite mode only
-  console.log("[VR] LITE MODE ENABLED - Performance optimizations active");
+  vrLog("[VR] LITE MODE ENABLED - Performance optimizations active");
   
   try {
-    console.log("[VR] Step 1: Setting up scene...");
+    vrLog("[VR] Step 1: Setting up scene...");
     // Create Babylon.js app using existing setup with VR optimizations
     const { canvas, engine, scene } = await setupScene(true); // true = VR mode
-    console.log("[VR] Scene setup complete:", {
+    vrDebug("[VR] Scene setup complete:", {
       canvas: !!canvas,
       engine: !!engine,
       scene: !!scene,
@@ -32,10 +44,10 @@ export async function initVRApp() {
       lightCount: scene.lights.length
     });
     
-    console.log("[VR] Step 2: Setting up molecule...");
+    vrLog("[VR] Step 2: Setting up molecule...");
     // Setup molecule and related systems using existing setup
     const { mol, atoms, state, torsion, mlip, forceVis } = await setupMolecule(scene);
-    console.log("[VR] Molecule setup complete:", {
+    vrDebug("[VR] Molecule setup complete:", {
       mol: !!mol,
       atoms: atoms?.length || 0,
       state: !!state,
@@ -45,18 +57,18 @@ export async function initVRApp() {
     });
     
     // Debug scene state before VR initialization
-    console.log("[VR] Pre-VR scene debug:");
-    console.log("- Scene meshes:", scene.meshes.length);
-    console.log("- Scene lights:", scene.lights.length);
-    console.log("- Active camera:", scene.activeCamera?.constructor.name);
+    vrDebug("[VR] Pre-VR scene debug:");
+    vrDebug("- Scene meshes:", scene.meshes.length);
+    vrDebug("- Scene lights:", scene.lights.length);
+    vrDebug("- Active camera:", scene.activeCamera?.constructor.name);
     
     // Check for molecules/atoms
     const atomMeshes = scene.meshes.filter(m => m.name && m.name.includes('atom'));
     const bondMeshes = scene.meshes.filter(m => m.name && m.name.includes('bond'));
-    console.log(`- Atom meshes: ${atomMeshes.length}`);
-    console.log(`- Bond meshes: ${bondMeshes.length}`);
+  vrDebug(`- Atom meshes: ${atomMeshes.length}`);
+  vrDebug(`- Bond meshes: ${bondMeshes.length}`);
     
-    console.log("[VR] Step 3: Initializing VR...");
+  vrLog("[VR] Step 3: Initializing VR...");
     // Initialize VR
     const vrHelper = await setupVR(engine, scene);
     
@@ -65,7 +77,7 @@ export async function initVRApp() {
       return null;
     }
     
-    console.log("[VR] ✅ VR helper created successfully");
+  vrLog("[VR] ✅ VR helper created successfully");
     
     // CRITICAL: Make the VR helper globally accessible for browser native VR button
     window.vrHelper = vrHelper;
@@ -76,23 +88,23 @@ export async function initVRApp() {
   window.vrMol = mol;
     window.vrTorsion = torsion;
     window.vrMlip = mlip;
-    console.log("[VR] 🌐 VR helper and molecular systems stored globally for interaction");
+  vrLog("[VR] 🌐 VR helper and molecular systems stored globally for interaction");
     
   // Instructions panel removed (prefer 2D HUD overlay only)
     
     // Native VR button trigger is handled centrally in vr-setup.js; duplicate logic removed here
     
-  console.log("[VR] Step 4: Creating VR UI...");
+  vrLog("[VR] Step 4: Creating VR UI...");
   // Create fullscreen HUD for non-XR; XR HUD will be created when session starts
   let vrUI = createVRUI(scene);
   let xrHud = null;
-  console.log("[VR] VR UI created (energy panel)");
+  vrLog("[VR] VR UI created (energy panel)");
 
   // Bond rotation controls via 2D HUD overlay (bottom bar)
   try {
   const uiState = vrUI?.bond?.state || { side: 'j', step: 5, recompute: false };
   window.vrBondUI = uiState;
-  let bondLabel = vrUI?.bond?.label;
+  // No bond label in Lite HUD
   let btnMinus = vrUI?.bond?.btnMinus;
   let btnPlus  = vrUI?.bond?.btnPlus;
 
@@ -100,14 +112,7 @@ export async function initVRApp() {
   btnMinus?.onPointerUpObservable.add(() => { console.log('[HUD] (-) pressed'); rotateSelectedBond(scene, -1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e); } catch {} });
   btnPlus?.onPointerUpObservable.add(() => { console.log('[HUD] (+) pressed'); rotateSelectedBond(scene, +1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e); } catch {} });
 
-    // Update label based on selection (bar stays visible to make HUD obvious)
-    const __updateBondHud = () => {
-      const sel = window.vrSelection;
-      const label = bondLabel || xrHud?.bond?.label;
-      if (!label) return;
-      if (sel && sel.kind === 'bond') label.text = `Bond ${sel.data.i}-${sel.data.j}`; else label.text = 'Select a bond to rotate';
-    };
-    scene.onBeforeRenderObservable.add(__updateBondHud);
+    // Bond label removed in Lite HUD
     // Build a camera-anchored HUD for XR session
     vrHelper.baseExperience.sessionManager.onXRSessionInit.add(() => {
       try {
@@ -115,13 +120,12 @@ export async function initVRApp() {
         if (!xrCam) return;
         // Hide 2D overlay during XR to avoid duplicate energy panel in HMD
         try { if (vrUI?.advancedTexture) vrUI.advancedTexture.rootContainer.isVisible = false; } catch {}
-        if (xrHud && xrHud.advancedTexture) { try { xrHud.advancedTexture.dispose(); } catch {} }
-        if (xrHud && xrHud.rootMesh) { try { xrHud.rootMesh.dispose(); } catch {} }
+  // Dispose any prior XR HUD instance
+  try { xrHud?.dispose && xrHud.dispose(); } catch {}
   xrHud = createVRUIOnCamera(scene, xrCam);
         // Rebind button handlers to XR HUD controls
         btnMinus = xrHud?.bond?.btnMinus || btnMinus;
         btnPlus  = xrHud?.bond?.btnPlus  || btnPlus;
-        bondLabel = xrHud?.bond?.label   || bondLabel;
         // Use XR HUD state for torsion controls going forward
         try {
           const prev = window.vrBondUI || { side: 'j', step: 5, recompute: false };
@@ -162,11 +166,10 @@ export async function initVRApp() {
           if (xrHud?.plot && isFinite(e0)) xrHud.plot.addPoint(e0);
         } catch {}
       } catch {}
-      console.log('[VR] Created camera-anchored HUD for XR session');
+      vrLog('[VR] Created camera-anchored HUD for XR session');
     });
     vrHelper.baseExperience.sessionManager.onXRSessionEnded.add(() => {
-      try { if (xrHud?.advancedTexture?.dispose) xrHud.advancedTexture.dispose(); } catch {}
-      try { if (xrHud?.rootMesh?.dispose) xrHud.rootMesh.dispose(); } catch {}
+      try { xrHud?.dispose && xrHud.dispose(); } catch {}
       xrHud = null;
       // Restore 2D overlay when exiting XR
       try { if (vrUI?.advancedTexture) vrUI.advancedTexture.rootContainer.isVisible = true; } catch {}
@@ -176,17 +179,7 @@ export async function initVRApp() {
     console.warn('[VR] Overlay bond controls failed:', e?.message);
   }
     
-    // VR-specific state
-    // Lite mode: remove advanced UI control wiring (forces, plot, export)
-    let vrUIVisible = true;
-    
-    // Update energy display in VR
-    function updateVREnergy() {
-      const { energy } = mlip.compute();
-      vrUI.energyValue.text = energy.toFixed(3);
-      
-      // Plot disabled in lite mode
-    }
+    // VR-specific state: advanced features disabled in Lite mode
     
     // Render loop with cached physics results
     function startVRRenderLoop() {
@@ -287,7 +280,7 @@ export async function initVRApp() {
               if (Math.abs(leftY) > deadzone && now >= window.__vrBondStickNext) {
                 const sign = leftY < 0 ? +1 : -1; // up is negative Y: rotate +, down is positive Y: rotate -
                 if (window && window.vrLogSticks && typeof console !== 'undefined') {
-                  console.log('[VR Stick] Rotate via left stick', { leftY: +leftY.toFixed(3), sign });
+                  vrLog('[VR Stick] Rotate via left stick', { leftY: +leftY.toFixed(3), sign });
                 }
                 rotateSelectedBond(scene, sign);
                 rotationCount += 1;
@@ -321,23 +314,26 @@ export async function initVRApp() {
     }
     
     // Initialize default state
-  // Lite mode: forces/plot disabled
-  updateVREnergy();
+  // Seed energy once before render loop (Lite mode)
+  try {
+    const { energy } = mlip.compute();
+    if (vrUI?.energyValue) vrUI.energyValue.text = energy.toFixed(3);
+  } catch {}
     
     startVRRenderLoop();
     
     // Handle window resize
     addEventListener("resize", () => engine.resize());
     
-    console.log("[VR] VR molecular viewer initialized successfully!");
+  vrLog("[VR] VR molecular viewer initialized successfully!");
     
     // Final debug check
-    console.log("[VR] Final scene state:");
-    console.log(`- Total meshes: ${scene.meshes.length}`);
-    console.log(`- Visible meshes: ${scene.meshes.filter(m => m.isVisible).length}`);
-    console.log(`- Total lights: ${scene.lights.length}`);
-    console.log(`- Enabled lights: ${scene.lights.filter(l => l.isEnabled()).length}`);
-    console.log(`- Camera position: ${scene.activeCamera?.position}`);
+  vrDebug("[VR] Final scene state:");
+  vrDebug(`- Total meshes: ${scene.meshes.length}`);
+  vrDebug(`- Visible meshes: ${scene.meshes.filter(m => m.isVisible).length}`);
+  vrDebug(`- Total lights: ${scene.lights.length}`);
+  vrDebug(`- Enabled lights: ${scene.lights.filter(l => l.isEnabled()).length}`);
+  vrDebug(`- Camera position: ${scene.activeCamera?.position}`);
     
     // Expose debug info globally for Quest console access
     window.vrDebug = {
@@ -350,13 +346,13 @@ export async function initVRApp() {
   vrUI,
       mlip, // Add MLIP for debugging
       debugInfo: () => {
-        console.log("=== VR DEBUG INFO ===");
-        console.log("Scene meshes:", scene.meshes.map(m => `${m.name} (visible: ${m.isVisible})`));
-        console.log("Scene lights:", scene.lights.map(l => `${l.constructor.name} (intensity: ${l.intensity}, enabled: ${l.isEnabled()})`));
-        console.log("Camera:", scene.activeCamera);
-        console.log("VR Session active:", vrHelper.baseExperience.sessionManager.currentSession !== null);
-        console.log("Molecule change counter:", mol.changeCounter);
-        console.log("=== END DEBUG ===");
+        vrDebug("=== VR DEBUG INFO ===");
+        vrDebug("Scene meshes:", scene.meshes.map(m => `${m.name} (visible: ${m.isVisible})`));
+        vrDebug("Scene lights:", scene.lights.map(l => `${l.constructor.name} (intensity: ${l.intensity}, enabled: ${l.isEnabled()})`));
+        vrDebug("Camera:", scene.activeCamera);
+        vrDebug("VR Session active:", vrHelper.baseExperience.sessionManager.currentSession !== null);
+        vrDebug("Molecule change counter:", mol.changeCounter);
+        vrDebug("=== END DEBUG ===");
       }
     };
     
@@ -407,69 +403,4 @@ function rotateSelectedBond(scene, sign) {
   }
 }
 
-function createVRInstructions(scene) {
-  try {
-    // Create a 3D text panel with VR instructions
-    const manager = new BABYLON.GUI.GUI3DManager(scene);
-    
-    // Create a panel
-    const panel = new BABYLON.GUI.CylinderPanel();
-    panel.margin = 0.2;
-    
-    // Position the panel in front of the user
-    panel.position.z = 2;
-    panel.position.y = 1.5;
-    panel.radius = 3;
-    
-    manager.addControl(panel);
-    
-    const instructions = [
-      "🎮 VR Controls (Lite):",
-      "",
-      "✋ Grab box: Move/rotate the molecule",
-      "🤲 Two hands: Pinch to scale",
-      " Tap trigger: Select bond/atom",
-      " ⬆️⬇️ Left stick: Rotate selected bond",
-      "👉 Hold trigger + rotate wrist (fallback)",
-      "👀 Move your head to look around",
-      "",
-      "🧪 Molecule: ROY Crystal Structure"
-    ];
-    
-    instructions.forEach((text, index) => {
-      const button = new BABYLON.GUI.HolographicButton("instruction_" + index);
-      panel.addControl(button);
-      
-      button.text = text;
-      button.fontSize = 24;
-      button.color = "white";
-      button.background = "rgba(0, 100, 200, 0.8)";
-      
-      // Make it non-interactive for pure display
-      button.isPointerBlocker = false;
-      button.isEnabled = false;
-    });
-    
-    // Make the panel fade out after 10 seconds
-    setTimeout(() => {
-      let alpha = 1;
-      const fadeInterval = setInterval(() => {
-        alpha -= 0.05;
-        panel.scaling = new BABYLON.Vector3(alpha, alpha, alpha);
-        
-        if (alpha <= 0) {
-          clearInterval(fadeInterval);
-          manager.removeControl(panel);
-          panel.dispose();
-        }
-      }, 100);
-    }, 10000);
-    
-    console.log("[VR] Instructions panel created and will auto-hide in 10 seconds");
-    
-  } catch (error) {
-    console.warn("[VR] Could not create instructions panel:", error.message);
-  }
-}
-
-// showVRTextPanel removed (unused)
+// createVRInstructions removed (unused)

@@ -1,11 +1,19 @@
 // vr/vr-setup.js - VR initialization and controller setup
 import { makePicker } from "../selection.js";
 
+// Lightweight log helpers (enable by setting window.vrLog = true)
+function vrLog() {
+  try { if (window && window.vrLog) console.log.apply(console, arguments); } catch (_) {}
+}
+function vrDebug() {
+  try { if (window && window.vrLog) (console.debug || console.log).apply(console, arguments); } catch (_) {}
+}
+
 export async function setupVR(engine, scene) {
-  console.log('[VR Setup] 🔧 Initializing WebXR...');
-  console.log('[VR Setup] Engine ready:', !!engine);
-  console.log('[VR Setup] Scene ready:', !!scene);
-  console.log('[VR Setup] Scene meshes:', scene.meshes.length);
+  vrLog('[VR Setup] 🔧 Initializing WebXR...');
+  vrDebug('[VR Setup] Engine ready:', !!engine);
+  vrDebug('[VR Setup] Scene ready:', !!scene);
+  vrDebug('[VR Setup] Scene meshes:', scene.meshes.length);
   
   try {
     // Optimize engine settings for VR performance
@@ -14,30 +22,10 @@ export async function setupVR(engine, scene) {
     scene.autoClear = true;
     scene.autoClearDepthAndStencil = true;
     
-    console.log('[VR Setup] Engine optimizations applied');
+  vrDebug('[VR Setup] Engine optimizations applied');
     
-    // Try the most minimal approach first - direct WebXR API
-    console.log('[VR Setup] Trying direct WebXR API first for better native button support...');
-    try {
-      const directXR = await BABYLON.WebXRDefaultExperience.CreateAsync(scene, {
-        floorMeshes: [],
-        optionalFeatures: [], // No optional features
-        uiOptions: {
-          sessionMode: 'immersive-vr',
-          referenceSpaceType: 'local-floor'
-        }
-      });
-      
-      if (directXR && directXR.baseExperience) {
-        console.log('[VR Setup] ✅ Direct WebXR API successful - this should show native VR button');
-        return setupVRFeatures(directXR, scene);
-      }
-    } catch (directError) {
-      console.warn('[VR Setup] Direct WebXR API failed, trying scene method:', directError.message);
-    }
-    
-    // Fallback to scene method
-    console.log('[VR Setup] Creating default XR experience via scene...');
+    // Single path: scene helper creates default XR experience
+  vrLog('[VR Setup] Creating default XR experience...');
   const xrHelper = await scene.createDefaultXRExperienceAsync({
       floorMeshes: [], // No floor mesh needed for molecular viewer
       // Completely disable optional features to prevent errors
@@ -55,9 +43,9 @@ export async function setupVR(engine, scene) {
       useStablePlugins: false     // Avoid enabling optional stable plugins automatically
     });
     
-    console.log('[VR Setup] XR helper created:', !!xrHelper);
-    console.log('[VR Setup] Base experience:', !!xrHelper?.baseExperience);
-    console.log('[VR Setup] Session manager:', !!xrHelper?.baseExperience?.sessionManager);
+  vrDebug('[VR Setup] XR helper created:', !!xrHelper);
+  vrDebug('[VR Setup] Base experience:', !!xrHelper?.baseExperience);
+  vrDebug('[VR Setup] Session manager:', !!xrHelper?.baseExperience?.sessionManager);
     
     
     return setupVRFeatures(xrHelper, scene);
@@ -78,7 +66,7 @@ function getMoleculeMasters(scene) {
   if (scene._vrMasters && scene._vrMasters.length) return scene._vrMasters;
   const masters = scene.meshes.filter(m => m && m.name && (m.name.startsWith('base_') || m.name.startsWith('bond_')));
   scene._vrMasters = masters;
-  console.log('[VR] Found masters to rotate:', masters.map(m => m.name));
+  vrDebug('[VR] Found masters to rotate:', masters.map(m => m.name));
   return masters;
 }
 
@@ -106,7 +94,7 @@ function getMoleculeDiag(scene) {
 }
 
 function setupVRFeatures(xrHelper, scene) {
-  console.log('[VR Setup] Configuring VR features...');
+  vrLog('[VR Setup] Configuring VR features...');
   // Cache masters list for rotation-based controls
   try { getMoleculeMasters(scene); } catch (e) { console.warn('[VR] Could not collect molecule masters:', e?.message); }
   // Track last two-hand center for dual-trigger translation
@@ -209,7 +197,7 @@ function setupVRFeatures(xrHelper, scene) {
   
   // Disable automatic locomotion features - we'll use manual trigger + rotate behavior
   if (xrHelper.baseExperience.featuresManager) {
-    console.log('[VR Setup] Skipping optional locomotion/plugins; using simple trigger+rotate molecule control');
+  vrDebug('[VR Setup] Skipping optional locomotion/plugins; using simple trigger+rotate molecule control');
     
   } else {
     console.warn('[VR Setup] ⚠️ Features manager not available - using basic VR only');
@@ -218,19 +206,20 @@ function setupVRFeatures(xrHelper, scene) {
   // VR-specific settings
   xrHelper.baseExperience.sessionManager.onXRSessionInit.add(() => {
     // Reset rotation/behavior flags on session start
-    isDragging = false;
-    accYaw = 0;
-    accPitch = 0;
+  // Reset trigger-based rotation state
+  isDragging = false;
+  accYaw = 0;
+  accPitch = 0;
     scene._behaviorsActive = false;
     scene._grabActive = false;
-    console.log("VR Session started successfully");
+  vrLog("VR Session started successfully");
     
     // Enhanced debugging for black screen issues
-    console.log('[VR Debug] Scene state at VR start:');
-    console.log('- Meshes:', scene.meshes.length);
-    console.log('- Lights:', scene.lights.length);
-    console.log('- Active Camera:', scene.activeCamera?.constructor.name);
-    console.log('- Camera Position:', scene.activeCamera?.position);
+  vrDebug('[VR Debug] Scene state at VR start:');
+  vrDebug('- Meshes:', scene.meshes.length);
+  vrDebug('- Lights:', scene.lights.length);
+  vrDebug('- Active Camera:', scene.activeCamera?.constructor.name);
+  vrDebug('- Camera Position:', scene.activeCamera?.position);
     
     // Check and fix common lighting issues
     let lightIntensityTotal = 0;
@@ -250,8 +239,8 @@ function setupVRFeatures(xrHelper, scene) {
     
     
     // Force render to ensure everything is updated
-    scene.render();
-    console.log('[VR Debug] Forced initial render');
+  scene.render();
+  vrDebug('[VR Debug] Forced initial render');
     
     // Add continuous lighting monitoring to prevent lights being turned off
     let lightingCheckInterval = setInterval(() => {
