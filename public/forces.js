@@ -2,7 +2,7 @@
 // Draw per-atom forces as thin-instanced arrows with per-instance opacity.
 // Toggle between Normalized-length and True-magnitude length.
 
-import { setThinInstanceMatrices } from "./helpers.js";
+import { setThinInstanceMatrices, quatYto } from "./helpers.js";
 
 export function createForceRenderer(
   scene,
@@ -56,15 +56,7 @@ export function createForceRenderer(
   setThinInstanceMatrices(arrow, []);
   arrow.thinInstanceSetBuffer("color", new Float32Array(0), 4, true);
 
-  function dirToQuatY(v) {
-    const up = BABYLON.Vector3.Up();
-    const d = v.normalizeToNew();
-    const dot = BABYLON.Vector3.Dot(up, d);
-    if (dot > 0.9999) return BABYLON.Quaternion.Identity();
-    if (dot < -0.9999) return BABYLON.Quaternion.RotationAxis(BABYLON.Vector3.Right(), Math.PI);
-    const axis = BABYLON.Vector3.Cross(up, d).normalize();
-    return BABYLON.Quaternion.RotationAxis(axis, Math.acos(dot));
-  }
+  // Use shared helper for rotation from +Y to direction
 
   function setForces(forces) {
     // 1) magnitudes + max
@@ -97,7 +89,7 @@ export function createForceRenderer(
 
       // rotation
       let rot = BABYLON.Quaternion.Identity();
-      if (mag >= 1e-6) rot = dirToQuatY(F);
+  if (mag >= 1e-6) rot = quatYto(F);
 
       mats[i] = BABYLON.Matrix.Compose(new BABYLON.Vector3(1, L, 1), rot, p);
 

@@ -45,7 +45,6 @@ export function createVRUI(scene) {
   bondBar.thickness = 0;
   bondBar.background = "rgba(15,18,24,0.66)";
   bondBar.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_BOTTOM;
-  bondBar.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_BOTTOM;
   bondBar.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
   bondBar.width = "90%";
   bondBar.isVisible = true; // always show; label will instruct when nothing selected
@@ -53,7 +52,6 @@ export function createVRUI(scene) {
   try { bondBar.zIndex = 1000; } catch {}
   advancedTexture.addControl(bondBar);
   try { energyPanel.zIndex = 500; } catch {}
-  advancedTexture.addControl(energyPanel);
 
   const row = new BABYLON.GUI.StackPanel();
   row.isVertical = false;
@@ -111,6 +109,9 @@ export function createVRUI(scene) {
       btnPlus,
       btnSide,
       state: bondUIState
+    },
+    dispose() {
+      try { advancedTexture.dispose(); } catch {}
     }
   };
 }
@@ -227,14 +228,14 @@ export function createVRUIOnCamera(scene, xrCamera) {
   try { bg.billboardMode = BABYLON.AbstractMesh.BILLBOARDMODE_ALL; } catch {}
     bg.isPickable = false;
     bg.renderingGroupId = 3;
-    const mat = new BABYLON.StandardMaterial('hudPlotMat', scene);
+  const mat = new BABYLON.StandardMaterial('hudPlotMat', scene);
   mat.disableLighting = true;
   // Cull back face so we never see mirrored text
   mat.backFaceCulling = true;
     mat.alpha = 0.98;
     // Draw onto a high-res dynamic texture for crisp lines
     const texW = 1024, texH = 512;
-    const dyn = new BABYLON.DynamicTexture('hudPlotDT', { width: texW, height: texH }, scene, false);
+  const dyn = new BABYLON.DynamicTexture('hudPlotDT', { width: texW, height: texH }, scene, false);
     dyn.hasAlpha = true;
     // Fix orientation: invert both axes so the canvas draws appear non-mirrored in world
     try {
@@ -323,7 +324,7 @@ export function createVRUIOnCamera(scene, xrCamera) {
     // Initial draw
     redraw();
 
-    return { addPoint, reset, setVisible, root };
+    return { addPoint, reset, setVisible, root, mesh: bg, mat, dyn };
   }
 
   const hudPlot = createHudPlot(scene, hudRoot);
@@ -393,6 +394,24 @@ export function createVRUIOnCamera(scene, xrCamera) {
       btnPlus: plus.btn,
       btnSide: side.btn,
       state: bondUIState
+    },
+    dispose() {
+      // Dispose GUI textures first
+      try { minus.adt && minus.adt.dispose(); } catch {}
+      try { plus.adt && plus.adt.dispose(); } catch {}
+      try { side.adt && side.adt.dispose(); } catch {}
+      try { energy.adt && energy.adt.dispose(); } catch {}
+      // Dispose plot textures/materials/mesh
+      try { hudPlot && hudPlot.dyn && hudPlot.dyn.dispose(); } catch {}
+      try { hudPlot && hudPlot.mat && hudPlot.mat.dispose(); } catch {}
+      try { hudPlot && hudPlot.mesh && hudPlot.mesh.dispose(); } catch {}
+      // Dispose button/label meshes
+      try { minus.mesh && minus.mesh.dispose(); } catch {}
+      try { plus.mesh && plus.mesh.dispose(); } catch {}
+      try { side.mesh && side.mesh.dispose(); } catch {}
+      try { energy.mesh && energy.mesh.dispose(); } catch {}
+      // Finally dispose the root transform
+      try { hudRoot && hudRoot.dispose(); } catch {}
     }
   };
 }

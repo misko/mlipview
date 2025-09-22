@@ -239,7 +239,7 @@
                         
                         if (inlineSupported) {
                             statusText.textContent = '⚠️ VR hardware not detected, but WebXR is available.';
-                            enterVRBtn.disabled = false;
+                            // Only Lite mode button exists in this UI
                             enterVRLiteBtn.disabled = false;
                             return true;
                         }
@@ -390,7 +390,7 @@
                 }
                 
                 statusText.textContent = errorMessage;
-                enterVRBtn.disabled = false; // Re-enable for retry
+                // Only Lite mode button exists in this UI
                 enterVRLiteBtn.disabled = false; // Re-enable for retry
                 
                 // Show fallback options

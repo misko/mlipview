@@ -8,10 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const HTTPS_PORT = process.env.HTTPS_PORT || 8443;
 
-// Middleware to serve static files
-app.use(express.static(path.join(__dirname, "public")));
-
-// Add security headers for WebXR
+// Add security headers for WebXR (must come before static so they apply to assets too)
 app.use((req, res, next) => {
   // Required for WebXR
   res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
@@ -26,6 +23,9 @@ app.use((req, res, next) => {
   
   next();
 });
+
+// Middleware to serve static files
+app.use(express.static(path.join(__dirname, "public")));
 
 // Start HTTP server
 app.listen(PORT, () => {

@@ -59,31 +59,6 @@ export async function setupVR(engine, scene) {
     console.log('[VR Setup] Base experience:', !!xrHelper?.baseExperience);
     console.log('[VR Setup] Session manager:', !!xrHelper?.baseExperience?.sessionManager);
     
-    if (!xrHelper.baseExperience) {
-      console.warn("[VR Setup] ⚠️ Scene XR initialization failed - trying minimal fallback");
-      
-      // Try even more minimal initialization
-      try {
-        console.log('[VR Setup] Attempting absolutely minimal XR setup...');
-        const minimalXR = await scene.createDefaultXRExperienceAsync({
-          floorMeshes: [],
-          optionalFeatures: [],
-          disableTeleportation: true,
-          uiOptions: {
-            sessionMode: 'immersive-vr'
-          }
-        });
-        
-        if (minimalXR && minimalXR.baseExperience) {
-          console.log('[VR Setup] ✅ Minimal WebXR initialization successful');
-          return setupVRFeatures(minimalXR, scene);
-        }
-      } catch (minimalError) {
-        console.error('[VR Setup] Minimal VR initialization failed:', minimalError);
-      }
-      
-      return null;
-    }
     
     return setupVRFeatures(xrHelper, scene);
     
@@ -273,107 +248,6 @@ function setupVRFeatures(xrHelper, scene) {
       }
     });
     
-    console.log(`Total light intensity: ${lightIntensityTotal}`);
-    
-    if (lightIntensityTotal < 0.5) {
-      console.warn('[VR Debug] WARNING: Very low total light intensity, adding emergency lighting');
-      
-      // Add emergency lighting if scene is too dark
-      const emergencyLight = new BABYLON.HemisphericLight("emergencyVRLight", new BABYLON.Vector3(0, 1, 0), scene);
-      emergencyLight.intensity = 2.0; // Brighter emergency lighting
-      emergencyLight.diffuse = new BABYLON.Color3(1, 1, 1);
-      console.log('[VR Debug] Added emergency hemisphere light with intensity 2.0');
-      
-      // Also add a directional emergency light
-      const emergencyDir = new BABYLON.DirectionalLight("emergencyVRDir", new BABYLON.Vector3(1, -1, 1), scene);
-      emergencyDir.intensity = 1.5;
-      emergencyDir.diffuse = new BABYLON.Color3(1, 1, 1);
-      console.log('[VR Debug] Added emergency directional light');
-    } else {
-      // Even if we have lights, boost them for VR
-      console.log('[VR Debug] Boosting existing lights for VR visibility');
-      scene.lights.forEach((light, i) => {
-        const originalIntensity = light.intensity;
-        if (light instanceof BABYLON.HemisphericLight) {
-          light.intensity = Math.max(light.intensity, 1.5);
-        } else if (light instanceof BABYLON.DirectionalLight) {
-          light.intensity = Math.max(light.intensity, 1.2);
-        }
-        if (light.intensity !== originalIntensity) {
-          console.log(`[VR Debug] Boosted light ${i} from ${originalIntensity} to ${light.intensity}`);
-        }
-      });
-    }
-    
-    // Check camera positioning for VR
-    if (scene.activeCamera) {
-      const camera = scene.activeCamera;
-      console.log('[VR Debug] Camera details:');
-      console.log('- Type:', camera.constructor.name);
-      console.log('- Position:', camera.position);
-      console.log('- Target:', camera.target || 'N/A');
-      console.log('- FOV:', camera.fov || 'N/A');
-      
-      // Ensure camera is positioned appropriately for molecules
-      if (camera.position.length() < 0.1) {
-        console.warn('[VR Debug] Camera too close to origin, adjusting...');
-        camera.position = new BABYLON.Vector3(0, 0, 5);
-      }
-      
-      // Set target to molecular center
-      if (camera.setTarget) {
-        camera.setTarget(BABYLON.Vector3.Zero());
-      }
-    }
-    
-    // Check mesh visibility and materials
-    let visibleMeshCount = 0;
-    scene.meshes.forEach((mesh, i) => {
-      if (mesh.isVisible && mesh.isEnabled()) {
-        visibleMeshCount++;
-        
-        // Check material
-        if (!mesh.material) {
-          console.warn(`[VR Debug] Mesh ${i} (${mesh.name}) has no material - adding default`);
-          // Add default material
-          const defaultMaterial = new BABYLON.StandardMaterial(`defaultVR_${mesh.name}`, scene);
-          defaultMaterial.diffuseColor = new BABYLON.Color3(0.8, 0.8, 0.8);
-          defaultMaterial.emissiveColor = new BABYLON.Color3(0.1, 0.1, 0.1); // Self-illuminated
-          mesh.material = defaultMaterial;
-        } else {
-          // Ensure material is visible in VR
-          if (mesh.material.alpha < 0.1) {
-            console.warn(`[VR Debug] Mesh ${i} (${mesh.name}) is nearly transparent (alpha: ${mesh.material.alpha}) - fixing`);
-            mesh.material.alpha = 1.0;
-          }
-          
-          // Add some emissive lighting to materials to ensure they're visible even with poor lighting
-          if (mesh.material instanceof BABYLON.StandardMaterial && mesh.material.emissiveColor) {
-            const originalEmissive = mesh.material.emissiveColor.clone();
-            mesh.material.emissiveColor = new BABYLON.Color3(
-              Math.max(originalEmissive.r, 0.05),
-              Math.max(originalEmissive.g, 0.05),
-              Math.max(originalEmissive.b, 0.05)
-            );
-          }
-        }
-      }
-    });
-    
-    console.log(`[VR Debug] Visible meshes: ${visibleMeshCount}/${scene.meshes.length}`);
-    
-    if (visibleMeshCount === 0) {
-      console.error('[VR Debug] NO VISIBLE MESHES - This will cause a black screen!');
-      
-      // Create a test cube to verify rendering is working
-      const testCube = BABYLON.MeshBuilder.CreateBox("vrTestCube", {size: 1}, scene);
-      testCube.position = new BABYLON.Vector3(0, 0, -3);
-      const testMaterial = new BABYLON.StandardMaterial("vrTestMaterial", scene);
-      testMaterial.diffuseColor = new BABYLON.Color3(1, 0, 0); // Red cube
-      testMaterial.emissiveColor = new BABYLON.Color3(0.2, 0, 0); // Self-illuminated
-      testCube.material = testMaterial;
-      console.log('[VR Debug] Created red test cube at (0, 0, -3)');
-    }
     
     // Force render to ensure everything is updated
     scene.render();
