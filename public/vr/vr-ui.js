@@ -18,20 +18,22 @@ export function createVRUI(scene) {
   energyPanel.background = "rgba(15,18,24,0.9)";
   energyPanel.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;
   energyPanel.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
-  energyPanel.top = "20px";
+  // Move overlay energy panel lower by an additional ~10% of screen height
+  energyPanel.top = "30%";
   energyPanel.left = "-20px";
   advancedTexture.addControl(energyPanel);
   
   // Energy value text
   const energyTitle = new BABYLON.GUI.TextBlock("energyTitle", "Mock Energy");
   energyTitle.color = "#a4b0c0";
-  energyTitle.fontSize = "14px";
+  energyTitle.fontSize = "18px";
+  energyTitle.fontWeight = "bold";
   energyTitle.top = "-30px";
   energyPanel.addControl(energyTitle);
   
   const energyValue = new BABYLON.GUI.TextBlock("energyValue", "0.000");
   energyValue.color = "#f5ffd1";
-  energyValue.fontSize = "24px";
+  energyValue.fontSize = "30px";
   energyValue.fontWeight = "bold";
   energyValue.top = "5px";
   energyPanel.addControl(energyValue);
@@ -39,7 +41,7 @@ export function createVRUI(scene) {
   // Lite mode: only expose energy value (no control buttons)
   // Bond control bottom bar (2D overlay)
   const bondBar = new BABYLON.GUI.Rectangle("bondBar");
-  bondBar.height = "80px";
+  bondBar.height = "240px";
   bondBar.thickness = 0;
   bondBar.background = "rgba(15,18,24,0.66)";
   bondBar.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_BOTTOM;
@@ -67,7 +69,9 @@ export function createVRUI(scene) {
     b.height = "100%";
     b.width = w;
     b.color = "#e9f6ff";
-    b.fontSize = 30;
+    // Triple overlay button font size for readability
+    b.fontSize = 108;
+    b.fontWeight = "bold";
     b.thickness = 0;
     b.paddingLeft = "8px";
     b.paddingRight = "8px";
@@ -79,40 +83,23 @@ export function createVRUI(scene) {
   }
 
   const btnMinus = mkBtn("⟲ −");
-  const labelRect = new BABYLON.GUI.Rectangle("bondLblRect");
-  labelRect.height = "100%";
-  labelRect.width = "260px";
-  labelRect.thickness = 0;
-  labelRect.background = "rgba(25,32,44,0.9)";
-  labelRect.cornerRadius = 10;
-  const bondLabel = new BABYLON.GUI.TextBlock("bondLbl", "Select a bond to rotate");
-  bondLabel.color = "#d7e6ff";
-  bondLabel.fontSize = 30;
-  bondLabel.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
-  bondLabel.textVerticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
-  labelRect.addControl(bondLabel);
   const btnPlus  = mkBtn("⟲ +");
-  const btnSide  = mkBtn("Side: j");
-  const btnRec   = mkBtn("recompute: off");
+  const btnSide  = mkBtn("(i,j)");
 
-  row.addControl(btnMinus);
-  row.addControl(labelRect);
+  // Put buttons in a single row: +, (i,j)/(j,i), -
   row.addControl(btnPlus);
   row.addControl(btnSide);
-  row.addControl(btnRec);
+  row.addControl(btnMinus);
+  // recompute button removed
 
-  // Note: placing btnRec overlapping step+ if needed; adjust columns later if you want separate columns
-
-  const bondUIState = { side: 'j', step: 5, recompute: false };
+  const bondUIState = { side: 'j', step: 5 };
 
   btnSide.onPointerUpObservable.add(() => {
     bondUIState.side = bondUIState.side === 'j' ? 'i' : 'j';
-    btnSide.textBlock.text = `Side: ${bondUIState.side}`;
+    const lbl = bondUIState.side === 'j' ? '(i,j)' : '(j,i)';
+    btnSide.textBlock.text = lbl;
   });
-  btnRec.onPointerUpObservable.add(() => {
-    bondUIState.recompute = !bondUIState.recompute;
-    btnRec.textBlock.text = `recompute: ${bondUIState.recompute ? 'on' : 'off'}`;
-  });
+  // recompute toggle removed
 
   return {
     advancedTexture,
@@ -120,11 +107,9 @@ export function createVRUI(scene) {
     // overlay bond UI
     bond: {
       bar: bondBar,
-      label: bondLabel,
       btnMinus,
       btnPlus,
       btnSide,
-      btnRec,
       state: bondUIState
     }
   };
@@ -135,8 +120,9 @@ export function createVRUIOnCamera(scene, xrCamera) {
   // Runtime overrides for quick tuning on device
   const cfg = (typeof window !== 'undefined' && window.vrHudConfig) ? window.vrHudConfig : {};
   const fontScale = cfg.fontScale || 1.2;
-  // Move HUD slightly lower by default (can override via window.vrHudConfig.position)
-  const pos = cfg.position || { x: 0, y: -0.25, z: 1.1 };
+  // Position the HUD, shifted lower by an additional ~10% for comfort
+  // Lower the entire HUD noticeably; use runtime override if provided
+  const pos = cfg.position || { x: 0, y: -0.06, z: 1.1 };
 
   // Root transform, parented to camera
   const hudRoot = new BABYLON.TransformNode('vrHudRoot', scene);
@@ -156,7 +142,15 @@ export function createVRUIOnCamera(scene, xrCamera) {
     btn.width = 1;
     btn.height = 1;
     btn.color = '#e9f6ff';
-    btn.fontSize = Math.round((fontPx || 34) * fontScale);
+    const fs = Math.round((fontPx || 42) * fontScale);
+    // Set font size on both the Button and its inner TextBlock to ensure it takes effect
+    btn.fontSize = fs;
+    try {
+      if (btn.textBlock) {
+        btn.textBlock.fontWeight = 'bold';
+        btn.textBlock.fontSize = fs;
+      }
+    } catch {}
     btn.thickness = 0;
     btn.background = 'rgba(35,45,60,0.9)';
     btn.cornerRadius = 10;
@@ -182,48 +176,73 @@ export function createVRUIOnCamera(scene, xrCamera) {
     adt.addControl(rect);
     const txt = new BABYLON.GUI.TextBlock(name + '_text', initialText);
     txt.color = '#d7e6ff';
-    txt.fontSize = Math.round((fontPx || 34) * fontScale);
+    txt.fontSize = Math.round((fontPx || 38) * fontScale);
+  try { txt.fontWeight = 'bold'; } catch {}
     txt.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
     txt.textVerticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
     rect.addControl(txt);
     return { mesh, adt, rect, txt };
   }
 
-  // Small energy panel (non-pickable) at top-right of HUD root
-  const energyW = 0.32, energyH = 0.14;
-  const energy = mkLabelPlane('energyPanelXR', energyW, energyH, new BABYLON.Vector3(0.35, 0.22, 0), '0.000', 24);
+  // Small energy panel (non-pickable) at top-right of HUD root (near top of FOV)
+  const energyW = 0.40, energyH = 0.16;
+  // Energy panel local position (root shift handles 10% lowering globally)
+  // Swap energy to the left side and raise higher in the HUD
+  const energyPos = (cfg.energyPos && typeof cfg.energyPos === 'object')
+    ? new BABYLON.Vector3(cfg.energyPos.x ?? -0.45, cfg.energyPos.y ?? 0.26, cfg.energyPos.z ?? 0)
+    : new BABYLON.Vector3(-0.45, 0.26, 0);
+  const energy = mkLabelPlane('energyPanelXR', energyW, energyH, energyPos, '0.000', 45);
   // Add a title above energy value
   const energyTitle = new BABYLON.GUI.TextBlock('energyTitleXR', 'Mock Energy');
   energyTitle.color = '#a4b0c0';
-  energyTitle.fontSize = 18;
+  energyTitle.fontSize = 33;
+  energyTitle.fontWeight = 'bold';
   energyTitle.top = '-40px';
   try { energy.rect.addControl(energyTitle); } catch {}
   const energyValue = energy.txt;
+  try { energyValue.fontWeight = 'bold'; } catch {}
 
   // ---- Mini energy vs step plot (top-left) ----
   function createHudPlot(scene, parent, opts = {}) {
-    const w = opts.width || 0.52;   // meters
-    const h = opts.height || 0.22;  // meters
-    const origin = opts.position || new BABYLON.Vector3(-0.35, 0.22, 0.001);
+    const w = opts.width || 0.60;   // meters
+    const h = opts.height || 0.24;  // meters
+    // Plot local position; lower it and keep the 10% right shift. Allow override via cfg.plotPos
+    // Swap plot to the right side and raise higher in the HUD
+    const defaultPlotPos = new BABYLON.Vector3(0.39, 0.30, 0.001);
+    const origin = opts.position || (cfg.plotPos
+      ? new BABYLON.Vector3(cfg.plotPos.x ?? 0.39, cfg.plotPos.y ?? 0.30, cfg.plotPos.z ?? 0.001)
+      : defaultPlotPos);
     const maxPoints = opts.maxPoints || 100;
     const root = new BABYLON.TransformNode('hudPlotRoot', scene);
     root.parent = parent;
     root.position = origin.clone();
 
     // Background plane with dynamic texture for plot
-    const bg = BABYLON.MeshBuilder.CreatePlane('hudPlotBg', { width: w, height: h, sideOrientation: BABYLON.Mesh.DOUBLESIDE }, scene);
+  // Create a plane rendering only its front face and make it always face the camera
+  const bg = BABYLON.MeshBuilder.CreatePlane('hudPlotBg', { width: w, height: h, sideOrientation: BABYLON.Mesh.FRONTSIDE }, scene);
     bg.parent = root;
     bg.position = new BABYLON.Vector3(0, 0, 0);
+  // Make the plane always face the camera to avoid mirrored/back-side views
+  try { bg.rotation = new BABYLON.Vector3(0, 0, 0); } catch {}
+  try { bg.billboardMode = BABYLON.AbstractMesh.BILLBOARDMODE_ALL; } catch {}
     bg.isPickable = false;
     bg.renderingGroupId = 3;
     const mat = new BABYLON.StandardMaterial('hudPlotMat', scene);
-    mat.disableLighting = true;
-    mat.backFaceCulling = false;
+  mat.disableLighting = true;
+  // Cull back face so we never see mirrored text
+  mat.backFaceCulling = true;
     mat.alpha = 0.98;
     // Draw onto a high-res dynamic texture for crisp lines
     const texW = 1024, texH = 512;
     const dyn = new BABYLON.DynamicTexture('hudPlotDT', { width: texW, height: texH }, scene, false);
     dyn.hasAlpha = true;
+    // Fix orientation: invert both axes so the canvas draws appear non-mirrored in world
+    try {
+      // Keep vertical flip so bottom of canvas maps to bottom in world
+      dyn.vScale = -1; dyn.vOffset = 1;
+      // Do not flip horizontally so left stays left (Y-axis/"Energy" on left)
+      dyn.uScale = 1; dyn.uOffset = 0;
+    } catch {}
     mat.emissiveTexture = dyn;
     mat.diffuseTexture = dyn;
     bg.material = mat;
@@ -236,6 +255,7 @@ export function createVRUIOnCamera(scene, xrCamera) {
       const ctx = dyn.getContext();
       // Clear
       ctx.clearRect(0, 0, texW, texH);
+      // Draw in normal orientation (no canvas flipping)
       // Background
       ctx.fillStyle = 'rgba(26, 32, 44, 0.92)';
       ctx.fillRect(0, 0, texW, texH);
@@ -255,6 +275,22 @@ export function createVRUIOnCamera(scene, xrCamera) {
       ctx.moveTo(x0, y0);
       ctx.lineTo(x0, y1);
       ctx.stroke();
+      // Axis labels (bold)
+    ctx.fillStyle = 'rgba(220, 230, 255, 0.95)';
+  ctx.font = 'bold 32px sans-serif';
+  // X label: Step (bottom center) - with flipped texture, this maps to bottom in world
+  const xLabel = 'Step';
+  const xLabelWidth = ctx.measureText(xLabel).width;
+  ctx.fillText(xLabel, x0 + (x1 - x0) / 2 - xLabelWidth / 2, texH - 14);
+      // Y label: Energy (rotated)
+      ctx.save();
+  // Place the Y label slightly to the left of the axis
+  ctx.translate(14, y0 - (y0 - y1) / 2);
+      ctx.rotate(-Math.PI / 2);
+      const yLabel = 'Energy';
+      const yLabelWidth = ctx.measureText(yLabel).width;
+      ctx.fillText(yLabel, -yLabelWidth / 2, 0);
+      ctx.restore();
       // Plot line
       if (data.length >= 2) {
         minY = Math.min(...data);
@@ -292,32 +328,31 @@ export function createVRUIOnCamera(scene, xrCamera) {
 
   const hudPlot = createHudPlot(scene, hudRoot);
 
-  // Layout sizes in meters
+  // Layout sizes in meters (reverted physical size; we scale font instead)
   const hBtn = 0.10; // 10 cm
   const wBtn = 0.22; // 22 cm
-  const wLabel = 0.62;
-  const wRec = 0.34;
+  // recompute removed; no wide button
   const spacing = 0.03;
-  const rowDY = 0.14; // vertical distance between rows
-  const row1Y = 0.06;
-  const row2Y = -0.08;
+  const rowDY = 0.16; // vertical distance between rows
+  // Place buttons lower at bottom area of HUD (below center), single row now
+  // Lower further by default; allow runtime override via window.vrHudConfig.buttonRowY
+  const rowY = (typeof cfg.buttonRowY === 'number') ? cfg.buttonRowY : -0.32;
 
   // Compute positions
-  const minusX = -(wLabel / 2 + spacing + wBtn / 2);
-  const plusX  = +(wLabel / 2 + spacing + wBtn / 2);
-  const sideRecTotal = wBtn + spacing + wRec;
-  const startX = -sideRecTotal / 2 + wBtn / 2;
-  const sideX = startX;
-  const recX = startX + wBtn / 2 + spacing + wRec / 2;
+  // Single row positions: +, (i,j)/(j,i), -
+  const plusX  = - (wBtn + spacing);
+  const sideX  = 0;
+  const minusX = + (wBtn + spacing);
+  // recX removed
 
-  const minus = mkButtonPlane('hudMinus', wBtn, hBtn, new BABYLON.Vector3(minusX, row1Y, 0), '⟲ −');
-  const label = mkLabelPlane('hudLabel', wLabel, hBtn, new BABYLON.Vector3(0, row1Y, 0), 'Select a bond to rotate');
-  const plus  = mkButtonPlane('hudPlus',  wBtn, hBtn, new BABYLON.Vector3(plusX, row1Y, 0), '⟲ +');
-  const side  = mkButtonPlane('hudSide',  wBtn, hBtn, new BABYLON.Vector3(sideX, row2Y, 0), 'Side: j');
-  const rec   = mkButtonPlane('hudRecompute', wRec, hBtn, new BABYLON.Vector3(recX, row2Y, 0), 'recompute: off');
+  // Triple font size for XR control buttons only via local fontPx
+  const minus = mkButtonPlane('hudMinus', wBtn, hBtn, new BABYLON.Vector3(minusX, rowY, 0), '⟲ −', 42 * 3);
+  const plus  = mkButtonPlane('hudPlus',  wBtn, hBtn, new BABYLON.Vector3(plusX, rowY, 0), '⟲ +', 42 * 3);
+  const side  = mkButtonPlane('hudSide',  wBtn, hBtn, new BABYLON.Vector3(sideX, rowY, 0), '(i,j)', 42 * 3);
+  // recompute plane removed
 
   // State shared with app
-  const bondUIState = { side: 'j', step: 5, recompute: false };
+  const bondUIState = { side: 'j', step: 5 };
 
   // GUI press guard (only when real button planes pressed)
   const setGuiActive = (v) => {
@@ -338,17 +373,15 @@ export function createVRUIOnCamera(scene, xrCamera) {
     btn.onPointerDownObservable.add(() => setGuiActive(true));
     btn.onPointerUpObservable.add(() => setTimeout(() => setGuiActive(false), 0));
   };
-  [minus.btn, plus.btn, side.btn, rec.btn].forEach(wirePressGuards);
+  [minus.btn, plus.btn, side.btn].forEach(wirePressGuards);
 
   // Side/recompute handlers
   side.btn.onPointerUpObservable.add(() => {
     bondUIState.side = bondUIState.side === 'j' ? 'i' : 'j';
-    side.btn.textBlock.text = `Side: ${bondUIState.side}`;
+    const lbl = bondUIState.side === 'j' ? '(i,j)' : '(j,i)';
+    side.btn.textBlock.text = lbl;
   });
-  rec.btn.onPointerUpObservable.add(() => {
-    bondUIState.recompute = !bondUIState.recompute;
-    rec.btn.textBlock.text = `recompute: ${bondUIState.recompute ? 'on' : 'off'}`;
-  });
+  // recompute handler removed
 
   return {
     advancedTexture: null, // per-mesh ADTs; no single texture
@@ -356,11 +389,9 @@ export function createVRUIOnCamera(scene, xrCamera) {
     energyValue,
     plot: hudPlot,
     bond: {
-      label: label.txt,
       btnMinus: minus.btn,
       btnPlus: plus.btn,
       btnSide: side.btn,
-      btnRec: rec.btn,
       state: bondUIState
     }
   };

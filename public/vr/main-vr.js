@@ -113,6 +113,8 @@ export async function initVRApp() {
       try {
         const xrCam = vrHelper?.baseExperience?.camera || scene.activeCamera;
         if (!xrCam) return;
+        // Hide 2D overlay during XR to avoid duplicate energy panel in HMD
+        try { if (vrUI?.advancedTexture) vrUI.advancedTexture.rootContainer.isVisible = false; } catch {}
         if (xrHud && xrHud.advancedTexture) { try { xrHud.advancedTexture.dispose(); } catch {} }
         if (xrHud && xrHud.rootMesh) { try { xrHud.rootMesh.dispose(); } catch {} }
   xrHud = createVRUIOnCamera(scene, xrCam);
@@ -129,12 +131,31 @@ export async function initVRApp() {
             xrHud.bond.state.recompute = !!prev.recompute;
             window.vrBondUI = xrHud.bond.state;
             // Sync visible labels for side/recompute
-            if (xrHud.bond.btnSide?.textBlock) xrHud.bond.btnSide.textBlock.text = `Side: ${window.vrBondUI.side}`;
+            if (xrHud.bond.btnSide?.textBlock) {
+              const lbl = (window.vrBondUI.side === 'j') ? '(i,j)' : '(j,i)';
+              xrHud.bond.btnSide.textBlock.text = lbl;
+            }
             if (xrHud.bond.btnRec?.textBlock) xrHud.bond.btnRec.textBlock.text = `recompute: ${window.vrBondUI.recompute ? 'on' : 'off'}`;
           }
         } catch {}
-  btnMinus?.onPointerUpObservable.add(() => { console.log('[HUD XR] (-) pressed'); rotateSelectedBond(scene, -1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e); } catch {} });
-  btnPlus?.onPointerUpObservable.add(() => { console.log('[HUD XR] (+) pressed'); rotateSelectedBond(scene, +1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e); } catch {} });
+  btnMinus?.onPointerUpObservable.add(() => {
+    console.log('[HUD XR] (-) pressed');
+    rotateSelectedBond(scene, -1);
+    try {
+      const e = mlip.compute()?.energy;
+      if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e);
+      if (xrHud?.energyValue && isFinite(e)) xrHud.energyValue.text = e.toFixed(3);
+    } catch {}
+  });
+  btnPlus?.onPointerUpObservable.add(() => {
+    console.log('[HUD XR] (+) pressed');
+    rotateSelectedBond(scene, +1);
+    try {
+      const e = mlip.compute()?.energy;
+      if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e);
+      if (xrHud?.energyValue && isFinite(e)) xrHud.energyValue.text = e.toFixed(3);
+    } catch {}
+  });
         // Seed the plot with current energy so it's immediately visible
         try {
           const e0 = mlip.compute()?.energy;
@@ -147,6 +168,8 @@ export async function initVRApp() {
       try { if (xrHud?.advancedTexture?.dispose) xrHud.advancedTexture.dispose(); } catch {}
       try { if (xrHud?.rootMesh?.dispose) xrHud.rootMesh.dispose(); } catch {}
       xrHud = null;
+      // Restore 2D overlay when exiting XR
+      try { if (vrUI?.advancedTexture) vrUI.advancedTexture.rootContainer.isVisible = true; } catch {}
       // fullscreen HUD remains available outside XR
     });
   } catch (e) {
@@ -212,8 +235,13 @@ export async function initVRApp() {
           // Lite mode: only energy update used
           
           // Update VR energy display (using cached energy)
-          if (needsEnergyUpdate && vrUI && vrUI.energyValue && cachedEnergy !== null) {
-            vrUI.energyValue.text = cachedEnergy.toFixed(3);
+          if (needsEnergyUpdate && cachedEnergy !== null) {
+            if (vrUI && vrUI.energyValue) {
+              vrUI.energyValue.text = cachedEnergy.toFixed(3);
+            }
+            if (xrHud && xrHud.energyValue) {
+              xrHud.energyValue.text = cachedEnergy.toFixed(3);
+            }
             lastEnergyUpdate = frameCount;
           }
 
