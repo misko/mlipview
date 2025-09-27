@@ -5,10 +5,9 @@
   "description": "Minimal Babylon.js + WebXR benzene demo with a tiny Node static server",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js",
-    "generate-certs": "./generate-certs.sh",
-    "https": "npm run generate-certs && npm start",
+  "start": "node server.js",
+  "dev": "node server.js",
+  "https": "npm start",
     "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand"
   },
   "dependencies": {

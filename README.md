@@ -130,43 +130,19 @@ Then load with `?ff=mybackend`.
 `compute()` returns Babylon `Vector3` forces for immediate visualization.
 `computeRaw({Z, xyz})` is backend-neutral numeric data (no Babylon dependency) and can be used for batch or headless analysis.
 
-## Local UMA FAIR-Chem Server (HTTP + HTTPS)
+## Local UMA FAIR-Chem Server (Simplified)
 
-When developing locally over `file://` or `http://` the FAIR-Chem adapter can talk to `http://localhost:8000`. However, when you load the viewer over **HTTPS** (common for WebXR / headset flows, or when tunneling) browsers will block mixed content (HTTP API from HTTPS page). The adapter in `public/forcefield/fairchem.js` automatically attempts to upgrade to `https://<host>:8444` first; if that fails it falls back to HTTP with a single warning.
+When developing locally over `http://` the FAIR-Chem adapter talks to `http://localhost:8000` (default UMA). If you access the viewer itself over HTTPS, use an external reverse proxy or tunnel (e.g. Caddy, Traefik, nginx, ngrok) to terminate TLS and forward to the Node server + UMA backend. The previous dual HTTP+HTTPS helper script has been removed to reduce maintenance.
 
-To support this upgrade path seamlessly, run a parallel HTTPS uvicorn instance. A helper script creates a self‑signed certificate (if needed) and launches both servers.
+Mixed-content avoidance is now handled by:
+1. Same-origin proxy endpoints in `server.js` (`/simple_calculate`, `/calculate`).
+2. Automatic upgrade attempt inside `public/forcefield/fairchem.js` (logs a single warning on fallback).
 
-### Script: `fairchem_local_server/run_dual_server.sh`
-
-Usage:
-
-```bash
-cd fairchem_local_server
-chmod +x run_dual_server.sh   # first time
-./run_dual_server.sh
+If you need HTTPS for VR quickly:
 ```
-
-It will:
-1. Generate `certs/fairchem-key.pem` and `certs/fairchem-cert.pem` (with SANs for hostnames + IPs) if missing.
-2. Start HTTP on port 8000 and HTTPS on port 8444.
-3. Export `UMA_MODEL` and `UMA_TASK` (override via env vars) for the FastAPI app.
-
-Environment overrides (examples):
-
-```bash
-UMA_MODEL=uma-s-1p1 UMA_TASK=omol ./run_dual_server.sh
-UMA_ONLY_HTTPS=1 ./run_dual_server.sh                # only HTTPS
-UMA_HTTP_PORT=8100 UMA_HTTPS_PORT=8543 ./run_dual_server.sh
-UMA_REGEN_CERT=1 ./run_dual_server.sh                # force regenerate certificate
-UMA_HOSTNAMES="kalman,localhost,mybox" UMA_IPS="127.0.0.1,192.168.1.141" ./run_dual_server.sh
+caddy reverse-proxy --from https://localhost:8443 --to :3000
 ```
+(Accept the local trust prompt / add a dev certificate.)
 
-Notes:
-- Self-signed cert will trigger a one-time browser warning; accept to proceed.
-- The viewer will log a single upgrade attempt and fallback if HTTPS fails.
-- Certificate artifacts are ignored by git via the root `.gitignore` (`certs/`).
-
-You can restrict to a single protocol with `UMA_ONLY_HTTP=1` or `UMA_ONLY_HTTPS=1`.
-
-For production, terminate TLS with a proper reverse proxy (Caddy / nginx / Traefik) and present a trusted certificate—this script is purely for local development convenience.
+Production-grade deployment should still use a hardened reverse proxy with proper certificates.
 

@@ -1,3 +1,29 @@
 # Ignore injected HuggingFace token file
 public/hf-token.js
 certs/
+
+# Python virtual environments / caches
+mlipview/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Logs
+*.log
+fairchem_local_server/*.log
+
+# Node
+node_modules/
+dist/
+*.tmp
+
+# Experimental forcefield prototype build output (if ever built)
+forcefield-mlip-js/dist/
+
+# Certificates (root already ignoring certs/; also ignore root localhost certs)
+localhost-cert.pem
+localhost-key.pem
+
+# Misc
+*.DS_Store
+Thumbs.db

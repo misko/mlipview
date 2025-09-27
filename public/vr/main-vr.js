@@ -319,11 +319,16 @@ export async function initVRApp() {
           const updated = physics.updatePhysicsCache();
           const e = physics.energy;
           const needsEnergyUpdate = updated || (frameCount - lastEnergyUpdate >= ENERGY_UPDATE_INTERVAL);
-          if (needsEnergyUpdate && Number.isFinite(e)) {
-            const txt = e.toFixed(3);
-            if (vrUI?.energyValue) vrUI.energyValue.text = txt;
-            if (xrHud?.energyValue) xrHud.energyValue.text = txt;
-            lastEnergyUpdate = frameCount;
+          if (needsEnergyUpdate) {
+            if (Number.isFinite(e)) {
+              const txt = e.toFixed(3);
+              if (vrUI?.energyValue) vrUI.energyValue.text = txt;
+              if (xrHud?.energyValue) xrHud.energyValue.text = txt;
+              lastEnergyUpdate = frameCount;
+            } else {
+              if (vrUI?.energyValue && !vrUI.energyValue.text) vrUI.energyValue.text = 'n/a';
+              if (xrHud?.energyValue && !xrHud.energyValue.text) xrHud.energyValue.text = 'n/a';
+            }
           }
           // Plot update: add point on change or periodic interval
           if (xrHud?.plot && Number.isFinite(e)) {

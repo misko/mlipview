@@ -161,9 +161,21 @@ function startRenderLoop(engine, scene, energyVal, forceControls, energyPlot, st
     const needsEnergyUpdate = physicsUpdated || (frameCount - lastEnergyUpdate >= ENERGY_UPDATE_INTERVAL);
     const needsForceUpdate = physicsUpdated || (frameCount - lastForceUpdate >= FORCE_UPDATE_INTERVAL);
     const needsPlotUpdate = physicsUpdated || (frameCount - lastPlotUpdate >= PLOT_UPDATE_INTERVAL);
-    if (needsEnergyUpdate && Number.isFinite(e)) { energyVal.textContent = e.toFixed(3); lastEnergyUpdate = frameCount; }
+    if (needsEnergyUpdate) {
+      if (Number.isFinite(e)) {
+        energyVal.textContent = e.toFixed(3);
+        lastEnergyUpdate = frameCount;
+      } else if (!energyVal.textContent) {
+        energyVal.textContent = 'n/a';
+      }
+    }
     if (needsForceUpdate && physics.forces) { forceControls.updateForces(physics.forces); lastForceUpdate = frameCount; }
-    if (needsPlotUpdate && energyPlot.isEnabled() && Number.isFinite(e)) { energyPlot.updateChart(e, state); lastPlotUpdate = frameCount; }
+    if (needsPlotUpdate && energyPlot.isEnabled()) {
+      if (Number.isFinite(e)) {
+        energyPlot.updateChart(e, state);
+        lastPlotUpdate = frameCount;
+      }
+    }
     scene.render();
   });
 }
