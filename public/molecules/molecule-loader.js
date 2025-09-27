@@ -3,45 +3,70 @@ import { loadXYZFromURL } from "../loader_xyz.js";
 import { buildMolecule } from "../molecule.js";
 import { makeBenzeneAtoms, defaultBondStyles } from "./default-molecules.js";
 
-export async function buildDefault(scene) {
-  // Preferred: benzene from file, then ROY, then procedural benzene
+// Explicitly define the canonical default molecule so BOTH desktop and VR
+// pathways (which both call buildDefault via setupMolecule) stay aligned.
+// If we ever change the default, updating this constant is sufficient.
+export const DEFAULT_MOLECULE = 'roy.xyz';
+
+function getRequestedMolecule() {
   try {
-    const { atoms } = await loadXYZFromURL("./molecules/benzene.xyz");
-    console.log("[loader] Loaded benzene.xyz with", atoms.length, "atoms");
-    return buildMolecule(scene, {
-      atoms,
-      bondScale: 1.30,
-      mode: "ballstick",
-      debugAlwaysActive: true,
-      bondStyles: {
-        "C-C": defaultBondStyles["C-C"],
-        "C-H": defaultBondStyles["C-H"]
-      }
-    });
-  } catch (bzErr) {
-    console.warn("[loader] Could not load benzene.xyz, trying ROY.", bzErr);
+    const params = new URLSearchParams(window.location.search);
+    let m = params.get('molecule');
+    if (!m || !m.trim()) return null;
+    m = m.trim().toLowerCase();
+    // Allow passing with or without .xyz
+    if (!m.endsWith('.xyz')) m += '.xyz';
+    // Basic sanitization: no path separators
+    if (m.includes('/') || m.includes('..')) return null;
+    return m;
+  } catch (_) {
+    return null;
+  }
+}
+
+export async function buildDefault(scene) {
+  // Fallback chain order:
+  //   1. User-requested (?molecule=)
+  //   2. DEFAULT_MOLECULE (roy.xyz)
+  //   3. benzene.xyz
+  //   4. Procedural benzene (as a final safety)
+  // This guarantees ROY loads by default in both desktop and VR modes unless
+  // the user explicitly requests another molecule.
+  const requested = getRequestedMolecule();
+  const tried = [];
+  const candidates = [];
+  if (requested) candidates.push(requested);
+  // Ensure DEFAULT_MOLECULE appears once
+  if (!candidates.includes(DEFAULT_MOLECULE)) candidates.push(DEFAULT_MOLECULE);
+  if (!candidates.includes('benzene.xyz')) candidates.push('benzene.xyz');
+  // Attempt sequentially
+  for (const file of candidates) {
     try {
-      const { atoms } = await loadXYZFromURL("./molecules/roy.xyz");
-      console.log("[loader] Loaded ROY.xyz with", atoms.length, "atoms");
+      const { atoms } = await loadXYZFromURL(`./molecules/${file}`);
+      console.log(`[loader] Loaded ${file} with`, atoms.length, 'atoms');
+      // Heuristic: slightly different bond scale for benzene
+      const bondScale = file === 'benzene.xyz' ? 1.30 : 1.25;
       return buildMolecule(scene, {
         atoms,
-        bondScale: 1.25,
-        mode: "ballstick",
+        bondScale,
+        mode: 'ballstick',
         debugAlwaysActive: true,
         bondStyles: defaultBondStyles
       });
-    } catch (royErr) {
-      console.warn("[loader] Could not load ROY.xyz either, falling back to procedural benzene.", royErr);
-      return buildMolecule(scene, {
-        atoms: makeBenzeneAtoms(),
-        bondScale: 1.30,
-        mode: "ballstick",
-        debugAlwaysActive: true,
-        bondStyles: {
-          "C-C": defaultBondStyles["C-C"],
-          "C-H": defaultBondStyles["C-H"]
-        }
-      });
+    } catch (e) {
+      tried.push({ file, error: e.message });
+      console.warn(`[loader] Failed loading ${file}`, e);
     }
   }
+  console.warn('[loader] All file-based molecule loads failed, falling back to procedural benzene', tried);
+  return buildMolecule(scene, {
+    atoms: makeBenzeneAtoms(),
+    bondScale: 1.30,
+    mode: 'ballstick',
+    debugAlwaysActive: true,
+    bondStyles: {
+      'C-C': defaultBondStyles['C-C'],
+      'C-H': defaultBondStyles['C-H']
+    }
+  });
 }

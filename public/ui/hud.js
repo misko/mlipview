@@ -18,6 +18,9 @@ export function createEnergyHUD() {
       <button id="btnForces">Forces: ON</button>
       <button id="btnLenMode" title="Toggle between normalized length and true magnitude">Length: Normalized</button>
       <button id="btnPlot">Plot: ON</button>
+      <button id="btnMolecules" title="Select molecule">Molecules</button>
+      <button id="btnFFFair" title="Switch to FAIR-Chem backend">FF: FAIR</button>
+      <button id="btnFFLJ" title="Switch to Lennard-Jones backend">FF: LJ</button>
     </div>
   `;
   
@@ -29,6 +32,9 @@ export function createEnergyHUD() {
     btnForces: hud.querySelector("#btnForces"),
     btnLenMode: hud.querySelector("#btnLenMode"),
     btnPlot: hud.querySelector("#btnPlot")
+    ,btnMolecules: hud.querySelector('#btnMolecules')
+    ,btnFFFair: hud.querySelector('#btnFFFair')
+    ,btnFFLJ: hud.querySelector('#btnFFLJ')
   };
 }
 

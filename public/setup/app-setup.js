@@ -3,7 +3,8 @@ import { createBasicScene } from "../scene.js";
 import { enableAtomDragging } from "../interaction.js";
 import { loadBondsSpec } from "../loader_bonds.js";
 import { createTorsionController } from "../torsion.js";
-import { createMockMLIP } from "../physics_mock.js";
+import { createLJForceField } from "../physics_mock.js";
+import { createForceField } from "../forcefield/registry.js";
 import { createForceRenderer } from "../forces.js";
 import { enableBondPicking } from "../bond_pick.js";
 import { createStateStore } from "../state.js";
@@ -76,8 +77,22 @@ export async function setupMolecule(scene) {
   // Torsion controller (records into state)
   const torsion = createTorsionController(mol, state);
   
-  // Mock MLIP + force visualization
-  const mlip = createMockMLIP(mol);
+  // Select force field backend via URL (?ff=fairchem or ?ff=lj)
+  // Default now 'fairchem' (local UMA server); falls back to 'lj' if unavailable.
+  let ffKind = 'fairchem';
+  try {
+    const p = new URLSearchParams(window.location.search);
+    const v = p.get('ff');
+    if (v) ffKind = v.toLowerCase();
+  } catch {}
+  let mlip;
+  try {
+    mlip = createForceField(ffKind, { molecule: mol });
+    console.log('[forcefield] Using backend:', ffKind);
+  } catch (e) {
+    console.warn('[forcefield] Failed to create backend', ffKind, 'falling back to local LJ. Error:', e.message);
+    mlip = createLJForceField(mol);
+  }
   const forceVis = createForceRenderer(scene, atoms, {
     color: new BABYLON.Color3(1, 0.2, 0.9)
   });

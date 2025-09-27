@@ -112,3 +112,72 @@ export function createMockMLIP(molecule) {
 
   return { compute };
 }
+
+// ---- New unified interface adapter (LJ + harmonic) ----
+// Provides compute() (Babylon vectors) and computeRaw({Z,xyz}) (plain numbers)
+// to match the generic MLIP/forcefield contract.
+// Note: computeRaw currently omits harmonic bond term for simplicity; can be added if needed.
+export function createLJForceField(molecule) {
+  const base = createMockMLIP(molecule); // reuse existing implementation for scene-bound compute
+  const atoms = molecule.atoms;
+  const n = atoms.length;
+
+  // Minimal element->Z map (extend as necessary)
+  const ZMAP = { H:1, C:6, N:7, O:8, S:16 };
+  const REV = Object.fromEntries(Object.entries(ZMAP).map(([k,v])=>[v,k]));
+
+  function ljParams(a, b) {
+    const k = pairKey(a, b);
+    return LJ_PARAMS[k] || LJ_DEFAULT;
+  }
+
+  function computeRaw({ Z, xyz }) {
+    if (!Z || !xyz) {
+      // derive from bound atoms if not provided
+      Z = atoms.map(a => ZMAP[a.type] || 0);
+      xyz = atoms.map(a => [a.pos.x, a.pos.y, a.pos.z]);
+    }
+    if (Z.length !== xyz.length) throw new Error('Z/xyz length mismatch');
+    const types = Z.map(z => REV[z] || 'X');
+    const forces = Array.from({ length: Z.length }, () => [0,0,0]);
+    let E = 0;
+    for (let i=0;i<Z.length;i++) {
+      const ti = types[i];
+      const xi = xyz[i];
+      for (let j=i+1;j<Z.length;j++) {
+        const tj = types[j];
+        const xj = xyz[j];
+        const dx = xj[0]-xi[0];
+        const dy = xj[1]-xi[1];
+        const dz = xj[2]-xi[2];
+        const r2 = dx*dx+dy*dy+dz*dz;
+        if (r2 < 1e-12) continue;
+        const r = Math.sqrt(r2);
+        const { eps, sig } = ljParams(ti, tj);
+        const sr = sig / r;
+        const sr2 = sr*sr;
+        const sr6 = sr2*sr2*sr2;
+        const sr12 = sr6*sr6;
+        const e = 4*eps*(sr12 - sr6);
+        E += e;
+        const fmag = (24*eps / r) * (2*sr12 - sr6);
+        const fx = fmag * dx / r;
+        const fy = fmag * dy / r;
+        const fz = fmag * dz / r;
+        forces[i][0] -= fx; forces[i][1] -= fy; forces[i][2] -= fz;
+        forces[j][0] += fx; forces[j][1] += fy; forces[j][2] += fz;
+      }
+    }
+    return { energy: E, forces };
+  }
+
+  function compute() { return base.compute(); }
+
+  return {
+    kind: 'lj',
+    units: { energy: 'arb', length: 'arb' },
+    meta: { source: 'local-lj' },
+    compute,
+    computeRaw
+  };
+}

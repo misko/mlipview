@@ -1,2 +1,3 @@
 # Ignore injected HuggingFace token file
 public/hf-token.js
+certs/

@@ -5,6 +5,8 @@ import { createVRUI, createVRUIOnCamera } from './vr-ui.js';
 
 // Import existing modules
 import { setupScene, setupMolecule } from '../setup/app-setup.js';
+import { createPhysicsManager } from '../physics/physics-manager.js';
+import { showMoleculeSelector } from '../ui/molecule-selector.js';
 
 // Lightweight logging guards (enable by setting window.vrLog = true in console)
 function vrLog() {
@@ -46,6 +48,18 @@ export async function initVRApp() {
     vrLog("[VR] Step 2: Setting up molecule...");
     // Setup molecule and related systems using existing setup
     const { mol, atoms, state, torsion, mlip, forceVis } = await setupMolecule(scene);
+    // Step index helper defined immediately after molecule creation so ALL
+    // subsequent closures (HUD handlers, XR session callbacks, render loop)
+    // capture it. Previous placement caused ReferenceError in some loops.
+    function currentStepIndex() {
+      try {
+        if (typeof mol?.changeCounter === 'number') return mol.changeCounter;
+        window.__vrStepSeq = (window.__vrStepSeq || 0) + 1;
+        return window.__vrStepSeq;
+      } catch {
+        return 0;
+      }
+    }
     vrDebug("[VR] Molecule setup complete:", {
       mol: !!mol,
       atoms: atoms?.length || 0,
@@ -96,6 +110,106 @@ export async function initVRApp() {
   let vrUI = createVRUI(scene);
   let xrHud = null;
   vrLog("[VR] VR UI created (energy panel)");
+  // Wire molecules selector button (desktop overlay inside VR page)
+  try {
+    if (vrUI?.btnMolecules) {
+      vrUI.btnMolecules.onPointerUpObservable.add(() => {
+        try { showMoleculeSelector(); } catch (e) { console.warn('[VR] Failed to open molecule selector', e); }
+      });
+    }
+  } catch {}
+
+  // In-headset molecule panel (XR only) ---------------------------------
+  function createXRMoleculePanel(scene, parent) {
+    const panelWidth = 0.9; // meters
+    const panelHeight = 0.55;
+    const root = new BABYLON.TransformNode('xrMolPanelRoot', scene);
+    root.parent = parent;
+    root.position = new BABYLON.Vector3(0, 0, 0.05); // just slightly in front of HUD root
+    const plane = BABYLON.MeshBuilder.CreatePlane('xrMolPanelPlane', { width: panelWidth, height: panelHeight }, scene);
+    plane.parent = root;
+    plane.isPickable = true;
+    const adt = BABYLON.GUI.AdvancedDynamicTexture.CreateForMesh(plane, 2048, 1024, false);
+    try { adt.useInvalidateRectOptimization = false; } catch {}
+    const bg = new BABYLON.GUI.Rectangle('xrMolPanelBg');
+    bg.thickness = 0;
+    bg.cornerRadius = 28;
+    bg.background = 'rgba(15,18,24,0.92)';
+    adt.addControl(bg);
+    const title = new BABYLON.GUI.TextBlock('xrMolPanelTitle', 'Select Molecule');
+    title.color = '#f5ffd1';
+    title.fontSize = 72;
+    title.fontWeight = 'bold';
+    title.top = '-40%';
+    bg.addControl(title);
+    const stack = new BABYLON.GUI.StackPanel();
+    stack.width = '90%';
+    stack.height = '60%';
+    stack.top = '5%';
+    stack.isVertical = true;
+    bg.addControl(stack);
+    const status = new BABYLON.GUI.TextBlock('xrMolPanelStatus', 'Loading...');
+    status.color = '#cfe3ff';
+    status.fontSize = 48;
+    status.textWrapping = true;
+    stack.addControl(status);
+    const btnClose = BABYLON.GUI.Button.CreateSimpleButton('xrMolClose', 'Close');
+    btnClose.width = '40%';
+    btnClose.height = '14%';
+    btnClose.color = '#e9f6ff';
+    btnClose.background = 'rgba(60,70,90,0.9)';
+    btnClose.cornerRadius = 18;
+    btnClose.fontSize = 54;
+    btnClose.top = '35%';
+    bg.addControl(btnClose);
+    btnClose.onPointerUpObservable.add(() => dispose());
+    function styleEntry(btn) {
+      btn.height = '120px';
+      btn.color = '#e9f6ff';
+      btn.fontSize = 58;
+      btn.thickness = 0;
+      btn.background = 'rgba(40,50,65,0.9)';
+      btn.cornerRadius = 14;
+      btn.onPointerEnterObservable.add(()=> btn.background='rgba(55,70,90,0.95)');
+      btn.onPointerOutObservable.add(()=> btn.background='rgba(40,50,65,0.9)');
+    }
+    async function loadList() {
+      try {
+        const res = await fetch('/api/molecules');
+        if (!res.ok) throw new Error(res.status+'');
+        const data = await res.json();
+        stack.removeControl(status);
+        if (!data.molecules?.length) {
+          status.text = 'No .xyz files found';
+          stack.addControl(status);
+          return;
+        }
+        data.molecules.forEach(m => {
+          const b = BABYLON.GUI.Button.CreateSimpleButton('mol_'+m.name, m.name);
+          styleEntry(b);
+          b.onPointerUpObservable.add(() => {
+            try {
+              const base = window.location.pathname;
+              const params = new URLSearchParams(window.location.search);
+              params.set('molecule', m.name);
+              window.location.href = `${base}?${params.toString()}`;
+            } catch(e) { console.warn('[VR] reload failed', e); }
+          });
+          stack.addControl(b);
+        });
+      } catch (e) {
+        status.text = 'Error: '+e.message;
+      }
+    }
+    loadList();
+    function dispose() {
+      try { adt.dispose(); } catch {}
+      try { plane.dispose(); } catch {}
+      try { root.dispose(); } catch {}
+      window.__xrMolPanel = null;
+    }
+    return { dispose };
+  }
 
   // Bond rotation controls via 2D HUD overlay
   try {
@@ -106,8 +220,8 @@ export async function initVRApp() {
   let btnPlus  = vrUI?.bond?.btnPlus;
 
   // Wire clicks to rotation (with debug)
-  btnMinus?.onPointerUpObservable.add(() => { vrDebug('[HUD] (-) pressed'); rotateSelectedBond(scene, -1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e); } catch {} });
-  btnPlus?.onPointerUpObservable.add(() => { vrDebug('[HUD] (+) pressed'); rotateSelectedBond(scene, +1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e); } catch {} });
+  btnMinus?.onPointerUpObservable.add(() => { vrDebug('[HUD] (-) pressed'); rotateSelectedBond(scene, -1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e, currentStepIndex()); } catch {} });
+  btnPlus?.onPointerUpObservable.add(() => { vrDebug('[HUD] (+) pressed'); rotateSelectedBond(scene, +1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e, currentStepIndex()); } catch {} });
 
   // Lite HUD: no bond label
     // Build a camera-anchored HUD for XR session
@@ -123,6 +237,16 @@ export async function initVRApp() {
         // Rebind button handlers to XR HUD controls
         btnMinus = xrHud?.bond?.btnMinus || btnMinus;
         btnPlus  = xrHud?.bond?.btnPlus  || btnPlus;
+        // Molecules button (XR)
+        try {
+          const mBtn = xrHud?.btnMolecules;
+          if (mBtn) {
+            mBtn.onPointerUpObservable.add(() => {
+              if (window.__xrMolPanel) { try { window.__xrMolPanel.dispose(); } catch {}; return; }
+              window.__xrMolPanel = createXRMoleculePanel(scene, xrHud.rootMesh || xrCam);
+            });
+          }
+        } catch (e) { console.warn('[VR] Failed wiring XR molecules button', e); }
         // Use XR HUD state for torsion controls going forward
         try {
           const prev = window.vrBondUI || { side: 'j', step: 5, recompute: false };
@@ -144,7 +268,7 @@ export async function initVRApp() {
     rotateSelectedBond(scene, -1);
     try {
       const e = mlip.compute()?.energy;
-      if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e);
+  if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e, currentStepIndex());
       if (xrHud?.energyValue && isFinite(e)) xrHud.energyValue.text = e.toFixed(3);
     } catch {}
   });
@@ -153,14 +277,14 @@ export async function initVRApp() {
     rotateSelectedBond(scene, +1);
     try {
       const e = mlip.compute()?.energy;
-      if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e);
+  if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e, currentStepIndex());
       if (xrHud?.energyValue && isFinite(e)) xrHud.energyValue.text = e.toFixed(3);
     } catch {}
   });
   // Seed plot with current energy (if present)
         try {
           const e0 = mlip.compute()?.energy;
-          if (xrHud?.plot && isFinite(e0)) xrHud.plot.addPoint(e0);
+          if (xrHud?.plot && isFinite(e0)) xrHud.plot.addPoint(e0, currentStepIndex());
         } catch {}
       } catch {}
       vrLog('[VR] Created camera-anchored HUD for XR session');
@@ -168,6 +292,7 @@ export async function initVRApp() {
     vrHelper.baseExperience.sessionManager.onXRSessionEnded.add(() => {
       try { xrHud?.dispose && xrHud.dispose(); } catch {}
       xrHud = null;
+      try { if (window.__xrMolPanel) { window.__xrMolPanel.dispose(); } } catch {}
       // Restore 2D overlay when exiting XR
       try { if (vrUI?.advancedTexture) vrUI.advancedTexture.rootContainer.isVisible = true; } catch {}
       // fullscreen HUD remains available outside XR
@@ -180,58 +305,38 @@ export async function initVRApp() {
     
     // Render loop with cached physics results
     function startVRRenderLoop() {
+      const physics = createPhysicsManager({ state, getMlip: () => mlip });
       let frameCount = 0;
       let lastEnergyUpdate = 0;
-  // Removed: force and plot update trackers
-      
-  // Cache physics results - only recompute when molecular structure changes
-    let cachedEnergy = null;
-  // Removed: cached forces (not used in lite mode)
-      let lastChangeCounter = -1;
-      
-      // Function to check if molecular structure has changed
-      function hasStructureChanged() {
-        if (mol && mol.changeCounter !== lastChangeCounter) {
-          lastChangeCounter = mol.changeCounter;
-          return true;
-        }
-        return false;
-      }
-      
-      // Function to update cached physics if needed
-      function updatePhysicsCache() {
-        if (hasStructureChanged() || cachedEnergy === null) {
-          vrDebug("[VR] Molecular structure changed - recomputing physics");
-          const result = mlip.compute();
-          cachedEnergy = result.energy;
-          return true;
-        }
-        return false;
-      }
-      
-      // Throttle UI updates (less aggressive now since physics is cached)
-  const ENERGY_UPDATE_INTERVAL = 5;   // Update energy display every 5 frames in lite mode
-      
+      let lastPlotUpdate = 0;
+      const ENERGY_UPDATE_INTERVAL = 5;      // HUD text refresh cadence
+      const PLOT_UPDATE_INTERVAL = 20;       // plot point every 20 frames when stable
+      let lastPlottedEnergy = null;
       engine.runRenderLoop(() => {
         try {
           frameCount++;
-          
-          // Check if we need to recompute physics (only when structure changes)
-          const physicsUpdated = updatePhysicsCache();
-          
-          // Determine what UI elements need updating
-          const needsEnergyUpdate = physicsUpdated || (frameCount - lastEnergyUpdate >= ENERGY_UPDATE_INTERVAL);
-          // Lite mode: only energy update used
-          
-          // Update VR energy display (using cached energy)
-          if (needsEnergyUpdate && cachedEnergy !== null) {
-            if (vrUI && vrUI.energyValue) {
-              vrUI.energyValue.text = cachedEnergy.toFixed(3);
-            }
-            if (xrHud && xrHud.energyValue) {
-              xrHud.energyValue.text = cachedEnergy.toFixed(3);
-            }
+          physics.tickFrame();
+          const updated = physics.updatePhysicsCache();
+          const e = physics.energy;
+          const needsEnergyUpdate = updated || (frameCount - lastEnergyUpdate >= ENERGY_UPDATE_INTERVAL);
+          if (needsEnergyUpdate && Number.isFinite(e)) {
+            const txt = e.toFixed(3);
+            if (vrUI?.energyValue) vrUI.energyValue.text = txt;
+            if (xrHud?.energyValue) xrHud.energyValue.text = txt;
             lastEnergyUpdate = frameCount;
+          }
+          // Plot update: add point on change or periodic interval
+          if (xrHud?.plot && Number.isFinite(e)) {
+            const energyChanged = (lastPlottedEnergy === null) || Math.abs(e - lastPlottedEnergy) > 1e-9;
+            if (updated && energyChanged) {
+              xrHud.plot.addPoint(e, currentStepIndex());
+              lastPlottedEnergy = e;
+              lastPlotUpdate = frameCount;
+            } else if ((frameCount - lastPlotUpdate) >= PLOT_UPDATE_INTERVAL) {
+              xrHud.plot.addPoint(e, currentStepIndex());
+              lastPlottedEnergy = e;
+              lastPlotUpdate = frameCount;
+            }
           }
 
           // Handle LEFT-stick bond rotation (up/down) when a bond is selected
@@ -281,9 +386,9 @@ export async function initVRApp() {
                 rotateSelectedBond(scene, sign);
                 // Push a point to XR HUD plot if present (energy vs step)
                 try {
-                  const e = (cachedEnergy !== null) ? cachedEnergy : (mlip.compute()?.energy ?? null);
-                  if (xrHud?.plot && e !== null && isFinite(e)) {
-                    xrHud.plot.addPoint(e);
+                  const e2 = physics.energy;
+                  if (xrHud?.plot && e2 !== null && isFinite(e2)) {
+                    xrHud.plot.addPoint(e2, currentStepIndex());
                   }
                 } catch {}
                 window.__vrBondStickNext = now + repeatMs;
@@ -311,8 +416,12 @@ export async function initVRApp() {
     // Initialize default state
   // Seed energy once before render loop (Lite mode)
   try {
-    const { energy } = mlip.compute();
-    if (vrUI?.energyValue) vrUI.energyValue.text = energy.toFixed(3);
+    const r0 = mlip.compute();
+    if (r0 && typeof r0.then === 'function') {
+      r0.then(res => { if (res && Number.isFinite(res.energy) && vrUI?.energyValue) vrUI.energyValue.text = res.energy.toFixed(3); }).catch(()=>{});
+    } else if (r0 && Number.isFinite(r0.energy) && vrUI?.energyValue) {
+      vrUI.energyValue.text = r0.energy.toFixed(3);
+    }
   } catch {}
     
   startVRRenderLoop();

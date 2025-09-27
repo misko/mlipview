@@ -1,6 +1,10 @@
 // public/main.js - Main application entry point
 import { setupScene, setupMolecule, setupBondPicking, setupGlobalFunctions } from "./setup/app-setup.js";
+import { createForceField } from './forcefield/registry.js';
+import { createLJForceField } from './physics_mock.js';
+import { createPhysicsManager } from './physics/physics-manager.js';
 import { createEnergyHUD, createStateBar } from "./ui/hud.js";
+import { showMoleculeSelector } from './ui/molecule-selector.js';
 import { createEnergyPlot } from "./ui/energy-plot.js";
 import { createForceControls } from "./controls/force-controls.js";
 
@@ -12,7 +16,8 @@ async function initApp() {
   const { canvas, engine, scene } = await setupScene();
   
   // Setup molecule and related systems
-  const { mol, atoms, state, torsion, mlip, forceVis } = await setupMolecule(scene);
+  const { mol, atoms, state, torsion, mlip: initialMlip, forceVis } = await setupMolecule(scene);
+  let mlip = initialMlip;
   
   // Setup bond picking
   await setupBondPicking(scene, mol, torsion);
@@ -37,16 +42,52 @@ async function initApp() {
   });
   
   // Setup UI event handlers
-  setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, mlip);
+  setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, () => mlip);
+  // Molecule selector button
+  if (hud.btnMolecules) {
+    hud.btnMolecules.onclick = () => showMoleculeSelector();
+  }
   
-  // Add initial data point to plot
+  // Add initial data point to plot (supports async compute)
   if (energyPlot.isEnabled()) {
-    const { energy } = mlip.compute();
-    energyPlot.addInitialDataPoint(energy, state);
+    const r0 = mlip.compute();
+    if (r0 && typeof r0.then === 'function') {
+      r0.then(res => {
+        if (res && Number.isFinite(res.energy)) {
+          energyPlot.addInitialDataPoint(res.energy, state);
+        }
+      }).catch(e => console.warn('[forcefield] initial compute failed', e));
+    } else if (r0 && Number.isFinite(r0.energy)) {
+      energyPlot.addInitialDataPoint(r0.energy, state);
+    }
   }
   
   // Start render loop
-  startRenderLoop(engine, scene, mlip, hud.energyVal, forceControls, energyPlot, state);
+  const physics = createPhysicsManager({ state, getMlip: () => mlip });
+  startRenderLoop(engine, scene, hud.energyVal, forceControls, energyPlot, state, physics);
+
+  // Forcefield switch handlers
+  function applyActiveFFStyles(kind) {
+    if (hud.btnFFFair) hud.btnFFFair.style.opacity = kind === 'fairchem' ? '1' : '0.4';
+    if (hud.btnFFLJ) hud.btnFFLJ.style.opacity = kind === 'lj' ? '1' : '0.4';
+  }
+  applyActiveFFStyles(mlip.kind || 'fairchem');
+  function switchBackend(kind) {
+    try {
+      const created = createForceField(kind, { molecule: mol });
+      mlip = created;
+      console.log('[forcefield] Switched backend to', kind);
+    } catch (e) {
+      console.warn('[forcefield] Failed to switch to', kind, 'falling back to LJ.', e.message);
+      mlip = createLJForceField(mol);
+    }
+    applyActiveFFStyles(mlip.kind);
+    // Reset caches & plot
+  physics.resetCache();
+    if (energyPlot.isEnabled()) energyPlot.clear(state);
+  }
+  if (hud.btnFFFair) hud.btnFFFair.onclick = () => switchBackend('fairchem');
+  if (hud.btnFFLJ) hud.btnFFLJ.onclick = () => switchBackend('lj');
   
   // Handle window resize
   addEventListener("resize", () => engine.resize());
@@ -54,7 +95,7 @@ async function initApp() {
   console.log("[app] Application initialized successfully");
 }
 
-function setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, mlip) {
+function setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, getMlip) {
   // Forces button
   hud.btnForces.onclick = () => {
     const isEnabled = forceControls.toggleForces();
@@ -75,8 +116,12 @@ function setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, mli
     console.log("[DEBUG] Plot toggled to:", isEnabled);
     
     if (isEnabled) {
-      const { energy } = mlip.compute();
-      energyPlot.addInitialDataPoint(energy, state);
+      const r = getMlip().compute();
+      if (r && typeof r.then === 'function') {
+        r.then(res => res && Number.isFinite(res.energy) && energyPlot.addInitialDataPoint(res.energy, state));
+      } else if (r && Number.isFinite(r.energy)) {
+        energyPlot.addInitialDataPoint(r.energy, state);
+      }
     }
   };
   
@@ -100,72 +145,25 @@ function setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, mli
   window.clearEnergyPlot = () => energyPlot.clear(state);
 }
 
-function startRenderLoop(engine, scene, mlip, energyVal, forceControls, energyPlot, state) {
-  // Cache physics results - only recompute when molecular structure changes
-  let cachedEnergy = null;
-  let cachedForces = null;
-  let lastChangeCounter = -1;
+function startRenderLoop(engine, scene, energyVal, forceControls, energyPlot, state, physics) {
   let frameCount = 0;
   let lastEnergyUpdate = 0;
   let lastForceUpdate = 0;
   let lastPlotUpdate = 0;
-  
-  // Function to check if molecular structure has changed
-  function hasStructureChanged() {
-    const molecule = state.molecule;
-    if (molecule && molecule.changeCounter !== lastChangeCounter) {
-      lastChangeCounter = molecule.changeCounter;
-      return true;
-    }
-    return false;
-  }
-  
-  // Function to update cached physics if needed
-  function updatePhysicsCache() {
-    if (hasStructureChanged() || cachedEnergy === null) {
-      console.log("[Desktop] Molecular structure changed - recomputing physics");
-      const result = mlip.compute();
-      cachedEnergy = result.energy;
-      cachedForces = result.forces;
-      return true;
-    }
-    return false;
-  }
-  
-  // Throttle UI updates
-  const ENERGY_UPDATE_INTERVAL = 2;  // Update energy display every 2 frames
-  const FORCE_UPDATE_INTERVAL = 3;   // Update forces every 3 frames  
-  const PLOT_UPDATE_INTERVAL = 5;    // Update plot every 5 frames
-  
+  const ENERGY_UPDATE_INTERVAL = 2;
+  const FORCE_UPDATE_INTERVAL = 3;
+  const PLOT_UPDATE_INTERVAL = 5;
   engine.runRenderLoop(() => {
     frameCount++;
-    
-    // Check if we need to recompute physics (only when structure changes)
-    const physicsUpdated = updatePhysicsCache();
-    
-    // Determine what UI elements need updating
+    physics.tickFrame();
+    const physicsUpdated = physics.updatePhysicsCache();
+    const e = physics.energy;
     const needsEnergyUpdate = physicsUpdated || (frameCount - lastEnergyUpdate >= ENERGY_UPDATE_INTERVAL);
     const needsForceUpdate = physicsUpdated || (frameCount - lastForceUpdate >= FORCE_UPDATE_INTERVAL);
     const needsPlotUpdate = physicsUpdated || (frameCount - lastPlotUpdate >= PLOT_UPDATE_INTERVAL);
-    
-    // Update energy display (using cached energy)
-    if (needsEnergyUpdate && cachedEnergy !== null) {
-      energyVal.textContent = cachedEnergy.toFixed(3);
-      lastEnergyUpdate = frameCount;
-    }
-    
-    // Update forces if enabled (using cached forces)
-    if (needsForceUpdate && cachedForces) {
-      forceControls.updateForces(cachedForces);
-      lastForceUpdate = frameCount;
-    }
-    
-    // Update plot if enabled (using cached energy)
-    if (needsPlotUpdate && energyPlot.isEnabled() && cachedEnergy !== null) {
-      energyPlot.updateChart(cachedEnergy, state);
-      lastPlotUpdate = frameCount;
-    }
-    
+    if (needsEnergyUpdate && Number.isFinite(e)) { energyVal.textContent = e.toFixed(3); lastEnergyUpdate = frameCount; }
+    if (needsForceUpdate && physics.forces) { forceControls.updateForces(physics.forces); lastForceUpdate = frameCount; }
+    if (needsPlotUpdate && energyPlot.isEnabled() && Number.isFinite(e)) { energyPlot.updateChart(e, state); lastPlotUpdate = frameCount; }
     scene.render();
   });
 }

@@ -248,9 +248,13 @@ export function createVRUIOnCamera(scene, xrCamera) {
     mat.diffuseTexture = dyn;
     bg.material = mat;
 
-    // Data buffer
-    let data = [];
-    let minY = Infinity, maxY = -Infinity;
+  // Data buffers: energies and corresponding step indices
+  // We decouple the X axis (step index) from wall-clock time so the plot
+  // reflects user-driven structural changes / sampling steps, matching
+  // desktop semantics.
+  let data = [];
+  let steps = [];
+  let minY = Infinity, maxY = -Infinity;
 
     function redraw() {
       const ctx = dyn.getContext();
@@ -298,12 +302,16 @@ export function createVRUIOnCamera(scene, xrCamera) {
         maxY = Math.max(...data);
         if (minY === maxY) { minY -= 1; maxY += 1; }
         const n = data.length;
+        // Determine step range for scaling X properly (even if steps not contiguous)
+        const minStep = steps[0];
+        const maxStep = steps[steps.length - 1];
+        const span = Math.max(1, maxStep - minStep);
         ctx.strokeStyle = 'rgba(245, 255, 209, 1)';
         ctx.lineWidth = 4;
         ctx.beginPath();
         for (let i = 0; i < n; i++) {
-          const t = n > 1 ? i / (n - 1) : 0;
-          const x = x0 + t * (x1 - x0);
+          const sNorm = (steps[i] - minStep) / span; // 0..1
+          const x = x0 + sNorm * (x1 - x0);
           const ny = (data[i] - minY) / (maxY - minY);
           const y = y0 - ny * (y0 - y1);
           if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
@@ -313,18 +321,22 @@ export function createVRUIOnCamera(scene, xrCamera) {
       dyn.update(false);
     }
 
-    function addPoint(v) {
+    function addPoint(v, stepIndex) {
+      // Accept only finite energies
+      if (!Number.isFinite(v)) return;
+      const nextStep = (typeof stepIndex === 'number' ? stepIndex : (steps.length ? steps[steps.length - 1] + 1 : 0));
       data.push(v);
-      if (data.length > maxPoints) data.shift();
+      steps.push(nextStep);
+      if (data.length > maxPoints) { data.shift(); steps.shift(); }
       redraw();
     }
-    function reset() { data = []; redraw(); }
+    function reset() { data = []; steps = []; redraw(); }
     function setVisible(visible) { bg.setEnabled(!!visible); }
 
     // Initial draw
     redraw();
 
-    return { addPoint, reset, setVisible, root, mesh: bg, mat, dyn };
+  return { addPoint, reset, setVisible, root, mesh: bg, mat, dyn };
   }
 
   const hudPlot = createHudPlot(scene, hudRoot);
@@ -344,12 +356,14 @@ export function createVRUIOnCamera(scene, xrCamera) {
   const plusX  = - (wBtn + spacing);
   const sideX  = 0;
   const minusX = + (wBtn + spacing);
+  const molsX  = 0; // Will place molecules button in a second row below center
   // recX removed
 
   // Triple font size for XR control buttons only via local fontPx
   const minus = mkButtonPlane('hudMinus', wBtn, hBtn, new BABYLON.Vector3(minusX, rowY, 0), '⟲ −', 42 * 3);
   const plus  = mkButtonPlane('hudPlus',  wBtn, hBtn, new BABYLON.Vector3(plusX, rowY, 0), '⟲ +', 42 * 3);
   const side  = mkButtonPlane('hudSide',  wBtn, hBtn, new BABYLON.Vector3(sideX, rowY, 0), '(i,j)', 42 * 3);
+  const mols  = mkButtonPlane('hudMols',  wBtn*1.4, hBtn, new BABYLON.Vector3(molsX, rowY - (rowDY*1.1), 0), 'Molecules', 42 * 2.2);
   // recompute plane removed
 
   // State shared with app
@@ -374,7 +388,7 @@ export function createVRUIOnCamera(scene, xrCamera) {
     btn.onPointerDownObservable.add(() => setGuiActive(true));
     btn.onPointerUpObservable.add(() => setTimeout(() => setGuiActive(false), 0));
   };
-  [minus.btn, plus.btn, side.btn].forEach(wirePressGuards);
+  [minus.btn, plus.btn, side.btn, mols.btn].forEach(wirePressGuards);
 
   // Side/recompute handlers
   side.btn.onPointerUpObservable.add(() => {
@@ -395,11 +409,13 @@ export function createVRUIOnCamera(scene, xrCamera) {
       btnSide: side.btn,
       state: bondUIState
     },
+    btnMolecules: mols.btn,
     dispose() {
       // Dispose GUI textures first
       try { minus.adt && minus.adt.dispose(); } catch {}
       try { plus.adt && plus.adt.dispose(); } catch {}
       try { side.adt && side.adt.dispose(); } catch {}
+      try { mols.adt && mols.adt.dispose(); } catch {}
       try { energy.adt && energy.adt.dispose(); } catch {}
       // Dispose plot textures/materials/mesh
       try { hudPlot && hudPlot.dyn && hudPlot.dyn.dispose(); } catch {}
@@ -409,6 +425,7 @@ export function createVRUIOnCamera(scene, xrCamera) {
       try { minus.mesh && minus.mesh.dispose(); } catch {}
       try { plus.mesh && plus.mesh.dispose(); } catch {}
       try { side.mesh && side.mesh.dispose(); } catch {}
+      try { mols.mesh && mols.mesh.dispose(); } catch {}
       try { energy.mesh && energy.mesh.dispose(); } catch {}
       // Finally dispose the root transform
       try { hudRoot && hudRoot.dispose(); } catch {}
