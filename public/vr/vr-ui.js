@@ -82,9 +82,12 @@ export function createVRUI(scene) {
 
   const btnMinus = mkBtn("⟲ −");
   const btnPlus  = mkBtn("⟲ +");
+  const btnRelax = mkBtn("Relax", "140px");
+  
   // Side toggle removed; rotation direction now determined by bond orientation cycle (selection logic)
   row.addControl(btnPlus);
   row.addControl(btnMinus);
+  row.addControl(btnRelax);
   const bondUIState = { step: 5 };
   // recompute toggle removed
 
@@ -94,9 +97,10 @@ export function createVRUI(scene) {
     // overlay bond UI
     bond: {
       bar: bondBar,
-  btnMinus,
-  btnPlus,
-  state: bondUIState
+      btnMinus,
+      btnPlus,
+      btnRelax,
+      state: bondUIState
     },
     dispose() {
       try { advancedTexture.dispose(); } catch {}

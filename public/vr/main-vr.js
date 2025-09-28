@@ -20,6 +20,21 @@ function vrDebug() {
   } catch (_) {}
 }
 
+function updateVRRelaxationStatus(physics, vrUI, xrHud) {
+  const state = physics.getRelaxationState();
+  
+  // Update button states when relaxation finishes
+  const isRunning = physics.isRelaxationRunning();
+  if (!isRunning && state.status !== 'running') {
+    if (vrUI?.bond?.btnRelax?.textBlock) {
+      vrUI.bond.btnRelax.textBlock.text = "Relax";
+    }
+    if (xrHud?.bond?.btnRelax?.textBlock) {
+      xrHud.bond.btnRelax.textBlock.text = "Relax";
+    }
+  }
+}
+
 export async function initVRApp() {
   vrLog("[VR] 🚀 Starting VR molecular viewer...");
   vrLog("[VR] Desktop app should NOT be running - checking...");
@@ -223,6 +238,29 @@ export async function initVRApp() {
   btnMinus?.onPointerUpObservable.add(() => { vrDebug('[HUD] (-) pressed'); rotateSelectedBond(scene, -1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e, currentStepIndex()); } catch {} });
   btnPlus?.onPointerUpObservable.add(() => { vrDebug('[HUD] (+) pressed'); rotateSelectedBond(scene, +1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e, currentStepIndex()); } catch {} });
 
+  // Relaxation button handlers for VR overlay UI
+  let btnRelax = vrUI?.bond?.btnRelax;
+  
+  btnRelax?.onPointerUpObservable.add(() => {
+    vrDebug('[HUD] Relax pressed');
+    // We'll get physics from the render loop context
+    if (window.vrPhysics) {
+      if (window.vrPhysics.isRelaxationRunning()) {
+        window.vrPhysics.stopRelaxation();
+        btnRelax.textBlock.text = "Relax";
+      } else {
+        window.vrPhysics.startRelaxation({ 
+          optimizer: 'steepest_descent', 
+          stepSize: 0.01, 
+          maxSteps: 1000, 
+          stepDelay: 0,
+          energyTolerance: 1e-4
+        });
+        btnRelax.textBlock.text = "Stop";
+      }
+    }
+  });
+
   // Lite HUD: no bond label
     // Build a camera-anchored HUD for XR session
     vrHelper.baseExperience.sessionManager.onXRSessionInit.add(() => {
@@ -237,6 +275,7 @@ export async function initVRApp() {
         // Rebind button handlers to XR HUD controls
         btnMinus = xrHud?.bond?.btnMinus || btnMinus;
         btnPlus  = xrHud?.bond?.btnPlus  || btnPlus;
+        btnRelax = xrHud?.bond?.btnRelax || btnRelax;
         // Molecules button (XR)
         try {
           const mBtn = xrHud?.btnMolecules;
@@ -278,6 +317,26 @@ export async function initVRApp() {
       if (xrHud?.energyValue && isFinite(e)) xrHud.energyValue.text = e.toFixed(3);
     } catch {}
   });
+
+  // XR Relaxation button handlers
+  btnRelax?.onPointerUpObservable.add(() => {
+    vrDebug('[HUD XR] Relax pressed');
+    if (window.vrPhysics) {
+      if (window.vrPhysics.isRelaxationRunning()) {
+        window.vrPhysics.stopRelaxation();
+        btnRelax.textBlock.text = "Relax";
+      } else {
+        window.vrPhysics.startRelaxation({ 
+          optimizer: 'steepest_descent', 
+          stepSize: 0.01, 
+          maxSteps: 1000, 
+          stepDelay: 0,
+          energyTolerance: 1e-4
+        });
+        btnRelax.textBlock.text = "Stop";
+      }
+    }
+  });
   // Seed plot with current energy (if present)
         try {
           const e0 = mlip.compute()?.energy;
@@ -302,7 +361,9 @@ export async function initVRApp() {
     
     // Render loop with cached physics results
     function startVRRenderLoop() {
-      const physics = createPhysicsManager({ state, getMlip: () => mlip });
+      const physics = createPhysicsManager({ state, getMlip: () => mlip, energyPlot: undefined });
+      // Make physics available globally for VR button handlers
+      window.vrPhysics = physics;
       let frameCount = 0;
       let lastEnergyUpdate = 0;
       let lastPlotUpdate = 0;
@@ -326,6 +387,9 @@ export async function initVRApp() {
               if (vrUI?.energyValue && !vrUI.energyValue.text) vrUI.energyValue.text = 'n/a';
               if (xrHud?.energyValue && !xrHud.energyValue.text) xrHud.energyValue.text = 'n/a';
             }
+            
+            // Update VR relaxation status
+            updateVRRelaxationStatus(physics, vrUI, xrHud);
           }
           // Plot update: add point on change or periodic interval
           if (xrHud?.plot && Number.isFinite(e)) {

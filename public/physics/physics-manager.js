@@ -1,7 +1,9 @@
 // Unified physics manager for desktop & VR to keep logic in sync.
 // Provides cached compute, throttled retries, and backend switching reset.
 
-export function createPhysicsManager({ state, getMlip }) {
+import { createRelaxationEngine } from './relaxation.js';
+
+export function createPhysicsManager({ state, getMlip, energyPlot }) {
   let cachedEnergy = null;
   let cachedForces = null;
   let lastChangeCounter = -1;
@@ -11,6 +13,41 @@ export function createPhysicsManager({ state, getMlip }) {
   let computeSeq = 0;
 
   const MIN_RETRY_INTERVAL = 30; // frames before retry when energy null
+
+  // Relaxation engine
+  let relaxationEngine = null;
+  
+  function ensureRelaxationEngine() {
+    if (!relaxationEngine) {
+      relaxationEngine = createRelaxationEngine({
+        getMlip,
+        molecule: state.molecule,
+        updateCallback: () => {
+          // Update visual representation - atoms and bonds
+          if (state.molecule && typeof state.molecule.refreshAtoms === 'function') {
+            state.molecule.refreshAtoms();
+          }
+          if (state.molecule && typeof state.molecule.refreshBonds === 'function') {
+            state.molecule.refreshBonds();
+          }
+          
+          // Trigger physics cache update when coordinates change during relaxation
+          resetCache();
+          updatePhysicsCache();
+        },
+        energyCallback: (energy) => {
+          // Record energy step for plotting (same interface as user interactions)
+          // Only available in desktop mode, VR doesn't have energy plotting
+          if (energyPlot && 
+              typeof energyPlot.isEnabled === 'function' && energyPlot.isEnabled() && 
+              typeof energyPlot.recordStep === 'function') {
+            energyPlot.recordStep(energy);
+          }
+        }
+      });
+    }
+    return relaxationEngine;
+  }
 
   function hasStructureChanged() {
     const molecule = state.molecule;
@@ -63,10 +100,48 @@ export function createPhysicsManager({ state, getMlip }) {
     computeSeq++; // invalidate async
   }
 
+  // Relaxation methods
+  function startRelaxation(options = {}) {
+    const engine = ensureRelaxationEngine();
+    // Update engine parameters if provided
+    if (options.optimizer) engine.setOptimizer(options.optimizer);
+    if (options.stepSize) engine.setStepSize(options.stepSize);
+    if (options.maxSteps) engine.setMaxSteps(options.maxSteps);
+    if (options.stepDelay !== undefined) engine.setStepDelay(options.stepDelay);
+    if (options.energyTolerance || options.forceTolerance) {
+      engine.setTolerances(options.energyTolerance, options.forceTolerance);
+    }
+    return engine.start();
+  }
+
+  function stopRelaxation() {
+    if (relaxationEngine) {
+      relaxationEngine.stop();
+    }
+  }
+
+
+
+  function getRelaxationState() {
+    if (!relaxationEngine) {
+      return { status: 'idle', step: 0, energy: null, maxForce: null, converged: false };
+    }
+    return relaxationEngine.getCurrentState();
+  }
+
+  function isRelaxationRunning() {
+    return relaxationEngine ? relaxationEngine.isRunning : false;
+  }
+
   return {
     tickFrame,
     updatePhysicsCache,
     resetCache,
+    // Relaxation interface
+    startRelaxation,
+    stopRelaxation,
+    getRelaxationState,
+    isRelaxationRunning,
     get energy() { return cachedEnergy; },
     get forces() { return cachedForces; }
   };

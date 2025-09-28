@@ -44,8 +44,11 @@ async function initApp() {
     btnPlot: !!hud.btnPlot
   });
   
+  // Create physics manager
+  const physics = createPhysicsManager({ state, getMlip: () => mlip, energyPlot });
+  
   // Setup UI event handlers
-  setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, () => mlip);
+  setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, () => mlip, physics);
   // Molecule selector button
   if (hud.btnMolecules) {
     hud.btnMolecules.onclick = () => showMoleculeSelector();
@@ -66,7 +69,6 @@ async function initApp() {
   }
   
   // Start render loop
-  const physics = createPhysicsManager({ state, getMlip: () => mlip });
   startRenderLoop(engine, scene, hud.energyVal, forceControls, energyPlot, state, physics);
   // Expose explicit step recorder (bond rotations will call this)
   window.recordEnergyStep = () => {
@@ -105,7 +107,7 @@ async function initApp() {
   console.log("[app] Application initialized successfully");
 }
 
-function setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, getMlip) {
+function setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, getMlip, physics) {
   // Forces button
   hud.btnForces.onclick = () => {
     const isEnabled = forceControls.toggleForces();
@@ -135,10 +137,74 @@ function setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, get
     }
   };
   
+  // Relaxation controls
+  if (hud.btnRelax) {
+    hud.btnRelax.onclick = () => {
+      if (physics.isRelaxationRunning()) {
+        physics.stopRelaxation();
+        hud.btnRelax.textContent = "Relax";
+        hud.btnRelax.style.opacity = "1";
+      } else {
+        const options = {
+          optimizer: hud.relaxOptimizer ? hud.relaxOptimizer.value : 'steepest_descent',
+          stepSize: hud.relaxStepSize ? parseFloat(hud.relaxStepSize.value) : 0.01,
+          maxSteps: hud.relaxMaxSteps ? parseInt(hud.relaxMaxSteps.value) : 1000,
+          stepDelay: 0, // No delay - run as fast as server allows
+          energyTolerance: 1e-4 // Stop when energy changes less than 1e-4
+        };
+        physics.startRelaxation(options);
+        hud.btnRelax.textContent = "Stop";
+        hud.btnRelax.style.opacity = "0.7";
+      }
+    };
+  }
+
+  // Toggle relaxation controls visibility with right-click
+  if (hud.btnRelax && hud.relaxControls) {
+    hud.btnRelax.oncontextmenu = (e) => {
+      e.preventDefault();
+      const isVisible = hud.relaxControls.style.display !== 'none';
+      hud.relaxControls.style.display = isVisible ? 'none' : 'block';
+    };
+  }
+
+  // Step size slider
+  if (hud.relaxStepSize && hud.relaxStepSizeVal) {
+    hud.relaxStepSize.oninput = () => {
+      hud.relaxStepSizeVal.textContent = hud.relaxStepSize.value;
+    };
+  }
+  
   // Rebuild / Export controls removed
   
   // Global clear function
   window.clearEnergyPlot = () => energyPlot.clear();
+}
+
+function updateRelaxationStatus(physics) {
+  const state = physics.getRelaxationState();
+  const statusEl = document.querySelector('#relaxStatus');
+  const btnRelax = document.querySelector('#btnRelax');
+  
+  if (statusEl) {
+    let statusText = `Status: ${state.status}`;
+    if (state.step > 0) {
+      statusText += ` | Step: ${state.step}`;
+    }
+    if (state.maxForce !== null) {
+      statusText += ` | Max Force: ${state.maxForce.toFixed(4)}`;
+    }
+    if (state.energy !== null) {
+      statusText += ` | Energy: ${state.energy.toFixed(6)}`;
+    }
+    statusEl.textContent = statusText;
+  }
+  
+  // Update button text when relaxation finishes
+  if (btnRelax && !physics.isRelaxationRunning() && state.status !== 'running') {
+    btnRelax.textContent = "Relax";
+    btnRelax.style.opacity = "1";
+  }
 }
 
 function startRenderLoop(engine, scene, energyVal, forceControls, energyPlot, state, physics) {
@@ -164,6 +230,9 @@ function startRenderLoop(engine, scene, energyVal, forceControls, energyPlot, st
       } else if (!energyVal.textContent) {
         energyVal.textContent = 'n/a';
       }
+      
+      // Update relaxation status
+      updateRelaxationStatus(physics);
     }
     if (needsForceUpdate && physics.forces) { forceControls.updateForces(physics.forces); lastForceUpdate = frameCount; }
     // Plot updates only happen when window.recordEnergyStep is invoked (after rotations)

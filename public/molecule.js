@@ -198,12 +198,32 @@ export function buildMolecule(scene, opts) {
     setThinInstanceMatrices(g.master, g.mats);
   }
 
+  // --- refresh all atom positions based on current atom.pos values
+  function refreshAtoms() {
+    for (const [elem, g] of groups) {
+      // Rebuild matrices for all atoms of this element
+      for (let k = 0; k < g.indices.length; k++) {
+        const globalIdx = g.indices[k];
+        const pos = atoms[globalIdx].pos;
+        const d = perAtomScale[globalIdx];
+        const mat = BABYLON.Matrix.Compose(
+          new BABYLON.Vector3(d, d, d),
+          BABYLON.Quaternion.Identity(),
+          pos
+        );
+        g.mats[k] = mat;
+      }
+      setThinInstanceMatrices(g.master, g.mats);
+    }
+  }
+
   return {
     groups,
     atoms: atomsAPI,
     bonds: bondList,
     bondGroups,
     refreshBonds,             // bulk updates each group
+    refreshAtoms,             // bulk updates all atom positions
     recomputeBonds,
     updateAtom,
     updateAtomMatrixByElement

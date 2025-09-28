@@ -21,6 +21,27 @@ export function createEnergyHUD() {
       <button id="btnMolecules" title="Select molecule">Molecules</button>
       <button id="btnFFFair" title="Switch to FAIR-Chem backend">FF: FAIR</button>
       <button id="btnFFLJ" title="Switch to Lennard-Jones backend">FF: LJ</button>
+      <button id="btnRelax" title="Start/stop geometry relaxation">Relax</button>
+    </div>
+    <div id="relaxControls" style="margin-top:8px; display:none; padding:8px; background:rgba(0,0,0,0.3); border-radius:4px;">
+      <div style="font-size:11px; color:#a4b0c0; margin-bottom:4px;">Relaxation Status</div>
+      <div id="relaxStatus" style="font-size:12px; margin-bottom:6px; color:#cfe3ff;">Idle</div>
+      <div style="display:flex; gap:4px; align-items:center; margin-bottom:4px;">
+        <label style="font-size:11px; color:#cfe3ff;">Method:</label>
+        <select id="relaxOptimizer" style="font-size:11px; background:#2a3441; color:#cfe3ff; border:1px solid #444; border-radius:2px;">
+          <option value="steepest_descent">Steepest Descent</option>
+          <option value="conjugate_gradient">Conjugate Gradient</option>
+        </select>
+      </div>
+      <div style="display:flex; gap:4px; align-items:center; margin-bottom:4px;">
+        <label style="font-size:11px; color:#cfe3ff;">Step Size:</label>
+        <input id="relaxStepSize" type="range" min="0.001" max="0.1" step="0.001" value="0.01" style="flex:1;">
+        <span id="relaxStepSizeVal" style="font-size:11px; color:#cfe3ff; min-width:40px;">0.01</span>
+      </div>
+      <div style="display:flex; gap:4px; align-items:center;">
+        <label style="font-size:11px; color:#cfe3ff;">Max Steps:</label>
+        <input id="relaxMaxSteps" type="number" min="1" max="10000" value="1000" style="flex:1; font-size:11px; background:#2a3441; color:#cfe3ff; border:1px solid #444; border-radius:2px; padding:2px;">
+      </div>
     </div>
   `;
   
@@ -35,6 +56,13 @@ export function createEnergyHUD() {
     ,btnMolecules: hud.querySelector('#btnMolecules')
     ,btnFFFair: hud.querySelector('#btnFFFair')
     ,btnFFLJ: hud.querySelector('#btnFFLJ')
+    ,btnRelax: hud.querySelector('#btnRelax')
+    ,relaxControls: hud.querySelector('#relaxControls')
+    ,relaxStatus: hud.querySelector('#relaxStatus')
+    ,relaxOptimizer: hud.querySelector('#relaxOptimizer')
+    ,relaxStepSize: hud.querySelector('#relaxStepSize')
+    ,relaxStepSizeVal: hud.querySelector('#relaxStepSizeVal')
+    ,relaxMaxSteps: hud.querySelector('#relaxMaxSteps')
   };
 }
 

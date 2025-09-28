@@ -24,7 +24,6 @@ export function createEnergyPlot() {
   let showPlot = true; // Default to ON
   let chart = null;
   let internalStep = 0; // internal monotonic counter independent of removed rotation history
-  const maxDataPoints = 100;
 
   // Initialize plot as visible since it's on by default
   plotContainer.style.display = showPlot ? "block" : "none";
@@ -113,10 +112,6 @@ export function createEnergyPlot() {
     internalStep += 1;
     chart.data.labels.push(internalStep);
     chart.data.datasets[0].data.push(energy);
-    if (chart.data.labels.length > maxDataPoints) {
-      chart.data.labels.shift();
-      chart.data.datasets[0].data.shift();
-    }
     chart.update('none');
   }
 
@@ -177,7 +172,7 @@ export function createEnergyPlot() {
   return {
     isEnabled: () => showPlot,
     toggle,
-  recordStep,
+    recordStep,
     addInitialDataPoint,
     clear,
     destroy,
