@@ -149,16 +149,8 @@ export function buildMolecule(scene, opts) {
 
   // --- (B) fast & robust: recompute matrices for all bonds and bulk re-upload
   function refreshBonds() {
-    for (const [, g] of bondGroups) {
-      // rebuild matrices based on current atom positions
-      const newMats = new Array(g.indices.length);
-      for (let k = 0; k < g.indices.length; k++) {
-        const { i, j } = g.indices[k];
-        newMats[k] = bondMatrix(atoms[i].pos, atoms[j].pos, g.style.radius);
-      }
-      g.mats = newMats;
-      setThinInstanceMatrices(g.master, g.mats); // bulk upload + bounds refresh
-    }
+    // Use chemistry-aware updating for all bond refreshes
+    updateBondsWithChemistry();
   }
 
   // --- (C) slow path: recompute connectivity by cutoff, then rebuild buffers
@@ -174,6 +166,90 @@ export function buildMolecule(scene, opts) {
     }
     bondList = newList;
     rebuildBondGroupsFromList(bondList);
+  }
+
+  // --- Enhanced bond updating with realistic chemistry and transparency
+  function updateBondsWithChemistry() {
+    // Clear existing bonds and reset materials
+    for (const [, g] of bondGroups) { 
+      g.mats = []; 
+      g.indices = [];
+      // Reset material to opaque
+      if (g.master && g.master.material) {
+        g.master.material.alpha = 1.0;
+        g.master.material.transparencyMode = BABYLON.Material.MATERIAL_OPAQUE;
+      }
+    }
+    
+    // Group bonds by their transparency level
+    const bondsByOpacity = new Map(); // opacity -> bonds[]
+    
+    for (let i = 0; i < atoms.length; i++) {
+      const ai = atoms[i]; const infoi = elInfo(ai.element);
+      for (let j = i + 1; j < atoms.length; j++) {
+        const aj = atoms[j]; const infoj = elInfo(aj.element);
+        
+        const distance = BABYLON.Vector3.Distance(ai.pos, aj.pos);
+        const expectedBondLength = (infoi.covRad + infoj.covRad) * bondScale;
+        
+        // Calculate transparency based on deviation from expected length
+        const minVisibleLength = expectedBondLength * 0.9; // 90% of expected
+        const maxVisibleLength = expectedBondLength * 1.1; // 110% of expected
+        
+        let opacity = 1.0;
+        
+        if (distance < minVisibleLength) {
+          // Fade out when compressed below 90%
+          const compressionFactor = distance / minVisibleLength;
+          opacity = compressionFactor; // Fades to 0 as distance approaches 0
+        } else if (distance > maxVisibleLength) {
+          // Fade out when stretched beyond 110%
+          const stretchLimit = expectedBondLength * 1.5; // Complete disappearance at 150%
+          if (distance > stretchLimit) {
+            opacity = 0.0; // Completely gone
+          } else {
+            const stretchFactor = (distance - maxVisibleLength) / (stretchLimit - maxVisibleLength);
+            opacity = 1.0 - stretchFactor; // Fade from 1.0 to 0.0
+          }
+        }
+        
+        // Only show bonds with some visibility
+        if (opacity > 0.05) {
+          const opacityKey = Math.round(opacity * 20) / 20; // Round to nearest 0.05
+          if (!bondsByOpacity.has(opacityKey)) {
+            bondsByOpacity.set(opacityKey, []);
+          }
+          bondsByOpacity.get(opacityKey).push({ i, j, pairKey: pairKeyOf(i, j) });
+        }
+      }
+    }
+    
+    // Create bonds grouped by opacity for efficiency
+    for (const [opacity, bonds] of bondsByOpacity) {
+      for (const { i, j, pairKey } of bonds) {
+        const group = getOrCreateBondGroup(pairKey);
+        
+        // Set material transparency for this opacity level
+        if (group.master && group.master.material) {
+          if (opacity < 1.0) {
+            group.master.material.alpha = Math.min(group.master.material.alpha || 1.0, opacity);
+            group.master.material.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND;
+          }
+        }
+        
+        const mat = bondMatrix(atoms[i].pos, atoms[j].pos, group.style.radius);
+        group.mats.push(mat);
+        group.indices.push({ i, j });
+      }
+    }
+    
+    // Update all bond group meshes
+    for (const [, g] of bondGroups) {
+      setThinInstanceMatrices(g.master, g.mats);
+    }
+    
+    const totalBonds = Array.from(bondsByOpacity.values()).reduce((sum, bonds) => sum + bonds.length, 0);
+    console.log(`[Bonds] Updated with ${totalBonds} bonds (${bondsByOpacity.size} opacity levels)`);
   }
 
   // --- update a single atom's matrix via global index (kept for completeness)
@@ -225,6 +301,7 @@ export function buildMolecule(scene, opts) {
     refreshBonds,             // bulk updates each group
     refreshAtoms,             // bulk updates all atom positions
     recomputeBonds,
+    updateBondsWithChemistry, // realistic chemistry-based bonds with transparency
     updateAtom,
     updateAtomMatrixByElement
   };

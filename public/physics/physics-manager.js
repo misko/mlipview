@@ -23,12 +23,12 @@ export function createPhysicsManager({ state, getMlip, energyPlot }) {
         getMlip,
         molecule: state.molecule,
         updateCallback: () => {
-          // Update visual representation - atoms and bonds
+          // Update visual representation - atoms and chemistry-aware bonds
           if (state.molecule && typeof state.molecule.refreshAtoms === 'function') {
             state.molecule.refreshAtoms();
           }
           if (state.molecule && typeof state.molecule.refreshBonds === 'function') {
-            state.molecule.refreshBonds();
+            state.molecule.refreshBonds(); // Now includes chemistry-aware updating
           }
           
           // Trigger physics cache update when coordinates change during relaxation
