@@ -22,6 +22,7 @@ export function createEnergyHUD() {
       <button id="btnFFFair" title="Switch to FAIR-Chem backend">FF: FAIR</button>
       <button id="btnFFLJ" title="Switch to Lennard-Jones backend">FF: LJ</button>
       <button id="btnRelax" title="Start/stop geometry relaxation">Relax</button>
+  <button id="btnMD" title="Start/stop molecular dynamics">MD</button>
     </div>
     <div id="relaxControls" style="margin-top:8px; display:none; padding:8px; background:rgba(0,0,0,0.3); border-radius:4px;">
       <div style="font-size:11px; color:#a4b0c0; margin-bottom:4px;">Relaxation Status</div>
@@ -57,6 +58,7 @@ export function createEnergyHUD() {
     ,btnFFFair: hud.querySelector('#btnFFFair')
     ,btnFFLJ: hud.querySelector('#btnFFLJ')
     ,btnRelax: hud.querySelector('#btnRelax')
+  ,btnMD: hud.querySelector('#btnMD')
     ,relaxControls: hud.querySelector('#relaxControls')
     ,relaxStatus: hud.querySelector('#relaxStatus')
     ,relaxOptimizer: hud.querySelector('#relaxOptimizer')

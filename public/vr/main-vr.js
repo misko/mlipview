@@ -238,8 +238,9 @@ export async function initVRApp() {
   btnMinus?.onPointerUpObservable.add(() => { vrDebug('[HUD] (-) pressed'); rotateSelectedBond(scene, -1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e, currentStepIndex()); } catch {} });
   btnPlus?.onPointerUpObservable.add(() => { vrDebug('[HUD] (+) pressed'); rotateSelectedBond(scene, +1); try { const e = mlip.compute()?.energy; if (xrHud?.plot && isFinite(e)) xrHud.plot.addPoint(e, currentStepIndex()); } catch {} });
 
-  // Relaxation button handlers for VR overlay UI
+  // Relaxation & MD button handlers for VR overlay UI
   let btnRelax = vrUI?.bond?.btnRelax;
+  let btnMD = vrUI?.bond?.btnMD;
   
   btnRelax?.onPointerUpObservable.add(() => {
     vrDebug('[HUD] Relax pressed');
@@ -261,6 +262,25 @@ export async function initVRApp() {
     }
   });
 
+  // MD overlay button
+  btnMD?.onPointerUpObservable.add(() => {
+    vrDebug('[HUD] MD pressed');
+    if (window.vrPhysics) {
+      if (window.vrPhysics.isMDRunning && window.vrPhysics.isMDRunning()) {
+        window.vrPhysics.stopMD();
+        if (btnMD.textBlock) btnMD.textBlock.text = 'MD';
+      } else {
+        if (window.vrPhysics.isRelaxationRunning && window.vrPhysics.isRelaxationRunning()) {
+          window.vrPhysics.stopRelaxation();
+          if (btnRelax?.textBlock) btnRelax.textBlock.text = 'Relax';
+        }
+  // Default thermostat handled internally; only specify dt.
+  window.vrPhysics.startMD({ dt: 0.5 });
+        if (btnMD.textBlock) btnMD.textBlock.text = 'Stop';
+      }
+    }
+  });
+
   // Lite HUD: no bond label
     // Build a camera-anchored HUD for XR session
     vrHelper.baseExperience.sessionManager.onXRSessionInit.add(() => {
@@ -275,7 +295,8 @@ export async function initVRApp() {
         // Rebind button handlers to XR HUD controls
         btnMinus = xrHud?.bond?.btnMinus || btnMinus;
         btnPlus  = xrHud?.bond?.btnPlus  || btnPlus;
-        btnRelax = xrHud?.bond?.btnRelax || btnRelax;
+  btnRelax = xrHud?.bond?.btnRelax || btnRelax;
+  btnMD = xrHud?.bond?.btnMD || btnMD;
         // Molecules button (XR)
         try {
           const mBtn = xrHud?.btnMolecules;
@@ -334,6 +355,24 @@ export async function initVRApp() {
           energyTolerance: 1e-4
         });
         btnRelax.textBlock.text = "Stop";
+      }
+    }
+  });
+  // XR MD button
+  btnMD?.onPointerUpObservable.add(() => {
+    vrDebug('[HUD XR] MD pressed');
+    if (window.vrPhysics) {
+      if (window.vrPhysics.isMDRunning && window.vrPhysics.isMDRunning()) {
+        window.vrPhysics.stopMD();
+        if (btnMD.textBlock) btnMD.textBlock.text = 'MD';
+      } else {
+        if (window.vrPhysics.isRelaxationRunning && window.vrPhysics.isRelaxationRunning()) {
+          window.vrPhysics.stopRelaxation();
+          if (btnRelax?.textBlock) btnRelax.textBlock.text = 'Relax';
+        }
+            // Default thermostat handled internally; only specify dt.
+            window.vrPhysics.startMD({ dt: 0.5 });
+        if (btnMD.textBlock) btnMD.textBlock.text = 'Stop';
       }
     }
   });

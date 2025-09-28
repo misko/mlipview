@@ -16,6 +16,15 @@ export function createPhysicsManager({ state, getMlip, energyPlot }) {
 
   // Relaxation engine
   let relaxationEngine = null;
+  // MD engine state
+  let mdRunning = false;
+  let mdStep = 0;
+  let mdVelocities = null; // Array of BABYLON.Vector3
+  let mdHandle = null; // requestAnimationFrame id
+  let mdOpts = null;
+
+  const MASS_TABLE = { H: 1.0079, C: 12.011, N: 14.007, O: 15.999, S: 32.06 };
+  function atomMass(el) { return MASS_TABLE[el] || 12.0; }
   
   function ensureRelaxationEngine() {
     if (!relaxationEngine) {
@@ -102,6 +111,8 @@ export function createPhysicsManager({ state, getMlip, energyPlot }) {
 
   // Relaxation methods
   function startRelaxation(options = {}) {
+    // Mutual exclusion: stop MD if running
+    if (mdRunning) stopMD();
     const engine = ensureRelaxationEngine();
     // Update engine parameters if provided
     if (options.optimizer) engine.setOptimizer(options.optimizer);
@@ -133,6 +144,138 @@ export function createPhysicsManager({ state, getMlip, energyPlot }) {
     return relaxationEngine ? relaxationEngine.isRunning : false;
   }
 
+  // --------------------------------------------------------------
+  // MD (Molecular Dynamics) basic velocity Verlet integrator
+  // --------------------------------------------------------------
+  function initVelocities() {
+    const atoms = state.molecule?.atoms || [];
+    mdVelocities = atoms.map(() => new BABYLON.Vector3(0,0,0));
+  }
+  function isMDRunning() { return mdRunning; }
+  function getMDState() { return { running: mdRunning, step: mdStep }; }
+
+  function currentKineticTemperature() {
+    const atoms = state.molecule?.atoms || [];
+    if (!atoms.length || !mdVelocities) return 0;
+    // Simplified k_B = 1 units for visualization: T = (2 KE)/(3N)
+    let ke = 0;
+    for (let i=0;i<atoms.length;i++) {
+      const m = atomMass(atoms[i].element);
+      const v = mdVelocities[i];
+      ke += 0.5 * m * (v.x*v.x + v.y*v.y + v.z*v.z);
+    }
+    const dof = Math.max(1, 3*atoms.length - 3); // subtract rigid translation
+    return (2*ke) / dof;
+  }
+
+  async function mdSingleStep() {
+    if (!mdRunning) return;
+    const mol = state.molecule;
+    if (!mol) { stopMD(); return; }
+    const atoms = mol.atoms;
+    if (!atoms || !atoms.length) { stopMD(); return; }
+    const mlip = getMlip();
+    try {
+      // 1. Compute forces at current positions
+      const res = await mlip.compute();
+      if (!res || !Array.isArray(res.forces)) throw new Error('MD: invalid forces');
+      const forces = res.forces; // array of {x,y,z}
+      const dt = mdOpts.dt;
+      const half = dt * 0.5;
+      // Velocity Verlet: v(t+1/2)
+      for (let i=0;i<atoms.length;i++) {
+        const m = atomMass(atoms[i].element);
+        const f = forces[i];
+        const v = mdVelocities[i];
+        v.x += (f.x / m) * half;
+        v.y += (f.y / m) * half;
+        v.z += (f.z / m) * half;
+      }
+      // Update positions x(t+1)
+      for (let i=0;i<atoms.length;i++) {
+        const a = atoms[i];
+        const v = mdVelocities[i];
+        a.pos.x += v.x * dt;
+        a.pos.y += v.y * dt;
+        a.pos.z += v.z * dt;
+      }
+      if (mol.changeCounter !== undefined) mol.changeCounter++;
+      if (typeof mol.refreshAtoms === 'function') mol.refreshAtoms();
+      if (typeof mol.refreshBonds === 'function') mol.refreshBonds();
+      resetCache(); // positions changed
+      // 2. Compute forces at new positions for full step velocity update
+      const res2 = await mlip.compute();
+      if (!res2 || !Array.isArray(res2.forces)) throw new Error('MD: invalid forces 2');
+      const forces2 = res2.forces;
+      for (let i=0;i<atoms.length;i++) {
+        const m = atomMass(atoms[i].element);
+        const f = forces2[i];
+        const v = mdVelocities[i];
+        v.x += (f.x / m) * half;
+        v.y += (f.y / m) * half;
+        v.z += (f.z / m) * half;
+      }
+      // --- Thermostat (Berendsen style) ---
+      if (mdOpts.thermostat) {
+        const Tcur = currentKineticTemperature();
+        const Ttarget = mdOpts.thermostat.target;
+        const tau = mdOpts.thermostat.tau; // relaxation time in MD time units
+        if (Tcur > 0 && Ttarget > 0 && tau > 0) {
+          const dt = mdOpts.dt;
+          // Berendsen scaling factor: lambda = sqrt(1 + (dt/tau)*(Ttarget/Tcur - 1))
+          const lambda2 = 1 + (dt / tau) * (Ttarget / Tcur - 1);
+          if (lambda2 > 0) {
+            const lambda = Math.sqrt(lambda2);
+            for (const v of mdVelocities) {
+              v.x *= lambda; v.y *= lambda; v.z *= lambda;
+            }
+          }
+        }
+      }
+      mdStep++;
+      if (mdOpts.energyPlot && Number.isFinite(res2.energy)) {
+        try { mdOpts.energyPlot.recordStep(res2.energy); } catch {}
+      }
+      if (mdRunning) mdHandle = requestAnimationFrame(mdSingleStep);
+    } catch (e) {
+      console.warn('[MD] step error, stopping:', e.message);
+      stopMD();
+    }
+  }
+
+  function startMD(options = {}) {
+    if (isRelaxationRunning()) stopRelaxation();
+    if (mdRunning) return;
+    mdOpts = { 
+      dt: options.dt || 0.5,
+      energyPlot: options.energyPlot || energyPlot,
+      // Default thermostat ON unless explicitly disabled
+      thermostat: (options.thermostat === false) ? { target: 0, tau: 0 } : (options.thermostat || { target: 0.5, tau: 50 })
+    };
+    initVelocities();
+    mdRunning = true;
+    mdStep = 0;
+    mdHandle = requestAnimationFrame(mdSingleStep);
+    console.log('[MD] started with dt=', mdOpts.dt);
+  }
+
+  function setMDThermostat({ target, tau }) {
+    if (!mdOpts) return;
+    if (target <= 0 || tau <= 0) {
+      mdOpts.thermostat = { target: 0, tau: 0 }; // disable
+    } else {
+      mdOpts.thermostat = { target, tau };
+    }
+    console.log('[MD] thermostat set to', mdOpts.thermostat);
+  }
+  function stopMD() {
+    if (!mdRunning) return;
+    mdRunning = false;
+    if (mdHandle) cancelAnimationFrame(mdHandle);
+    mdHandle = null;
+    console.log('[MD] stopped at step', mdStep);
+  }
+
   return {
     tickFrame,
     updatePhysicsCache,
@@ -142,6 +285,12 @@ export function createPhysicsManager({ state, getMlip, energyPlot }) {
     stopRelaxation,
     getRelaxationState,
     isRelaxationRunning,
+    // MD interface
+    startMD,
+    stopMD,
+    isMDRunning,
+    getMDState,
+    setMDThermostat,
     get energy() { return cachedEnergy; },
     get forces() { return cachedForces; }
   };

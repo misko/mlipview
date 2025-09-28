@@ -145,6 +145,11 @@ function setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, get
         hud.btnRelax.textContent = "Relax";
         hud.btnRelax.style.opacity = "1";
       } else {
+        // Stop MD if running
+        if (physics.isMDRunning && physics.isMDRunning()) {
+          physics.stopMD();
+          if (hud.btnMD) { hud.btnMD.textContent = 'MD'; hud.btnMD.style.opacity = '1'; }
+        }
         const options = {
           optimizer: hud.relaxOptimizer ? hud.relaxOptimizer.value : 'steepest_descent',
           stepSize: hud.relaxStepSize ? parseFloat(hud.relaxStepSize.value) : 0.01,
@@ -155,6 +160,27 @@ function setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, get
         physics.startRelaxation(options);
         hud.btnRelax.textContent = "Stop";
         hud.btnRelax.style.opacity = "0.7";
+      }
+    };
+  }
+
+  // MD button
+  if (hud.btnMD) {
+    hud.btnMD.onclick = () => {
+      if (physics.isMDRunning && physics.isMDRunning()) {
+        physics.stopMD();
+        hud.btnMD.textContent = 'MD';
+        hud.btnMD.style.opacity = '1';
+      } else {
+        // Stop relaxation if active
+        if (physics.isRelaxationRunning && physics.isRelaxationRunning()) {
+          physics.stopRelaxation();
+          if (hud.btnRelax) { hud.btnRelax.textContent = 'Relax'; hud.btnRelax.style.opacity = '1'; }
+        }
+  // Thermostat now enabled by default inside physics manager; only pass dt here.
+  physics.startMD({ dt: 0.5 });
+        hud.btnMD.textContent = 'Stop';
+        hud.btnMD.style.opacity = '0.7';
       }
     };
   }

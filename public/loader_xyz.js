@@ -6,26 +6,32 @@
 //   ... (N lines)
 
 export function parseXYZ(text) {
-  const lines = text.trim().split(/\r?\n/);
-  if (lines.length < 3) throw new Error("Invalid XYZ: too few lines");
-  const n = parseInt(lines[0].trim(), 10);
-  if (!Number.isFinite(n) || n <= 0) throw new Error("Invalid XYZ: first line must be a positive integer atom count");
-
-  if (lines.length < 2 + n) throw new Error(`Invalid XYZ: expected ${n} atom lines, got ${lines.length - 2}`);
-
+  const rawLines = text.split(/\r?\n/); // do not trim globally; preserve indexing for messages
+  if (rawLines.length < 2) throw new Error("Invalid XYZ: missing header lines");
+  const n = parseInt(rawLines[0].trim(), 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error("Invalid XYZ: first line must be positive integer atom count");
+  }
+  // Second line is nominal comment; subsequent comment (#...) or blank lines are skipped.
   const atoms = [];
-  for (let i = 2; i < 2 + n; i++) {
-    const parts = lines[i].trim().split(/\s+/);
-    if (parts.length < 4) throw new Error(`Invalid XYZ atom line at ${i+1}`);
-    const el = parts[0];
-    const x = parseFloat(parts[1]);
-    const y = parseFloat(parts[2]);
-    const z = parseFloat(parts[3]);
-    if (![x,y,z].every(Number.isFinite)) throw new Error(`Invalid XYZ coords at line ${i+1}`);
-    atoms.push({
-      element: el,
-      pos: new BABYLON.Vector3(x, y, z)
-    });
+  let i = 2; // start scanning potential atom lines
+  while (i < rawLines.length && atoms.length < n) {
+    const line = rawLines[i].trim();
+    i++;
+    if (!line || line.startsWith('#')) continue; // skip blank/comment
+    const parts = line.split(/\s+/);
+    if (parts.length < 4) {
+      throw new Error(`Invalid XYZ atom line near original line ${i}`);
+    }
+    const [el, xs, ys, zs] = parts;
+    const x = parseFloat(xs), y = parseFloat(ys), z = parseFloat(zs);
+    if (![x, y, z].every(Number.isFinite)) {
+      throw new Error(`Invalid XYZ coords near original line ${i}`);
+    }
+    atoms.push({ element: el, pos: new BABYLON.Vector3(x, y, z) });
+  }
+  if (atoms.length !== n) {
+    throw new Error(`Invalid XYZ: expected ${n} atoms, parsed ${atoms.length}`);
   }
   return { atoms };
 }

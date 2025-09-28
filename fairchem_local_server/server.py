@@ -1,11 +1,13 @@
 # server.py
 import os
+import threading
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-from ase.io.jsonio import decode, encode
-from fairchem.core import FAIRChemCalculator, pretrained_mlip  # fairchem-core >= 2.x
+from ase.io.jsonio import decode
+from fairchem.core import pretrained_mlip  # fairchem-core >= 2.x
+from fairchem.core import FAIRChemCalculator
 from fairchem.core.units.mlip_unit import InferenceSettings
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,8 +18,8 @@ MODEL_NAME = os.environ.get("UMA_MODEL", "uma-s-1p1")  # UMA small
 TASK_NAME = os.environ.get("UMA_TASK", "omol")  # omol / omat / oc20 / odac / omc
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Load once at startup (kept in memory)
-predictor = pretrained_mlip.get_predict_unit(
+# Load a default predict unit at startup (fallback / first use)
+_default_predict_unit = pretrained_mlip.get_predict_unit(
     MODEL_NAME,
     device=DEVICE,
     inference_settings=InferenceSettings(
@@ -29,7 +31,69 @@ predictor = pretrained_mlip.get_predict_unit(
         internal_graph_gen_version=2,
     ),
 )
-calc = FAIRChemCalculator(predictor, task_name=TASK_NAME)
+_default_calc = FAIRChemCalculator(_default_predict_unit, task_name=TASK_NAME)
+
+# ----------------------------------------------------------------------------
+# Composition-based predict unit + calculator cache
+# ----------------------------------------------------------------------------
+# Some UMA model internal graph building / compilation work can benefit from
+# reusing a predict unit + calculator for identical compositions (multiset of
+# atomic numbers). We store a cache keyed by a hashable composition signature.
+
+_cache_lock = threading.RLock()
+_composition_cache: Dict[
+    Tuple[Tuple[int, int], ...], Tuple[Any, FAIRChemCalculator]
+] = {}
+
+
+def _composition_key(atomic_numbers: List[int]) -> Tuple[Tuple[int, int], ...]:
+    """Return a canonical hashable key for a list of atomic numbers.
+
+    Key is a tuple of (Z, count) pairs sorted by Z. Order-invariant.
+    """
+    from collections import Counter
+
+    c = Counter(int(z) for z in atomic_numbers)
+    return tuple(sorted(c.items()))
+
+
+def get_cached_unit_and_calculator(atomic_numbers: List[int]):
+    """Return (predict_unit, calculator) for the given atomic numbers.
+
+    Reuses cached objects for identical compositions to avoid repeated model
+    instantiation / graph setup cost. Falls back to a default global instance
+    when atomic_numbers is empty or too small to justify a separate entry.
+    """
+    if not atomic_numbers:
+        return _default_predict_unit, _default_calc
+    key = _composition_key(atomic_numbers)
+    with _cache_lock:
+        hit = _composition_cache.get(key)
+        if hit is not None:
+            return hit
+        # Miss: create a new predict unit + calculator.
+        # NOTE: We reuse the same MODEL_NAME / TASK_NAME but could extend this
+        # to adapt hyperparameters based on composition size if needed.
+        pu = pretrained_mlip.get_predict_unit(
+            MODEL_NAME,
+            device=DEVICE,
+            inference_settings=InferenceSettings(
+                tf32=True,
+                activation_checkpointing=False,
+                merge_mole=True,
+                compile=False,
+                external_graph_gen=False,
+                internal_graph_gen_version=2,
+            ),
+        )
+        calculator = FAIRChemCalculator(pu, task_name=TASK_NAME)
+        _composition_cache[key] = (pu, calculator)
+        print(
+            "[cache] created new predict_unit for composition="
+            f"{key} cache_size={len(_composition_cache)}"
+        )
+        return pu, calculator
+
 
 app = FastAPI(title="UMA-small ASE HTTP server")
 
@@ -81,7 +145,9 @@ def simple_calculate(inp: SimpleIn):
             }
         )
         props = tuple(inp.properties or ("energy", "forces"))
-        atoms.calc = calc
+        # Use / create cached calculator based on composition
+        _pu, _calc = get_cached_unit_and_calculator(Z)
+        atoms.calc = _calc
         results = {}
         # --- compute selected properties ---
         if "energy" in props or "free_energy" in props:
@@ -127,7 +193,13 @@ def calculate(inp: CalcIn):
         props = tuple(inp.properties or ("energy", "forces"))
 
         # Attach calculator, run single point
-        atoms.calc = calc
+        # Determine composition for caching (Atoms with numbers attr)
+        try:
+            Z = list(getattr(atoms, "numbers", getattr(atoms, "get_atomic_numbers")()))
+        except Exception:  # fallback if Atoms style accessor fails
+            Z = []
+        _pu, _calc = get_cached_unit_and_calculator(Z)
+        atoms.calc = _calc
         results = {}
         if "energy" in props or "free_energy" in props:
             results["energy"] = float(atoms.get_potential_energy())

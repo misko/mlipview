@@ -81,13 +81,16 @@ export function createVRUI(scene) {
   }
 
   const btnMinus = mkBtn("⟲ −");
-  const btnPlus  = mkBtn("⟲ +");
-  const btnRelax = mkBtn("Relax", "140px");
+    const btnRelax = mkBtn("Relax", "150px");
+    const btnMD = mkBtn("MD", "120px");
+    const btnPlus  = mkBtn("⟲ +");
   
-  // Side toggle removed; rotation direction now determined by bond orientation cycle (selection logic)
-  row.addControl(btnPlus);
+  // Order: (-) Relax (+)
   row.addControl(btnMinus);
   row.addControl(btnRelax);
+  row.addControl(btnRelax);
+  row.addControl(btnMD);
+  row.addControl(btnPlus);
   const bondUIState = { step: 5 };
   // recompute toggle removed
 
@@ -98,8 +101,11 @@ export function createVRUI(scene) {
     bond: {
       bar: bondBar,
       btnMinus,
-      btnPlus,
-      btnRelax,
+  btnPlus,
+  btnMD,
+  btnPlus,
+  btnRelax,
+  btnMD,
       state: bondUIState
     },
     dispose() {
@@ -352,6 +358,8 @@ export function createVRUIOnCamera(scene, xrCamera) {
 
   // Triple font size for XR control buttons only via local fontPx
   const minus = mkButtonPlane('hudMinus', wBtn, hBtn, new BABYLON.Vector3(minusX, rowY, 0), '⟲ −', 42 * 3);
+  // Insert Relax button plane at x=0 between minus and plus
+  const relax = mkButtonPlane('hudRelax', wBtn*1.1, hBtn, new BABYLON.Vector3(0, rowY, 0), 'Relax', 42 * 2.4);
   const plus  = mkButtonPlane('hudPlus',  wBtn, hBtn, new BABYLON.Vector3(plusX, rowY, 0), '⟲ +', 42 * 3);
   const mols  = mkButtonPlane('hudMols',  wBtn*1.4, hBtn, new BABYLON.Vector3(molsX, rowY - (rowDY*1.1), 0), 'Molecules', 42 * 2.2);
   // recompute plane removed
@@ -378,7 +386,7 @@ export function createVRUIOnCamera(scene, xrCamera) {
     btn.onPointerDownObservable.add(() => setGuiActive(true));
     btn.onPointerUpObservable.add(() => setTimeout(() => setGuiActive(false), 0));
   };
-  [minus.btn, plus.btn, mols.btn].forEach(wirePressGuards);
+  [minus.btn, relax.btn, plus.btn, mols.btn].forEach(wirePressGuards);
 
   // Side toggle removed (orientation handled via selection clicks)
 
@@ -389,6 +397,7 @@ export function createVRUIOnCamera(scene, xrCamera) {
     plot: hudPlot,
     bond: {
       btnMinus: minus.btn,
+      btnRelax: relax.btn,
       btnPlus: plus.btn,
       btnSide: null,
       state: bondUIState
@@ -397,7 +406,8 @@ export function createVRUIOnCamera(scene, xrCamera) {
     dispose() {
       // Dispose GUI textures first
       try { minus.adt && minus.adt.dispose(); } catch {}
-      try { plus.adt && plus.adt.dispose(); } catch {}
+  try { plus.adt && plus.adt.dispose(); } catch {}
+  try { relax.adt && relax.adt.dispose(); } catch {}
       try { mols.adt && mols.adt.dispose(); } catch {}
       try { energy.adt && energy.adt.dispose(); } catch {}
       // Dispose plot textures/materials/mesh
@@ -406,7 +416,8 @@ export function createVRUIOnCamera(scene, xrCamera) {
       try { hudPlot && hudPlot.mesh && hudPlot.mesh.dispose(); } catch {}
       // Dispose button/label meshes
       try { minus.mesh && minus.mesh.dispose(); } catch {}
-      try { plus.mesh && plus.mesh.dispose(); } catch {}
+  try { plus.mesh && plus.mesh.dispose(); } catch {}
+  try { relax.mesh && relax.mesh.dispose(); } catch {}
       try { mols.mesh && mols.mesh.dispose(); } catch {}
       try { energy.mesh && energy.mesh.dispose(); } catch {}
       // Finally dispose the root transform
