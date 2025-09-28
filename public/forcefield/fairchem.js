@@ -149,6 +149,22 @@ export function createFairChemForceField({
   defaultSpin = 1
 } = {}) {
   const boundAtoms = molecule ? molecule.atoms : null;
+  // Helper: extract cell if enabled & visible: returns [[ax,ay,az],[bx,by,bz],[cx,cy,cz]] or null
+  function currentCellMatrix() {
+    try {
+      if (!molecule || !molecule.__cellState) return null;
+      const cs = molecule.__cellState;
+      if (!cs.visible || !cs.vectors) return null; // only pass when visible per requirement
+      const { a, b, c } = cs.vectors;
+      if (!a || !b || !c) return null;
+      // Accept zero vectors? Skip if near-zero length
+      const eps = 1e-8;
+      if (a.length() < eps || b.length() < eps || c.length() < eps) return null;
+      return [ [a.x,a.y,a.z], [b.x,b.y,b.z], [c.x,c.y,c.z] ];
+    } catch {
+      return null;
+    }
+  }
 
   async function computeRaw({ Z, xyz }) {
     validateZXYZ(Z, xyz);
@@ -159,6 +175,10 @@ export function createFairChemForceField({
       spin_multiplicity: defaultSpin,
       properties: ['energy','forces']
     };
+    const cell = currentCellMatrix();
+    if (cell) {
+      payload.cell = cell; // pass only when cell visualization enabled
+    }
   console.log('[fairchem] computeRaw issuing request');
   const effEndpoint = __fairchemLockedEndpoint || endpoint;
   const data = await postJSON(effEndpoint, payload);

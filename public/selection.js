@@ -21,8 +21,8 @@ export function makePicker(scene, molecule) {
 
   const bondGroups = molecule.bondGroups; // Map(pairKey -> { indices: [{i,j}], master, ... })
 
-  const isBondMesh = (m) => !!m?.name && m.name.startsWith("bond_");
-  const isAtomMesh = (m) => !!m?.name && m.name.startsWith("base_");
+  const isBondMesh = (m) => !!m?.name && m.name.startsWith("bond_") && !m.name.startsWith("ghost_bond_");
+  const isAtomMesh = (m) => !!m?.name && m.name.startsWith("base_") && !m.name.startsWith("ghost_atom_");
 
   function mapPickedBondFromPick(pick) {
     if (!(pick?.hit) || !isBondMesh(pick.pickedMesh)) return null;

@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 # --- configure model ---
 MODEL_NAME = os.environ.get("UMA_MODEL", "uma-s-1p1")  # UMA small
-TASK_NAME = os.environ.get("UMA_TASK", "omol")  # omol / omat / oc20 / odac / omc
+TASK_NAME = os.environ.get("UMA_TASK", "omol")  # task: omol|omat|oc20|odac|omc
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Load a default predict unit at startup (fallback / first use)
@@ -119,6 +119,8 @@ class SimpleIn(BaseModel):
     charge: Optional[int] = 0
     spin_multiplicity: Optional[int] = 1
     properties: Optional[List[str]] = None
+    # Optional 3x3 cell matrix (a,b,c) row vectors
+    cell: Optional[list[list[float]]] = None
 
 
 @app.post("/simple_calculate")
@@ -137,7 +139,25 @@ def simple_calculate(inp: SimpleIn):
                 status_code=400,
                 detail="Length mismatch atomic_numbers vs coordinates",
             )
-        atoms = _Atoms(numbers=Z, positions=_np.array(xyz, dtype=float))
+        # Debug print cell if provided
+        if inp.cell:
+            try:
+                rows = []
+                if isinstance(inp.cell, list) and len(inp.cell) == 3:
+                    for r in inp.cell:
+                        if isinstance(r, list) and len(r) == 3:
+                            rows.append(f"({r[0]:.3f},{r[1]:.3f},{r[2]:.3f})")
+                        else:
+                            rows.append(str(r))
+                    print("[simple_calculate] cell=", ", ".join(rows))
+            except Exception as _ce:  # noqa: F841
+                print("[simple_calculate] cell print failed", _ce)
+            pbc = [True, True, True]
+        else:
+            pbc = [False, False, False]
+        atoms = _Atoms(
+            numbers=Z, positions=_np.array(xyz, dtype=float), cell=inp.cell, pbc=pbc
+        )
         atoms.info.update(
             {
                 "charge": inp.charge or 0,
@@ -195,7 +215,13 @@ def calculate(inp: CalcIn):
         # Attach calculator, run single point
         # Determine composition for caching (Atoms with numbers attr)
         try:
-            Z = list(getattr(atoms, "numbers", getattr(atoms, "get_atomic_numbers")()))
+            Z = list(
+                getattr(
+                    atoms,
+                    "numbers",
+                    getattr(atoms, "get_atomic_numbers")(),
+                )
+            )
         except Exception:  # fallback if Atoms style accessor fails
             Z = []
         _pu, _calc = get_cached_unit_and_calculator(Z)

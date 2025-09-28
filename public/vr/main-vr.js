@@ -241,6 +241,7 @@ export async function initVRApp() {
   // Relaxation & MD button handlers for VR overlay UI
   let btnRelax = vrUI?.bond?.btnRelax;
   let btnMD = vrUI?.bond?.btnMD;
+  let btnCell = vrUI?.bond?.btnCell;
   
   btnRelax?.onPointerUpObservable.add(() => {
     vrDebug('[HUD] Relax pressed');
@@ -281,6 +282,23 @@ export async function initVRApp() {
     }
   });
 
+  // Cell overlay button
+  btnCell?.onPointerUpObservable.add(() => {
+    vrDebug('[HUD] Cell pressed');
+    try {
+      const molRef = window.vrMol || window.appState?.molecule;
+      if (!molRef) return;
+      if (!molRef.__cellState || !molRef.__cellState.vectors) {
+        if (typeof molRef.buildDefaultCell === 'function') molRef.buildDefaultCell();
+      } else if (!molRef.__cellState.visible) {
+        molRef.toggleCell(true);
+      } else {
+        molRef.toggleCell(false);
+      }
+      if (btnCell.textBlock) btnCell.textBlock.text = molRef.__cellState && molRef.__cellState.visible ? 'Cell*' : 'Cell';
+    } catch (e) { console.warn('[VR] cell toggle failed', e.message); }
+  });
+
   // Lite HUD: no bond label
     // Build a camera-anchored HUD for XR session
     vrHelper.baseExperience.sessionManager.onXRSessionInit.add(() => {
@@ -297,6 +315,7 @@ export async function initVRApp() {
         btnPlus  = xrHud?.bond?.btnPlus  || btnPlus;
   btnRelax = xrHud?.bond?.btnRelax || btnRelax;
   btnMD = xrHud?.bond?.btnMD || btnMD;
+  btnCell = xrHud?.bond?.btnCell || btnCell;
         // Molecules button (XR)
         try {
           const mBtn = xrHud?.btnMolecules;
@@ -375,6 +394,22 @@ export async function initVRApp() {
         if (btnMD.textBlock) btnMD.textBlock.text = 'Stop';
       }
     }
+  });
+  // XR cell button
+  btnCell?.onPointerUpObservable.add(() => {
+    vrDebug('[HUD XR] Cell pressed');
+    try {
+      const molRef = window.vrMol || window.appState?.molecule;
+      if (!molRef) return;
+      if (!molRef.__cellState || !molRef.__cellState.vectors) {
+        if (typeof molRef.buildDefaultCell === 'function') molRef.buildDefaultCell();
+      } else if (!molRef.__cellState.visible) {
+        molRef.toggleCell(true);
+      } else {
+        molRef.toggleCell(false);
+      }
+      if (btnCell.textBlock) btnCell.textBlock.text = molRef.__cellState && molRef.__cellState.visible ? 'Cell*' : 'Cell';
+    } catch (e) { console.warn('[VR XR] cell toggle failed', e.message); }
   });
   // Seed plot with current energy (if present)
         try {

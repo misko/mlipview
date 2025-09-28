@@ -83,6 +83,7 @@ export function createVRUI(scene) {
   const btnMinus = mkBtn("⟲ −");
     const btnRelax = mkBtn("Relax", "150px");
     const btnMD = mkBtn("MD", "120px");
+    const btnCell = mkBtn("Cell", "130px");
     const btnPlus  = mkBtn("⟲ +");
   
   // Order: (-) Relax (+)
@@ -90,6 +91,7 @@ export function createVRUI(scene) {
   row.addControl(btnRelax);
   row.addControl(btnRelax);
   row.addControl(btnMD);
+  row.addControl(btnCell);
   row.addControl(btnPlus);
   const bondUIState = { step: 5 };
   // recompute toggle removed
@@ -103,6 +105,7 @@ export function createVRUI(scene) {
       btnMinus,
   btnPlus,
   btnMD,
+  btnCell,
   btnPlus,
   btnRelax,
   btnMD,

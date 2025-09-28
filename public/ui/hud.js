@@ -23,6 +23,7 @@ export function createEnergyHUD() {
       <button id="btnFFLJ" title="Switch to Lennard-Jones backend">FF: LJ</button>
       <button id="btnRelax" title="Start/stop geometry relaxation">Relax</button>
   <button id="btnMD" title="Start/stop molecular dynamics">MD</button>
+      <button id="btnCell" title="Toggle periodic cell visualization (right-click for parameters)">Cell</button>
     </div>
     <div id="relaxControls" style="margin-top:8px; display:none; padding:8px; background:rgba(0,0,0,0.3); border-radius:4px;">
       <div style="font-size:11px; color:#a4b0c0; margin-bottom:4px;">Relaxation Status</div>
@@ -44,6 +45,19 @@ export function createEnergyHUD() {
         <input id="relaxMaxSteps" type="number" min="1" max="10000" value="1000" style="flex:1; font-size:11px; background:#2a3441; color:#cfe3ff; border:1px solid #444; border-radius:2px; padding:2px;">
       </div>
     </div>
+      <div id="cellControls" style="margin-top:8px; display:none; padding:8px; background:rgba(0,0,0,0.3); border-radius:4px;">
+        <div style="font-size:11px; color:#a4b0c0; margin-bottom:6px;">Monoclinic Cell (Å / °)</div>
+        <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:4px; margin-bottom:6px;">
+          <div style="display:flex; flex-direction:column; gap:2px;"><label style="font-size:10px; color:#cfe3ff;">a</label><input id="cellA" type="number" step="0.01" min="0.1" value="10" style="font-size:11px; background:#2a3441; color:#cfe3ff; border:1px solid #444; border-radius:2px; padding:2px;"></div>
+          <div style="display:flex; flex-direction:column; gap:2px;"><label style="font-size:10px; color:#cfe3ff;">b</label><input id="cellB" type="number" step="0.01" min="0.1" value="10" style="font-size:11px; background:#2a3441; color:#cfe3ff; border:1px solid #444; border-radius:2px; padding:2px;"></div>
+          <div style="display:flex; flex-direction:column; gap:2px;"><label style="font-size:10px; color:#cfe3ff;">c</label><input id="cellC" type="number" step="0.01" min="0.1" value="10" style="font-size:11px; background:#2a3441; color:#cfe3ff; border:1px solid #444; border-radius:2px; padding:2px;"></div>
+          <div style="display:flex; flex-direction:column; gap:2px;"><label style="font-size:10px; color:#cfe3ff;">β (deg)</label><input id="cellBeta" type="number" step="0.1" min="10" max="170" value="110" style="font-size:11px; background:#2a3441; color:#cfe3ff; border:1px solid #444; border-radius:2px; padding:2px;"></div>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <button id="cellApply" style="flex:1;">Apply</button>
+          <span style="font-size:10px; color:#7faadf;">Right-click Cell</span>
+        </div>
+      </div>
   `;
   
   document.body.appendChild(hud);
@@ -59,12 +73,19 @@ export function createEnergyHUD() {
     ,btnFFLJ: hud.querySelector('#btnFFLJ')
     ,btnRelax: hud.querySelector('#btnRelax')
   ,btnMD: hud.querySelector('#btnMD')
+    ,btnCell: hud.querySelector('#btnCell')
     ,relaxControls: hud.querySelector('#relaxControls')
     ,relaxStatus: hud.querySelector('#relaxStatus')
     ,relaxOptimizer: hud.querySelector('#relaxOptimizer')
     ,relaxStepSize: hud.querySelector('#relaxStepSize')
     ,relaxStepSizeVal: hud.querySelector('#relaxStepSizeVal')
     ,relaxMaxSteps: hud.querySelector('#relaxMaxSteps')
+    ,cellControls: hud.querySelector('#cellControls')
+    ,cellA: hud.querySelector('#cellA')
+    ,cellB: hud.querySelector('#cellB')
+    ,cellC: hud.querySelector('#cellC')
+    ,cellBeta: hud.querySelector('#cellBeta')
+    ,cellApply: hud.querySelector('#cellApply')
   };
 }
 

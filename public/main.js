@@ -185,6 +185,62 @@ function setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, get
     };
   }
 
+  // Cell toggle button
+  if (hud.btnCell) {
+    hud.btnCell.onclick = () => {
+      try {
+        const mol = state.molecule || window.appState?.molecule || window.vrMol;
+        if (!mol) return;
+        if (!mol.__cellState || !mol.__cellState.vectors) {
+          // Build default orthogonal cell from bounds
+          if (typeof mol.buildDefaultCell === 'function') mol.buildDefaultCell();
+        } else if (!mol.__cellState.visible) {
+          mol.toggleCell(true);
+        } else {
+          mol.toggleCell(false);
+        }
+        hud.btnCell.style.opacity = mol.__cellState && mol.__cellState.visible ? '0.7' : '1';
+      } catch (e) {
+        console.warn('[cell] toggle failed', e.message);
+      }
+    };
+    // Right-click -> show/hide monoclinic parameter panel
+    hud.btnCell.oncontextmenu = (e)=>{
+      e.preventDefault();
+      if (!hud.cellControls) return;
+      const vis = hud.cellControls.style.display !== 'none';
+      hud.cellControls.style.display = vis ? 'none' : 'block';
+    };
+  }
+
+  // Apply monoclinic parameters
+  if (hud.cellApply) {
+    hud.cellApply.onclick = () => {
+      try {
+        const mol = state.molecule || window.appState?.molecule || window.vrMol;
+        if (!mol) return;
+        const a = parseFloat(hud.cellA?.value)||0;
+        const b = parseFloat(hud.cellB?.value)||0;
+        const c = parseFloat(hud.cellC?.value)||0;
+        const betaDeg = parseFloat(hud.cellBeta?.value)||90;
+        if (!(a>0 && b>0 && c>0)) return;
+        const beta = betaDeg * Math.PI/180;
+        // Monoclinic: alpha=gamma=90deg. Choose convention: beta between a and c (unique axis b)
+        // a along x, b along y, c lies in x-z plane making angle beta with a.
+        const aVec = [a,0,0];
+        const bVec = [0,b,0];
+        const cVec = [c*Math.cos(beta),0,c*Math.sin(beta)];
+        if (typeof mol.setCellVectors === 'function') {
+          mol.setCellVectors(aVec,bVec,cVec);
+        }
+        if (!mol.__cellState.visible) mol.toggleCell(true);
+        if (hud.btnCell) hud.btnCell.style.opacity = mol.__cellState && mol.__cellState.visible ? '0.7' : '1';
+      } catch (e) {
+        console.warn('[cell] apply parameters failed', e.message);
+      }
+    };
+  }
+
   // Toggle relaxation controls visibility with right-click
   if (hud.btnRelax && hud.relaxControls) {
     hud.btnRelax.oncontextmenu = (e) => {

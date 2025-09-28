@@ -2,7 +2,7 @@
 // Click/drag atoms with a ground-aligned drag plane. Updates thin instances and bonds.
 
 import { makePicker } from "./selection.js";
-import { registerAtomClear, selectAtom, clearSelection as clearGlobalSelection, setAtomDragging } from "./selection_state.js";
+import { registerAtomClear, selectAtom, clearSelection as clearGlobalSelection, setAtomDragging, getKind } from "./selection_state.js";
 
 export function enableAtomDragging(scene, { atoms, refreshBonds, molecule, state }) {
   const canvas = scene.getEngine().getRenderingCanvas();
@@ -138,10 +138,22 @@ export function enableAtomDragging(scene, { atoms, refreshBonds, molecule, state
   scene.onPointerObservable.add((pi) => {
     if (pi.type !== BABYLON.PointerEventTypes.POINTERDOWN) return;
 
+    // NEW: If pointer is over a bond, skip atom pick to avoid instant deselect of bond selection logic
+    try {
+      const bondTest = scene.pick(scene.pointerX, scene.pointerY, (m)=> !!m?.name && m.name.startsWith('bond_') && !m.name.startsWith('ghost_bond_'));
+      if (bondTest?.hit) {
+        console.log('[interaction] pointerdown over bond mesh', bondTest.pickedMesh?.name, '-> skip atom pick');
+        // Let bond_pick handler manage selection; do not start atom drag/selection
+        return;
+      } else {
+        console.log('[interaction] pointerdown no bond hit');
+      }
+    } catch(e) { console.log('[interaction] bond pre-check error', e.message); }
+
     const res = pickAtomAtPointer();
     console.log("[pick] DOWN pick:", res);
     if (!res) {
-      // Not an atom: do NOT clear selection here; allow bond selection to persist
+      // Not an atom (and not a bond): leave selection as-is
       return;
     }
 
@@ -303,13 +315,21 @@ export function enableAtomDragging(scene, { atoms, refreshBonds, molecule, state
     } else {
       // Safety: ensure camera is attached even if we weren't dragging
       if (camera && canvas) camera.attachControl(canvas, true);
-      // If this was a true background click (neither atom nor bond), clear selection
+      // Pointer up with no drag: only clear if truly background AND not holding a bond selection
       const anyPick = scene.pick(scene.pointerX, scene.pointerY);
       const mesh = anyPick?.hit ? anyPick.pickedMesh : null;
       const isAtom = mesh && picker.isAtomMesh(mesh);
       const isBond = mesh && picker.isBondMesh(mesh);
+      const kind = getKind && getKind();
+      if (kind === 'bond') {
+        console.log('[interaction] pointerup: preserve bond selection (kind=bond) meshHit=', mesh?.name);
+        return; // do not clear when a bond is selected
+      }
       if (!mesh || (!isAtom && !isBond)) {
+        console.log('[interaction] pointerup background -> clearing selection (kind=', kind, ')');
         clearGlobalSelection();
+      } else {
+        console.log('[interaction] pointerup over', mesh.name, 'isAtom=', !!isAtom, 'isBond=', !!isBond, 'kind=', kind, '-> no clear');
       }
     }
   });

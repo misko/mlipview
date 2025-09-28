@@ -6,6 +6,7 @@ let kind = null; // 'atom' | 'bond' | null
 let clearAtomFn = () => {};
 let clearBondFn = () => {};
 let atomDragging = false;
+let _clearing = false; // reentrancy guard
 
 export function registerAtomClear(fn) {
   if (typeof fn === 'function') clearAtomFn = fn;
@@ -17,23 +18,34 @@ export function registerBondClear(fn) {
 export function selectAtom() {
   if (kind !== 'atom') {
     // Clear any bond selection when switching to atom
-    try { clearBondFn(); } catch {}
+    if (!_clearing) {
+      try { console.log('[select_state] selectAtom: clearing bond selection (prev kind=', kind, ')'); clearBondFn(); } catch {}
+    }
   }
   kind = 'atom';
+  console.log('[select_state] kind=atom');
 }
 
 export function selectBond() {
   if (kind !== 'bond') {
     // Clear any atom selection when switching to bond
-    try { clearAtomFn(); } catch {}
+    if (!_clearing) {
+      try { console.log('[select_state] selectBond: clearing atom selection (prev kind=', kind, ')'); clearAtomFn(); } catch {}
+    }
   }
   kind = 'bond';
+  console.log('[select_state] kind=bond');
 }
 
 export function clearSelection() {
+  if (_clearing) { console.log('[select_state] clearSelection ignored (reentrant)'); return; }
+  _clearing = true;
+  console.log('[select_state] clearSelection called (prev kind=', kind, ')');
   try { clearAtomFn(); } catch {}
   try { clearBondFn(); } catch {}
   kind = null;
+  console.log('[select_state] kind=null');
+  _clearing = false;
 }
 
 export function getKind() {
@@ -42,6 +54,7 @@ export function getKind() {
 
 export function setAtomDragging(v) {
   atomDragging = !!v;
+  console.log('[select_state] setAtomDragging', atomDragging);
 }
 
 export function isAtomDragging() {

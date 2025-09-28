@@ -105,6 +105,7 @@ export function enableBondPicking(
   }
 
   function clearSelection() {
+    console.log('[bond_pick] clearSelection invoked');
     selected = null;
     selection.kind = null; selection.data = null;
     selMesh.setEnabled(false);
@@ -161,10 +162,11 @@ export function enableBondPicking(
     if (pi.type !== BABYLON.PointerEventTypes.POINTERDOWN) return;
 
   // Do not allow bond selection while atom is being dragged
-  if (isAtomDragging && isAtomDragging()) return;
+  if (isAtomDragging && isAtomDragging()) { console.log('[bond_pick] pointerdown ignored: atom dragging'); return; }
 
   const bondHit = pickBondAtPointer();
     if (bondHit) {
+      console.log('[bond_pick] pointerdown bondHit', bondHit.key, 'idx', bondHit.index);
       const group = groupByKey.get(bondHit.key);
       const pair = group?.indices[bondHit.index];
       if (!pair) return;
@@ -176,6 +178,7 @@ export function enableBondPicking(
       const prevOrientation = selection.data?.orientation;
       const result = applyBondClick(selection, { i, j, key: bondHit.key, index: bondHit.index });
       if (result === 'cleared') {
+        console.log('[bond_pick] applyBondClick returned cleared');
         clearSelection();
         return;
       }
@@ -191,7 +194,7 @@ export function enableBondPicking(
         selMat.emissiveColor = new BABYLON.Color3(col.emissive.r, col.emissive.g, col.emissive.b);
         updateLabel(!allowed);
         orientBondMarker(selected.i, selected.j);
-        if (prevKind !== 'bond') selectBond(); // only signal new bond selection once
+        if (prevKind !== 'bond') { console.log('[bond_pick] selecting bond (prevKind=', prevKind, ')'); selectBond(); }
         return;
       }
     }
@@ -199,6 +202,7 @@ export function enableBondPicking(
     // Not a bond: if it's not an atom either, deselect & reattach camera
     const anyPick = scene.pick(scene.pointerX, scene.pointerY);
     if (!anyPick?.hit || !isAtomMesh(anyPick.pickedMesh)) {
+      console.log('[bond_pick] background click clearing selection');
       clearGlobalSelection();
     }
   });
