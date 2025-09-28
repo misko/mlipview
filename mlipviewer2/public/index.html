@@ -23,6 +23,8 @@
       <button id="btnRelax">Relax Step</button>
       <button id="btnMD">MD Step</button>
       <button id="btnRebonds">Recompute Bonds</button>
+  <button id="btnCell">Cell</button>
+  <button id="btnGhosts">Ghosts</button>
       <span id="status">Ready</span>
       <div id="bond-rotation-ui" style="position:absolute;top:10px;right:10px;display:none;z-index:10;font-family:Arial;">
         <button id="bond-rot-minus" style="margin:2px;">-</button>
@@ -69,6 +71,8 @@
     document.getElementById('btnRelax').onclick=()=>{ if (!viewerApi) return; viewerApi.relaxStep(); document.getElementById('status').textContent='Relax step'; };
     document.getElementById('btnMD').onclick=()=>{ if (!viewerApi) return; viewerApi.mdStep(); document.getElementById('status').textContent=`MD T=${viewerApi.state.dynamics.temperature.toFixed(2)}`; };
     document.getElementById('btnRebonds').onclick=()=>{ if (!viewerApi) return; viewerApi.recomputeBonds(); document.getElementById('status').textContent='Recomputed bonds'; };
+  document.getElementById('btnCell').onclick=()=>{ if(!viewerApi) return; (viewerApi.state.toggleCellVisibilityEnhanced||viewerApi.state.toggleCellVisibility).call(viewerApi.state); document.getElementById('status').textContent = viewerApi.state.showCell? 'Cell ON':'Cell OFF'; };
+  document.getElementById('btnGhosts').onclick=()=>{ if(!viewerApi) return; viewerApi.state.toggleGhostCells(); document.getElementById('status').textContent = viewerApi.state.showGhostCells? 'Ghosts ON':'Ghosts OFF'; };
     // Simple molecule switch UI (development convenience)
     const switcher = document.createElement('select');
     switcher.innerHTML = '<option value="molecules/roy.xyz">ROY</option><option value="molecules/benzene.xyz">Benzene</option>';

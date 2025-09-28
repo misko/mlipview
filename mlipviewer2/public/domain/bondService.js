@@ -5,7 +5,7 @@ export function createBondService(molState) {
     return molState.positions.map((p, i) => ({ element: molState.elements[i], pos:[p.x,p.y,p.z] }));
   }
   function hasCell() {
-    const c = molState.cell; return !!(c && c.enabled && c.a && c.b && c.c);
+    const c = molState.cell; return !!(c && c.enabled && c.a && c.b && c.c) && !c.synthetic; // skip synthetic bounding box for periodic expansion
   }
   function computePeriodicBonds() {
     // Non-periodic path: preserve full opacity shaping from computeBondsNoState (legacy smooth transparency)
@@ -53,9 +53,18 @@ export function createBondService(molState) {
     const out=[];
     for (const eb of augBonds) {
       const A=aug[eb.i], B=aug[eb.j];
+      // Skip self-bonds introduced by periodic augmentation (same base index)
+      if (A.baseIndex === B.baseIndex) continue;
       if (A.shiftIndex===B.shiftIndex && A.shiftIndex!==0) continue;
       const pA={x:A.pos[0],y:A.pos[1],z:A.pos[2]};
       const pB={x:B.pos[0],y:B.pos[1],z:B.pos[2]};
+      // Hard distance pruning: skip if raw distance exceeds a generous covalent upper bound (~2.2 Å) to avoid spurious long bonds
+      const dx0=pA.x-pB.x, dy0=pA.y-pB.y, dz0=pA.z-pB.z; const dist0=Math.sqrt(dx0*dx0+dy0*dy0+dz0*dz0);
+      if (dist0 > 2.2) continue;
+      // Additional pruning: avoid creating cross-image C-H or H-H bonds; only allow hydrogen bonds from primary image (shiftIndex 0)
+      const eA = molState.elements[A.baseIndex];
+      const eB = molState.elements[B.baseIndex];
+      if ((eA==='H' || eB==='H') && (A.shiftIndex!==0 || B.shiftIndex!==0)) continue;
       const fA=wrap(frac(pA)); const fB=wrap(frac(pB));
       const cA=cart(fA); const cB=cart(fB);
       const dx=cA.x-cB.x, dy=cA.y-cB.y, dz=cA.z-cB.z; const dist=Math.sqrt(dx*dx+dy*dy+dz*dz);

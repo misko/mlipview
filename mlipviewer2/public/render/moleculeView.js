@@ -1,8 +1,12 @@
 import { elInfo } from '../elements.js';
+import { computeBondsNoState } from '../bond_render.js';
 
 export function createMoleculeView(scene, molState) {
   const atomGroups = new Map();
   const bondGroups = new Map();
+  const ghostAtomGroups = new Map(); // separate to keep pickable flag false
+  const ghostBondGroups = new Map();
+  let cellLines = null; // line system for cell outline
   // Highlight meshes (single reusable shell each for selected atom or bond)
   const highlight = { atom:null, bond:null };
   function keyOf(i,j){ const a=molState.elements[i], b=molState.elements[j]; return [a,b].sort().join('-'); }
@@ -15,6 +19,27 @@ export function createMoleculeView(scene, molState) {
     const master = BABYLON.MeshBuilder.CreateSphere('atom_'+el,{diameter:1,segments:24},scene);
     master.material = mat; master.isPickable = true; master.thinInstanceEnablePicking = true;
     const g = { master, mats:[], indices:[] }; atomGroups.set(el,g); return g;
+  }
+  function ensureGhostAtomGroup(el) {
+    if (ghostAtomGroups.has(el)) return ghostAtomGroups.get(el);
+    const info = elInfo(el);
+    const mat = new BABYLON.StandardMaterial('ghost_atom_'+el, scene);
+    mat.diffuseColor = info.color.clone();
+    mat.emissiveColor = info.color.scale(0.02);
+    mat.alpha = 0.35;
+    const master = BABYLON.MeshBuilder.CreateSphere('ghost_atom_'+el,{diameter:1,segments:16},scene);
+    master.material = mat; master.isPickable = false; master.thinInstanceEnablePicking = false;
+    const g = { master, mats:[], indices:[] }; ghostAtomGroups.set(el,g); return g;
+  }
+  function ensureGhostBondGroup(key) {
+    if (ghostBondGroups.has(key)) return ghostBondGroups.get(key);
+    const mat = new BABYLON.StandardMaterial('ghost_bond_'+key, scene);
+    mat.diffuseColor = new BABYLON.Color3(0.55,0.58,0.60);
+    mat.emissiveColor = mat.diffuseColor.scale(0.02);
+    mat.alpha = 0.25;
+    const master = BABYLON.MeshBuilder.CreateCylinder('ghost_bond_'+key,{height:1,diameter:1,tessellation:12},scene);
+    master.material=mat; master.isPickable=false; master.thinInstanceEnablePicking=false;
+    const g = { master, mats:[], indices:[] }; ghostBondGroups.set(key,g); return g;
   }
   function ensureBondGroup(key) {
     if (bondGroups.has(key)) return bondGroups.get(key);
@@ -86,6 +111,81 @@ export function createMoleculeView(scene, molState) {
       }
     }
   }
+  function rebuildGhosts() {
+    // Clear previous ghost buffers
+    for (const g of ghostAtomGroups.values()) { g.mats.length = 0; g.indices.length = 0; }
+    for (const g of ghostBondGroups.values()) { g.mats.length = 0; g.indices.length = 0; }
+    if (!molState.showGhostCells || !molState.showCell || !molState.cell?.enabled) {
+      for (const g of ghostAtomGroups.values()) g.master.thinInstanceSetBuffer('matrix', new Float32Array());
+      for (const g of ghostBondGroups.values()) g.master.thinInstanceSetBuffer('matrix', new Float32Array());
+      return;
+    }
+    const { a, b, c } = molState.cell;
+    const shifts = [ {x:0,y:0,z:0}, {x:1,y:0,z:0}, {x:-1,y:0,z:0}, {x:0,y:1,z:0}, {x:0,y:-1,z:0}, {x:0,y:0,z:1}, {x:0,y:0,z:-1} ];
+    // Build augmented atom list (first block is original atoms at shift 0)
+    const augAtoms = [];
+    for (const S of shifts) {
+      for (let i=0;i<molState.positions.length;i++) {
+        const base = molState.positions[i];
+        const pos = { x: base.x + S.x*a.x + S.y*b.x + S.z*c.x, y: base.y + S.x*a.y + S.y*b.y + S.z*c.y, z: base.z + S.x*a.z + S.y*b.z + S.z*c.z };
+        augAtoms.push({ element: molState.elements[i], baseIndex:i, shift:S, pos });
+        if (S.x!==0 || S.y!==0 || S.z!==0) {
+          // Only create thin instances for non-primary images (primary already rendered in main atom groups)
+          const g = ensureGhostAtomGroup(molState.elements[i]);
+          const info = elInfo(molState.elements[i]); const d = info.scale;
+          const mat = BABYLON.Matrix.Compose(new BABYLON.Vector3(d,d,d), BABYLON.Quaternion.Identity(), new BABYLON.Vector3(pos.x,pos.y,pos.z));
+          g.mats.push(mat); g.indices.push({ base:i, shift:[S.x,S.y,S.z] });
+        }
+      }
+    }
+    for (const g of ghostAtomGroups.values()) g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
+    // Run bond calculator over augmented list (stateless) and then extract bonds that involve at least one ghost image OR cross-image pair.
+    // We import lazily to avoid circular dependency; computeBondsNoState is already globally available in legacy path.
+    const augSimple = augAtoms.map(a=>({ element:a.element, pos:[a.pos.x,a.pos.y,a.pos.z] }));
+    const augBonds = computeBondsNoState(augSimple);
+    // Build mapping from augmented atom index back to (baseIndex, shift)
+    // augmented index layout: for shift index si and local atom i => idx = si * nAtoms + i
+    const nAtoms = molState.positions.length;
+    function decode(idx){ const si = Math.floor(idx / nAtoms); const local = idx % nAtoms; return { si, local, shift: shifts[si] }; }
+    for (const eb of augBonds) {
+      const A = decode(eb.i); const B = decode(eb.j);
+      // Skip primary-primary (both shift 0) because those are already rendered as real bonds
+      if (A.si===0 && B.si===0) continue;
+      const baseI = A.local; const baseJ = B.local;
+      const key = keyOf(baseI, baseJ);
+      const g = ensureGhostBondGroup(key);
+      const pA = augAtoms[eb.i].pos; const pB = augAtoms[eb.j].pos;
+      const mat = bondMatrix(pA,pB,0.1);
+      g.mats.push(mat); g.indices.push({ i:baseI, j:baseJ, shiftA:[A.shift.x,A.shift.y,A.shift.z], shiftB:[B.shift.x,B.shift.y,B.shift.z] });
+    }
+    for (const g of ghostBondGroups.values()) g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
+  }
+  function rebuildCellLines() {
+    if (!molState.showCell || !molState.cell?.enabled) { if (cellLines) { cellLines.dispose(); cellLines=null; } return; }
+    const { a,b,c, originOffset } = molState.cell;
+    const O = originOffset || {x:0,y:0,z:0};
+    const pts = [
+      O,
+      {x:O.x+a.x,y:O.y+a.y,z:O.z+a.z},
+      {x:O.x+a.x+b.x,y:O.y+a.y+b.y,z:O.z+a.z+b.z},
+      {x:O.x+b.x,y:O.y+b.y,z:O.z+b.z},
+      O,
+      {x:O.x+c.x,y:O.y+c.y,z:O.z+c.z},
+      {x:O.x+a.x+c.x,y:O.y+a.y+c.y,z:O.z+a.z+c.z},
+      {x:O.x+a.x+b.x+c.x,y:O.y+a.y+b.y+c.y,z:O.z+a.z+b.z+c.z},
+      {x:O.x+b.x+c.x,y:O.y+b.y+c.y,z:O.z+b.z+c.z},
+      {x:O.x+c.x,y:O.y+c.y,z:O.z+c.z},
+      {x:O.x+a.x+c.x,y:O.y+a.y+c.y,z:O.z+a.z+c.z},
+      {x:O.x+a.x+b.x+c.x,y:O.y+a.y+b.y+c.y,z:O.z+a.z+b.z+c.z},
+      {x:O.x+a.x+b.x,y:O.y+a.y+b.y,z:O.z+a.z+b.z},
+      {x:O.x+b.x+c.x,y:O.y+b.y+c.y,z:O.z+b.z+c.z},
+      {x:O.x+b.x,y:O.y+b.y,z:O.z+b.z}
+    ].map(p=> new BABYLON.Vector3(p.x,p.y,p.z));
+    if (cellLines) cellLines.dispose();
+    cellLines = BABYLON.MeshBuilder.CreateLines('cell_lines',{ points: pts }, scene);
+    cellLines.color = new BABYLON.Color3(0.9,0.8,0.25);
+    cellLines.isPickable = false;
+  }
   function rebuildAtoms() {
     // Clear current groups and rebuild from molState.elements/positions
     for (const g of atomGroups.values()) { g.mats.length = 0; g.indices.length = 0; }
@@ -115,7 +215,9 @@ export function createMoleculeView(scene, molState) {
     const currentCount = Array.from(atomGroups.values()).reduce((s,g)=>s+g.indices.length,0);
     if (currentCount !== molState.positions.length) rebuildAtoms();
     rebuildBonds();
+    rebuildGhosts();
   });
+  molState.bus.on('cellChanged', () => { rebuildCellLines(); rebuildGhosts(); });
   // Selection highlight management
   function ensureHighlightMeshes() {
     if (!highlight.atom) {
@@ -216,5 +318,5 @@ export function createMoleculeView(scene, molState) {
     }
     return null;
   }
-  return { rebuildBonds, _internals:{ atomGroups, bondGroups, highlight }, resolveAtomPick, resolveBondPick };
+  return { rebuildBonds, rebuildGhosts, _internals:{ atomGroups, bondGroups, ghostAtomGroups, ghostBondGroups, highlight }, resolveAtomPick, resolveBondPick };
 }
