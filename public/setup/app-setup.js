@@ -130,12 +130,6 @@ export async function setupBondPicking(scene, mol, torsion) {
 export function setupGlobalFunctions(state, torsion) {
   // Global functions for console access
   window.stateJson = () => state.getStateJSON();
-  window.stateExportXYZ = (name) => state.exportXYZ(name);
-  window.rotateBond = (i, j, side = "j", angleDeg = 5, recompute = false) =>
-    torsion.rotateAroundBond({ i, j, side, angleDeg, recompute });
-  // Debug helpers
-  window.stateOps = () => state.getOps();
-  window.stateLen = () => state.getOps().length;
-  window.stateLast = () => { const a = state.getOps(); return a.length ? a[a.length - 1] : null; };
-  window.stateDebug = (tag) => state.debugPrint(tag);
+  window.rotateBond = (i, j, orientation = 0, angleDeg = 5, recompute = false) =>
+    torsion.rotateAroundBond({ i, j, orientation, angleDeg, recompute });
 }

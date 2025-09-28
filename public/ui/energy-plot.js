@@ -1,11 +1,12 @@
 // ui/energy-plot.js - Energy plotting functionality
+import { dbg } from "../util/debug.js";
 export function createEnergyPlot() {
   const plotContainer = document.getElementById("plotContainer");
   const energyChart = document.getElementById("energyChart");
   
-  console.log("[DEBUG] Plot container found:", !!plotContainer);
-  console.log("[DEBUG] Energy chart canvas found:", !!energyChart);
-  console.log("[DEBUG] Chart.js available:", typeof Chart !== 'undefined');
+  dbg("[DEBUG] Plot container found:", !!plotContainer);
+  dbg("[DEBUG] Energy chart canvas found:", !!energyChart);
+  dbg("[DEBUG] Chart.js available:", typeof Chart !== 'undefined');
 
   // Return a no-op implementation if required elements are missing
   if (!plotContainer || !energyChart) {
@@ -29,7 +30,7 @@ export function createEnergyPlot() {
   plotContainer.style.display = showPlot ? "block" : "none";
 
   function initializeChart() {
-    console.log("[DEBUG] Initializing chart...");
+  dbg("[DEBUG] Initializing chart...");
     
     if (typeof Chart === 'undefined') {
       console.error("[ERROR] Chart.js is not loaded!");
@@ -44,7 +45,7 @@ export function createEnergyPlot() {
     // Destroy existing chart if it exists
     const existingChart = Chart.getChart(energyChart);
     if (existingChart) {
-      console.log("[DEBUG] Destroying existing chart...");
+  dbg("[DEBUG] Destroying existing chart...");
       existingChart.destroy();
     }
     
@@ -104,7 +105,7 @@ export function createEnergyPlot() {
         animation: false
       }
     });
-    console.log("[DEBUG] Chart initialized:", !!chart);
+  dbg("[DEBUG] Chart initialized:", !!chart);
   }
 
   function recordStep(energy) {
@@ -150,7 +151,7 @@ export function createEnergyPlot() {
 
   // Initialize chart since plot is on by default
   if (showPlot) {
-    console.log("[DEBUG] Initializing chart on startup...");
+  dbg("[DEBUG] Initializing chart on startup...");
     initializeChart();
   }
 
@@ -158,7 +159,7 @@ export function createEnergyPlot() {
   const clearButton = document.getElementById("clearPlot");
   if (clearButton) {
     clearButton.onclick = () => {
-      console.log("[DEBUG] Clear plot button clicked");
+  dbg("[DEBUG] Clear plot button clicked");
       clear(window.appState); // Will be set by main.js
     };
   } else {
@@ -167,7 +168,7 @@ export function createEnergyPlot() {
 
   function destroy() {
     if (chart) {
-      console.log("[DEBUG] Destroying chart...");
+  dbg("[DEBUG] Destroying chart...");
       chart.destroy();
       chart = null;
     }

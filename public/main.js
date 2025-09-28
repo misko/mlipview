@@ -7,6 +7,9 @@ import { createEnergyHUD, createStateBar } from "./ui/hud.js";
 import { showMoleculeSelector } from './ui/molecule-selector.js';
 import { createEnergyPlot } from "./ui/energy-plot.js";
 import { createForceControls } from "./controls/force-controls.js";
+import { DEBUG, dbg } from "./util/debug.js";
+
+// DEBUG and dbg provided by util/debug.js
 
 // Initialize application
 async function initApp() {
@@ -34,7 +37,7 @@ async function initApp() {
   const energyPlot = createEnergyPlot();
   const forceControls = createForceControls(forceVis);
   
-  console.log("[DEBUG] HUD elements found:", {
+  dbg("[DEBUG] HUD elements found:", {
     energyVal: !!hud.energyVal,
     btnForces: !!hud.btnForces,
     btnLenMode: !!hud.btnLenMode,
@@ -117,10 +120,10 @@ function setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, get
   
   // Plot button
   hud.btnPlot.onclick = () => {
-    console.log("[DEBUG] Plot button clicked, current state:", energyPlot.isEnabled());
+  dbg("[DEBUG] Plot button clicked, current state:", energyPlot.isEnabled());
     const isEnabled = energyPlot.toggle();
     hud.btnPlot.textContent = `Plot: ${isEnabled ? "ON" : "OFF"}`;
-    console.log("[DEBUG] Plot toggled to:", isEnabled);
+  dbg("[DEBUG] Plot toggled to:", isEnabled);
     
     if (isEnabled) {
       const r = getMlip().compute();
