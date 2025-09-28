@@ -51,7 +51,8 @@ export async function buildDefault(scene) {
         bondScale,
         mode: 'ballstick',
         debugAlwaysActive: true,
-        bondStyles: defaultBondStyles
+        bondStyles: defaultBondStyles,
+        center: true
       });
     } catch (e) {
       tried.push({ file, error: e.message });
@@ -67,6 +68,7 @@ export async function buildDefault(scene) {
     bondStyles: {
       'C-C': defaultBondStyles['C-C'],
       'C-H': defaultBondStyles['C-H']
-    }
+    },
+    center: true
   });
 }

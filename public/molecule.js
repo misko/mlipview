@@ -1,5 +1,6 @@
 import { elInfo } from "./elements.js";
 import { quatYto, setThinInstanceMatrices } from "./helpers.js";
+import { computeBondsNoState } from "./bond_render.js";
 
 /**
  * Generic molecule builder using thin instances.
@@ -16,8 +17,19 @@ export function buildMolecule(scene, opts) {
     bondScale = 1.15,
     mode = "ballstick",
     debugAlwaysActive = true,
-    bondStyles = {}
+    bondStyles = {},
+    center = true // center molecule on load (geometric center of positions)
   } = opts || {};
+
+  // Optional centering (currently geometric center; mass-weighting could be added later)
+  if (center && atoms.length) {
+    let cx = 0, cy = 0, cz = 0;
+    for (const a of atoms) { cx += a.pos.x; cy += a.pos.y; cz += a.pos.z; }
+    cx /= atoms.length; cy /= atoms.length; cz /= atoms.length;
+    if (Math.abs(cx) + Math.abs(cy) + Math.abs(cz) > 1e-9) {
+      for (const a of atoms) { a.pos.x -= cx; a.pos.y -= cy; a.pos.z -= cz; }
+    }
+  }
 
   // --- group atoms by element; masters are UNIT spheres, per-instance scale carries size
   const groups = new Map(); // elem -> { master, mats: [], indices:[], mat, info }
@@ -91,45 +103,45 @@ export function buildMolecule(scene, opts) {
       height: 1, diameter: 1, tessellation: 20
     }, scene);
     master.material = mat;
-    master.isPickable = true;                 // pick bonds
-    master.thinInstanceEnablePicking = true;  // pick specific instances
-    if (debugAlwaysActive) master.alwaysSelectAsActiveMesh = true;
+  // Minimize visual artifact: scale master host to epsilon so it never appears
+  // as a white cylinder at origin, while keeping it 'visible' for the thin instance system.
+  master.scaling = new BABYLON.Vector3(1, 1, 1); // normal scale for proper bond length reference
+  master.isVisible = true; // visible when instances present, may be hidden dynamically if empty
+  master.isPickable = false;                // picking occurs via thin instances
+  master.thinInstanceEnablePicking = true;  // allow per-instance picking
+  if (debugAlwaysActive) master.alwaysSelectAsActiveMesh = true;
 
     const group = { master, mats: [], style, indices: [] };
     bondGroups.set(pairKey, group);
     return group;
   }
 
-  // --- (A) initial bond detection or use provided bonds
-  let bondList = bonds || [];
-  if (!bonds) {
-    for (let i = 0; i < atoms.length; i++) {
-      const ai = atoms[i]; const infoi = elInfo(ai.element);
-      for (let j = i + 1; j < atoms.length; j++) {
-        const aj = atoms[j]; const infoj = elInfo(aj.element);
-        const cutoff = (infoi.covRad + infoj.covRad) * bondScale;
-        if (BABYLON.Vector3.Distance(ai.pos, aj.pos) <= cutoff) bondList.push({ i, j });
-      }
-    }
+  // --- (A) initial bond generation unified with runtime logic.
+  // If explicit bonds are provided, we respect them; otherwise we derive
+  // an initial list using computeBondsNoState (same logic used later).
+  let bondList = [];
+  if (bonds) {
+    bondList = bonds.slice();
+  } else {
+    const initial = computeBondsNoState(atoms.map(a => ({ element: a.element, pos: [a.pos.x, a.pos.y, a.pos.z] })));
+    bondList = initial.map(b => ({ i: b.i, j: b.j }));
   }
-
-  function rebuildBondGroupsFromList(list) {
-    // reset mats/indices but keep masters/materials
+  // Use the normal chemistry update path to build thin instances (ensures opacity treatment)
+  // but since updateBondsWithChemistry reads bondList only for historical purposes now,
+  // we still perform one direct population pass with full opacity for speed, then immediately
+  // call updateBondsWithChemistry to settle final visuals.
+  (function initialPopulate() {
     for (const [, g] of bondGroups) { g.mats = []; g.indices = []; }
-    // fill mats per pair
-    for (const { i, j } of list) {
+    for (const { i, j } of bondList) {
       const key = pairKeyOf(i, j);
       const g = getOrCreateBondGroup(key);
       g.indices.push({ i, j });
       g.mats.push(bondMatrix(atoms[i].pos, atoms[j].pos, g.style.radius));
     }
-    // bulk upload per group
-    for (const [, g] of bondGroups) {
-      setThinInstanceMatrices(g.master, g.mats);
-    }
-  }
-
-  rebuildBondGroupsFromList(bondList);
+    for (const [, g] of bondGroups) setThinInstanceMatrices(g.master, g.mats);
+    // Now immediately apply unified opacity/weight logic
+    updateBondsWithChemistry();
+  })();
 
   // --- per-element index mapping for interaction
   const elementToPerMeshIndex = new Map();
@@ -138,6 +150,8 @@ export function buildMolecule(scene, opts) {
     g.indices.forEach((globalIdx, k) => idxMap.set(globalIdx, k));
     elementToPerMeshIndex.set(elem, idxMap);
   }
+
+  // ring detection now handled inside computeBonds (pure function)
 
   // atoms presented to interaction layer (include scale)
   const atomsAPI = atoms.map((a, globalIdx) => {
@@ -155,6 +169,7 @@ export function buildMolecule(scene, opts) {
 
   // --- (C) slow path: recompute connectivity by cutoff, then rebuild buffers
   function recomputeBonds({ hysteresis = 1.02 } = {}) {
+    // Re-run lightweight proximity pass to seed a new list, then apply chemistry logic
     const newList = [];
     for (let i = 0; i < atoms.length; i++) {
       const ai = atoms[i]; const infoi = elInfo(ai.element);
@@ -165,91 +180,59 @@ export function buildMolecule(scene, opts) {
       }
     }
     bondList = newList;
-    rebuildBondGroupsFromList(bondList);
+    updateBondsWithChemistry();
   }
 
   // --- Enhanced bond updating with realistic chemistry and transparency
   function updateBondsWithChemistry() {
-    // Clear existing bonds and reset materials
-    for (const [, g] of bondGroups) { 
-      g.mats = []; 
+    // Reset existing bond group buffers/materials
+    for (const [, g] of bondGroups) {
+      g.mats = [];
       g.indices = [];
-      // Reset material to opaque
       if (g.master && g.master.material) {
         g.master.material.alpha = 1.0;
         g.master.material.transparencyMode = BABYLON.Material.MATERIAL_OPAQUE;
       }
+  // Do not upload an empty buffer here; wait until new mats are populated to avoid flicker.
     }
-    
-    // Group bonds by their transparency level
-    const bondsByOpacity = new Map(); // opacity -> bonds[]
-    
-    for (let i = 0; i < atoms.length; i++) {
-      const ai = atoms[i]; const infoi = elInfo(ai.element);
-      for (let j = i + 1; j < atoms.length; j++) {
-        const aj = atoms[j]; const infoj = elInfo(aj.element);
-        
-        const distance = BABYLON.Vector3.Distance(ai.pos, aj.pos);
-        const expectedBondLength = (infoi.covRad + infoj.covRad) * bondScale;
-        
-        // Calculate transparency based on deviation from expected length
-        const minVisibleLength = expectedBondLength * 0.9; // 90% of expected
-        const maxVisibleLength = expectedBondLength * 1.1; // 110% of expected
-        
-        let opacity = 1.0;
-        
-        if (distance < minVisibleLength) {
-          // Fade out when compressed below 90%
-          const compressionFactor = distance / minVisibleLength;
-          opacity = compressionFactor; // Fades to 0 as distance approaches 0
-        } else if (distance > maxVisibleLength) {
-          // Fade out when stretched beyond 110%
-          const stretchLimit = expectedBondLength * 1.5; // Complete disappearance at 150%
-          if (distance > stretchLimit) {
-            opacity = 0.0; // Completely gone
-          } else {
-            const stretchFactor = (distance - maxVisibleLength) / (stretchLimit - maxVisibleLength);
-            opacity = 1.0 - stretchFactor; // Fade from 1.0 to 0.0
-          }
-        }
-        
-        // Only show bonds with some visibility
-        if (opacity > 0.05) {
-          const opacityKey = Math.round(opacity * 20) / 20; // Round to nearest 0.05
-          if (!bondsByOpacity.has(opacityKey)) {
-            bondsByOpacity.set(opacityKey, []);
-          }
-          bondsByOpacity.get(opacityKey).push({ i, j, pairKey: pairKeyOf(i, j) });
-        }
+
+    // Use stateless bond computation from bond_render.js
+    // Adapt atom vector3 -> plain tuple expected by computeBondsNoState
+    const bondsRaw = computeBondsNoState(atoms.map(a => ({ element: a.element, pos: [a.pos.x, a.pos.y, a.pos.z] })));
+
+    // Map to existing rendering grouping (pairKey) and feed matrices
+    const bonds = bondsRaw.map(b => ({
+      i: b.i,
+      j: b.j,
+      opacity: b.opacity,
+      pairKey: [atoms[b.i].element, atoms[b.j].element].sort().join("-")
+    }));
+
+    // Track min alpha per group for coarse transparency
+    const minAlphaPerGroup = new Map();
+    for (const b of bonds) {
+      const group = getOrCreateBondGroup(b.pairKey);
+      const mat = bondMatrix(atoms[b.i].pos, atoms[b.j].pos, group.style.radius);
+      group.mats.push(mat);
+      group.indices.push({ i: b.i, j: b.j });
+      if (b.opacity < 0.999) {
+        const prev = minAlphaPerGroup.get(b.pairKey) ?? 1.0;
+        if (b.opacity < prev) minAlphaPerGroup.set(b.pairKey, b.opacity);
       }
     }
-    
-    // Create bonds grouped by opacity for efficiency
-    for (const [opacity, bonds] of bondsByOpacity) {
-      for (const { i, j, pairKey } of bonds) {
-        const group = getOrCreateBondGroup(pairKey);
-        
-        // Set material transparency for this opacity level
-        if (group.master && group.master.material) {
-          if (opacity < 1.0) {
-            group.master.material.alpha = Math.min(group.master.material.alpha || 1.0, opacity);
-            group.master.material.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND;
-          }
-        }
-        
-        const mat = bondMatrix(atoms[i].pos, atoms[j].pos, group.style.radius);
-        group.mats.push(mat);
-        group.indices.push({ i, j });
+
+    for (const [pairKey, g] of bondGroups) {
+      const matAlpha = minAlphaPerGroup.get(pairKey);
+      if (matAlpha !== undefined && g.master.material) {
+        g.master.material.alpha = matAlpha;
+        g.master.material.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND;
       }
-    }
-    
-    // Update all bond group meshes
-    for (const [, g] of bondGroups) {
       setThinInstanceMatrices(g.master, g.mats);
+      // Toggle host visibility based on whether we have instances; prevents lone cylinder
+      g.master.isVisible = g.mats.length > 0;
     }
-    
-    const totalBonds = Array.from(bondsByOpacity.values()).reduce((sum, bonds) => sum + bonds.length, 0);
-    console.log(`[Bonds] Updated with ${totalBonds} bonds (${bondsByOpacity.size} opacity levels)`);
+
+    console.log(`[Bonds] Updated with ${bonds.length} bonds (bond_render.js integration)`);
   }
 
   // --- update a single atom's matrix via global index (kept for completeness)
