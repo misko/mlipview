@@ -173,24 +173,28 @@ export function createFairChemForceField({
       coordinates: xyz,
       charge: defaultCharge,
       spin_multiplicity: defaultSpin,
-      properties: ['energy','forces']
+      properties: ['energy','forces'] // may push 'stress' below if cell present
     };
     const cell = currentCellMatrix();
     if (cell) {
       payload.cell = cell; // pass only when cell visualization enabled
+      if (!payload.properties.includes('stress')) payload.properties.push('stress');
     }
   console.log('[fairchem] computeRaw issuing request');
   const effEndpoint = __fairchemLockedEndpoint || endpoint;
   const data = await postJSON(effEndpoint, payload);
     const results = data.results || {};
-    const energy = results.energy;
-    const forces = results.forces;
+  const energy = results.energy;
+  const forces = results.forces;
+  const stress = results.stress || null; // expected 6-component or 3x3? server returns list or None
     if (!Array.isArray(forces) || forces.length !== Z.length) {
   console.warn('[fairchem] invalid forces length', { got: Array.isArray(forces)? forces.length : typeof forces, expected: Z.length });
       throw new Error('Invalid forces array length from FAIR-Chem response');
     }
   console.log('[fairchem] computeRaw parsed energy/forces', { energy, forcesLen: forces.length });
-    return { energy, forces };
+    // expose last stress on factory closure object for relaxation use
+    fairchemFF.lastStress = stress;
+    return { energy, forces, stress };
   }
 
   async function compute() {
@@ -200,10 +204,10 @@ export function createFairChemForceField({
     const t0 = performance.now();
   console.log('[fairchem] compute() start', { natoms: Z.length });
     try {
-      const { energy, forces } = await computeRaw({ Z, xyz });
+      const { energy, forces, stress } = await computeRaw({ Z, xyz });
       const dt = (performance.now() - t0).toFixed(1);
   console.log('[fairchem] compute() done in', dt, 'ms', { energy });
-      return { energy, forces: rawForcesToVectors(forces) };
+      return { energy, forces: rawForcesToVectors(forces), stress };
     } catch (err) {
       const dt = (performance.now() - t0).toFixed(1);
       console.warn('[fairchem] compute() failed after', dt, 'ms', err);
@@ -211,11 +215,13 @@ export function createFairChemForceField({
     }
   }
 
-  return {
+  const fairchemFF = {
     kind: 'fairchem',
     units,
   meta: { endpoint: (__fairchemLockedEndpoint || endpoint), provider: 'local-uma-server' },
     compute,
-    computeRaw
+    computeRaw,
+    lastStress: null
   };
+  return fairchemFF;
 }

@@ -121,20 +121,138 @@ export function createRelaxationEngine({
   async function computeEnergyAndForces() {
     const mlip = getMlip();
     if (!mlip) throw new Error('No MLIP available');
-    
+    // Wrap atoms into primary cell before computing forces (if cell present)
+    try {
+      if (molecule && molecule.wrapIntoCell) molecule.wrapIntoCell({ refresh: false, bondRefresh: false, log: false });
+    } catch {}
     const result = await mlip.compute();
     if (!result || typeof result.energy !== 'number' || !Array.isArray(result.forces)) {
       throw new Error('Invalid MLIP result');
     }
+    // Capture stress if present
+    let stress = null;
+    if (result.stress) {
+      stress = result.stress; // could be array length 6, or 3x3; we treat as Voigt length 6 if length==6
+    } else if (mlip.lastStress) {
+      stress = mlip.lastStress;
+    }
+    if (stress) {
+      try {
+        const sxx = stress[0], syy = stress[1], szz = stress[2];
+        console.log('[Relaxation][Stress] received from forcefield', {
+          hasStress: true,
+          length: Array.isArray(stress)? stress.length : 'n/a',
+          sxx, syy, szz,
+          hydrostatic_p: (Number.isFinite(sxx)&&Number.isFinite(syy)&&Number.isFinite(szz))? Number(((sxx+syy+szz)/3).toFixed(6)) : null
+        });
+      } catch {}
+    } else {
+      console.log('[Relaxation][Stress] not present this step');
+    }
     
     return {
       energy: result.energy,
-      forces: babylonForcesToVectors(result.forces)
+      forces: babylonForcesToVectors(result.forces),
+      stress
     };
   }
 
+  function tryCellRelax(stress) {
+    try {
+      if (!stress) return;
+      if (!molecule || !molecule.__cellState || !molecule.__cellState.visible) return;
+      const cs = molecule.__cellState;
+      const { a, b, c } = cs.vectors || {};
+      if (!a || !b || !c) return;
+      // Interpret stress as Voigt (xx, yy, zz, yz, xz, xy) in some units; we apply only hydrostatic part.
+      const sxx = stress[0], syy = stress[1], szz = stress[2];
+      if (![sxx,syy,szz].every(v=> Number.isFinite(v))) return;
+      const p = (sxx + syy + szz)/3; // simple average
+      // If near zero, skip
+      if (Math.abs(p) < 1e-4) {
+        console.log('[Relaxation][Stress] received (no cell change, |p| small)', { sxx, syy, szz, p: p.toFixed(6) });
+        return;
+      }
+      // Small scaling proportional to pressure; clamp magnitude (heuristic)
+      const scaleStep = Math.max(-0.01, Math.min(0.01, -0.002 * p)); // negative p expands, positive compress
+      // Cell volume before
+      const oldVol = a.x*(b.y*c.z - b.z*c.y) - a.y*(b.x*c.z - b.z*c.x) + a.z*(b.x*c.y - b.y*c.x);
+      const newA = a.scale(1+scaleStep);
+      const newB = b.scale(1+scaleStep);
+      const newC = c.scale(1+scaleStep);
+      // Preserve fractional coordinates
+      // Build inverse cell matrix with columns a,b,c
+      const M = [a.x, b.x, c.x, a.y, b.y, c.y, a.z, b.z, c.z];
+      const det = (
+        M[0]*(M[4]*M[8]-M[5]*M[7]) -
+        M[1]*(M[3]*M[8]-M[5]*M[6]) +
+        M[2]*(M[3]*M[7]-M[4]*M[6])
+      );
+      if (Math.abs(det) < 1e-12) return;
+      const invDet = 1/det;
+      const inv = [
+        (M[4]*M[8]-M[5]*M[7])*invDet,
+        (M[2]*M[7]-M[1]*M[8])*invDet,
+        (M[1]*M[5]-M[2]*M[4])*invDet,
+        (M[5]*M[6]-M[3]*M[8])*invDet,
+        (M[0]*M[8]-M[2]*M[6])*invDet,
+        (M[2]*M[3]-M[0]*M[5])*invDet,
+        (M[3]*M[7]-M[4]*M[6])*invDet,
+        (M[1]*M[6]-M[0]*M[7])*invDet,
+        (M[0]*M[4]-M[1]*M[3])*invDet
+      ];
+      function toFrac(pos) {
+        const x=pos.x,y=pos.y,z=pos.z;
+        return {
+          u: inv[0]*x + inv[1]*y + inv[2]*z,
+          v: inv[3]*x + inv[4]*y + inv[5]*z,
+            w: inv[6]*x + inv[7]*y + inv[8]*z
+        };
+      }
+      const fracs = molecule.atoms.map(a0 => ({ f: toFrac(a0.pos), atom: a0 }));
+      // Apply new cell vectors
+      if (typeof molecule.setCellVectors === 'function') {
+        molecule.setCellVectors(newA, newB, newC);
+      } else {
+        cs.vectors.a = newA; cs.vectors.b = newB; cs.vectors.c = newC;
+      }
+      // Rebuild quick matrix for fractional to cartesian
+      const A = newA, B = newB, C = newC;
+      function fracToCart(f) { return {
+        x: A.x*f.u + B.x*f.v + C.x*f.w,
+        y: A.y*f.u + B.y*f.v + C.y*f.w,
+        z: A.z*f.u + B.z*f.v + C.z*f.w
+      }; }
+      for (const entry of fracs) {
+        const cart = fracToCart(entry.f);
+        entry.atom.pos.x = cart.x;
+        entry.atom.pos.y = cart.y;
+        entry.atom.pos.z = cart.z;
+      }
+      if (molecule.changeCounter !== undefined) molecule.changeCounter++;
+      updateCallback();
+      const newVol = newA.x*(newB.y*newC.z - newB.z*newC.y) - newA.y*(newB.x*newC.z - newB.z*newC.x) + newA.z*(newB.x*newC.y - newB.y*newC.x);
+      const dVpct = ((newVol - oldVol)/oldVol)*100;
+      console.log('[Relaxation][Stress] applied cell update', {
+        stressVoigt: stress.slice(0,6).map(v=> Number.isFinite(v)? Number(v.toFixed(5)) : v),
+        hydrostatic_p: Number(p.toFixed(6)),
+        scaleStep: Number(scaleStep.toFixed(6)),
+        oldVolume: Number(oldVol.toFixed(6)),
+        newVolume: Number(newVol.toFixed(6)),
+        dV_percent: Number(dVpct.toFixed(4)),
+        newLengths: {
+          a: Number(newA.length().toFixed(4)),
+          b: Number(newB.length().toFixed(4)),
+          c: Number(newC.length().toFixed(4))
+        }
+      });
+    } catch(e) {
+      console.warn('[Relaxation] cell relax failed', e.message);
+    }
+  }
+
   async function performOptimizationStep() {
-    const { energy, forces } = await computeEnergyAndForces();
+    const { energy, forces, stress } = await computeEnergyAndForces();
     
     // Check convergence
     const maxForce = getMaxForce(forces);
@@ -198,6 +316,13 @@ export function createRelaxationEngine({
     );
 
     setAtomPositions(newPositions);
+    // Post-move wrap to keep atoms inside cell
+    try {
+      if (molecule && molecule.wrapIntoCell) {
+        const wrapped = molecule.wrapIntoCell({ refresh: false, bondRefresh: false, log: false });
+        if (wrapped) updateCallback();
+      }
+    } catch {}
 
     // Record energy step for plotting (same interface as user interactions)
     try {
@@ -210,6 +335,10 @@ export function createRelaxationEngine({
     // Store for next iteration
     lastEnergy = energy;
     lastForces = forces;
+    // Attempt simple cell relaxation using hydrostatic stress component
+    if (stress && Array.isArray(stress) && stress.length >= 3) {
+      tryCellRelax(stress);
+    }
     currentStep++;
 
     return false; // not converged

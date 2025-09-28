@@ -275,6 +275,8 @@ export function enableAtomDragging(scene, { atoms, refreshBonds, molecule, state
         // Translation recording removed with state simplification
 
         console.log("[pick] DROP @", finalCenter.toString(), "mesh:", dragging.mesh.name, "index:", dragging.index);
+        // Wrap position into cell if cell enabled
+        try { if (molecule && molecule.wrapIntoCell) { const wrapped = molecule.wrapIntoCell({ refresh: true, bondRefresh: true, log: false }); if (wrapped) console.log('[interaction][cell] wrapped after drag'); } } catch {}
       } else {
         console.log("[pick] DROP: no plane hit (keeping last position)");
       }

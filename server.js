@@ -28,6 +28,8 @@ app.use((req, res, next) => {
 
 // Middleware to serve static files
 app.use(express.static(path.join(__dirname, "public")));
+// New architecture preview served under /new
+app.use('/new', express.static(path.join(__dirname, 'public_new')));
 
 // API endpoint to list available molecule XYZ files
 app.get('/api/molecules', (req, res) => {

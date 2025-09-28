@@ -156,7 +156,10 @@ def simple_calculate(inp: SimpleIn):
         else:
             pbc = [False, False, False]
         atoms = _Atoms(
-            numbers=Z, positions=_np.array(xyz, dtype=float), cell=inp.cell, pbc=pbc
+            numbers=Z,
+            positions=_np.array(xyz, dtype=float),
+            cell=inp.cell,
+            pbc=pbc,
         )
         atoms.info.update(
             {
@@ -175,12 +178,29 @@ def simple_calculate(inp: SimpleIn):
             results["free_energy"] = results["energy"]
         if "forces" in props:
             results["forces"] = atoms.get_forces().tolist()
+        if "stress" in props:
+            try:
+                results["stress"] = atoms.get_stress().tolist()
+            except Exception:
+                results["stress"] = None
         dt = (_time.time() - t0) * 1000.0
         per_atom = dt / max(1, len(Z))
+        has_stress = "stress" in results and results.get("stress") is not None
+        stress_shape = (
+            (
+                len(results.get("stress", []))
+                if isinstance(results.get("stress"), list)
+                else None
+            )
+            if has_stress
+            else None
+        )
         print(
             "[simple_calculate] natoms="
             f"{len(Z)} props={props} time_ms={dt:.1f} "
-            f"ms_per_atom={per_atom:.2f}"
+            f"ms_per_atom={per_atom:.2f} "
+            f"stress={'yes' if has_stress else 'no'}"
+            + (f" stress_len={stress_shape}" if has_stress else "")
         )
         return {"results": results}
     except HTTPException:
@@ -246,10 +266,22 @@ def calculate(inp: CalcIn):
             else "n/a"
         )
         per_atom = dt / max(1, (natoms if isinstance(natoms, int) else 1))
+        has_stress = "stress" in results and results.get("stress") is not None
+        stress_shape = (
+            (
+                len(results.get("stress", []))
+                if isinstance(results.get("stress"), list)
+                else None
+            )
+            if has_stress
+            else None
+        )
         print(
             "[calculate] natoms="
             f"{natoms} props={props} time_ms={dt:.1f} "
-            f"ms_per_atom={per_atom:.2f}"
+            f"ms_per_atom={per_atom:.2f} "
+            f"stress={'yes' if has_stress else 'no'}"
+            + (f" stress_len={stress_shape}" if has_stress else "")
         )
         return {"results": results, "info": atoms.info}
     except Exception as e:

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>MLIP Viewer 2</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <style>
+    html,body { margin:0; padding:0; height:100%; background:#0b0f14; font-family: system-ui, sans-serif; color:#d8e6f3; }
+    #app { position:relative; width:100%; height:100%; overflow:hidden; }
+    canvas { width:100%; height:100%; display:block; }
+    .hud { position:absolute; top:8px; left:8px; background:rgba(20,26,34,0.65); border:1px solid rgba(255,255,255,0.07); border-radius:8px; padding:8px 12px; font-size:13px; backdrop-filter: blur(4px); }
+    .hud button { margin-right:6px; }
+    .footer { position:absolute; bottom:8px; left:8px; font-size:11px; opacity:0.6; }
+    a { color:#7fc4ff; }
+  </style>
+  <!-- Load Babylon globally so legacy-style modules that reference global BABYLON work -->
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+</head>
+<body>
+  <div id="app">
+    <canvas id="viewer"></canvas>
+    <div class="hud">
+      <button id="btnRelax">Relax Step</button>
+      <button id="btnMD">MD Step</button>
+      <button id="btnRebonds">Recompute Bonds</button>
+      <span id="status">Ready</span>
+      <div id="bond-rotation-ui" style="position:absolute;top:10px;right:10px;display:none;z-index:10;font-family:Arial;">
+        <button id="bond-rot-minus" style="margin:2px;">-</button>
+        <button id="bond-rot-plus" style="margin:2px;">+</button>
+      </div>
+    </div>
+    <div class="footer">MLIP Viewer 2 – separate project</div>
+  </div>
+  <script type="module">
+    import { initNewViewer } from './index.js';
+    import { loadDefault, loadXYZIntoViewer } from './util/moleculeLoader.js';
+    const urlParams = new URLSearchParams(location.search);
+    const DEBUG = urlParams.get('debug') === '1';
+    const canvas=document.getElementById('viewer');
+    let viewerApi;
+    (async()=>{
+      // Start with empty molecule; loader will populate.
+      viewerApi = await initNewViewer(canvas,{ elements:[], positions:[], bonds:[] });
+      if (DEBUG) {
+        console.log('[debug] viewer initialized');
+        window._viewer = viewerApi;
+      }
+      // Bond rotation UI wiring
+      const rotUI = document.getElementById('bond-rotation-ui');
+      const rotMinus = document.getElementById('bond-rot-minus');
+      const rotPlus = document.getElementById('bond-rot-plus');
+      const EPS = 0.1; // radians per click
+      function refreshRotationUI() {
+        const sel = viewerApi.selection.get();
+        if (sel.kind === 'bond') rotUI.style.display = 'block'; else rotUI.style.display = 'none';
+      }
+      viewerApi.state.bus.on('selectionChanged', refreshRotationUI);
+      rotMinus.addEventListener('click', ()=>{ viewerApi.manipulation.rotateBond(-EPS); });
+      rotPlus.addEventListener('click', ()=>{ viewerApi.manipulation.rotateBond(EPS); });
+      try {
+        const { file } = await loadDefault(viewerApi);
+        document.getElementById('status').textContent = `Loaded ${file}`;
+        if (DEBUG) console.log('[debug] default molecule loaded', file, 'atoms=', viewerApi.state.positions.length);
+      } catch (e) {
+        document.getElementById('status').textContent = 'Load failed';
+        console.error(e);
+      }
+    })();
+    document.getElementById('btnRelax').onclick=()=>{ if (!viewerApi) return; viewerApi.relaxStep(); document.getElementById('status').textContent='Relax step'; };
+    document.getElementById('btnMD').onclick=()=>{ if (!viewerApi) return; viewerApi.mdStep(); document.getElementById('status').textContent=`MD T=${viewerApi.state.dynamics.temperature.toFixed(2)}`; };
+    document.getElementById('btnRebonds').onclick=()=>{ if (!viewerApi) return; viewerApi.recomputeBonds(); document.getElementById('status').textContent='Recomputed bonds'; };
+    // Simple molecule switch UI (development convenience)
+    const switcher = document.createElement('select');
+    switcher.innerHTML = '<option value="molecules/roy.xyz">ROY</option><option value="molecules/benzene.xyz">Benzene</option>';
+    switcher.onchange = async () => {
+      if (!viewerApi) return;
+      const file = switcher.value;
+      document.getElementById('status').textContent = `Loading ${file}...`;
+      try {
+        await loadXYZIntoViewer(viewerApi, file);
+        document.getElementById('status').textContent = `Loaded ${file}`;
+        if (DEBUG) console.log('[debug] switched molecule', file, 'atoms=', viewerApi.state.positions.length);
+      } catch (e) {
+        document.getElementById('status').textContent = `Failed ${file}`;
+      }
+    };
+    document.querySelector('.hud').appendChild(switcher);
+  </script>
+</body>
+</html>

@@ -174,6 +174,8 @@ export function createPhysicsManager({ state, getMlip, energyPlot }) {
     if (!mol) { stopMD(); return; }
     const atoms = mol.atoms;
     if (!atoms || !atoms.length) { stopMD(); return; }
+    // Ensure current coordinates are wrapped before computing forces
+    if (mol.wrapIntoCell) mol.wrapIntoCell({ refresh: true, bondRefresh: false, log: false });
     const mlip = getMlip();
     try {
       // 1. Compute forces at current positions
@@ -199,11 +201,21 @@ export function createPhysicsManager({ state, getMlip, energyPlot }) {
         a.pos.y += v.y * dt;
         a.pos.z += v.z * dt;
       }
+      // Wrap after drift
+      if (mol.wrapIntoCell) mol.wrapIntoCell({ refresh: false, bondRefresh: false, log: false });
       if (mol.changeCounter !== undefined) mol.changeCounter++;
       if (typeof mol.refreshAtoms === 'function') mol.refreshAtoms();
-      if (typeof mol.refreshBonds === 'function') mol.refreshBonds();
+      // Recompute bonds each step (connectivity may change if system distorts/explodes)
+      try {
+        if (typeof mol.recomputeBonds === 'function') {
+          mol.recomputeBonds({ hysteresis: 1.01 }); // slightly tighter to avoid ghosty long bonds
+        } else if (typeof mol.refreshBonds === 'function') {
+          mol.refreshBonds();
+        }
+      } catch(e) { console.warn('[MD] bond update failed', e.message); }
       resetCache(); // positions changed
       // 2. Compute forces at new positions for full step velocity update
+      if (mol.wrapIntoCell) mol.wrapIntoCell({ refresh: false, bondRefresh: false, log: false });
       const res2 = await mlip.compute();
       if (!res2 || !Array.isArray(res2.forces)) throw new Error('MD: invalid forces 2');
       const forces2 = res2.forces;
