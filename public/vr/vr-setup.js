@@ -1,5 +1,6 @@
 // vr/vr-setup.js - VR initialization and controller setup
 import { makePicker } from "../selection.js";
+import { createEmptySelection, applyBondClick, bondOrientationColor, selectAtom as modelSelectAtom } from "../selection-model.js";
 import { getMoleculeMasters, getMoleculeDiag, transformLocalToWorld, getAnyMaster } from "./vr-utils.js";
 
 // Lightweight log helpers (enable by setting window.vrLog = true)
@@ -71,7 +72,7 @@ function setupVRFeatures(xrHelper, scene) {
   let picker = null;
   try { const m = molRef(); if (m) picker = makePicker(scene, m); } catch {}
   // Selection state (bond or atom) and visual markers
-  const selection = { kind: null, data: null }; // kind: 'bond' | 'atom' | null
+  const selection = createEmptySelection(); // unified selection model
   try { window.vrSelection = selection; } catch {}
   let bondSelMesh = null;   // cylinder highlighting selected bond (world-aligned)
   let atomSelMesh = null;   // sphere highlighting selected atom
@@ -80,9 +81,11 @@ function setupVRFeatures(xrHelper, scene) {
   function ensureBondMarker() {
     if (bondSelMesh) return bondSelMesh;
     const selMat = new BABYLON.StandardMaterial("vrBondSelMat", scene);
+    // Base orientation (i,j): cyan similar to desktop
     selMat.diffuseColor = new BABYLON.Color3(0.1, 0.9, 1.0);
-    selMat.emissiveColor = new BABYLON.Color3(0.05, 0.5, 0.6);
-    const cyl = BABYLON.MeshBuilder.CreateCylinder("vrBondSel", { height: 1, diameter: 1.25, tessellation: 32 }, scene);
+    selMat.emissiveColor = new BABYLON.Color3(0.05, 0.4, 0.5);
+    // Diameter 10% larger than base bond (assumed 1)
+    const cyl = BABYLON.MeshBuilder.CreateCylinder("vrBondSel", { height: 1, diameter: 1.1, tessellation: 32 }, scene);
     cyl.material = selMat;
     cyl.isPickable = false;
     cyl.alwaysSelectAsActiveMesh = true;
@@ -387,19 +390,30 @@ function setupVRFeatures(xrHelper, scene) {
               if (picker) {
                 const b = picker.pickBondWithRay(ray);
                 if (b) {
-                  selection.kind = 'bond';
-                  selection.data = { key: b.key, index: b.index, i: b.i, j: b.j };
-                  const m = molRef();
-                  const ai = m.atoms[b.i].pos, aj = m.atoms[b.j].pos;
-                  orientBondMarkerWorld(transformLocalToWorld(scene, ai), transformLocalToWorld(scene, aj));
-                  if (atomSelMesh) atomSelMesh.setEnabled(false);
-                  vrDebug(`[VR Select] Bond ${b.i}-${b.j} (group ${b.key}, ti ${b.index})`);
-                  handled = true;
+                  const prevKind = selection.kind;
+                  const cycleResult = applyBondClick(selection, { i: b.i, j: b.j, key: b.key, index: b.index });
+                  if (cycleResult === 'cleared') {
+                    clearSelection();
+                    handled = true;
+                  } else if (selection.kind === 'bond') {
+                    const cyl = ensureBondMarker();
+                    const mat = cyl.material;
+                    const col = bondOrientationColor(selection.data.orientation);
+                    if (mat) {
+                      mat.diffuseColor = new BABYLON.Color3(col.diffuse.r, col.diffuse.g, col.diffuse.b);
+                      mat.emissiveColor = new BABYLON.Color3(col.emissive.r, col.emissive.g, col.emissive.b);
+                    }
+                    const m = molRef();
+                    const ai = m.atoms[selection.data.i].pos, aj = m.atoms[selection.data.j].pos;
+                    orientBondMarkerWorld(transformLocalToWorld(scene, ai), transformLocalToWorld(scene, aj));
+                    if (atomSelMesh) atomSelMesh.setEnabled(false);
+                    if (prevKind !== 'bond') vrDebug(`[VR Select] Bond ${selection.data.i}-${selection.data.j}`);
+                    handled = true;
+                  }
                 } else {
                   const a = picker.pickAtomWithRay(ray);
                   if (a) {
-                    selection.kind = 'atom';
-                    selection.data = { idx: a.idx, type: a.type };
+                    modelSelectAtom(selection, { idx: a.idx, type: a.type });
                     const aW = transformLocalToWorld(scene, a.atom.pos);
                     const m0 = getAnyMaster();
                     const scl = m0?.scaling || new BABYLON.Vector3(1,1,1);

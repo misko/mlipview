@@ -256,10 +256,7 @@ export async function initVRApp() {
             xrHud.bond.state.recompute = !!prev.recompute;
             window.vrBondUI = xrHud.bond.state;
             // Sync visible labels for side/recompute
-            if (xrHud.bond.btnSide?.textBlock) {
-              const lbl = (window.vrBondUI.side === 'j') ? '(i,j)' : '(j,i)';
-              xrHud.bond.btnSide.textBlock.text = lbl;
-            }
+            // Side toggle removed; orientation handled by selection cycle
             if (xrHud.bond.btnRec?.textBlock) xrHud.bond.btnRec.textBlock.text = `recompute: ${window.vrBondUI.recompute ? 'on' : 'off'}`;
           }
         } catch {}
@@ -504,23 +501,31 @@ function rotateSelectedBond(scene, sign) {
   if (!sel) { console.warn('[VR] rotateSelectedBond called but no selection'); return; }
   if (sel.kind !== 'bond') { console.warn('[VR] rotateSelectedBond called but selection is not a bond:', sel.kind); return; }
   if (!torsion) { console.warn('[VR] rotateSelectedBond called but torsion controller missing'); return; }
-  const ui = window.vrBondUI || { side: 'j', step: 5, recompute: false };
+  const ui = window.vrBondUI || { side: 'j', step: 5 };
   const step = Math.abs(ui.step || 5);
   try {
-    if (typeof console !== 'undefined') {
-      console.log('[VR] rotateSelectedBond', { i: sel.data.i, j: sel.data.j, side: ui.side, step, sign, recompute: !!ui.recompute });
+    // Map orientation -> torsion side
+    // orientation 0 (cyan) == original ordering (i,j) -> side 'j'
+    // orientation 1 (purple) == reversed ordering -> side 'i'
+    let side;
+    if (sel.data && typeof sel.data.orientation === 'number') {
+      side = (sel.data.orientation === 0) ? 'j' : 'i';
+    } else {
+      // Fallback to legacy ui.side if orientation missing
+      side = ui.side || 'j';
     }
-    torsion.rotateAroundBond({ i: sel.data.i, j: sel.data.j, side: ui.side || 'j', angleDeg: sign * step, recompute: !!ui.recompute });
+    if (typeof console !== 'undefined') {
+      console.log('[VR] rotateSelectedBond', { i: sel.data.i, j: sel.data.j, orientation: sel.data.orientation, resolvedSide: side, step, sign });
+    }
+    torsion.rotateAroundBond({ i: sel.data.i, j: sel.data.j, orientation: sel.data.orientation, side, angleDeg: sign * step });
     if (typeof window.vrMol?.markChanged === 'function') window.vrMol.markChanged();
+  try { if (typeof window.recordEnergyStep === 'function') window.recordEnergyStep(); } catch {}
     // Snap positions to exact state by replaying ops from initial to avoid drift; print debug
     try {
-      if (window.appState?.recomputeAndCommit) {
-        window.appState.recomputeAndCommit();
-      }
+  // state recompute pipeline removed in simplified state store
       if (window.appState?.debugPrint) window.appState.debugPrint('[VR rotate]');
     } catch {}
-    // One-shot recompute like desktop: reset flag after use
-    if (ui.recompute) ui.recompute = false;
+    // recompute flag removed
     // Keep bond selected: do not clear window.vrSelection here.
     // Re-emit label update by touching a flag (safe no-op)
     try { scene._lastHudTick = (scene._lastHudTick || 0) + 1; } catch {}

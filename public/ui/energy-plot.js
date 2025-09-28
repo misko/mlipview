@@ -22,7 +22,7 @@ export function createEnergyPlot() {
 
   let showPlot = true; // Default to ON
   let chart = null;
-  let lastStepCount = 0;
+  let internalStep = 0; // internal monotonic counter independent of removed rotation history
   const maxDataPoints = 100;
 
   // Initialize plot as visible since it's on by default
@@ -107,24 +107,16 @@ export function createEnergyPlot() {
     console.log("[DEBUG] Chart initialized:", !!chart);
   }
 
-  function updateChart(energy, state) {
+  function recordStep(energy) {
     if (!chart) return;
-    // Use monotonic rotationSteps counter so compaction doesn't stall the plot
-    const steps = (typeof state.getRotationSteps === 'function') ? state.getRotationSteps() : state.rotations.length;
-    if (steps > lastStepCount) {
-      lastStepCount = steps;
-
-      chart.data.labels.push(steps);
-      chart.data.datasets[0].data.push(energy);
-      
-      if (chart.data.labels.length > maxDataPoints) {
-        chart.data.labels.shift();
-        chart.data.datasets[0].data.shift();
-      }
-      
-      chart.update('none');
-      console.log("[DEBUG] Chart updated, step:", steps, "energy:", energy);
+    internalStep += 1;
+    chart.data.labels.push(internalStep);
+    chart.data.datasets[0].data.push(energy);
+    if (chart.data.labels.length > maxDataPoints) {
+      chart.data.labels.shift();
+      chart.data.datasets[0].data.shift();
     }
+    chart.update('none');
   }
 
   function toggle() {
@@ -138,24 +130,21 @@ export function createEnergyPlot() {
     return showPlot;
   }
 
-  function addInitialDataPoint(energy, state) {
+  function addInitialDataPoint(energy) {
     if (chart) {
-      const steps = (typeof state.getRotationSteps === 'function') ? state.getRotationSteps() : state.rotations.length;
-      chart.data.labels.push(steps);
+      internalStep = 0;
+      chart.data.labels.push(internalStep);
       chart.data.datasets[0].data.push(energy);
-      lastStepCount = steps;
       chart.update('none');
-      console.log("[DEBUG] Added initial data point - step:", steps, "energy:", energy);
     }
   }
 
-  function clear(state) {
+  function clear() {
     if (chart) {
       chart.data.labels = [];
       chart.data.datasets[0].data = [];
-      lastStepCount = (typeof state.getRotationSteps === 'function') ? state.getRotationSteps() : state.rotations.length;
+      internalStep = 0;
       chart.update();
-      console.log("[DEBUG] Plot data cleared, reset to step:", lastStepCount);
     }
   }
 
@@ -187,7 +176,7 @@ export function createEnergyPlot() {
   return {
     isEnabled: () => showPlot,
     toggle,
-    updateChart,
+  recordStep,
     addInitialDataPoint,
     clear,
     destroy,

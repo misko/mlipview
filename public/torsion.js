@@ -14,9 +14,23 @@ export function createTorsionController(molecule, stateStore = null) {
     if (stateStore) stateStore.refreshAdjacency();
   }
 
-  function rotateAroundBond({ i, j, side = "j", angleDeg = 5, recompute = false, record = true }) {
+  /**
+   * Rotate around bond i-j.
+   * Preferred: pass orientation (0 -> original ordering i->j, 1 -> reversed) instead of side.
+   * Backward compatible: if side provided explicitly it wins. Otherwise orientation maps:
+   *   orientation 0 => side 'j' (rotate atoms on j side, pivot i)
+   *   orientation 1 => side 'i' (rotate atoms on i side, pivot j)
+   */
+  function rotateAroundBond({ i, j, side, orientation, angleDeg = 5, recompute = false }) {
     if (i === j) return;
     if (i < 0 || j < 0 || i >= atomsAPI.length || j >= atomsAPI.length) return;
+
+    // Resolve side from orientation if not provided
+    if (!side) {
+      if (orientation === 0) side = 'j';
+      else if (orientation === 1) side = 'i';
+      else side = 'j'; // default
+    }
 
     const pivotIdx  = (side === "j") ? i : j;
     const movedFrom = (side === "j") ? j : i;
@@ -54,9 +68,7 @@ export function createTorsionController(molecule, stateStore = null) {
       molecule.markChanged();
     }
 
-    if (record && stateStore) {
-      stateStore.recordRotation({ i, j, side, angleDeg });
-    }
+    // Rotation history recording removed with simplified state store
 
     if (recompute) {
       molecule.recomputeBonds({ hysteresis: 1.03 });

@@ -53,16 +53,10 @@ export function createStateBar() {
   stateBar.style.color = "#cfe3ff";
   stateBar.style.font = "12px system-ui,-apple-system,Segoe UI,Roboto,sans-serif";
   
-  stateBar.innerHTML = `
-    <button id="btnRebuild">Rebuild from rotations</button>
-    <button id="btnExport">Export XYZ</button>
-  `;
+  // Rebuild / Export controls removed
+  stateBar.innerHTML = ``;
   
   document.body.appendChild(stateBar);
   
-  return {
-    container: stateBar,
-    btnRebuild: stateBar.querySelector("#btnRebuild"),
-    btnExport: stateBar.querySelector("#btnExport")
-  };
+  return { container: stateBar };
 }

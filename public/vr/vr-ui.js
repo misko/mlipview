@@ -82,21 +82,10 @@ export function createVRUI(scene) {
 
   const btnMinus = mkBtn("⟲ −");
   const btnPlus  = mkBtn("⟲ +");
-  const btnSide  = mkBtn("(i,j)");
-
-  // Put buttons in a single row: +, (i,j)/(j,i), -
+  // Side toggle removed; rotation direction now determined by bond orientation cycle (selection logic)
   row.addControl(btnPlus);
-  row.addControl(btnSide);
   row.addControl(btnMinus);
-  // recompute button removed
-
-  const bondUIState = { side: 'j', step: 5 };
-
-  btnSide.onPointerUpObservable.add(() => {
-    bondUIState.side = bondUIState.side === 'j' ? 'i' : 'j';
-    const lbl = bondUIState.side === 'j' ? '(i,j)' : '(j,i)';
-    btnSide.textBlock.text = lbl;
-  });
+  const bondUIState = { step: 5 };
   // recompute toggle removed
 
   return {
@@ -105,10 +94,9 @@ export function createVRUI(scene) {
     // overlay bond UI
     bond: {
       bar: bondBar,
-      btnMinus,
-      btnPlus,
-      btnSide,
-      state: bondUIState
+  btnMinus,
+  btnPlus,
+  state: bondUIState
     },
     dispose() {
       try { advancedTexture.dispose(); } catch {}
@@ -352,22 +340,20 @@ export function createVRUIOnCamera(scene, xrCamera) {
   const rowY = (typeof cfg.buttonRowY === 'number') ? cfg.buttonRowY : -0.32;
 
   // Compute positions
-  // Single row positions: +, (i,j)/(j,i), -
-  const plusX  = - (wBtn + spacing);
-  const sideX  = 0;
-  const minusX = + (wBtn + spacing);
+  // Single row positions now: +  -  (center formerly side toggle)
+  const plusX  = - (wBtn + spacing*0.5);
+  const minusX = + (wBtn + spacing*0.5);
   const molsX  = 0; // Will place molecules button in a second row below center
   // recX removed
 
   // Triple font size for XR control buttons only via local fontPx
   const minus = mkButtonPlane('hudMinus', wBtn, hBtn, new BABYLON.Vector3(minusX, rowY, 0), '⟲ −', 42 * 3);
   const plus  = mkButtonPlane('hudPlus',  wBtn, hBtn, new BABYLON.Vector3(plusX, rowY, 0), '⟲ +', 42 * 3);
-  const side  = mkButtonPlane('hudSide',  wBtn, hBtn, new BABYLON.Vector3(sideX, rowY, 0), '(i,j)', 42 * 3);
   const mols  = mkButtonPlane('hudMols',  wBtn*1.4, hBtn, new BABYLON.Vector3(molsX, rowY - (rowDY*1.1), 0), 'Molecules', 42 * 2.2);
   // recompute plane removed
 
   // State shared with app
-  const bondUIState = { side: 'j', step: 5 };
+  const bondUIState = { step: 5 }; // side removed; orientation from selection model
 
   // GUI press guard (only when real button planes pressed)
   const setGuiActive = (v) => {
@@ -388,15 +374,9 @@ export function createVRUIOnCamera(scene, xrCamera) {
     btn.onPointerDownObservable.add(() => setGuiActive(true));
     btn.onPointerUpObservable.add(() => setTimeout(() => setGuiActive(false), 0));
   };
-  [minus.btn, plus.btn, side.btn, mols.btn].forEach(wirePressGuards);
+  [minus.btn, plus.btn, mols.btn].forEach(wirePressGuards);
 
-  // Side/recompute handlers
-  side.btn.onPointerUpObservable.add(() => {
-    bondUIState.side = bondUIState.side === 'j' ? 'i' : 'j';
-    const lbl = bondUIState.side === 'j' ? '(i,j)' : '(j,i)';
-    side.btn.textBlock.text = lbl;
-  });
-  // recompute handler removed
+  // Side toggle removed (orientation handled via selection clicks)
 
   return {
     advancedTexture: null, // per-mesh ADTs; no single texture
@@ -406,7 +386,7 @@ export function createVRUIOnCamera(scene, xrCamera) {
     bond: {
       btnMinus: minus.btn,
       btnPlus: plus.btn,
-      btnSide: side.btn,
+      btnSide: null,
       state: bondUIState
     },
     btnMolecules: mols.btn,
@@ -414,7 +394,6 @@ export function createVRUIOnCamera(scene, xrCamera) {
       // Dispose GUI textures first
       try { minus.adt && minus.adt.dispose(); } catch {}
       try { plus.adt && plus.adt.dispose(); } catch {}
-      try { side.adt && side.adt.dispose(); } catch {}
       try { mols.adt && mols.adt.dispose(); } catch {}
       try { energy.adt && energy.adt.dispose(); } catch {}
       // Dispose plot textures/materials/mesh
@@ -424,7 +403,6 @@ export function createVRUIOnCamera(scene, xrCamera) {
       // Dispose button/label meshes
       try { minus.mesh && minus.mesh.dispose(); } catch {}
       try { plus.mesh && plus.mesh.dispose(); } catch {}
-      try { side.mesh && side.mesh.dispose(); } catch {}
       try { mols.mesh && mols.mesh.dispose(); } catch {}
       try { energy.mesh && energy.mesh.dispose(); } catch {}
       // Finally dispose the root transform

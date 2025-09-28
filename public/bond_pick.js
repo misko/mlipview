@@ -4,6 +4,7 @@
 
 import { makePicker } from "./selection.js";
 import { registerBondClear, selectBond, clearSelection as clearGlobalSelection, isAtomDragging } from "./selection_state.js";
+import { createEmptySelection, applyBondClick, bondOrientationColor, orientationToSide } from "./selection-model.js";
 
 export function enableBondPicking(
   scene,
@@ -24,8 +25,9 @@ export function enableBondPicking(
   selMat.diffuseColor = new BABYLON.Color3(0.1, 0.9, 1.0);
   selMat.emissiveColor = new BABYLON.Color3(0.05, 0.4, 0.5);
 
+  // Highlight cylinder: 10% larger than base bond diameter (base assumed diameter=1)
   const selMesh = BABYLON.MeshBuilder.CreateCylinder("bondSelMesh", {
-    height: 1, diameter: 1.25, tessellation: 32
+    height: 1, diameter: 1.1, tessellation: 32
   }, scene);
   selMesh.material = selMat;
   selMesh.isPickable = false;
@@ -74,37 +76,37 @@ export function enableBondPicking(
   ui.style.pointerEvents = "auto";
   ui.style.backdropFilter = "blur(4px)";
   ui.innerHTML = `
-    <span id="bondLabel" style="min-width: 260px; display:inline-block;">Select a bond…</span>
-    <button id="btnSide" style="font-size:16px; padding:10px 12px;">Side: j</button>
+  <span id="bondLabel" style="min-width: 260px; display:inline-block;">Select a bond…</span>
     <button id="btnMinus" style="font-size:20px; padding:10px 14px;">⟲ −</button>
     <button id="btnPlus"  style="font-size:20px; padding:10px 14px;">⟳ +</button>
-    <button id="btnRecompute" title="Recompute connectivity after next rotation">recompute</button>
+    <!-- recompute button removed -->
   `;
   document.body.appendChild(ui);
 
   const labelEl = ui.querySelector("#bondLabel");
-  const btnSide = ui.querySelector("#btnSide");
+  // side button removed (cycling handled by repeated selection clicks)
   const btnMinus = ui.querySelector("#btnMinus");
   const btnPlus  = ui.querySelector("#btnPlus");
-  const btnRec   = ui.querySelector("#btnRecompute");
+  // recompute button removed
 
-  let selected = null; // { i, j, side, step, label }
-  let doRecompute = false;
+  const selection = createEmptySelection();
+  let selected = null; // local convenience mirror (will hold augmented step/label)
 
   function updateLabel(warn = false) {
     if (!selected) {
       labelEl.textContent = "Select a bond…";
-      btnSide.textContent = "Side: j";
+      // no side button now
       return;
     }
-    const { i, j, side, step, label } = selected;
-    const base = `${label || `bond ${i}-${j}`} (step ${step}°)`;
+    const { i, j, orientation, step, label } = selected;
+    const orientLabel = orientation === 0 ? '(i,j)' : '(j,i)';
+    const base = `${label || `bond ${i}-${j}`} ${orientLabel} (step ${step}°)`;
     labelEl.textContent = warn ? `${base} — not in ROY.BONDS` : base;
-    btnSide.textContent = `Side: ${side}`;
   }
 
   function clearSelection() {
     selected = null;
+    selection.kind = null; selection.data = null;
     selMesh.setEnabled(false);
     updateLabel(false);
     // ensure camera reattaches so orbit/pan work immediately
@@ -119,36 +121,28 @@ export function enableBondPicking(
   });
 
   function applyRotation(sign) {
-    if (!selected) return;
-    torsion.rotateAroundBond({
-      i: selected.i, j: selected.j, side: selected.side,
-      angleDeg: sign * Math.abs(selected.step || 5),
-      recompute: doRecompute
-    });
-    doRecompute = false;
+  if (!selected) return;
+  const side = orientationToSide(selected.orientation);
+  torsion.rotateAroundBond({ i: selected.i, j: selected.j, orientation: selected.orientation, side, angleDeg: sign * Math.abs(selected.step || 5) });
     try {
-      // Snap to float64 authoritative positions and force energy recompute
-      if (window.appState?.recomputeAndCommit) window.appState.recomputeAndCommit();
+    // Snap to float64 authoritative positions and force energy recompute (state simplification)
       if (typeof molecule?.markChanged === 'function') molecule.markChanged();
       if (typeof window.appState?.debugPrint === 'function') window.appState.debugPrint('[desktop rotate]');
     } catch {}
-    orientBondMarker(selected.i, selected.j);
+  orientBondMarker(selected.i, selected.j);
+  try { if (typeof window.recordEnergyStep === 'function') window.recordEnergyStep(); } catch {}
   }
 
   btnMinus.onclick = () => applyRotation(-1);
   btnPlus.onclick  = () => applyRotation(+1);
-  btnSide.onclick  = () => {
-    if (!selected) return;
-    selected.side = (selected.side === "j") ? "i" : "j";
-    updateLabel();
-  };
-  btnRec.onclick = () => { doRecompute = true; };
+  // side button removed
+  // recompute control removed
 
   // Shortcuts (desktop)
   window.addEventListener("keydown", (e) => {
     if (e.key === "[") applyRotation(-1);
     else if (e.key === "]") applyRotation(+1);
-    else if (e.key.toLowerCase() === "s") btnSide.click();
+    // side toggle shortcut removed
     else if (e.key === "Escape") clearSelection();
   });
 
@@ -176,18 +170,30 @@ export function enableBondPicking(
       if (!pair) return;
 
       const { i, j } = pair;
-      console.log(`[bond-pick] Selected bond i=${i} j=${j} (pairKey=${bondHit.key})`);
-
-      const allowed = isAllowed(i, j);
-      let spec = rotatableSpec.find(r => (r.i === i && r.j === j) || (r.i === j && r.j === i));
-      if (!spec) spec = { i, j, side: "j", step: 5, label: `bond ${i}-${j}` };
-
-      selected = { i: spec.i, j: spec.j, side: spec.side || "j", step: spec.step || 5, label: spec.label };
-      updateLabel(!allowed);
-      orientBondMarker(i, j);
-      // Announce bond selection to clear any atom selection
-      selectBond();
-      return;
+      // If already selected, advance orientation cycle or clear
+      // Use shared selection model
+      const prevKind = selection.kind;
+      const prevOrientation = selection.data?.orientation;
+      const result = applyBondClick(selection, { i, j, key: bondHit.key, index: bondHit.index });
+      if (result === 'cleared') {
+        clearSelection();
+        return;
+      }
+      if (selection.kind === 'bond') {
+        // augment with step/label spec
+        let spec = rotatableSpec.find(r => (r.i === selection.data.i && r.j === selection.data.j) || (r.i === selection.data.j && r.j === selection.data.i));
+        if (!spec) spec = { i: selection.data.i, j: selection.data.j, step: 5, label: `bond ${selection.data.i}-${selection.data.j}` };
+        selected = { i: selection.data.i, j: selection.data.j, orientation: selection.data.orientation, step: spec.step || 5, label: spec.label };
+        const allowed = isAllowed(selected.i, selected.j);
+        // set marker color for current orientation
+        const col = bondOrientationColor(selected.orientation);
+        selMat.diffuseColor = new BABYLON.Color3(col.diffuse.r, col.diffuse.g, col.diffuse.b);
+        selMat.emissiveColor = new BABYLON.Color3(col.emissive.r, col.emissive.g, col.emissive.b);
+        updateLabel(!allowed);
+        orientBondMarker(selected.i, selected.j);
+        if (prevKind !== 'bond') selectBond(); // only signal new bond selection once
+        return;
+      }
     }
 
     // Not a bond: if it's not an atom either, deselect & reattach camera

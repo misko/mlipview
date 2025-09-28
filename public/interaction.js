@@ -260,24 +260,7 @@ export function enableAtomDragging(scene, { atoms, refreshBonds, molecule, state
         
         if (typeof refreshBonds === "function") refreshBonds();
 
-        // Record translation delta into state ops if available and commit float64 rebuild
-        try {
-          if (state && typeof state.recordAtomTranslation === 'function') {
-            const dx = finalCenter.x - dragging.startPos.x;
-            const dy = finalCenter.y - dragging.startPos.y;
-            const dz = finalCenter.z - dragging.startPos.z;
-            // Only record if not a click-like micro move
-            const mag2 = dx*dx + dy*dy + dz*dz;
-            if (mag2 > 1e-10) {
-              const kIdx = (pointerDown?.pick?.globalIndex ?? -1);
-              if (kIdx >= 0) {
-                state.recordAtomTranslation({ k: kIdx, dx, dy, dz });
-                if (typeof state.recomputeAndCommit === 'function') state.recomputeAndCommit();
-                if (typeof state.debugPrint === 'function') state.debugPrint('[drag end]');
-              }
-            }
-          }
-        } catch {}
+        // Translation recording removed with state simplification
 
         console.log("[pick] DROP @", finalCenter.toString(), "mesh:", dragging.mesh.name, "index:", dragging.index);
       } else {

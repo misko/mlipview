@@ -54,17 +54,24 @@ async function initApp() {
     if (r0 && typeof r0.then === 'function') {
       r0.then(res => {
         if (res && Number.isFinite(res.energy)) {
-          energyPlot.addInitialDataPoint(res.energy, state);
+          energyPlot.addInitialDataPoint(res.energy);
         }
       }).catch(e => console.warn('[forcefield] initial compute failed', e));
     } else if (r0 && Number.isFinite(r0.energy)) {
-      energyPlot.addInitialDataPoint(r0.energy, state);
+  energyPlot.addInitialDataPoint(r0.energy);
     }
   }
   
   // Start render loop
   const physics = createPhysicsManager({ state, getMlip: () => mlip });
   startRenderLoop(engine, scene, hud.energyVal, forceControls, energyPlot, state, physics);
+  // Expose explicit step recorder (bond rotations will call this)
+  window.recordEnergyStep = () => {
+    const e = physics.energy;
+    if (Number.isFinite(e) && energyPlot.isEnabled()) {
+      energyPlot.recordStep(e);
+    }
+  };
 
   // Forcefield switch handlers
   function applyActiveFFStyles(kind) {
@@ -84,7 +91,7 @@ async function initApp() {
     applyActiveFFStyles(mlip.kind);
     // Reset caches & plot
   physics.resetCache();
-    if (energyPlot.isEnabled()) energyPlot.clear(state);
+  if (energyPlot.isEnabled()) energyPlot.clear();
   }
   if (hud.btnFFFair) hud.btnFFFair.onclick = () => switchBackend('fairchem');
   if (hud.btnFFLJ) hud.btnFFLJ.onclick = () => switchBackend('lj');
@@ -118,41 +125,27 @@ function setupEventHandlers(hud, stateBar, energyPlot, forceControls, state, get
     if (isEnabled) {
       const r = getMlip().compute();
       if (r && typeof r.then === 'function') {
-        r.then(res => res && Number.isFinite(res.energy) && energyPlot.addInitialDataPoint(res.energy, state));
+  r.then(res => res && Number.isFinite(res.energy) && energyPlot.addInitialDataPoint(res.energy));
       } else if (r && Number.isFinite(r.energy)) {
-        energyPlot.addInitialDataPoint(r.energy, state);
+  energyPlot.addInitialDataPoint(r.energy);
       }
     }
   };
   
-  // State bar buttons
-  stateBar.btnRebuild.onclick = () => {
-    state.recomputeAndCommit();
-  };
-  
-  stateBar.btnExport.onclick = () => {
-    const xyz = state.exportXYZ("ROY_from_rotations");
-    const blob = new Blob([xyz], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "reconstructed.xyz";
-    a.click();
-    URL.revokeObjectURL(url);
-  };
+  // Rebuild / Export controls removed
   
   // Global clear function
-  window.clearEnergyPlot = () => energyPlot.clear(state);
+  window.clearEnergyPlot = () => energyPlot.clear();
 }
 
 function startRenderLoop(engine, scene, energyVal, forceControls, energyPlot, state, physics) {
   let frameCount = 0;
   let lastEnergyUpdate = 0;
   let lastForceUpdate = 0;
-  let lastPlotUpdate = 0;
+  // Plot updates now event-driven; remove lastPlotUpdate
   const ENERGY_UPDATE_INTERVAL = 2;
   const FORCE_UPDATE_INTERVAL = 3;
-  const PLOT_UPDATE_INTERVAL = 5;
+  // PLOT_UPDATE_INTERVAL removed (event-driven)
   engine.runRenderLoop(() => {
     frameCount++;
     physics.tickFrame();
@@ -160,7 +153,7 @@ function startRenderLoop(engine, scene, energyVal, forceControls, energyPlot, st
     const e = physics.energy;
     const needsEnergyUpdate = physicsUpdated || (frameCount - lastEnergyUpdate >= ENERGY_UPDATE_INTERVAL);
     const needsForceUpdate = physicsUpdated || (frameCount - lastForceUpdate >= FORCE_UPDATE_INTERVAL);
-    const needsPlotUpdate = physicsUpdated || (frameCount - lastPlotUpdate >= PLOT_UPDATE_INTERVAL);
+  // Plot no longer updated on a timer
     if (needsEnergyUpdate) {
       if (Number.isFinite(e)) {
         energyVal.textContent = e.toFixed(3);
@@ -170,12 +163,7 @@ function startRenderLoop(engine, scene, energyVal, forceControls, energyPlot, st
       }
     }
     if (needsForceUpdate && physics.forces) { forceControls.updateForces(physics.forces); lastForceUpdate = frameCount; }
-    if (needsPlotUpdate && energyPlot.isEnabled()) {
-      if (Number.isFinite(e)) {
-        energyPlot.updateChart(e, state);
-        lastPlotUpdate = frameCount;
-      }
-    }
+    // Plot updates only happen when window.recordEnergyStep is invoked (after rotations)
     scene.render();
   });
 }

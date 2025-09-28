@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 import torch
 from ase.io.jsonio import decode, encode
 from fairchem.core import FAIRChemCalculator, pretrained_mlip  # fairchem-core >= 2.x
+from fairchem.core.units.mlip_unit import InferenceSettings
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -16,7 +17,18 @@ TASK_NAME = os.environ.get("UMA_TASK", "omol")  # omol / omat / oc20 / odac / om
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Load once at startup (kept in memory)
-predictor = pretrained_mlip.get_predict_unit(MODEL_NAME, device=DEVICE)
+predictor = pretrained_mlip.get_predict_unit(
+    MODEL_NAME,
+    device=DEVICE,
+    inference_settings=InferenceSettings(
+        tf32=True,
+        activation_checkpointing=False,
+        merge_mole=False,
+        compile=False,
+        external_graph_gen=False,
+        internal_graph_gen_version=2,
+    ),
+)
 calc = FAIRChemCalculator(predictor, task_name=TASK_NAME)
 
 app = FastAPI(title="UMA-small ASE HTTP server")
