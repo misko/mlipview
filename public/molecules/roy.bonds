@@ -1,9 +1,0 @@
-# ROY.BONDS — rotatable bond declarations for ROY (0-based indices from roy.xyz)
-
-# NOTE: Indices updated for new 28-atom roy.xyz (0-based). Verify chemically after final structure confirmation.
-# New ordering: anilide N is atom 10; adjacent carbon in side chain is atom 11; next chain carbon is atom 12.
-# Anilide N—C link (side chain swings)
-ROTATABLE i=10 j=11 side=j label=Tau1_N10-C11 step=5 min=-180 max=180
-
-# Next single bond down the chain (C11—C12)
-ROTATABLE i=11 j=12 side=j label=Tau2_C11-C12 step=5 min=-180 max=180

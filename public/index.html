@@ -1,32 +1,146 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Babylon.js Benzene (modular)</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="./styles.css">
-  <!-- Babylon UMD (global BABYLON) -->
+  <meta charset="UTF-8"/>
+  <title>MLIP Viewer 2</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <style>
+    html,body { margin:0; padding:0; height:100%; background:#0b0f14; font-family: system-ui, sans-serif; color:#d8e6f3; }
+    #app { position:relative; width:100%; height:100%; overflow:hidden; }
+    canvas { width:100%; height:100%; display:block; }
+    .hud { position:absolute; top:8px; left:8px; background:rgba(20,26,34,0.65); border:1px solid rgba(255,255,255,0.07); border-radius:8px; padding:8px 12px; font-size:13px; backdrop-filter: blur(4px); }
+    .hud button { margin-right:6px; }
+    .footer { position:absolute; bottom:8px; left:8px; font-size:11px; opacity:0.6; }
+    a { color:#7fc4ff; }
+    /* Lightweight VR entry button */
+    #enter-vr-btn { position:absolute; top:8px; right:8px; z-index:20; background:#1374d8; color:#fff; border:1px solid rgba(255,255,255,0.2); padding:8px 14px; border-radius:6px; font-size:14px; cursor:pointer; box-shadow:0 2px 4px rgba(0,0,0,0.4); display:none; }
+    #enter-vr-btn[disabled] { opacity:0.5; cursor:default; }
+    #enter-vr-btn.vr-active { background:#0d9256; }
+    #enter-vr-btn:hover:not([disabled]) { background:#0f62b4; }
+  </style>
+  <!-- Load Babylon globally so legacy-style modules that reference global BABYLON work -->
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
-<script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
-  <!-- Chart.js for plotting -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
+  <!-- Loaders plugin for glTF/glb (controllers, hand meshes) -->
+  <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.js"></script>
 </head>
 <body>
-  <canvas id="renderCanvas"></canvas>
-  <div id="hint">Drag to rotate · Scroll to zoom · Right-drag to pan</div>
-  
-  <!-- Energy plot container -->
-  <div id="plotContainer" style="position: absolute; bottom: 20px; left: 20px; width: 400px; height: 250px; background: rgba(15,18,24,0.9); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px; display: none;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-      <div style="color: #f5ffd1; font: 12px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;">Energy vs Bond Rotations</div>
-      <button id="clearPlot" style="padding: 2px 6px; font-size: 10px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; color: #f5ffd1; cursor: pointer;">Clear</button>
+  <div id="app">
+    <canvas id="viewer"></canvas>
+    <div class="hud">
+      <button id="btnRelax">Relax Step</button>
+      <button id="btnMD">MD Step</button>
+      <button id="btnRebonds">Recompute Bonds</button>
+  <button id="btnCell">Cell</button>
+  <button id="btnGhosts">Ghosts</button>
+      <span id="status">Ready</span>
+      <div id="bond-rotation-ui" style="position:absolute;top:10px;right:10px;display:none;z-index:10;font-family:Arial;">
+        <button id="bond-rot-minus" style="margin:2px;">-</button>
+        <button id="bond-rot-plus" style="margin:2px;">+</button>
+      </div>
     </div>
-    <canvas id="energyChart" width="380" height="200"></canvas>
+    <div class="footer">MLIP Viewer 2 – separate project</div>
+    <button id="enter-vr-btn" title="Enter WebXR (Lite)">Enter VR</button>
   </div>
+  <script type="module">
+    import { initNewViewer } from './index.js';
+    import { loadDefault, loadXYZIntoViewer } from './util/moleculeLoader.js';
+    const urlParams = new URLSearchParams(location.search);
+    const DEBUG = urlParams.get('debug') === '1';
+    const canvas=document.getElementById('viewer');
+    let viewerApi;
+    // Desktop initialization (runs immediately; we keep always-on desktop mode and allow VR overlay switch)
+    (async()=>{
+      // Start with empty molecule; loader will populate.
+      viewerApi = await initNewViewer(canvas,{ elements:[], positions:[], bonds:[] });
+      // Always expose viewer globally for VR reuse (was previously behind DEBUG flag)
+      window._viewer = viewerApi;
+      window.vrScene = viewerApi.scene; // redundancy for VR module
+      window.vrEngine = viewerApi.engine;
+      if (DEBUG) console.log('[debug] viewer initialized');
+      // Bond rotation UI wiring
+      const rotUI = document.getElementById('bond-rotation-ui');
+      const rotMinus = document.getElementById('bond-rot-minus');
+      const rotPlus = document.getElementById('bond-rot-plus');
+      const EPS = 0.1; // radians per click
+      function refreshRotationUI() {
+        const sel = viewerApi.selection.get();
+        if (sel.kind === 'bond') rotUI.style.display = 'block'; else rotUI.style.display = 'none';
+      }
+      viewerApi.state.bus.on('selectionChanged', refreshRotationUI);
+      rotMinus.addEventListener('click', ()=>{ viewerApi.manipulation.rotateBond(-EPS); });
+      rotPlus.addEventListener('click', ()=>{ viewerApi.manipulation.rotateBond(EPS); });
+      try {
+        const { file } = await loadDefault(viewerApi);
+        document.getElementById('status').textContent = `Loaded ${file}`;
+        if (DEBUG) console.log('[debug] default molecule loaded', file, 'atoms=', viewerApi.state.positions.length);
+      } catch (e) {
+        document.getElementById('status').textContent = 'Load failed';
+        console.error(e);
+      }
+    })();
+    document.getElementById('btnRelax').onclick=()=>{ if (!viewerApi) return; viewerApi.relaxStep(); document.getElementById('status').textContent='Relax step'; };
+    document.getElementById('btnMD').onclick=()=>{ if (!viewerApi) return; viewerApi.mdStep(); document.getElementById('status').textContent=`MD T=${viewerApi.state.dynamics.temperature.toFixed(2)}`; };
+    document.getElementById('btnRebonds').onclick=()=>{ if (!viewerApi) return; viewerApi.recomputeBonds(); document.getElementById('status').textContent='Recomputed bonds'; };
+  document.getElementById('btnCell').onclick=()=>{ if(!viewerApi) return; (viewerApi.state.toggleCellVisibilityEnhanced||viewerApi.state.toggleCellVisibility).call(viewerApi.state); document.getElementById('status').textContent = viewerApi.state.showCell? 'Cell ON':'Cell OFF'; };
+  document.getElementById('btnGhosts').onclick=()=>{ if(!viewerApi) return; viewerApi.state.toggleGhostCells(); document.getElementById('status').textContent = viewerApi.state.showGhostCells? 'Ghosts ON':'Ghosts OFF'; };
+    // Simple molecule switch UI (development convenience)
+    const switcher = document.createElement('select');
+    switcher.innerHTML = '<option value="molecules/roy.xyz">ROY</option><option value="molecules/benzene.xyz">Benzene</option>';
+    switcher.onchange = async () => {
+      if (!viewerApi) return;
+      const file = switcher.value;
+      document.getElementById('status').textContent = `Loading ${file}...`;
+      try {
+        await loadXYZIntoViewer(viewerApi, file);
+        document.getElementById('status').textContent = `Loaded ${file}`;
+        if (DEBUG) console.log('[debug] switched molecule', file, 'atoms=', viewerApi.state.positions.length);
+      } catch (e) {
+        document.getElementById('status').textContent = `Failed ${file}`;
+      }
+    };
+    document.querySelector('.hud').appendChild(switcher);
 
-  <!-- Your app entrypoint (ES module) -->
-  <script type="module" src="./main.js"></script>
+    // --- VR Entry Integration (Approach 2) -------------------------------------
+    const vrBtn = document.getElementById('enter-vr-btn');
+    async function checkXRSupport() {
+      if (!('xr' in navigator)) return false;
+      try { return await navigator.xr.isSessionSupported('immersive-vr'); } catch { return false; }
+    }
+    (async () => {
+      const ok = await checkXRSupport();
+      if (ok) {
+        vrBtn.style.display = 'inline-block';
+      }
+    })();
+    let vrSessionStarted = false;
+    let vrModule = null;
+    async function startVRLite() {
+      if (vrSessionStarted) return;
+      vrBtn.disabled = true;
+      vrBtn.textContent = 'Starting VR…';
+      try {
+        // Flag lite mode features consistent with legacy vr.html
+        window.vrLiteMode = true;
+        window.vrDisableForces = true;
+        window.vrDisablePlot = true;
+        // Dynamically import VR bundle
+        const mod = await import('./vr/main-vr.js');
+        vrModule = mod;
+        const vrApp = await mod.initVRApp();
+        if (!vrApp) throw new Error('VR init returned null');
+        vrSessionStarted = true;
+        vrBtn.textContent = 'VR Active';
+        vrBtn.classList.add('vr-active');
+        // Optionally hide desktop HUD to reduce clutter while in XR session
+        // (when XR session actually starts, VR module hides its overlay duplicates)
+      } catch (e) {
+        console.warn('[VR] start failed', e);
+        vrBtn.textContent = 'VR Failed';
+        setTimeout(()=>{ vrBtn.textContent='Enter VR'; vrBtn.disabled=false; }, 2500);
+      }
+    }
+    vrBtn.addEventListener('click', startVRLite);
+    // --------------------------------------------------------------------------
+  </script>
 </body>
 </html>

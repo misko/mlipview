@@ -146,3 +146,32 @@ caddy reverse-proxy --from https://localhost:8443 --to :3000
 
 Production-grade deployment should still use a hardened reverse proxy with proper certificates.
 
+
+## Test Pyramid Strategy
+
+The test suite is layered for speed and fidelity:
+
+1. Core (Jest / Node) – logic & state (`tests`, `mlipviewer2/tests`). Uses lightweight Babylon mocks.
+2. Browser (Jest / jsdom) – DOM integration / highlight & canvas behavior (`tests-browser`). Adds minimal canvas + pointer event polyfills.
+3. Engine (NullEngine harness) – optional Babylon scene graph checks without real GL (`tests/engine`).
+4. Future (Playwright) – real headless browser for WebGL rendering regression (bonds present, no stray primitives). Not yet added, but structure is prepared.
+
+Run all:
+```
+npm test
+```
+Only browser project:
+```
+npx jest --selectProjects browser
+```
+Only core project:
+```
+npx jest --selectProjects core
+```
+Engine-only sample:
+```
+npx jest tests/engine/nullEngine.spec.js --selectProjects core
+```
+
+Adding a browser test: drop a spec in `tests-browser/*.spec.js` and it will run under `jsdom` automatically.
+

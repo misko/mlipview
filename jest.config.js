@@ -1,16 +1,9 @@
-module.exports = {
+export default {
   testEnvironment: 'node',
-  // Updated roots: include original legacy public/tests plus new mlipviewer2 project.
-  roots: [
-    '<rootDir>/public',
-    '<rootDir>/tests',
-    '<rootDir>/mlipviewer2/public',
-    '<rootDir>/mlipviewer2/tests'
-  ],
-  moduleFileExtensions: ['js','mjs','cjs','jsx','ts','tsx','json'],
-  setupFilesAfterEnv: ['<rootDir>/tests/jest.setup.js'],
+  // Include tests root only; public files imported via relative paths. (If we need module resolution, add moduleDirectories.)
+  roots: ['<rootDir>/tests'],
   transform: {
-    '^.+\\\.(js|mjs|cjs)$': 'babel-jest'
+    '^.+\\.js$': 'babel-jest'
   },
-  transformIgnorePatterns: ['/node_modules/'],
+  setupFilesAfterEnv: ['<rootDir>/tests/jest.setup.js']
 };
