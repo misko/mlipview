@@ -9,8 +9,8 @@ from fairchem_local_server.server import app, encode
 client = TestClient(app)
 
 
-@pytest.mark.timeout(120)
-def test_water_energy_forces():
+@pytest.mark.timeout(180)
+def test_water_energy_forces_stress():
     atoms = molecule("H2O")
     atoms.info.update({"charge": 0, "spin": 1})
     encoded = encode(atoms)
@@ -18,10 +18,21 @@ def test_water_energy_forces():
         atoms_json = json.loads(encoded)
     else:
         atoms_json = encoded
+    # Provide a pseudo cell so stress is meaningful.
+    # Large orthorhombic box to avoid strong PBC interactions.
+    cell = [
+        [15.0, 0.0, 0.0],
+        [0.0, 15.0, 0.0],
+        [0.0, 0.0, 15.0],
+    ]
     payload = {
         "atoms_json": atoms_json,
-        "properties": ["energy", "forces"],
+        "properties": ["energy", "forces", "stress"],
         "info": atoms.info,
+        # For /calculate path the server reconstructs Atoms; cell needs to
+        # be baked into atoms_json via encode (future: extend API). Keeping
+        # placeholder here for clarity if API expands to accept cell.
+        "cell": cell,
     }
     resp = client.post("/calculate", json=payload)
     assert resp.status_code == 200, resp.text
@@ -36,3 +47,10 @@ def test_water_energy_forces():
     # each force vector should have length 3
     for f in forces:
         assert isinstance(f, list) and len(f) == 3
+    # Stress may be None; if present validate length 6 (Voigt order)
+    if "stress" in results and results["stress"] is not None:
+        stress = results["stress"]
+        assert isinstance(stress, list) and len(stress) == 6
+        # Basic numeric sanity (no NaN)
+        for s in stress:
+            assert isinstance(s, (int, float)) and s == s

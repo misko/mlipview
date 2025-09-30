@@ -178,3 +178,33 @@ npx jest tests/engine/nullEngine.spec.js --selectProjects core
 
 Adding a browser test: drop a spec in `tests-browser/*.spec.js` and it will run under `jsdom` automatically.
 
+## Static Build (Vite)
+
+You can produce a fully static production bundle (HTML + ES modules + assets) using Vite.
+
+Scripts added:
+
+```
+npm run build    # Generates dist/ using Vite (root = public/)
+npm run preview  # Serves the built dist/ locally on port 5174
+```
+
+Build output goes to `dist/` and can be deployed behind any static file host or CDN (Netlify, GitHub Pages, nginx, S3 + CloudFront, etc.). Requires Node 20.19+ (see `.nvmrc`).
+
+Notes:
+1. External Babylon CDN scripts referenced in `public/index.html` are preserved as-is (they are not bundled). This keeps the bundle lean and leverages browser caching. For full offline packaging you can vendor these scripts by removing the `<script src=...>` tags and importing modules instead.
+2. Environment-specific settings (e.g. remote FAIR-Chem endpoints) should be passed via query params or a small runtime config file; no `.env` integration has been added yet.
+3. If you only need a static viewer (no Node server API routes), you can deploy just the contents of `dist/`. The express server remains useful for local dev and any dynamic endpoints (molecule listing, force proxy, etc.).
+4. Source maps are enabled for easier debugging of production issues (`dist/**/*.js.map`).
+
+Minimal end-to-end check:
+
+```
+npm install
+npm run build
+npm run preview
+# open http://localhost:5174
+```
+
+If you see the viewer and can load the default molecule, the static build is functioning.
+

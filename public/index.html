@@ -23,13 +23,26 @@
 <body>
   <div id="app">
     <canvas id="viewer"></canvas>
-    <div class="hud">
-      <button id="btnRelax">Relax Step</button>
-      <button id="btnMD">MD Step</button>
+  <div class="hud">
+  <button id="btnRelax">Relax Step</button>
+  <button id="btnRelaxRun">Relax Run</button>
+  <button id="btnMD">MD Step</button>
+  <button id="btnMDRun">MD Run</button>
+  <button id="btnStopSim">Stop</button>
+      <select id="forceProviderSel"><option value="local">Local LJ</option><option value="fairchem">FairChem</option></select>
       <button id="btnRebonds">Recompute Bonds</button>
   <button id="btnCell">Cell</button>
   <button id="btnGhosts">Ghosts</button>
       <span id="status">Ready</span>
+      <select id="xrModeSelect" style="margin-left:6px" title="Switch XR mode">
+        <option value="none">XR:none</option>
+        <option value="vr">VR</option>
+        <option value="ar">AR</option>
+      </select>
+      <div id="energyPlot" style="margin-top:6px;width:260px;height:80px;background:rgba(255,255,255,0.05);position:relative;overflow:hidden;border:1px solid rgba(255,255,255,0.08);border-radius:4px;">
+        <canvas id="energyCanvas" width="260" height="80" style="position:absolute;left:0;top:0;"></canvas>
+        <div id="energyLabel" style="position:absolute;left:4px;top:2px;font-size:10px;opacity:0.8;">E plot</div>
+      </div>
       <div id="bond-rotation-ui" style="position:absolute;top:10px;right:10px;display:none;z-index:10;font-family:Arial;">
         <button id="bond-rot-minus" style="margin:2px;">-</button>
         <button id="bond-rot-plus" style="margin:2px;">+</button>
@@ -69,13 +82,22 @@
         const { file } = await loadDefault(viewerApi);
         document.getElementById('status').textContent = `Loaded ${file}`;
         if (DEBUG) console.log('[debug] default molecule loaded', file, 'atoms=', viewerApi.state.positions.length);
+        window.__MLIP_DEFAULT_LOADED = true;
       } catch (e) {
         document.getElementById('status').textContent = 'Load failed';
         console.error(e);
+        window.__MLIP_DEFAULT_LOADED = true; // still allow tests to proceed
       }
     })();
-    document.getElementById('btnRelax').onclick=()=>{ if (!viewerApi) return; viewerApi.relaxStep(); document.getElementById('status').textContent='Relax step'; };
+  document.getElementById('btnRelax').onclick=()=>{ if (!viewerApi) return; viewerApi.relaxStep(); document.getElementById('status').textContent='Relax step'; };
+  document.getElementById('btnRelaxRun').onclick=async()=>{ if(!viewerApi) return; document.getElementById('status').textContent='Relax running'; viewerApi.startRelaxContinuous({}).then(r=>{ document.getElementById('status').textContent = r?.converged? 'Relax converged':'Relax stopped'; }); };
     document.getElementById('btnMD').onclick=()=>{ if (!viewerApi) return; viewerApi.mdStep(); document.getElementById('status').textContent=`MD T=${viewerApi.state.dynamics.temperature.toFixed(2)}`; };
+  document.getElementById('btnMDRun').onclick=()=>{ if(!viewerApi) return; document.getElementById('status').textContent='MD running'; viewerApi.startMDContinuous({}); };
+  document.getElementById('btnStopSim').onclick=()=>{ if(!viewerApi) return; viewerApi.stopSimulation(); document.getElementById('status').textContent='Stopped'; };
+  document.getElementById('forceProviderSel').onchange = (e)=>{ if(!viewerApi) return; const kind=e.target.value; viewerApi.setForceProvider(kind); document.getElementById('status').textContent='Provider '+kind; };
+
+  // Periodic metrics HUD updater
+  setInterval(()=>{ if(!viewerApi) return; const m=viewerApi.getMetrics(); if(!m.running) return; const parts=[]; if(m.energy!=null) parts.push('E='+m.energy.toFixed(3)); if(m.maxForce!=null) parts.push('Fmax='+m.maxForce.toExponential(2)); if(m.maxStress!=null) parts.push('Smax='+m.maxStress.toExponential(2)); document.getElementById('status').textContent = (m.running||'idle')+' '+parts.join(' '); }, 500);
     document.getElementById('btnRebonds').onclick=()=>{ if (!viewerApi) return; viewerApi.recomputeBonds(); document.getElementById('status').textContent='Recomputed bonds'; };
   document.getElementById('btnCell').onclick=()=>{ if(!viewerApi) return; (viewerApi.state.toggleCellVisibilityEnhanced||viewerApi.state.toggleCellVisibility).call(viewerApi.state); document.getElementById('status').textContent = viewerApi.state.showCell? 'Cell ON':'Cell OFF'; };
   document.getElementById('btnGhosts').onclick=()=>{ if(!viewerApi) return; viewerApi.state.toggleGhostCells(); document.getElementById('status').textContent = viewerApi.state.showGhostCells? 'Ghosts ON':'Ghosts OFF'; };
@@ -96,31 +118,25 @@
     };
     document.querySelector('.hud').appendChild(switcher);
 
-    (function addXRModeSelector(){
-      const hud=document.querySelector('.hud'); if(!hud) return;
-      const sel=document.createElement('select'); sel.style.marginLeft='6px'; sel.title='Switch XR mode';
-      sel.innerHTML='<option value="none">XR:none</option><option value="vr">VR</option><option value="ar">AR</option>';
-      sel.id='xrModeSelect';
-      hud.appendChild(sel);
-      sel.addEventListener('change', async ()=>{
-        if(!viewerApi) return;
-        const v=sel.value;
-        if(v==='none'){ await viewerApi.vr.switchXR('none'); }
-        else if(v==='vr'){ await viewerApi.vr.switchXR('vr'); }
-        else if(v==='ar'){ await viewerApi.vr.switchXR('ar'); }
-      });
-      // Optionally update selection based on debug info polling
-      setInterval(()=>{
-        if(!viewerApi) return;
-        try {
-          const info=viewerApi.vr.debugInfo();
-          let mode='none';
-            if(info.sessionMode.includes('ar')) mode='ar';
-            else if(info.sessionMode.includes('vr')||info.hasXRHelper && info.sessionMode!=='unknown') mode='vr';
-          if(sel.value!==mode) sel.value=mode;
-        } catch{}
-      }, 2000);
-    })();
+    // XR dropdown wiring (now static in markup for reliability)
+    const xrSel = document.getElementById('xrModeSelect');
+    xrSel.addEventListener('change', async ()=> {
+      if(!viewerApi) return;
+      const v = xrSel.value;
+      if(v==='none'){ await viewerApi.vr.switchXR('none'); }
+      else if(v==='vr'){ await viewerApi.vr.switchXR('vr'); }
+      else if(v==='ar'){ await viewerApi.vr.switchXR('ar'); }
+    });
+    setInterval(()=>{
+      if(!viewerApi) return;
+      try {
+        const info=viewerApi.vr.debugInfo();
+        let mode='none';
+        if(info.sessionMode.includes('ar')) mode='ar';
+        else if(info.sessionMode.includes('vr')||info.hasXRHelper && info.sessionMode!=='unknown') mode='vr';
+        if(xrSel.value!==mode) xrSel.value=mode;
+      } catch{}
+    }, 2000);
   </script>
 </body>
 </html>

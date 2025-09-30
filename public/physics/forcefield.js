@@ -16,8 +16,15 @@ export function createForceField(molState, { kBond = 200, r0 = 1.1, ljEpsilon = 
   }
   function computeForces() {
     const N = molState.positions.length;
-    const F = molState.dynamics.forces;
+    let F = molState.dynamics.forces;
     let energy = 0;
+    // Ensure forces array is initialized and zeroed
+    if (!Array.isArray(F) || F.length !== N) {
+      F = molState.dynamics.forces = Array.from({ length:N }, ()=>({ x:0,y:0,z:0 }));
+    } else {
+      for (let i=0;i<N;i++){ F[i].x=0; F[i].y=0; F[i].z=0; }
+    }
+    const forces = F;
     if (!molState.dynamics.stress) {
       molState.dynamics.stress = { xx:0,yy:0,zz:0,xy:0,xz:0,yz:0 };
     }
@@ -29,8 +36,8 @@ export function createForceField(molState, { kBond = 200, r0 = 1.1, ljEpsilon = 
       const dr = r - r0;
       const fmag = -kBond * dr;
       const fx = fmag * dx / r, fy = fmag * dy / r, fz = fmag * dz / r;
-      F[b.i].x += fx; F[b.i].y += fy; F[b.i].z += fz;
-      F[b.j].x -= fx; F[b.j].y -= fy; F[b.j].z -= fz;
+      forces[b.i].x += fx; forces[b.i].y += fy; forces[b.i].z += fz;
+      forces[b.j].x -= fx; forces[b.j].y -= fy; forces[b.j].z -= fz;
       energy += 0.5 * kBond * dr * dr;
     }
     for (let i=0;i<N;i++) {
@@ -46,14 +53,14 @@ export function createForceField(molState, { kBond = 200, r0 = 1.1, ljEpsilon = 
         energy += lj;
         const fmag = 24*ljEpsilon*(2*sr12 - sr6) * Math.sqrt(invR2);
         const fx = fmag*dx, fy=fmag*dy, fz=fmag*dz;
-        F[i].x -= fx; F[i].y -= fy; F[i].z -= fz;
-        F[j].x += fx; F[j].y += fy; F[j].z += fz;
+        forces[i].x -= fx; forces[i].y -= fy; forces[i].z -= fz;
+        forces[j].x += fx; forces[j].y += fy; forces[j].z += fz;
       }
     }
     let Wxx=0,Wyy=0,Wzz=0,Wxy=0,Wxz=0,Wyz=0;
     for (let i=0;i<N;i++) {
       const r = molState.positions[i];
-      const f = F[i];
+      const f = forces[i];
       Wxx += r.x*f.x; Wyy += r.y*f.y; Wzz += r.z*f.z;
       Wxy += r.x*f.y; Wxz += r.x*f.z; Wyz += r.y*f.z;
     }
@@ -63,6 +70,9 @@ export function createForceField(molState, { kBond = 200, r0 = 1.1, ljEpsilon = 
     sig.xy = -(0.5*(Wxy + (Wxy)));
     sig.xz = -(0.5*(Wxz + (Wxz)));
     sig.yz = -(0.5*(Wyz + (Wyz)));
+    // Persist potential energy
+    if (!molState.dynamics) molState.dynamics = {};
+    molState.dynamics.energy = energy;
     return energy;
   }
   return { computeForces };

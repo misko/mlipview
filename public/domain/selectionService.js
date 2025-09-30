@@ -37,6 +37,7 @@ export function createSelectionService(molState) {
       }
       molState.selection = { kind: 'atom', data: { index } };
       molState.markSelectionChanged();
+      try { if (typeof window !== 'undefined') { window.__MLIP_LAST_SELECTION__ = { kind:'atom', index }; } } catch {}
       return 'selected';
     },
     clear() {

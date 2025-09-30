@@ -33,7 +33,7 @@ function startServers() {
     if (fs.existsSync(k) && fs.existsSync(c)) { keyPath = k; certPath = c; break; }
   }
 
-  if (keyPath && certPath) {
+  if (!process.env.NO_HTTPS && keyPath && certPath) {
     try {
       const key = fs.readFileSync(keyPath);
       const cert = fs.readFileSync(certPath);
