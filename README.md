@@ -1,122 +1,58 @@
-# MLIP Viewer
+# Minimal LJ + BFGS Parity
 
-Interactive molecular viewer with desktop and WebXR (VR) support.
-
-## New: Molecule Selection & URL Parameter
-
-The app now defaults to loading `roy.xyz` (ROY molecule). You can switch molecules dynamically using the Molecules button (desktop HUD or VR HUD) or by specifying a URL parameter.
-
-### URL Parameter
+This repository has been reduced to the essentials needed to reproduce an ASE Lennard-Jones BFGS relaxation for a water molecule in the browser (Node/Jest environment here). The goal is parity with the provided Python/ASE ground truth:
 
 ```
-?molecule=roy
-?molecule=benzene
-?molecule=someOther
+Initial energy:  2.802523
+Final energy:   -2.983548  (BFGS, fmax 0.05)
 ```
 
-The value is case-insensitive and you can omit the `.xyz` extension. The app searches for a matching `public/molecules/<name>.xyz` file.
+## Implementation
 
-### Fallback Order
-1. Requested molecule (if provided via `?molecule=`)
-2. `roy.xyz`
-3. `benzene.xyz`
-4. Procedural benzene (hardcoded) if all file loads fail
+File: `public/lj_bfgs.js`
 
-### Listing Available Molecules
-The server now exposes an endpoint:
+Contains:
+* `ljEnergyForces(positions)` — Lennard-Jones energy + forces with ASE-like defaults (epsilon=1, sigma=1, rc=3*sigma, energy shift so U(rc)=0).
+* `bfgsOptimize({...})` — Dense BFGS with Armijo backtracking and max per-component step control.
+* `optimizeWaterExample()` convenience helper.
+
+## Parity Test
+
+File: `tests/lj_bfgs_parity.spec.js` asserts:
+* Initial energy within 5e-3 of 2.802523
+* Relaxed energy within 5e-3 of -2.983548 with fmax < 0.05
+
+Run it:
 
 ```
-GET /api/molecules
-```
-Returns JSON:
-```json
-{ "molecules": [ { "file": "roy.xyz", "name": "roy" }, { "file": "benzene.xyz", "name": "benzene" } ] }
+npm test --silent -- lj_bfgs_parity.spec.js
 ```
 
-### UI Selector
-Click the `Molecules` button to open an overlay listing all `.xyz` files in `public/molecules/`. Selecting one reloads the page with the `?molecule=` parameter applied.
+## Usage Example
 
-Works in both:
-- Desktop (`index.html`)
-- VR (`vr.html`) via a VR HUD button (renders an HTML overlay when pressed)
+```js
+import { ljEnergyForces, bfgsOptimize } from './public/lj_bfgs.js';
+const d = 0.9575; const t = Math.PI/180*104.51;
+const positions = [ [d,0,0], [d*Math.cos(t), d*Math.sin(t), 0], [0,0,0] ];
+console.log('Initial', ljEnergyForces(positions).energy);
+const res = await bfgsOptimize({ positions, fmax:0.05, maxSteps:500, compute: async p => ljEnergyForces(p) });
+console.log('Final', res.energy, 'steps', res.steps);
+```
 
-### In-Headset (XR) Molecule Picker
-Inside an active WebXR session, a dedicated 3D panel can be opened using the `Molecules` HUD button that appears in the VR overlay. Selecting a molecule from this panel immediately reloads the page with the new `?molecule=` parameter so the chosen structure loads after re-entry.
+## Notes
 
-### Development Notes
-- Selector UI defined in `public/ui/molecule-selector.js`
-- Desktop HUD button injected via `hud.js` / wired in `main.js`
-- VR button created in `vr-ui.js` and wired in `vr/main-vr.js`
-- Molecule load logic refactored in `public/molecules/molecule-loader.js`
-- Server endpoint added in `server.js`
+* No neighbor list is needed for this tiny system.
+* Energy shifting matches ASE's default (non-smooth) cutoff handling.
+* Forces are analytical; dense BFGS is fine for very small atom counts.
 
-### Adding New Molecules
-Drop additional `.xyz` files into `public/molecules/` and they will automatically appear in the selector (no restart required unless server-side caching is added later).
+## Future Extensions (Out of Scope Now)
+
+* Add element-specific epsilon/sigma with Lorentz-Berthelot mixing.
+* Optional smooth cutoff (ro, rc) parity with ASE `smooth=True`.
+* Serialization of optimization trace for visualization.
 
 ---
-For VR setup details see `VR_SETUP_README.md`.
-
-### Spherical Atom Drag (VR/AR)
-Advanced spherical drag with multiple radial push/pull modes (adaptive default) is documented in `docs/VR_SphericalDrag.md`. Runtime tuning via `window.vrSpherical*` flags enables rapid experimentation (gain, smoothing, working radius cap, mode switching). See that doc for formulas, defaults, and troubleshooting.
-
-## Force Field / MLIP Interface
-
-The app now exposes a unified force field interface supporting both the local Lennard-Jones mock potential and remote FAIR-Chem models on HuggingFace.
-
-### Selecting Backend
-
-Use a URL parameter:
-
-```
-?ff=lj          # (default) local LJ + harmonic bonds (scene-cached)
-?ff=fairchem    # remote FAIR-Chem (requires network & HF token)
-```
-
-If creation fails (e.g. invalid kind or network error), the viewer falls back to `lj`.
-
-### Interface Contract
-
-Factory returns an object implementing:
-
-```
-{
-	kind: string,             // 'lj' | 'fairchem' | ...
-	units: { energy, length },
-	meta: { ... backend info ... },
-	compute(): { energy:number, forces: BABYLON.Vector3[] },
-	computeRaw({ Z:int[], xyz:number[][] }): Promise<{ energy:number, forces:number[][] }>
-}
-```
-
-Helper utilities & registry live in `public/forcefield/`.
-
-### FAIR-Chem Configuration
-
-File: `public/forcefield/fairchem.js`
-
-By default it targets:
-
-```
-https://api-inference.huggingface.co/models/facebook/fairchem_mace_large
-```
-
-Provide a HuggingFace token at runtime (before initiating compute):
-
-```
-window.HF_TOKEN = 'hf_xxxYourToken';
-```
-
-or fork `fairchem.js` to hard-code one (not recommended). You may also pass a different endpoint via query parameters in future (simple extension: parse `?hf_endpoint=` and forward to factory).
-
-#### Temporary Embedded Token (Development Only)
-
-There is currently a temporary token embedded in `public/forcefield/fairchem.js` (`__EMBEDDED_HF_TOKEN`). This is ONLY for local experimentation. You MUST:
-
-1. Replace it with `window.HF_TOKEN = 'hf_new_token';` or environment proxy before sharing.
-2. Rotate / revoke the embedded token on HuggingFace once you finish testing.
-3. Avoid committing real secrets—use a server proxy for production.
-
-Response mapping defaults to fields `{ total_energy, forces }`. Adjust via `responseMap` if your Space outputs different keys.
+Everything else (viewer, VR, remote force providers) was removed per request to focus solely on BFGS + LJ parity.
 
 ### Extending
 
@@ -207,4 +143,25 @@ npm run preview
 ```
 
 If you see the viewer and can load the default molecule, the static build is functioning.
+
+## FairChem HTTP Reference Generation
+
+To generate and update the FairChem 20-step BFGS trace for water:
+
+1. Start the local FastAPI server:
+	```bash
+	uvicorn fairchem_local_server.server:app --host 127.0.0.1 --port 8000
+	```
+2. Run the relax script:
+	```bash
+	python fairchem_local_server/relax_water_http.py
+	```
+3. This writes `public/reference/water_fairchem_bfgs_trace.json`.
+4. Run parity tests:
+	```bash
+	npm test -- fairchem_bfgs_parity.spec.js
+	npx playwright test tests-e2e/waterFairChemRelaxation.spec.js
+	```
+
+The JS + browser parity tests skip gracefully if the server is unreachable or the reference file is empty.
 

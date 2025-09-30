@@ -29,10 +29,12 @@
   <button id="btnMD">MD Step</button>
   <button id="btnMDRun">MD Run</button>
   <button id="btnStopSim">Stop</button>
+  <button id="btnResetEnergy" title="Reset energy plot to current structure">Reset Energy</button>
       <select id="forceProviderSel"><option value="local">Local LJ</option><option value="fairchem">FairChem</option></select>
       <button id="btnRebonds">Recompute Bonds</button>
   <button id="btnCell">Cell</button>
   <button id="btnGhosts">Ghosts</button>
+  <button id="btnToggleForces" title="Toggle force vectors (normalized)">Forces</button>
       <span id="status">Ready</span>
       <select id="xrModeSelect" style="margin-left:6px" title="Switch XR mode">
         <option value="none">XR:none</option>
@@ -79,9 +81,11 @@
       rotMinus.addEventListener('click', ()=>{ viewerApi.manipulation.rotateBond(-EPS); });
       rotPlus.addEventListener('click', ()=>{ viewerApi.manipulation.rotateBond(EPS); });
       try {
-        const { file } = await loadDefault(viewerApi);
-        document.getElementById('status').textContent = `Loaded ${file}`;
-        if (DEBUG) console.log('[debug] default molecule loaded', file, 'atoms=', viewerApi.state.positions.length);
+  const { file } = await loadDefault(viewerApi);
+  // Reset energy series to a single initial point (avoid multiple startup entries)
+  try { viewerApi.baselineEnergy?.(); } catch {}
+  document.getElementById('status').textContent = `Loaded ${file}`;
+  if (DEBUG) console.log('[debug] default molecule loaded', file, 'atoms=', viewerApi.state.positions.length, 'energySeriesLen=1');
         window.__MLIP_DEFAULT_LOADED = true;
       } catch (e) {
         document.getElementById('status').textContent = 'Load failed';
@@ -89,7 +93,7 @@
         window.__MLIP_DEFAULT_LOADED = true; // still allow tests to proceed
       }
     })();
-  document.getElementById('btnRelax').onclick=()=>{ if (!viewerApi) return; viewerApi.relaxStep(); document.getElementById('status').textContent='Relax step'; };
+  document.getElementById('btnRelax').onclick=async()=>{ if (!viewerApi) return; await viewerApi.relaxStep(); document.getElementById('status').textContent='Relax step'; };
   document.getElementById('btnRelaxRun').onclick=async()=>{ if(!viewerApi) return; document.getElementById('status').textContent='Relax running'; viewerApi.startRelaxContinuous({}).then(r=>{ document.getElementById('status').textContent = r?.converged? 'Relax converged':'Relax stopped'; }); };
     document.getElementById('btnMD').onclick=()=>{ if (!viewerApi) return; viewerApi.mdStep(); document.getElementById('status').textContent=`MD T=${viewerApi.state.dynamics.temperature.toFixed(2)}`; };
   document.getElementById('btnMDRun').onclick=()=>{ if(!viewerApi) return; document.getElementById('status').textContent='MD running'; viewerApi.startMDContinuous({}); };
@@ -101,17 +105,24 @@
     document.getElementById('btnRebonds').onclick=()=>{ if (!viewerApi) return; viewerApi.recomputeBonds(); document.getElementById('status').textContent='Recomputed bonds'; };
   document.getElementById('btnCell').onclick=()=>{ if(!viewerApi) return; (viewerApi.state.toggleCellVisibilityEnhanced||viewerApi.state.toggleCellVisibility).call(viewerApi.state); document.getElementById('status').textContent = viewerApi.state.showCell? 'Cell ON':'Cell OFF'; };
   document.getElementById('btnGhosts').onclick=()=>{ if(!viewerApi) return; viewerApi.state.toggleGhostCells(); document.getElementById('status').textContent = viewerApi.state.showGhostCells? 'Ghosts ON':'Ghosts OFF'; };
+  document.getElementById('btnResetEnergy').onclick=()=>{ if(!viewerApi) return; try { viewerApi.baselineEnergy?.(); document.getElementById('status').textContent='Energy reset'; } catch(e){ document.getElementById('status').textContent='Reset failed'; } };
+  // Forces toggle (default ON)
+  const btnForces = document.getElementById('btnToggleForces');
+  btnForces.dataset.enabled = '1';
+  btnForces.style.background = '#284';
+  btnForces.onclick = ()=>{ if(!viewerApi) return; const en = btnForces.dataset.enabled === '1'; btnForces.dataset.enabled = en ? '0':'1'; btnForces.style.background = en ? '' : '#284'; if (viewerApi.setForceVectorsEnabled) viewerApi.setForceVectorsEnabled(!en); };
     // Simple molecule switch UI (development convenience)
-    const switcher = document.createElement('select');
-    switcher.innerHTML = '<option value="molecules/roy.xyz">ROY</option><option value="molecules/benzene.xyz">Benzene</option>';
+  const switcher = document.createElement('select');
+  switcher.innerHTML = '<option value="molecules/roy.xyz">ROY</option><option value="molecules/benzene.xyz">Benzene</option><option value="molecules/water.xyz">Water</option>';
     switcher.onchange = async () => {
       if (!viewerApi) return;
       const file = switcher.value;
       document.getElementById('status').textContent = `Loading ${file}...`;
       try {
-        await loadXYZIntoViewer(viewerApi, file);
-        document.getElementById('status').textContent = `Loaded ${file}`;
-        if (DEBUG) console.log('[debug] switched molecule', file, 'atoms=', viewerApi.state.positions.length);
+  await loadXYZIntoViewer(viewerApi, file);
+  try { viewerApi.baselineEnergy?.(); } catch {}
+  document.getElementById('status').textContent = `Loaded ${file} (baseline reset)`;
+  if (DEBUG) console.log('[debug] switched molecule', file, 'atoms=', viewerApi.state.positions.length, 'baseline reset');
       } catch (e) {
         document.getElementById('status').textContent = `Failed ${file}`;
       }

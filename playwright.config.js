@@ -6,7 +6,7 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests-e2e',
-  timeout: 60_000,
+  timeout: 10_000,
   globalSetup: './tests-e2e/global-setup.js',
   use: {
     baseURL: 'http://localhost:4000',

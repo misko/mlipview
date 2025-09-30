@@ -5,7 +5,7 @@ import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-from ase.io.jsonio import decode
+from ase.io.jsonio import decode, encode
 from fairchem.core import pretrained_mlip  # fairchem-core >= 2.x
 from fairchem.core import FAIRChemCalculator
 from fairchem.core.units.mlip_unit import InferenceSettings
@@ -96,6 +96,8 @@ def get_cached_unit_and_calculator(atomic_numbers: List[int]):
 
 
 app = FastAPI(title="UMA-small ASE HTTP server")
+# Re-export encode for test modules
+__all__ = ["app", "encode", "get_cached_unit_and_calculator"]
 
 # Allow local browser dev (adjust origins in production)
 app.add_middleware(
