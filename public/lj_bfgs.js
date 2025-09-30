@@ -2,6 +2,8 @@
 // Parity target: initial water energy 2.802523 -> relaxed energy -2.983548 (fmax 0.05)
 // Assumptions: epsilon=1.0, sigma=1.0 global; rc = 3*sigma with energy shift (no smooth cutoff)
 
+// LJ with standard energy shift at cutoff so U(rc)=0.
+// Parity target: water initial energy 2.802523 -> relaxed -2.983548 using rc=3*sigma, epsilon=1, sigma=1.
 export function ljEnergyForces(positions, { epsilon = 1.0, sigma = 1.0 } = {}) {
   const n = positions.length; // positions: [ [x,y,z], ... ]
   const forces = Array.from({ length: n }, () => [0, 0, 0]);
@@ -12,8 +14,7 @@ export function ljEnergyForces(positions, { epsilon = 1.0, sigma = 1.0 } = {}) {
   const src2 = src * src;
   const src6 = src2 * src2 * src2;
   const src12 = src6 * src6;
-  // Remove energy shift so energies match unshifted LJ reference (still truncated at rc)
-  // const e0 = 4 * epsilon * (src12 - src6); // u(rc)
+  const e0 = 4 * epsilon * (src12 - src6); // U(rc) (negative); shift so potential zero at cutoff
   for (let i = 0; i < n; i++) {
     const pi = positions[i];
     for (let j = i + 1; j < n; j++) {
@@ -30,7 +31,7 @@ export function ljEnergyForces(positions, { epsilon = 1.0, sigma = 1.0 } = {}) {
       const sr2 = sr * sr;
       const sr6 = sr2 * sr2 * sr2;
       const sr12 = sr6 * sr6;
-  let pairE = 4 * epsilon * (sr12 - sr6); // unshifted (reference parity)
+  let pairE = 4 * epsilon * (sr12 - sr6) - e0; // shifted so U(rc)=0 (adds ~0.00548 per pair at rc=3)
       energy += pairE;
       // force magnitude factor: dU/dr times direction
       // dU/dr = 24*epsilon*(2*sr12 - sr6)/r

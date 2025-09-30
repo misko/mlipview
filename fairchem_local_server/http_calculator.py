@@ -6,7 +6,8 @@ import requests
 from ase.calculators.calculator import CalculationFailed, Calculator, all_changes
 from ase.io.jsonio import encode
 
-FAIRCHEM_SERVER_URL = os.environ.get("FAIRCHEM_SERVER_URL", "http://127.0.0.1:8000")
+#FAIRCHEM_SERVER_URL = os.environ.get("FAIRCHEM_SERVER_URL", "http://127.0.0.1:8000")
+FAIRCHEM_SERVER_URL = os.environ.get("FAIRCHEM_SERVER_URL", "http://nanoview.net:8000")
 
 
 class FairChemHTTP(Calculator):

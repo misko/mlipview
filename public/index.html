@@ -19,6 +19,12 @@
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <!-- Loaders plugin for glTF/glb (controllers, hand meshes) -->
   <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.js"></script>
+  <!-- Babylon GUI for XR HUD overlay -->
+  <script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
+  <script>
+    // Predeclare global so console commands entered early don't throw ReferenceError
+    (function(){ try { if(typeof window!=='undefined' && !('viewerApi' in window)) window.viewerApi = null; } catch{} })();
+  </script>
 </head>
 <body>
   <div id="app">
@@ -65,6 +71,10 @@
       viewerApi = await initNewViewer(canvas,{ elements:[], positions:[], bonds:[] });
       // Always expose viewer globally for VR reuse (was previously behind DEBUG flag)
       window._viewer = viewerApi;
+      try {
+        window.viewerApi = viewerApi;
+        window.dispatchEvent(new CustomEvent('mlipviewer-ready',{ detail:{ when: Date.now() }}));
+      } catch {}
       window.vrScene = viewerApi.scene; // redundancy for VR module
       window.vrEngine = viewerApi.engine;
       if (DEBUG) console.log('[debug] viewer initialized');

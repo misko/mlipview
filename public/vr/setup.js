@@ -30,7 +30,23 @@ export async function setupVR(engine, scene, picking){
   try{
     engine?.setHardwareScalingLevel?.(1.0);
     scene.skipPointerMovePicking=true; scene.autoClear=true; scene.autoClearDepthAndStencil=true;
-    const xrHelper=await scene.createDefaultXRExperienceAsync({ floorMeshes:[], optionalFeatures:[], uiOptions:{ sessionMode:'immersive-vr', referenceSpaceType:'local-floor' }, inputOptions:{ doNotLoadControllerMeshes:false, disableControllerAnimation:false }, disableTeleportation:true, useStablePlugins:false });
+    const xrHelper=await scene.createDefaultXRExperienceAsync({
+      floorMeshes:[],
+      optionalFeatures:['hand-tracking','local-floor','hit-test','dom-overlay','unbounded'],
+      uiOptions:{ sessionMode:'immersive-vr', referenceSpaceType:'local-floor' },
+      // Explicitly enable pointer selection (Babylon normally adds it, but we state intent for clarity)
+      inputOptions:{ doNotLoadControllerMeshes:false, disableControllerAnimation:false, forceInputProfile:true },
+      disableTeleportation:true,
+      useStablePlugins:false
+    });
+    try {
+      if(xrHelper?.pointerSelection){
+        console.log('[XR][Input] pointerSelection already present');
+      } else if(xrHelper?.featuresManager){
+        const ps = xrHelper.featuresManager.enableFeature(BABYLON.WebXRFeatureName.POINTER_SELECTION, 'latest', { xrInput:xrHelper.input, enablePointerSelectionOnAllControllers:true });
+        console.log('[XR][Input] pointerSelection enabled via featuresManager', !!ps);
+      }
+    } catch(e){ console.warn('[XR][Input] pointerSelection enable failed', e); }
     return setupVRFeatures(xrHelper, scene, picking);
   }catch(e){ console.error('[VR Setup] failed', e?.message||e); return null; }
 }
@@ -590,6 +606,7 @@ export function createVRSupport(scene, { picking } = {}) {
             if(needScale && m.scaling){ m.scaling.x*=appliedScale; m.scaling.y*=appliedScale; m.scaling.z*=appliedScale; }
           }
           console.log(AUTO_TAG,'applied', { attempts, originalDiag:diag, scaleApplied:needScale?appliedScale:1.0, originalDist:dist, targetDist, desiredCenter });
+          try { window.__XR_AUTO_NORM = { enabled:true, scale: needScale?appliedScale:1.0, desiredCenter, bbCenter:center }; } catch {}
           applied=true;
         };
         // Retry for up to ~2 seconds (120 frames at 60fps) until masters populated
@@ -612,15 +629,171 @@ export function createVRSupport(scene, { picking } = {}) {
       if(active){ await exitXR(); }
       const ok = await enterAR();
       if(ok) setTransparent(true); // auto-enable transparency in AR
+      if(ok) try { console.log('[XR][HUD] attempting create (AR branch)'); ensureXRHUD(); } catch(e){ console.warn('[XR][HUD] create failed', e); }
+      if(ok) { try { setTimeout(()=>{ try { forceWorldHUD(); } catch(e){ console.warn('[XR][HUD] auto worldHUD failed', e); } }, 600); } catch{} }
       return ok;
     } else {
       if(active){ await exitXR(); }
       await enterVR();
       // Restore opaque background for VR unless user manually toggled otherwise
       setTransparent(false);
+      try { console.log('[XR][HUD] attempting create (VR branch)'); ensureXRHUD(); } catch(e){ console.warn('[XR][HUD] create failed', e); }
+      try { setTimeout(()=>{ try { forceWorldHUD(); } catch(e){ console.warn('[XR][HUD] auto worldHUD failed', e); } }, 600); } catch{}
       return true;
     }
   }
+  // XR 2D HUD (bottom overlay) with primary simulation controls for Quest3
+  let _xrHudCreated=false;
+  function ensureXRHUD(){
+    if(_xrHudCreated) return;
+    try {
+      const dbgInfo = { hasScene: !!scene, hasBABYLON: typeof BABYLON!=='undefined', hasGUI: !!(typeof BABYLON!=='undefined' && BABYLON.GUI), hasADT: !!(typeof BABYLON!=='undefined' && BABYLON.GUI && BABYLON.GUI.AdvancedDynamicTexture), sessionMode: sessionMode(), existingHUD: !!window.__XR_HUD_ADT };
+      console.log('[XR][HUD] ensureXRHUD pre-check', dbgInfo);
+      if(!scene || typeof BABYLON==='undefined' || !BABYLON.GUI || !BABYLON.GUI.AdvancedDynamicTexture){
+        console.warn('[XR][HUD] prerequisites missing');
+        return;
+      }
+      // Align with existing VR overlay usage (main-vr.js uses false for fullscreen optimization param)
+      const adt = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI('xrHUD', false, scene);
+      try { if(scene && !scene.__xrHudPointerLogger){
+        scene.__xrHudPointerLogger = true;
+        scene.onPointerObservable.add(evt=>{
+          if(!window.XR_HUD_DEBUG) return; // reduce noise unless debug flag set
+          try {
+            const pick = evt.pickInfo;
+            console.log('[XR][HUD][PointerEvt]', evt.type, pick && { hit:pick?.hit, mesh: pick?.pickedMesh?.name, hasControl: !!pick?.pickedMesh?.metadata?.hudPanel });
+          } catch{}
+        });
+      } } catch{}
+      // Container bar
+      const bar = new BABYLON.GUI.StackPanel();
+      bar.isVertical = false;
+      bar.height = '80px';
+      bar.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_BOTTOM;
+      bar.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
+      bar.paddingBottom = '20px';
+      adt.addControl(bar);
+      const hudDebug = ()=> (typeof window!=='undefined') && (window.XR_HUD_DEBUG || /[?&]xrhuddebug=1/.test(window.location.search));
+      function logBtn(phase, name, extra){ if(!hudDebug()) return; try { console.log('[XR][HUD][BTN]', phase, name, extra||''); } catch{} }
+      function makeBtn(text, cb){
+        const id = 'btn'+text.replace(/\s+/g,'');
+        const b = BABYLON.GUI.Button.CreateSimpleButton(id, text);
+        b.width = '140px';
+        b.height = '60px';
+        b.thickness = 0;
+        b.color = '#d8e6f3';
+        b.background = 'rgba(30,38,48,0.72)';
+        b.fontSize = 22;
+        b.cornerRadius = 12;
+        b.paddingLeft = '8px';
+        b.paddingRight = '8px';
+        b.onPointerDownObservable.add(()=>logBtn('down', text));
+        b.onPointerUpObservable.add(()=>{ logBtn('up', text); try { cb(); logBtn('invoke', text, 'OK'); } catch(e){ logBtn('invokeErr', text, e?.message||e); console.warn('[XR][HUD] btn err', text, e); } });
+        // Simple hover visual (controller ray over)
+        b.onPointerEnterObservable.add(()=>{ logBtn('enter', text); b.background='rgba(60,110,160,0.78)'; });
+        b.onPointerOutObservable.add(()=>{ logBtn('leave', text); b.background='rgba(30,38,48,0.72)'; });
+        return b;
+      }
+  // Viewer accessor (resolve lazily each click so HUD can be created before viewer)
+  const getViewer = ()=>{ try { return window._viewer; } catch{} return null; };
+      function status(msg){ try { const el=document.getElementById('status'); if(el) el.textContent=msg; } catch{} }
+      // Buttons
+  bar.addControl(makeBtn('Relax Step', async()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','RelaxStep'); console.warn('[XR][HUD] Relax Step: viewer not ready'); return; } try { logBtn('call','relaxStep'); await v.relaxStep(); status('Relax step'); logBtn('done','relaxStep'); } catch(e){ logBtn('error','relaxStep', e?.message||e); console.warn('[XR][HUD] relaxStep failed', e); } }));
+  bar.addControl(makeBtn('Relax Run', async()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','RelaxRun'); console.warn('[XR][HUD] Relax Run: viewer not ready'); return; } status('Relax running'); try { logBtn('call','relaxRun'); v.startRelaxContinuous({}).then(r=>{ status(r?.converged?'Relax converged':'Relax stopped'); logBtn('done','relaxRun', r?.converged?'converged':'stopped'); }); } catch(e){ logBtn('error','relaxRun', e?.message||e); console.warn('[XR][HUD] relaxRun failed', e); status('Relax err'); } }));
+      // Force provider toggle cycles Local LJ <-> FairChem; show active provider
+      const providerBtn = makeBtn('Prov?', ()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','Provider'); return; } try {
+        const sel=document.getElementById('forceProviderSel');
+        if(sel){ sel.value = sel.value==='fairchem' ? 'local':'fairchem'; sel.onchange({ target: sel }); updateProviderBtn(); }
+        logBtn('toggle','Provider', sel && sel.value); } catch(e){ logBtn('error','Provider', e?.message||e); } });
+      function updateProviderBtn(){ try { const sel=document.getElementById('forceProviderSel'); if(sel){ providerBtn.textBlock.text = sel.value==='fairchem' ? 'FairChem' : 'LJ'; } } catch{} }
+      updateProviderBtn();
+      bar.addControl(providerBtn);
+  bar.addControl(makeBtn('Cell', ()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','Cell'); return; } try { (v.state.toggleCellVisibilityEnhanced||v.state.toggleCellVisibility).call(v.state); status(v.state.showCell? 'Cell ON':'Cell OFF'); logBtn('toggle','Cell', v.state.showCell); } catch(e){ logBtn('error','Cell', e?.message||e); console.warn('[XR][HUD] cell toggle failed', e); } }));
+  bar.addControl(makeBtn('Ghosts', ()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','Ghosts'); return; } try { v.state.toggleGhostCells(); status(v.state.showGhostCells? 'Ghosts ON':'Ghosts OFF'); logBtn('toggle','Ghosts', v.state.showGhostCells); } catch(e){ logBtn('error','Ghosts', e?.message||e); console.warn('[XR][HUD] ghosts toggle failed', e); } }));
+      _xrHudCreated=true;
+      window.__XR_HUD_ADT = adt;
+      window.__XR_HUD_STATE = { created: true, createdAt: Date.now(), sessionMode: sessionMode(), buttons: ['Relax Step','Relax Run','Provider','Cell','Ghosts'] };
+      console.log('[XR][HUD] created');
+      // World-space fallback if fullscreen UI not rendered (e.g. some passthrough modes). Creates a floating plane with same buttons.
+      setTimeout(()=>{ try {
+        const testVis = adt && adt._rootContainer && adt._rootContainer.isVisible;
+        if(testVis === false){ console.log('[XR][HUD] fullscreen UI reports not visible; spawning world panel fallback'); spawnWorldPanelFallback(); }
+      } catch(e){ console.warn('[XR][HUD] visibility check failed', e); } }, 2000);
+    } catch(e){ console.warn('[XR][HUD] failed', e); }
+  }
+  function spawnWorldPanelFallback(){
+    try {
+      if(!scene) return;
+      const cam = scene.activeCamera; if(!cam) return;
+      const plane = BABYLON.MeshBuilder.CreatePlane('xrHudPanel', { width:1.35, height:0.38 }, scene);
+      // Dynamic placement: distance and vertical offset based on FOV so it hugs lower portion of view
+      const dist = 1.1;
+      const fov = cam.fov || Math.PI/2; // vertical fov
+      const halfHeight = Math.tan(fov/2) * dist; // vertical half-span at that distance
+  const verticalFrac = 0.6; // moved another ~10% higher (closer to view center)
+      const downward = halfHeight * verticalFrac; // world units to push downward
+      const forward = cam.getDirection(BABYLON.Axis.Z).normalize();
+      const up = cam.getDirection ? cam.getDirection(BABYLON.Axis.Y).normalize() : BABYLON.Vector3.Up();
+      const basePos = cam.position.add(forward.scale(dist)).subtract(up.scale(downward));
+      plane.position.copyFrom(basePos);
+      plane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_NONE;
+  plane.isPickable = true; // allow picking to reach GUI texture
+  try { plane.metadata = { hudPanel:true }; } catch{}
+  const tex = BABYLON.GUI.AdvancedDynamicTexture.CreateForMesh(plane, 1300, 340, false);
+  try { tex._rootContainer?.children?.forEach(c=>{ c.metadata = c.metadata||{}; c.metadata.hudRoot=true; }); } catch{}
+      const bg = new BABYLON.GUI.Rectangle(); bg.thickness=0; bg.cornerRadius=20; bg.background='rgba(25,32,42,0.78)'; tex.addControl(bg);
+      const stack = new BABYLON.GUI.StackPanel(); stack.isVertical=false; stack.height='300px'; stack.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER; bg.addControl(stack);
+  const hudDebug = ()=> (typeof window!=='undefined') && (window.XR_HUD_DEBUG || /[?&]xrhuddebug=1/.test(window.location.search));
+  function logBtn(phase, name, extra){ if(!hudDebug()) return; try { console.log('[XR][HUD][PANEL][BTN]', phase, name, extra||''); } catch{} }
+  function btn(label, cb){ const id='w'+label; const b = BABYLON.GUI.Button.CreateSimpleButton(id, label); b.width='240px'; b.height='260px'; b.color='#d8e6f3'; b.thickness=0; b.background='rgba(60,70,82,0.85)'; b.fontSize=72; b.onPointerDownObservable.add(()=>logBtn('down',label)); b.onPointerUpObservable.add(()=>{ logBtn('up',label); try { cb(); logBtn('invoke',label,'OK'); } catch(e){ logBtn('invokeErr',label,e?.message||e); } }); b.onPointerEnterObservable.add(()=>{ b.background='rgba(90,140,190,0.9)'; logBtn('enter',label); }); b.onPointerOutObservable.add(()=>{ b.background='rgba(60,70,82,0.85)'; logBtn('leave',label); }); stack.addControl(b); return b; }
+  const getViewer = ()=>{ try { return window._viewer; } catch{} return null; };
+  btn('Relax', ()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','Relax'); return; } try{ v.relaxStep(); logBtn('done','Relax'); } catch(e){ logBtn('error','Relax',e?.message||e); console.warn('[XR][HUD][fallback] relaxStep failed', e); } });
+  btn('Run', ()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','Run'); return; } try{ v.startRelaxContinuous({}); logBtn('done','Run'); } catch(e){ logBtn('error','Run',e?.message||e); console.warn('[XR][HUD][fallback] relaxRun failed', e); } });
+  btn('Prov', ()=>{ try { const sel=document.getElementById('forceProviderSel'); if(sel){ sel.value= sel.value==='fairchem'? 'local':'fairchem'; sel.onchange({target:sel}); logBtn('toggle','Prov', sel.value); } else logBtn('noSel','Prov'); } catch(e){ logBtn('error','Prov',e?.message||e); console.warn('[XR][HUD][fallback] provider toggle failed', e); } });
+  btn('Cell', ()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','Cell'); return; } try { (v.state.toggleCellVisibilityEnhanced||v.state.toggleCellVisibility).call(v.state); logBtn('toggle','Cell', v.state.showCell); } catch(e){ logBtn('error','Cell',e?.message||e); console.warn('[XR][HUD][fallback] cell toggle failed', e); } });
+  btn('Ghosts', ()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','Ghosts'); return; } try { v.state.toggleGhostCells(); logBtn('toggle','Ghosts', v.state.showGhostCells); } catch(e){ logBtn('error','Ghosts',e?.message||e); console.warn('[XR][HUD][fallback] ghosts toggle failed', e); } });
+      const followObs = scene.onBeforeRenderObservable.add(()=>{ try { const c=scene.activeCamera; if(!c) return; const dist2 = dist; const fov2 = c.fov || Math.PI/2; const hh = Math.tan(fov2/2)*dist2; const fw = c.getDirection(BABYLON.Axis.Z).normalize(); const up2 = c.getDirection ? c.getDirection(BABYLON.Axis.Y).normalize() : BABYLON.Vector3.Up(); const target = c.position.add(fw.scale(dist2)).subtract(up2.scale(hh*verticalFrac)); plane.position.copyFrom(target); // yaw only
+        const toCam = c.position.subtract(plane.position); toCam.y=0; toCam.normalize(); const yaw=Math.atan2(toCam.x,toCam.z); plane.rotation.y = yaw + Math.PI; } catch{} });
+      console.log('[XR][HUD][fallback] world panel spawned (camera-follow bottom)');
+      window.__XR_HUD_FALLBACK = { plane, tex, followObs };
+    } catch(e){ console.warn('[XR][HUD][fallback] failed', e); }
+  }
+  // Fallback poll: attempt HUD creation shortly after entering any XR session, in case switchXR path missed.
+  let _hudPollAttempts = 0;
+  function _hudPollTick(){
+    try {
+      if(_xrHudCreated){ return; }
+      const mode = sessionMode();
+      const active = /immersive/.test(mode);
+      if(active){ console.log('[XR][HUD][poll] session active; attempting ensureXRHUD (attempt '+_hudPollAttempts+')'); ensureXRHUD(); }
+      _hudPollAttempts++;
+      if(_xrHudCreated || _hudPollAttempts>15){ clearInterval(_hudPollInterval); }
+    } catch(e){ console.warn('[XR][HUD][poll] error', e); }
+  }
+  const _hudPollInterval = setInterval(_hudPollTick, 1200);
+  // Global pointer ray debug (controller forward ray pick) to verify intersection with HUD
+  try {
+    if(scene && !scene.__xrGlobalRayDebug){
+      scene.__xrGlobalRayDebug=true;
+      scene.onBeforeRenderObservable.add(()=>{
+        try {
+          const xr = (window._viewer && window._viewer.vr && window._viewer.vr.getXR) ? window._viewer.vr.getXR() : null;
+          const helper = xrHelper || xr;
+          const input = helper?.input;
+          if(!input) return;
+            input.controllers?.forEach(c=>{
+              const n=c.pointer||c.grip||c.pointer?.parent; if(!n?.getDirection||!n.getAbsolutePosition) return;
+              const origin=n.getAbsolutePosition(); const dir=n.getDirection(BABYLON.Vector3.Forward()).normalize();
+              const ray=new BABYLON.Ray(origin,dir,10);
+              const pr=scene.pickWithRay(ray, m=>m && (!m.isPickable?false:true));
+              if(window.XR_HUD_DEBUG && pr?.hit && pr.pickedMesh && pr.pickedMesh.name && /xrHudPanel|btn/i.test(pr.pickedMesh.name)){
+                console.log('[XR][HUD][RayHit]', pr.pickedMesh.name, { dist:pr.distance });
+              }
+            });
+        } catch{}
+      });
+    }
+  } catch{}
   async function init(){
     const nodeLike=(typeof window==='undefined'||typeof navigator==='undefined');
     const lacksRenderLoop = !scene?.onBeforeRenderObservable;
@@ -670,7 +843,8 @@ export function createVRSupport(scene, { picking } = {}) {
     };
   }
   try { if(typeof window!=='undefined') window.vrDebugInfo = debugInfo; } catch {}
-  return { init, isSupported, enterVR:legacyEnterVR, exitVR:legacyExitVR, enterAR, exitXR, switchXR, controllers, controllerStates, setTransparent, debugInfo }; 
+  function forceWorldHUD(){ if(window.__XR_HUD_FALLBACK){ console.log('[XR][HUD] fallback already exists'); return window.__XR_HUD_FALLBACK; } spawnWorldPanelFallback(); return window.__XR_HUD_FALLBACK; }
+  return { init, isSupported, enterVR:legacyEnterVR, exitVR:legacyExitVR, enterAR, exitXR, switchXR, controllers, controllerStates, setTransparent, debugInfo, ensureXRHUD, forceWorldHUD, _debugHUD:()=>({ created:_xrHudCreated, pollAttempts:_hudPollAttempts, session:sessionMode(), hasADT: !!window.__XR_HUD_ADT, hasFallback: !!window.__XR_HUD_FALLBACK }) }; 
 }
 
 export default { setupVR, setupVRFeatures, createVRSupport };

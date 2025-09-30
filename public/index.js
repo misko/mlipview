@@ -218,96 +218,53 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
 
   engine.runRenderLoop(()=>{ scene.render(); });
 
-  // --- Force vector visualization ---
-  const forceVis = { enabled: true, arrows: [], root: null, maxLen: 1.0 };
+  // --- Force vector visualization (legacy per-arrow implementation) ---
+  const forceVis = { enabled:true, root:null, arrows:[], maxLen:1.0 };
   function ensureForceRoot(){
-    if (!forceVis.root){
-      forceVis.root = new BABYLON.TransformNode('forceArrowsRoot', scene);
-    }
+    if(!forceVis.root){ forceVis.root = new BABYLON.TransformNode('forceArrowsRoot', scene); }
     return forceVis.root;
-  }
-  function disposeArrows(){
-    if (forceVis.arrows){ for (const a of forceVis.arrows){ try { a.parent = null; a.dispose(); } catch{} } }
-    forceVis.arrows = [];
-  }
-  function createArrow(baseName){
-    // Body
-    const body = BABYLON.MeshBuilder.CreateCylinder(baseName+'_body', { height:1, diameter:0.04, tessellation:12 }, scene);
-    // Tip
-    const tip = BABYLON.MeshBuilder.CreateCylinder(baseName+'_tip', { height:0.25, diameterTop:0, diameterBottom:0.12, tessellation:12 }, scene);
-    tip.position.y = 0.5 + 0.125; // body half + tip half
-    tip.parent = body;
-    body.material = forceMaterial;
-    tip.material = forceMaterial;
-    body.isPickable = false; tip.isPickable = false;
-    return body;
   }
   const forceMaterial = new BABYLON.StandardMaterial('forceMat', scene);
   forceMaterial.diffuseColor = new BABYLON.Color3(0.9,0.1,0.1);
   forceMaterial.emissiveColor = new BABYLON.Color3(0.6,0.05,0.05);
   forceMaterial.specularColor = new BABYLON.Color3(0.2,0.2,0.2);
   forceMaterial.disableLighting = false;
+  function disposeArrows(){ if(forceVis.arrows){ for(const a of forceVis.arrows){ try{ a.dispose(); }catch{} } } forceVis.arrows=[]; }
+  function createArrow(name){
+    const body = BABYLON.MeshBuilder.CreateCylinder(name+'_body',{height:1,diameter:0.04,tessellation:12},scene);
+    const tip  = BABYLON.MeshBuilder.CreateCylinder(name+'_tip',{height:0.25,diameterTop:0,diameterBottom:0.12,tessellation:12},scene);
+    tip.position.y = 0.5 + 0.125; tip.parent = body;
+    body.material = forceMaterial; tip.material = forceMaterial;
+    body.isPickable=false; tip.isPickable=false; body.visibility=1; return body;
+  }
   function updateForceVectors(){
-    if (!forceVis.enabled) return;
+    if(!forceVis.enabled) return;
     const forces = window.__RELAX_FORCES || [];
-    if (!forces.length || !state.positions.length) return;
+    if(!forces.length || !state.positions.length) return;
     const root = ensureForceRoot();
-    // Ensure arrow count matches atom count
-    if (forceVis.arrows.length !== forces.length){
+    if(!root.parent){
+      const sample = scene.meshes.find(m=>m && m.name && /^atom_/i.test(m.name));
+      if(sample && sample.parent){ root.parent = sample.parent; }
+    }
+    if(forceVis.arrows.length !== forces.length){
       disposeArrows();
-      for (let i=0;i<forces.length;i++){
-        const arrow = createArrow('fArrow'+i);
-        arrow.parent = root;
-        forceVis.arrows.push(arrow);
-      }
+      for(let i=0;i<forces.length;i++){ const a=createArrow('forceArrow'+i); a.parent = root; forceVis.arrows.push(a); }
     }
-    // Determine scale (magnitude encoded directly, clamp overly large values)
-    let maxMag = 0;
-    const mags = new Array(forces.length);
-    for (let i=0;i<forces.length;i++){
-      const f = forces[i];
-      const mag = Math.hypot(f[0],f[1],f[2]);
-      mags[i] = mag;
-      if (mag>maxMag) maxMag = mag;
-    }
-    // Avoid zero division; choose a base length so moderate forces are visible
-    const baseScale = maxMag > 0 ? 0.6 / maxMag : 0.0; // largest arrow body ~0.6 units
-    for (let i=0;i<forces.length;i++){
-      const f = forces[i];
-      const mag = mags[i];
-      const arrow = forceVis.arrows[i];
-      const p = state.positions[i];
-      // Force direction: arrows should point along the physical force vector (f[0],f[1],f[2])
-      // If displayed opposite, invert here (current forces appear to point atom->atom, likely correct sign already?)
-      const dir = new BABYLON.Vector3(f[0], f[1], f[2]);
-      // If near zero magnitude, hide
-      if (mag < 1e-8){ arrow.setEnabled(false); continue; } else { arrow.setEnabled(true); }
-      // Normalize direction
-      dir.normalize();
-      // Position arrow so its base sits at atom center; cylinder created along +Y, so orient via quaternion
-      // Compute quaternion from up (0,1,0) to dir
-      const up = BABYLON.Vector3.Up();
-      let q;
-      if (Math.abs(BABYLON.Vector3.Dot(up, dir) - 1) < 1e-6) {
-        q = BABYLON.Quaternion.Identity();
-      } else if (Math.abs(BABYLON.Vector3.Dot(up, dir) + 1) < 1e-6) {
-        // Opposite direction
-        q = new BABYLON.Quaternion();
-        BABYLON.Quaternion.RotationAxisToRef(BABYLON.Vector3.Right(), Math.PI, q);
-      } else {
-        const axis = BABYLON.Vector3.Cross(up, dir);
-        axis.normalize();
-        const angle = Math.acos(BABYLON.Vector3.Dot(up, dir));
-        q = BABYLON.Quaternion.RotationAxis(axis, angle);
-      }
+    // Compute max magnitude for scaling
+    let maxMag=0; const mags=new Array(forces.length);
+    for(let i=0;i<forces.length;i++){ const f=forces[i]; const mag=Math.hypot(f[0],f[1],f[2]); mags[i]=mag; if(mag>maxMag) maxMag=mag; }
+    const baseScale = maxMag>0 ? 0.6/maxMag : 0;
+    for(let i=0;i<forces.length;i++){
+      const f=forces[i]; const mag=mags[i]; const p=state.positions[i]; const arrow=forceVis.arrows[i];
+      if(!p || mag<1e-8){ arrow.setEnabled(false); continue; } else { arrow.setEnabled(true); }
+      const dir = new BABYLON.Vector3(f[0],f[1],f[2]); dir.normalize();
+      const up = BABYLON.Vector3.Up(); let q; const dot=BABYLON.Vector3.Dot(up,dir);
+      if(Math.abs(dot-1)<1e-6) q = BABYLON.Quaternion.Identity();
+      else if(Math.abs(dot+1)<1e-6) q = BABYLON.Quaternion.RotationAxis(BABYLON.Vector3.Right(), Math.PI);
+      else { const axis = BABYLON.Vector3.Cross(up,dir).normalize(); const angle=Math.acos(dot); q = BABYLON.Quaternion.RotationAxis(axis, angle); }
       arrow.rotationQuaternion = q;
-      // Scale: body height originally 1; tip extends additional ~0.25; scale y to reflect magnitude
-      const length = mag * baseScale; // encoded magnitude
-      // Prevent absurdly tiny or huge visuals
-      const clampedLen = Math.min(Math.max(length, 0.05), 1.2);
+      const length = mag*baseScale; const clampedLen = Math.min(Math.max(length,0.05),1.2);
       arrow.scaling = new BABYLON.Vector3(1, clampedLen, 1);
-      // Move arrow so base at atom: body height is scaled; origin of cylinder is center, so shift by scaledHeight/2 along +Y then rotate
-      // We'll compute offset before rotation: (0, clampedLen/2, 0)
       const offset = new BABYLON.Vector3(0, clampedLen/2, 0);
       const rotatedOffset = offset.rotateByQuaternionToRef(q, new BABYLON.Vector3());
       arrow.position.set(p.x + rotatedOffset.x, p.y + rotatedOffset.y, p.z + rotatedOffset.z);
@@ -316,12 +273,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   }
   function setForceVectorsEnabled(on){
     forceVis.enabled = !!on;
-    if (!forceVis.enabled){ if (forceVis.root) forceVis.root.setEnabled(false); }
+    if(!forceVis.enabled){ if(forceVis.root) forceVis.root.setEnabled(false); }
     else { updateForceVectors(); }
   }
-
-  // Initial attempt to render after baseline
-  setTimeout(()=>{ if(forceVis.enabled) try { updateForceVectors(); } catch{} }, 0);
+  // schedule initial draw
+  setTimeout(()=>{ if(forceVis.enabled) try{ updateForceVectors(); }catch{} },0);
 
   // VR support is lazy; user can call vr.init() explicitly later.
   const vr = createVRSupport(scene, { picking: { ...picking, view, vrPicker, selectionService: selection, manipulation, molState: state } });
