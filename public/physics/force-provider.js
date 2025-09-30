@@ -47,8 +47,14 @@ export function createLocalLJProvider(molState, opts={}) {
   return { compute, capabilities };
 }
 
-// FairChem remote provider hitting the FastAPI server (/simple_calculate)
-export function createFairChemProvider({ baseUrl = 'http://127.0.0.1:8000' } = {}) {
+// FairChem remote provider hitting FastAPI endpoint. By default we assume the backend is exposed
+// on the SAME origin (served or reverse-proxied) and we call a relative path '/simple_calculate'.
+// You can still override with a full baseUrl (e.g. http://host:8000) by passing { baseUrl } or
+// setting window.__FAIRCHEM_URL. If baseUrl is omitted we use relative fetch for zero CORS hassle.
+export function createFairChemProvider({ baseUrl } = {}) {
+  if (!baseUrl && typeof window !== 'undefined' && window.__FAIRCHEM_URL) {
+    baseUrl = window.__FAIRCHEM_URL; // explicit global override
+  }
   const capabilities = { supportsStress: true, supportsCellRelax: true, name: 'fairchem-remote' };
   async function compute({ elements = [], positions = [], cell = null, wantStress = true } = {}) {
     const Z = ensureZ(elements);
@@ -59,7 +65,8 @@ export function createFairChemProvider({ baseUrl = 'http://127.0.0.1:8000' } = {
     if (cell) body.cell = cell; // Expect 3x3 array
     let respData = null;
     try {
-      const resp = await fetch(baseUrl + '/simple_calculate', {
+      const url = baseUrl ? (baseUrl.replace(/\/$/, '') + '/simple_calculate') : '/simple_calculate';
+      const resp = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
