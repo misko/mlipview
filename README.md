@@ -56,6 +56,9 @@ Drop additional `.xyz` files into `public/molecules/` and they will automaticall
 ---
 For VR setup details see `VR_SETUP_README.md`.
 
+### Spherical Atom Drag (VR/AR)
+Advanced spherical drag with multiple radial push/pull modes (adaptive default) is documented in `docs/VR_SphericalDrag.md`. Runtime tuning via `window.vrSpherical*` flags enables rapid experimentation (gain, smoothing, working radius cap, mode switching). See that doc for formulas, defaults, and troubleshooting.
+
 ## Force Field / MLIP Interface
 
 The app now exposes a unified force field interface supporting both the local Lennard-Jones mock potential and remote FAIR-Chem models on HuggingFace.

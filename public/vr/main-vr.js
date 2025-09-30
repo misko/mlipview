@@ -39,21 +39,22 @@ async function ensureBaseScene() {
 	return { engine, scene, canvas, reuse: false };
 }
 
-async function setupXR(engine, scene) {
-	// Reuse helper if created by createVRSupport/init already
-	if (window.vrHelper && window.vrHelper.baseExperience) {
-		console.log('[VR] Reusing existing XR helper');
+async function setupXR(engine, scene, { sessionMode='immersive-vr', referenceSpaceType='local-floor', optionalFeatures=[] } = {}) {
+	// Reuse helper only if same sessionMode already active
+	if (window.vrHelper && window.vrHelper.baseExperience && window.vrHelper._sessionMode === sessionMode) {
+		console.log('[XR] Reusing existing XR helper ('+sessionMode+')');
 		return window.vrHelper;
 	}
 	try {
 		const helper = await scene.createDefaultXRExperienceAsync({
-			uiOptions: { sessionMode: 'immersive-vr', referenceSpaceType: 'local-floor' },
+			uiOptions: { sessionMode, referenceSpaceType },
 			disableTeleportation: true,
-			optionalFeatures: []
+			optionalFeatures
 		});
+		helper._sessionMode = sessionMode; // tag for reuse discrimination
 		return helper;
 	} catch (e) {
-		console.warn('[VR] WebXR initialization failed:', e.message || e);
+		console.warn('[XR] WebXR initialization failed ('+sessionMode+'):', e.message || e);
 		return null;
 	}
 }
@@ -86,12 +87,22 @@ function createOverlay(scene) {
 	return { adt, value, panel };
 }
 
-export async function initVRApp() {
-	console.log('[VR] initVRApp (minimal)');
+async function initXRLike({ sessionMode='immersive-vr', transparent=false } = {}) {
+	console.log('[XR] initXRLike', { sessionMode, transparent });
 	const { engine, scene, reuse } = await ensureBaseScene();
-	const xr = await setupXR(engine, scene);
+	if (transparent) {
+		try {
+			// Make scene / canvas transparent (AR passthrough or pseudo-AR fallback)
+			scene.autoClear = false;
+			scene.clearColor = new BABYLON.Color4(0,0,0,0);
+			const canvas = engine.getRenderingCanvas();
+			if (canvas) canvas.style.background = 'transparent';
+			if (document && document.body) document.body.style.background = 'transparent';
+		} catch {}
+	}
+	const xr = await setupXR(engine, scene, { sessionMode });
 	if (!xr) {
-		console.warn('[VR] XR not available');
+		console.warn('[XR] '+sessionMode+' not available');
 	}
 	const hud = createOverlay(scene);
 
@@ -123,7 +134,21 @@ export async function initVRApp() {
 		window.addEventListener('resize', () => engine.resize());
 	}
 
-	return { engine, scene, xr, hud };
+ 	return { engine, scene, xr, hud, sessionMode };
 }
 
-export default { initVRApp };
+// Backwards compatible VR-specific init
+export async function initVRApp() { return initXRLike({ sessionMode:'immersive-vr' }); }
+// New AR (transparent) init; will attempt immersive-ar, fallback to transparent pseudo-AR if unsupported.
+export async function initARApp() {
+	if (navigator?.xr && await navigator.xr.isSessionSupported?.('immersive-ar')) {
+		return initXRLike({ sessionMode:'immersive-ar', transparent:true });
+	} else {
+		console.warn('[AR] immersive-ar not supported; enabling transparent background fallback');
+		return initXRLike({ sessionMode:'immersive-vr', transparent:true });
+	}
+}
+
+export async function initXRApp(opts){ return initXRLike(opts||{}); }
+
+export default { initVRApp, initARApp, initXRApp };

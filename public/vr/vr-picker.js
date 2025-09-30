@@ -22,10 +22,10 @@ export function createVRPicker({ scene, view }) {
     if (!ray) return null;
     const t0 = performance.now();
     const pick = scene.pickWithRay(ray);
-    if (!pick || !pick.hit) { debugLast.durations = { total: performance.now()-t0 }; return null; }
+  if (!pick || !pick.hit) { debugLast.durations = { total: performance.now()-t0 }; return null; }
     // Attempt bond first
     const b = view.resolveBondPick(pick);
-    if (b) { debugLast.bondPickRaw = pick; debugLast.durations = { total: performance.now()-t0 }; return b; }
+  if (b) { debugLast.bondPickRaw = pick; debugLast.durations = { total: performance.now()-t0 }; return b; }
     const a = view.resolveAtomPick(pick);
     if (a) { debugLast.atomPickRaw = pick; debugLast.durations = { total: performance.now()-t0 }; return a; }
     debugLast.durations = { total: performance.now()-t0 }; return null;

@@ -340,16 +340,35 @@ export function createMoleculeView(scene, molState) {
       const pA = molState.positions[i];
       const pB = molState.positions[j];
       if (!pA || !pB) return;
-      const mid = new BABYLON.Vector3((pA.x+pB.x)/2,(pA.y+pB.y)/2,(pA.z+pB.z)/2);
-      const v = new BABYLON.Vector3(pB.x-pA.x,pB.y-pA.y,pB.z-pA.z);
-      const len = v.length();
+      // VR Regression Fix: Previously bond highlight used world coordinates once at selection time
+      // and was never updated when masters rotated (after removing VR's own per-frame marker code).
+      // We now parent the bond highlight to the same master mesh that hosts the bond thin instances.
+      // This lets it inherit rotation/scale automatically just like the atoms/bonds.
+      let bondMaster = null;
+      for (const [_, g] of bondGroups) {
+        if (g && g.indices && g.indices.some(b => (b.i===i && b.j===j) || (b.i===j && b.j===i))) { bondMaster = g.master; break; }
+      }
+      if (bondMaster && highlight.bond.parent !== bondMaster) {
+        highlight.bond.parent = bondMaster;
+      }
+      if (!bondMaster && highlight.bond.parent) {
+        // Fallback: detach if master vanished (e.g., molecule switch)
+        highlight.bond.parent = null;
+      }
+      // Compute local midpoint and vector using molecule-space coordinates (positions[] already local).
+      const midLocal = new BABYLON.Vector3((pA.x+pB.x)/2,(pA.y+pB.y)/2,(pA.z+pB.z)/2);
+      const vLocal = new BABYLON.Vector3(pB.x-pA.x,pB.y-pA.y,pB.z-pA.z);
+      const lenLocal = vLocal.length();
       const up = new BABYLON.Vector3(0,1,0);
-      let rotQ; const d=v.normalizeToNew(); const dot=BABYLON.Vector3.Dot(up,d);
-      if (dot>0.9999) rotQ=BABYLON.Quaternion.Identity(); else if (dot<-0.9999) rotQ=BABYLON.Quaternion.RotationAxis(new BABYLON.Vector3(1,0,0),Math.PI); else { const axis=BABYLON.Vector3.Cross(up,d).normalize(); rotQ=BABYLON.Quaternion.RotationAxis(axis,Math.acos(dot)); }
-      highlight.bond.position = mid;
+      let rotQ; const d=vLocal.normalizeToNew(); const dot=BABYLON.Vector3.Dot(up,d);
+      if (dot>0.9999) rotQ=BABYLON.Quaternion.Identity();
+      else if (dot<-0.9999) rotQ=BABYLON.Quaternion.RotationAxis(new BABYLON.Vector3(1,0,0),Math.PI);
+      else { const axis=BABYLON.Vector3.Cross(up,d).normalize(); rotQ=BABYLON.Quaternion.RotationAxis(axis,Math.acos(dot)); }
+      // Apply local transform; master rotation/scale (if any) will be inherited.
+      highlight.bond.position = midLocal;
       highlight.bond.rotationQuaternion = rotQ;
-      const radius = 0.16; // proportionate shell around default 0.1 bond radius
-      highlight.bond.scaling = new BABYLON.Vector3(radius*2, len, radius*2);
+      const radius = 0.16; // local radius shell; master scaling will modify in world space
+      highlight.bond.scaling = new BABYLON.Vector3(radius*2, lenLocal, radius*2);
       highlight.bond.isVisible = true;
     }
   }
@@ -374,6 +393,31 @@ export function createMoleculeView(scene, molState) {
       if (highlight.atom.isVisible) highlight.atom.isVisible = false;
       if (highlight.bond.isVisible) highlight.bond.isVisible = false;
       return;
+    }
+    // If a bond remains selected, recompute its local transform each frame so any
+    // underlying atom position mutations (e.g., dragging or dynamics) reflect immediately.
+    if (sel.kind === 'bond' && highlight.bond.isVisible) {
+      try {
+        const { i, j } = sel.data;
+        const pA = molState.positions[i];
+        const pB = molState.positions[j];
+        if (pA && pB) {
+          const midLocal = new BABYLON.Vector3((pA.x+pB.x)/2,(pA.y+pB.y)/2,(pA.z+pB.z)/2);
+          const vLocal = new BABYLON.Vector3(pB.x-pA.x,pB.y-pA.y,pB.z-pA.z);
+          const lenLocal = vLocal.length();
+          if (lenLocal > 1e-6) {
+            const up = new BABYLON.Vector3(0,1,0);
+            let rotQ; const d=vLocal.normalizeToNew(); const dot=BABYLON.Vector3.Dot(up,d);
+            if (dot>0.9999) rotQ=BABYLON.Quaternion.Identity();
+            else if (dot<-0.9999) rotQ=BABYLON.Quaternion.RotationAxis(new BABYLON.Vector3(1,0,0),Math.PI);
+            else { const axis=BABYLON.Vector3.Cross(up,d).normalize(); rotQ=BABYLON.Quaternion.RotationAxis(axis,Math.acos(dot)); }
+            highlight.bond.position = midLocal;
+            highlight.bond.rotationQuaternion = rotQ;
+            // Keep scaling local; world scaling inherited
+            highlight.bond.scaling.y = lenLocal; // preserve radius components
+          }
+        }
+      } catch {}
     }
     // Additional integrity checks: indices must be in range, bond must still exist
     if (sel.kind === 'atom') {

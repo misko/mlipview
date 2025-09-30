@@ -12,11 +12,8 @@
     .hud button { margin-right:6px; }
     .footer { position:absolute; bottom:8px; left:8px; font-size:11px; opacity:0.6; }
     a { color:#7fc4ff; }
-    /* Lightweight VR entry button */
-    #enter-vr-btn { position:absolute; top:8px; right:8px; z-index:20; background:#1374d8; color:#fff; border:1px solid rgba(255,255,255,0.2); padding:8px 14px; border-radius:6px; font-size:14px; cursor:pointer; box-shadow:0 2px 4px rgba(0,0,0,0.4); display:none; }
-    #enter-vr-btn[disabled] { opacity:0.5; cursor:default; }
-    #enter-vr-btn.vr-active { background:#0d9256; }
-    #enter-vr-btn:hover:not([disabled]) { background:#0f62b4; }
+    /* Removed standalone VR/AR buttons; unified AR transparency toggle lives in HUD */
+    .hud .inline-toggle { display:inline-flex; align-items:center; gap:4px; margin-left:4px; }
   </style>
   <!-- Load Babylon globally so legacy-style modules that reference global BABYLON work -->
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
@@ -39,7 +36,6 @@
       </div>
     </div>
     <div class="footer">MLIP Viewer 2 – separate project</div>
-    <button id="enter-vr-btn" title="Enter WebXR (Lite)">Enter VR</button>
   </div>
   <script type="module">
     import { initNewViewer } from './index.js';
@@ -100,47 +96,31 @@
     };
     document.querySelector('.hud').appendChild(switcher);
 
-    // --- VR Entry Integration (Approach 2) -------------------------------------
-    const vrBtn = document.getElementById('enter-vr-btn');
-    async function checkXRSupport() {
-      if (!('xr' in navigator)) return false;
-      try { return await navigator.xr.isSessionSupported('immersive-vr'); } catch { return false; }
-    }
-    (async () => {
-      const ok = await checkXRSupport();
-      if (ok) {
-        vrBtn.style.display = 'inline-block';
-      }
+    (function addXRModeSelector(){
+      const hud=document.querySelector('.hud'); if(!hud) return;
+      const sel=document.createElement('select'); sel.style.marginLeft='6px'; sel.title='Switch XR mode';
+      sel.innerHTML='<option value="none">XR:none</option><option value="vr">VR</option><option value="ar">AR</option>';
+      sel.id='xrModeSelect';
+      hud.appendChild(sel);
+      sel.addEventListener('change', async ()=>{
+        if(!viewerApi) return;
+        const v=sel.value;
+        if(v==='none'){ await viewerApi.vr.switchXR('none'); }
+        else if(v==='vr'){ await viewerApi.vr.switchXR('vr'); }
+        else if(v==='ar'){ await viewerApi.vr.switchXR('ar'); }
+      });
+      // Optionally update selection based on debug info polling
+      setInterval(()=>{
+        if(!viewerApi) return;
+        try {
+          const info=viewerApi.vr.debugInfo();
+          let mode='none';
+            if(info.sessionMode.includes('ar')) mode='ar';
+            else if(info.sessionMode.includes('vr')||info.hasXRHelper && info.sessionMode!=='unknown') mode='vr';
+          if(sel.value!==mode) sel.value=mode;
+        } catch{}
+      }, 2000);
     })();
-    let vrSessionStarted = false;
-    let vrModule = null;
-    async function startVRLite() {
-      if (vrSessionStarted) return;
-      vrBtn.disabled = true;
-      vrBtn.textContent = 'Starting VR…';
-      try {
-        // Flag lite mode features consistent with legacy vr.html
-        window.vrLiteMode = true;
-        window.vrDisableForces = true;
-        window.vrDisablePlot = true;
-        // Dynamically import VR bundle
-        const mod = await import('./vr/main-vr.js');
-        vrModule = mod;
-        const vrApp = await mod.initVRApp();
-        if (!vrApp) throw new Error('VR init returned null');
-        vrSessionStarted = true;
-        vrBtn.textContent = 'VR Active';
-        vrBtn.classList.add('vr-active');
-        // Optionally hide desktop HUD to reduce clutter while in XR session
-        // (when XR session actually starts, VR module hides its overlay duplicates)
-      } catch (e) {
-        console.warn('[VR] start failed', e);
-        vrBtn.textContent = 'VR Failed';
-        setTimeout(()=>{ vrBtn.textContent='Enter VR'; vrBtn.disabled=false; }, 2500);
-      }
-    }
-    vrBtn.addEventListener('click', startVRLite);
-    // --------------------------------------------------------------------------
   </script>
 </body>
 </html>

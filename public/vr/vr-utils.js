@@ -6,10 +6,13 @@ let _mastersCache = null;
 let _mastersCacheSceneId = null;
 let _mastersCacheVersion = 0;
 
+
 function _isMasterCandidate(m){
   if(!m || !m.name) return false;
-  if(/^(vrAtomSel|vrBondSel|vrBondSelMat|vrAtomSelMat|highlight_)/i.test(m.name)) return false; // exclude helper/highlight meshes
-  return /(base_|bond_|atom_|sphere_|cyl|mol|molecule|root)/i.test(m.name);
+  // Exclude canonical highlight meshes only; VR-specific vrBondSel/vrAtomSel removed.
+  if(/^highlight_/i.test(m.name)) return false;
+  if(/(base_|bond_|atom_|sphere_|cyl|mol|molecule|root)/i.test(m.name)) return true;
+  return false;
 }
 
 export function refreshMoleculeMasters(scene, { force } = {}){
@@ -17,7 +20,6 @@ export function refreshMoleculeMasters(scene, { force } = {}){
   try {
     if(force || !_mastersCache || _mastersCacheSceneId !== scene.uid){
       _mastersCache = (scene.meshes||[]).filter(_isMasterCandidate);
-      // Heuristic: if we only captured <=2 meshes and they look like selection helpers, broaden search to their parents/children
       if(_mastersCache.length <= 2){
         const extra = new Set(_mastersCache);
         for(const m of [..._mastersCache]){
@@ -52,7 +54,7 @@ export function getMoleculeDiag(scene){
   const masters = getMoleculeMasters(scene);
   if(!masters.length || typeof BABYLON==='undefined') return 0.0001;
   let min = new BABYLON.Vector3(Number.POSITIVE_INFINITY,Number.POSITIVE_INFINITY,Number.POSITIVE_INFINITY);
-  let max = new BABYLON.Vector3(Number.NEGATIVE_INFINITY,Number.NEGATIVE_INFINITY,Number.NEGATIVE_INFINITY);
+  let max = new BABYLON.Vector3(Number.NEGATIVE_INFINITY,Number.NEGATIVE_INFINITY,Number.POSITIVE_INFINITY);
   for(const m of masters){
     try {
       m.refreshBoundingInfo?.();
@@ -69,6 +71,7 @@ export function getMoleculeDiag(scene){
 // first master mesh rotation, scaling, and translation plus accumulated
 // quaternion if present (optional) - kept simple for now.
 export function transformLocalToWorld(scene, local){
+  // Reverted to manual composition (scale -> rotate -> translate) using first master.
   if(typeof BABYLON==='undefined') return { x: local.x, y: local.y, z: local.z };
   const m = getAnyMaster(scene);
   const v = new BABYLON.Vector3(local.x, local.y, local.z);
@@ -80,5 +83,6 @@ export function transformLocalToWorld(scene, local){
   }
   return v;
 }
+
 
 export default { getMoleculeMasters, getMoleculeDiag, transformLocalToWorld, getAnyMaster, refreshMoleculeMasters };
