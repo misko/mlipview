@@ -1,4 +1,18 @@
 import { defineConfig } from 'vite';
+import fs from 'fs';
+
+// Attempt to load localhost TLS certs for HTTPS dev (optional)
+function loadHttpsConfig(){
+  const keyPath = './localhost-key.pem';
+  const certPath = './localhost-cert.pem';
+  try {
+    if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
+      return { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) };
+    }
+  } catch {}
+  return null;
+}
+const httpsCfg = loadHttpsConfig();
 import path from 'path';
 
 // We serve static assets out of public/. Index.html already lives there and uses module scripts.
@@ -38,7 +52,8 @@ export default defineConfig({
     // Restrict or extend allowed host headers. Needed when accessing via hostname (e.g. http://kalman:5173).
     // Add more hostnames or patterns as needed; you can also expose an env var if desired.
     allowedHosts: ['kalman'],
-    proxy: {
+  https: !!httpsCfg && !process.env.NO_VITE_HTTPS ? httpsCfg : false,
+  proxy: {
       // Forward API calls to local FastAPI (FairChem) backend so frontend can just fetch('/simple_calculate').
       '/simple_calculate': {
         target: 'http://127.0.0.1:8000',

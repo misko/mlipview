@@ -1,6 +1,4 @@
-// Unified force provider abstraction (local LJ + FairChem remote)
-// Exposes a consistent async compute interface returning energy, forces, optional stress.
-// Units: energy eV, forces eV/Å, stress eV/Å^3.
+//WARNING THIS FILE IS MOST LIKELY DEPRECATED!!!!!
 
 import { createForceField } from './forcefield.js';
 
@@ -55,6 +53,18 @@ export function createFairChemProvider({ baseUrl } = {}) {
   if (!baseUrl && typeof window !== 'undefined' && window.__FAIRCHEM_URL) {
     baseUrl = window.__FAIRCHEM_URL; // explicit global override
   }
+  try {
+    const tag = '[fairchem-provider]';
+    if (typeof window !== 'undefined' && window.location) {
+      // Only log once per session unless forced
+      if (!window.__FAIRCHEM_BASEURL_LOGGED) {
+        window.__FAIRCHEM_BASEURL_LOGGED = true;
+        console.debug(tag, 'resolved baseUrl =', baseUrl || '(relative /simple_calculate)', 'page origin=', window.location.origin);
+      }
+    } else {
+      console.debug('[fairchem-provider]', 'resolved baseUrl (non-browser)=', baseUrl || '(relative /simple_calculate)');
+    }
+  } catch {}
   const capabilities = { supportsStress: true, supportsCellRelax: true, name: 'fairchem-remote' };
   async function compute({ elements = [], positions = [], cell = null, wantStress = true } = {}) {
     const Z = ensureZ(elements);

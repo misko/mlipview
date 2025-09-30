@@ -264,9 +264,7 @@ export function setupVRFeatures(xrHelper, scene, picking){
             // precompute to speed update
             atomLocalStart: { ...localStart }, ctrlVec0
           };
-          if(typeof window!=='undefined' && window.vrSphericalDebugInit){
-            console.log('[VR][Drag][Spherical][Init]', { initialRadius, controllerDist0, ctrlVec0:{x:ctrlVec0.x,y:ctrlVec0.y,z:ctrlVec0.z}, atomWorld:{x:atomWorld.x,y:atomWorld.y,z:atomWorld.z} });
-          }
+          // (spherical drag init debug suppressed)
         }
       } catch{}
     }
@@ -321,15 +319,7 @@ export function setupVRFeatures(xrHelper, scene, picking){
         if(sphericalData.invRotQ) local.applyRotationQuaternionInPlace(sphericalData.invRotQ);
         // inverse scale
         local.x /= sphericalData.scale.x; local.y /= sphericalData.scale.y; local.z /= sphericalData.scale.z;
-        if(typeof window!=='undefined' && window.vrSphericalDebugFrames){
-          if(sphericalData.framesLogged < window.vrSphericalDebugFrames){
-            console.log('[VR][Drag][Spherical]', { frame:sphericalData.framesLogged, mode, components: core.components, deltaR, newRadius, distCtrl, controllerDist0:sphericalData.controllerDist0, initialRadius:sphericalData.initialRadius, ratio: core.ratio, forward: {x:forward.x,y:forward.y,z:forward.z}, local:{x:local.x,y:local.y,z:local.z} });
-            sphericalData.framesLogged++;
-          }
-        } else if(sphericalData.framesLogged < 12){
-          console.log('[VR][Drag][Spherical]', { frame:sphericalData.framesLogged, mode, components: core.components, deltaR, amplificationMultiplier, smoothing, newRadius, newRadiusTarget, effectiveInitialRadius, distCtrl, controllerDist0:sphericalData.controllerDist0, initialRadius:sphericalData.initialRadius, ratio: core.ratio, forward: {x:forward.x,y:forward.y,z:forward.z}, local:{x:local.x,y:local.y,z:local.z} });
-          sphericalData.framesLogged++;
-        }
+        // (per-frame spherical drag debug suppressed)
         return { x: local.x, y: local.y, z: local.z };
       } catch(e){ return legacyIntersector(); }
     }

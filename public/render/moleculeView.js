@@ -78,7 +78,7 @@ export function createMoleculeView(scene, molState) {
   function rebuildBonds(bondData) {
     for (const g of bondGroups.values()) { g.mats=[]; g.indices=[]; }
     const source = bondData || molState.bonds;
-    const debug = (typeof window !== 'undefined' && window.location && window.location.search.includes('debug=1'));
+    // Debug logging removed (previously controlled by debug=1 query param) to reduce console noise.
     for (const b of source) {
       const g = ensureBondGroup(keyOf(b.i,b.j));
       const pA = molState.positions[b.i]; const pB = molState.positions[b.j];
@@ -116,7 +116,7 @@ export function createMoleculeView(scene, molState) {
       } else {
         if (typeof g.master.setEnabled === 'function') g.master.setEnabled(true); else g.master.isVisible=true;
       }
-      if (debug) console.debug('[debug][rebuildBonds] group', key, 'instances', g.mats.length);
+      // (debug log suppressed)
     }
   }
   function rebuildGhosts() {
@@ -205,8 +205,7 @@ export function createMoleculeView(scene, molState) {
       g.mats.push(mat); g.indices.push(i);
     }
     for (const g of atomGroups.values()) g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
-    const debug = (typeof window !== 'undefined' && window.location && window.location.search.includes('debug=1'));
-    if (debug) console.debug('[debug][rebuildAtoms] groups', Array.from(atomGroups.entries()).map(([el,g])=>({el, count:g.mats.length, visible:g.master.isVisible})));
+    // (debug log suppressed)
   }
   function updatePositions() {
     for (const [el,g] of atomGroups) {
@@ -253,14 +252,7 @@ export function createMoleculeView(scene, molState) {
       // Selection remains; refresh highlight transform/visibility
       updateSelectionHighlight();
     }
-    const debug = (typeof window !== 'undefined' && window.location && window.location.search.includes('debug=1'));
-    if (debug) {
-      console.debug('[debug][bondsChanged] atomCount', molState.positions.length, 'groups', Array.from(atomGroups.keys()));
-      for (const [el,g] of atomGroups) {
-        console.debug('[debug][atomGroup]', el, { instances:g.mats.length, masterVisible:g.master.isVisible, hasColorBuffer: !!g.master?._thinInstanceBufferUpdated });
-      }
-      console.debug('[debug][highlight]', { atomVisible: highlight.atom?.isVisible, bondVisible: highlight.bond?.isVisible });
-    }
+    // (debug logs suppressed)
   });
   molState.bus.on('cellChanged', () => { rebuildCellLines(); rebuildGhosts(); });
   // Selection highlight management

@@ -13,7 +13,7 @@ import { orientationToSide } from '../selection-model.js';
 export function createManipulationService(molState, { bondService } = {}) {
   let dragState = null; // { atomIndex, startPos:{x,y,z}, grabOffset:{x,y,z}, planeNormal:{x,y,z}, planePoint:{x,y,z} }
   // Debug instrumentation (re-added to surface desktop drag logs after migration).
-  const DRAG_LOG = true; // set false to silence
+  const DRAG_LOG = false; // silenced (set to true locally if detailed drag diagnostics needed)
 
   function getAtomPosition(i) { return molState.positions[i]; }
   function setAtomPosition(i, p) { molState.positions[i].x=p.x; molState.positions[i].y=p.y; molState.positions[i].z=p.z; }
@@ -29,7 +29,7 @@ export function createManipulationService(molState, { bondService } = {}) {
     const hit = intersector(planePoint, planeNormal);
     const grabOffset = hit ? { x:pos.x-hit.x, y:pos.y-hit.y, z:pos.z-hit.z } : { x:0,y:0,z:0 };
     dragState = { atomIndex, startPos: { ...pos }, grabOffset, planeNormal, planePoint };
-    if (DRAG_LOG) console.log('[drag][start]', { atomIndex, startPos: { ...pos }, planePoint: { ...planePoint }, planeNormal: { ...planeNormal } });
+  if (DRAG_LOG) console.log('[drag][start]', { atomIndex, startPos: { ...pos }, planePoint: { ...planePoint }, planeNormal: { ...planeNormal } }); // retained behind flag
     return true;
   }
   function setDragPlane(point, normal) {
@@ -50,7 +50,7 @@ export function createManipulationService(molState, { bondService } = {}) {
       const dy = +(newPos.y - prev.y).toFixed(3);
       const dz = +(newPos.z - prev.z).toFixed(3);
       console.log('[drag][move]', { atomIndex: dragState.atomIndex, from: prev, to: { ...newPos }, d: { dx, dy, dz } });
-    }
+    } // suppressed by default
     return true;
   }
   function endDrag() {
@@ -64,7 +64,7 @@ export function createManipulationService(molState, { bondService } = {}) {
       const dy = +(cur.y - startPos.y).toFixed(3);
       const dz = +(cur.z - startPos.z).toFixed(3);
       console.log('[drag][drop]', { atomIndex, moved, delta: { dx, dy, dz }, startPos: { ...startPos }, finalPos: { ...cur } });
-    }
+    } // suppressed by default
     dragState = null;
     if (moved && bondService && typeof bondService.recomputeAndStore === 'function') {
       bondService.recomputeAndStore();
