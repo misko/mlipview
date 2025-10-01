@@ -1,18 +1,18 @@
 import os
 import threading
 import traceback
+from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-from enum import Enum
+from ase.io.jsonio import decode, encode
+from fairchem.core import pretrained_mlip
+from fairchem.core.calculate.ase_calculator import \
+    FAIRChemCalculator  # updated path
+from fairchem.core.units.mlip_unit import InferenceSettings
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-
-from fairchem.core import pretrained_mlip
-from fairchem.core.calculate.ase_calculator import FAIRChemCalculator  # updated path
-from fairchem.core.units.mlip_unit import InferenceSettings
-from ase.io.jsonio import encode, decode
 
 
 class RelaxCalculatorName(str, Enum):
@@ -160,6 +160,9 @@ class RelaxIn(BaseModel):
     spin_multiplicity: Optional[int] = 1
     fmax: float = 0.05  # convergence threshold (still run fixed steps for now)
     max_step: float = 0.2  # not directly used by ASE BFGS but kept for parity
+    optimizer: Optional[str] = "bfgs"  # bfgs|bfgs_ls|lbfgs|fire (extensible)
+    optimizer_params: Optional[Dict[str, Any]] = None  # forwarded filtered params
+    return_trace: bool = False  # whether to return per-step energy list
 
 
 class RelaxResult(BaseModel):
@@ -170,6 +173,7 @@ class RelaxResult(BaseModel):
     stress: Optional[list[float]] = None
     steps_completed: int
     calculator: RelaxCalculatorName
+    trace_energies: Optional[list[float]] = None
 
 
 ###############################
@@ -418,37 +422,80 @@ def relax(inp: RelaxIn):
         try:
             initial_energy = float(atoms.get_potential_energy())
         except Exception as ee:
-            raise HTTPException(
-                status_code=500, detail=f"Initial energy failed: {ee}"
-            )
+            raise HTTPException(status_code=500, detail=f"Initial energy failed: {ee}")
 
-    # Run fixed number of steps collecting latest forces/stress
+        # --- Optimizer selection ---
+        opt_name = (inp.optimizer or "bfgs").lower()
+        opt_params = dict(inp.optimizer_params or {})
+        trace: list[float] = []
+
+        # Normalized common parameter mapping
+        max_step = float(inp.max_step or 0.2)
+        if opt_name in {"bfgs", "bfgs_ls", "lbfgs"}:
+            # unify parameter key names
+            if "maxstep" not in opt_params:
+                opt_params["maxstep"] = max_step
+        try:
+            if opt_name == "bfgs":
+                from ase.optimize import BFGS as _BFGS
+                optimizer = _BFGS(atoms, logfile=None, **{k:v for k,v in opt_params.items() if k in {"maxstep","alpha","memory"}})
+            elif opt_name == "bfgs_ls":
+                from ase.optimize import BFGSLineSearch as _BFGSLS
+                optimizer = _BFGSLS(atoms, logfile=None, **{k:v for k,v in opt_params.items() if k in {"maxstep","alpha"}})
+            elif opt_name == "lbfgs":
+                from ase.optimize import LBFGS as _LBFGS
+
+                # Some ASE versions support use_line_search; include if requested
+                allowed = {"maxstep","alpha","memory","use_line_search"}
+                optimizer = _LBFGS(atoms, logfile=None, **{k:v for k,v in opt_params.items() if k in allowed})
+            elif opt_name == "fire":
+                from ase.optimize import FIRE as _FIRE
+                allowed = {"dt","maxmove","force_consistent"}
+                optimizer = _FIRE(atoms, logfile=None, **{k:v for k,v in opt_params.items() if k in allowed})
+            else:
+                raise HTTPException(status_code=400, detail=f"Unknown optimizer '{opt_name}'")
+        except HTTPException:
+            raise
+        except Exception as oe:
+            raise HTTPException(status_code=500, detail=f"Optimizer init failed: {oe}")
+
+        # Run steps with optional early stop
         steps_completed = 0
         forces = None
         stress = None
-        opt = BFGS(atoms, logfile=None)
-        for _ in range(max(0, inp.steps)):
+        target_fmax = float(inp.fmax or 0.0)
+        max_steps = max(0, int(inp.steps))
+        for _ in range(max_steps):
             try:
-                opt.step()
+                optimizer.step()
                 steps_completed += 1
                 forces = atoms.get_forces()
+                if inp.return_trace:
+                    try:
+                        trace.append(float(atoms.get_potential_energy()))
+                    except Exception:
+                        pass
                 try:
                     stress = atoms.get_stress()  # may fail for LJ
                 except Exception:
                     stress = None
+                if target_fmax > 0:
+                    import numpy as _np
+                    fmax_val = float((_np.square(forces).sum(axis=1)) ** 0.5 if hasattr(forces, 'shape') else 0.0)
+                    # Actually compute max norm per-atom
+                    fmax_val = float((_np.square(forces).sum(axis=1) ** 0.5).max())
+                    if fmax_val < target_fmax:
+                        break
             except Exception as ste:
-                print(
-                    f"[relax] step failed after {steps_completed} steps: {ste}"
-                )
+                print(f"[relax] step failed after {steps_completed} steps: {ste}")
                 break
 
         final_energy = float(atoms.get_potential_energy())
         if forces is None:
             forces = atoms.get_forces()
         print(
-            f"[relax] calc={inp.calculator} natoms={len(inp.atomic_numbers)} "
-            f"steps={steps_completed}/{inp.steps} E0={initial_energy:.6f} "
-            f"Efin={final_energy:.6f}"
+            f"[relax] calc={inp.calculator} opt={opt_name} natoms={len(inp.atomic_numbers)} "
+            f"steps={steps_completed}/{inp.steps} E0={initial_energy:.6f} Efin={final_energy:.6f} trace_len={len(trace)}"
         )
         return RelaxResult(
             initial_energy=initial_energy,
@@ -458,6 +505,7 @@ def relax(inp: RelaxIn):
             stress=(stress.tolist() if stress is not None else None),
             steps_completed=steps_completed,
             calculator=inp.calculator,
+            trace_energies=(trace if inp.return_trace else None),
         )
     except HTTPException:
         raise

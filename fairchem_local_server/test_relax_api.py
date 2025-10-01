@@ -1,11 +1,17 @@
 import math
-import torch
-from fastapi.testclient import TestClient
-from ase.build import molecule
-from ase.optimize import BFGS
+import os
+from pathlib import Path
 
-from fairchem_local_server import server  # adjust to import via module path if package, else fallback
+import torch
+from ase.build import molecule
+from ase.io import read  # for loading ROY xyz
+from ase.optimize import BFGS
+from fastapi.testclient import TestClient
+
+from fairchem_local_server import \
+    server  # adjust to import via module path if package, else fallback
 from fairchem_local_server.server import app, get_cached_unit_and_calculator
+
 try:
     from ase.calculators.lj import LennardJones as _LJ
 except Exception:  # pragma: no cover
@@ -23,18 +29,42 @@ FMAX_TOL = 1e-4
 ENERGY_TOL = 1e-6  # direct vs API should be nearly identical
 POS_TOL = 1e-6
 
+# Extended test constants for ROY long relaxation
+ROY_STEPS = int(os.environ.get('MLIPVIEW_ROY_STEPS', '400')) if 'MLIPVIEW_ROY_STEPS' in os.environ else 400
+ROY_INIT_ENERGY_ABS_TOL = 5e-3  # UMA model slight nondeterminism tolerance (initial)
+ROY_FINAL_ENERGY_ABS_TOL = 1e-2  # final energy tolerance after 400 steps
 
-def run_direct_bfgs(atoms, steps: int):
+
+def load_roy_atoms():
+    """Load ROY molecule from the repository xyz file.
+
+    The xyz file resides at public/molecules/roy.xyz relative to repo root.
+    We avoid adding a dependency on any external dataset and reuse the file
+    already used by the frontend & Playwright tests.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    xyz_path = repo_root / 'public' / 'molecules' / 'roy.xyz'
+    if not xyz_path.is_file():  # defensive
+        raise FileNotFoundError(f"ROY xyz not found at {xyz_path}")
+    atoms = read(xyz_path)
+    return atoms
+
+
+def run_direct_bfgs(atoms, steps: int, fmax_stop: float | None = None):
+    """Run BFGS for up to `steps`, optionally stopping early if max force below fmax_stop.
+
+    Returns (energies, positions, forces).
+    """
     energies = [float(atoms.get_potential_energy())]
     opt = BFGS(atoms, logfile=None)
     for _ in range(steps):
         opt.step()
         energies.append(float(atoms.get_potential_energy()))
-    return (
-        energies,
-        atoms.get_positions().tolist(),
-        atoms.get_forces().tolist(),
-    )
+        if fmax_stop is not None:
+            fmax = (atoms.get_forces() ** 2).sum(axis=1) ** 0.5
+            if float(fmax.max()) < fmax_stop:
+                break
+    return (energies, atoms.get_positions().tolist(), atoms.get_forces().tolist())
 
 
 def test_relax_lj_water():
@@ -125,3 +155,148 @@ def test_relax_uma_water():
     for a, b in zip(data["positions"], pos_direct):
         for x, y in zip(a, b):
             assert abs(x - y) < 5e-4
+
+
+def test_relax_uma_roy_400_steps_energy():
+    """Long (400-step) UMA relaxation parity test for ROY.
+
+    Compares direct in-process ASE BFGS (UMA calculator) energies to the /relax API
+    performing an equivalent number of steps. We start with energy-only parity; force &
+    position parity can be added subsequently once acceptable tolerances are established.
+    """
+    torch.manual_seed(0)
+    atoms = load_roy_atoms()
+    # obtain UMA calculator
+    _pu, calc = get_cached_unit_and_calculator(atoms.get_atomic_numbers().tolist())
+    atoms.calc = calc
+    # Direct BFGS (ROY_STEPS)
+    direct_energies, _pos_direct, _forces_direct = run_direct_bfgs(atoms, ROY_STEPS, fmax_stop=1e-3)
+
+    # Fresh atoms for initial energy (direct) reference
+    atoms_init = load_roy_atoms()
+    _pu_init, calc_init = get_cached_unit_and_calculator(atoms_init.get_atomic_numbers().tolist())
+    atoms_init.calc = calc_init
+    e0_direct = float(atoms_init.get_potential_energy())
+
+    # Build API payload (fresh geometry so starting coordinates match API expectation)
+    atoms_api = load_roy_atoms()
+    payload = {
+        'atomic_numbers': atoms_api.get_atomic_numbers().tolist(),
+        'coordinates': atoms_api.get_positions().tolist(),
+        'steps': ROY_STEPS,
+        'calculator': 'uma'
+    }
+    resp = client.post('/relax', json=payload)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    # Initial energy parity (allow modest absolute tolerance)
+    assert math.isclose(data['initial_energy'], e0_direct, rel_tol=0, abs_tol=ROY_INIT_ENERGY_ABS_TOL), (
+        f"ROY initial energy mismatch: api={data['initial_energy']}, direct={e0_direct}" )
+
+    # Final energy parity (looser abs tolerance; relative tolerance tiny due to magnitude)
+    api_final = data['final_energy']
+    direct_final = direct_energies[-1]
+    assert math.isclose(api_final, direct_final, rel_tol=1e-5, abs_tol=ROY_FINAL_ENERGY_ABS_TOL), (
+        f"ROY final energy mismatch: api={api_final}, direct={direct_final}" )
+
+    # --- Sequential 1-step API sampling to obtain per-step energy trace ---
+    # Rebuild fresh atoms for stepwise sequence so that initial geometry matches again.
+    step_atoms = load_roy_atoms()
+    seq_payload_base = {
+        'atomic_numbers': step_atoms.get_atomic_numbers().tolist(),
+        'calculator': 'uma',
+        'steps': 1
+    }
+    step_positions = step_atoms.get_positions().tolist()
+    api_step_energies = []
+    # initial single-point energy via simple_calculate (optional) omitted; we rely on first relax step call's initial_energy
+    for i in range(min(ROY_STEPS, 120)):  # cap trace length for runtime if ROY_STEPS huge
+        seq_payload_base['coordinates'] = step_positions
+        r = client.post('/relax', json=seq_payload_base)
+        assert r.status_code == 200, f"step {i} status {r.status_code} body={r.text}"
+        jd = r.json()
+        api_step_energies.append(jd['final_energy'])
+        step_positions = jd['positions']
+    # Print energies for external inspection (pytest -s)
+    print('\nROY_API_STEP_ENERGIES', api_step_energies)
+    print('ROY_DIRECT_FINAL', direct_final, 'ROY_API_AGG_FINAL', api_final, 'SEQ_LEN', len(api_step_energies))
+
+    # Basic oscillation / monotonicity heuristic: count sign of successive diffs
+    if len(api_step_energies) > 2:
+        diffs = [api_step_energies[i+1]-api_step_energies[i] for i in range(len(api_step_energies)-1)]
+        up = sum(1 for d in diffs if d>0)
+        down = sum(1 for d in diffs if d<0)
+        print(f"ROY_API_TRACE_DIFFS up={up} down={down} totalSteps={len(diffs)}")
+
+    # (Future extension) Force / position parity: once baseline established we can compare
+    # final positions & forces with suitable tolerances; placeholder comment retained intentionally.
+
+
+def test_relax_uma_water_bfgs_linesearch_trace():
+    """Verify BFGSLineSearch optimizer selection + energy trace return for small system.
+
+    We request a short 5-step UMA relaxation with optimizer 'bfgs_ls' and confirm that
+    trace_energies length matches steps completed, energies are floats, and initial energy
+    lies within the expected physical range (< 0 eV large negative typical for model units).
+    """
+    torch.manual_seed(0)
+    atoms = molecule("H2O")
+    payload = {
+        'atomic_numbers': atoms.get_atomic_numbers().tolist(),
+        'coordinates': atoms.get_positions().tolist(),
+        'steps': 5,
+        'calculator': 'uma',
+        'optimizer': 'bfgs_ls',
+        'optimizer_params': { 'maxstep': 0.15 },
+        'return_trace': True,
+        'fmax': 0.0
+    }
+    resp = client.post('/relax', json=payload)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert 'trace_energies' in data and data['trace_energies'] is not None
+    trace = data['trace_energies']
+    # steps_completed may be < requested if an internal failure (should not) or early stop; we disabled early stop with fmax=0.0
+    assert len(trace) == data['steps_completed']
+    assert 1 <= data['steps_completed'] <= 5
+    for e in trace:
+        assert isinstance(e, (float, int))
+    # Sanity: energy numeric and negative (model typical)
+    assert data['initial_energy'] < 0 and data['final_energy'] < 0
+
+
+def test_relax_uma_roy_400_steps_bfgs_linesearch_trace():
+    """Run ROY 400-step (or env override) UMA relaxation with BFGSLineSearch and capture trace.
+
+    Prints monotonicity stats so we can visually/quantitatively assess oscillations compared to plain BFGS.
+    Environment variable MLIPVIEW_ROY_STEPS respected for step count; return_trace enables per-step energies.
+    """
+    torch.manual_seed(0)
+    steps = ROY_STEPS
+    atoms_api = load_roy_atoms()
+    payload = {
+        'atomic_numbers': atoms_api.get_atomic_numbers().tolist(),
+        'coordinates': atoms_api.get_positions().tolist(),
+        'steps': steps,
+        'calculator': 'uma',
+        'optimizer': 'bfgs_ls',
+        'optimizer_params': { 'maxstep': 0.15 },
+        'return_trace': True,
+        'fmax': 0.0
+    }
+    resp = client.post('/relax', json=payload)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    trace = data.get('trace_energies') or []
+    print(f"ROY_LS_TRACE_LEN {len(trace)} steps_completed {data['steps_completed']} requested {steps}")
+    if trace:
+        diffs = [trace[i+1]-trace[i] for i in range(len(trace)-1)]
+        up = sum(1 for d in diffs if d>0)
+        down = sum(1 for d in diffs if d<0)
+        print(f"ROY_LS_TRACE_DIFFS up={up} down={down} total={len(diffs)} firstE={trace[0]} lastE={trace[-1]}")
+        # Heuristic: expect fewer sign flips ratio vs vanilla BFGS (not enforcing yet)
+        # We only assert basic sanity to avoid flakiness.
+        assert len(trace) == data['steps_completed']
+        assert data['steps_completed'] <= steps
+        assert isinstance(trace[0], (float,int)) and isinstance(trace[-1], (float,int))
