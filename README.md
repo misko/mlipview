@@ -141,6 +141,32 @@ Key endpoints:
 HUD buttons:
 * `MD Step` – performs one 1 fs MD step via `/md`.
 * `MD Run` – continuous MD loop (enable via `window.__MLIP_FEATURES.MD_LOOP = true`).
+* `Relax Run` – continuous relaxation loop (auto-enabled by default; disable via `viewerApi.enableFeatureFlag('RELAX_LOOP', false)`).
+
+Loops are auto-enabled on load. You can disable or re-enable them dynamically via the runtime API:
+```js
+// After viewerApi is created
+// Disable
+viewerApi.enableFeatureFlag('RELAX_LOOP', false);
+viewerApi.enableFeatureFlag('MD_LOOP', false);
+// Re-enable
+viewerApi.enableFeatureFlag('RELAX_LOOP', true);
+viewerApi.enableFeatureFlag('MD_LOOP', true);
+```
+
+Continuous run implementation details (Relax Run / MD Run):
+* Makes at most ONE backend step request every 30 ms under normal operation (request pacing, configurable).
+* On server/network/parse failures the loop engages exponential backoff starting at 200 ms doubling each failure up to 5 s, then resumes normal pacing after a successful step.
+* Aborts automatically after 10 consecutive step errors (protects against persistent 500 responses).
+* `startRelaxContinuous({ maxSteps })` returns `{ converged:boolean, steps:number }`.
+* `startMDContinuous({ steps })` returns `{ completed:boolean, steps:number }` (steps actually executed; may be lower if aborted by error streak).
+* Runtime pacing config stored at `window.__MLIP_CONFIG.minStepIntervalMs` (default 30).
+  * Adjust with `viewerApi.setMinStepInterval(50)` (clamped to >=1ms).
+* You can prematurely halt a running loop via `viewerApi.stopSimulation()` which clears the internal `running.kind` flag.
+
+Testing:
+* Added `tests/water_relax_run_parity.spec.js` – compares a 50-step browser continuous relax run to a reference aggregate `/relax` call (ASE backend) within a tight energy tolerance.
+* Added `tests/water_md_run_stability.spec.js` – performs a 200-step continuous MD run (pacing/backoff active) ensuring energies remain finite and sufficient steps complete.
 
 Console temperature override:
 ```js

@@ -10,6 +10,22 @@ import { createVRSupport } from './vr/setup.js';
 import { createVRPicker } from './vr/vr-picker.js';
 import { __count } from './util/funcCount.js';
 
+// --- Runtime Config (pacing, etc.) ---
+if (typeof window !== 'undefined') {
+  window.__MLIP_CONFIG = window.__MLIP_CONFIG || { minStepIntervalMs: 30 };
+}
+function getConfig(){ if (typeof window === 'undefined') return { minStepIntervalMs:30 }; return window.__MLIP_CONFIG; }
+export function setMinStepInterval(ms){
+  const v = Number(ms);
+  if(!Number.isFinite(v) || v < 0) throw new Error('minStepIntervalMs must be non-negative number');
+  if (typeof window !== 'undefined') {
+    window.__MLIP_CONFIG.minStepIntervalMs = Math.max(1, Math.round(v));
+    console.log('[config] set minStepIntervalMs =', window.__MLIP_CONFIG.minStepIntervalMs);
+    return window.__MLIP_CONFIG.minStepIntervalMs;
+  }
+  return Math.max(1, Math.round(v));
+}
+
 // Minimal periodic table map for elements we currently load; extend as needed.
 const SYMBOL_TO_Z = {
   H:1, He:2, C:6, N:7, O:8, F:9, Ne:10, S:16, Cl:17, Fe:26, Co:27, Ni:28, Cu:29, Zn:30,
@@ -25,9 +41,8 @@ function elementToZ(e){
 export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   __count('index#initNewViewer');
   const state = createMoleculeState({ elements, positions, bonds });
-  // Wrap markPositionsChanged to invalidate force cache deterministically
+  // We'll wrap markPositionsChanged after bondService + view exist so we can recompute bonds centrally.
   const __origMarkPositionsChanged = state.markPositionsChanged ? state.markPositionsChanged.bind(state) : null;
-  state.markPositionsChanged = (...a)=>{ structureVersion++; state.forceCache && (state.forceCache.stale = true); if(__origMarkPositionsChanged) return __origMarkPositionsChanged(...a); };
   const bondService = createBondService(state);
   const selection = createSelectionService(state);
   // Remote UMA force provider via /simple_calculate
@@ -157,14 +172,23 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // Attach VR semantic picker (bond-first) so VR layer can use it without legacy imports
   let vrPicker = null;
   try { vrPicker = createVRPicker({ scene, view }); } catch (e) { console.warn('[VR] vrPicker init failed', e?.message||e); }
-  function recomputeBonds() {
+  function recomputeBonds(reason='manual') {
     __count('index#recomputeBonds');
     const bonds = bondService.recomputeAndStore();
-    view.rebuildBonds(bonds);
+    try { view.rebuildBonds(bonds); } catch {}
     recordInteraction('rebonds');
-    // Bond topology change invalidates force cache
-    structureVersion++; if(state.forceCache) state.forceCache.stale = true;
+    console.log(`[bonds] recomputed after ${reason} (count=${bonds?bonds.length:0})`);
+    return bonds;
   }
+  // Wrap markPositionsChanged now that bondService/view exist
+  state.markPositionsChanged = (...a)=>{
+    structureVersion++;
+    if(state.forceCache) state.forceCache.stale = true;
+    const r = __origMarkPositionsChanged? __origMarkPositionsChanged(...a): undefined;
+    // Always recompute bonds when positions change
+    try { recomputeBonds('markPositionsChanged'); } catch {}
+    return r;
+  };
   // If no bonds yet, ensure at least a recompute so initial energy uses bond term if applicable
   if (!state.bonds || state.bonds.length===0) {
     try { recomputeBonds(); } catch {}
@@ -177,11 +201,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       // Apply positions
       if(Array.isArray(positions) && positions.length === state.positions.length){
         for(let i=0;i<positions.length;i++){
-          const p=positions[i]; const tp=state.positions[i];
-          tp.x=p[0]; tp.y=p[1]; tp.z=p[2];
-        }
-        state.markPositionsChanged();
-        try { view.rebuildBonds(); } catch {}
+          const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; }
+        state.markPositionsChanged(); // central wrapper handles bonds & logging
       }
       window.__RELAX_FORCES = forces;
       state.dynamics = state.dynamics || {}; state.dynamics.energy = final_energy;
@@ -221,9 +242,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       const { positions, forces, final_energy } = data;
       if(Array.isArray(positions) && positions.length === state.positions.length){
         for(let i=0;i<positions.length;i++){
-          const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2];
-        }
-        state.markPositionsChanged();
+          const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; }
+        state.markPositionsChanged(); // central wrapper handles bonds & logging
       }
       window.__RELAX_FORCES = forces;
       state.dynamics = state.dynamics || {}; state.dynamics.energy = final_energy;
@@ -341,29 +361,87 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
 
   // --- Continuous simulation orchestration (relax / MD) ---
   // Feature flags (can be toggled at build time via define plugin):
-  const FEATURES = (typeof window !== 'undefined' && window.__MLIP_FEATURES) || { RELAX_LOOP:false, MD_LOOP:false, ENERGY_TRACE:true, FORCE_VECTORS:true };
+  // Feature flags are now read dynamically each access so they can be enabled after init.
+  // Previous implementation captured a snapshot causing UI buttons to remain disabled if flags
+  // were set after viewer initialization. Use getter to always reflect current window.__MLIP_FEATURES.
+  function featureFlags(){
+    if (typeof window === 'undefined') return { RELAX_LOOP:true, MD_LOOP:true, ENERGY_TRACE:true, FORCE_VECTORS:true };
+    if(!window.__MLIP_FEATURES) window.__MLIP_FEATURES = { RELAX_LOOP:true, MD_LOOP:true, ENERGY_TRACE:true, FORCE_VECTORS:true };
+    return window.__MLIP_FEATURES;
+  }
+  function enableFeatureFlag(name, value=true){
+    if (typeof window === 'undefined') return false;
+    if(!window.__MLIP_FEATURES) window.__MLIP_FEATURES={};
+    window.__MLIP_FEATURES[name]=value; return true;
+  }
   let running = { kind: null, abort: null };
   function setForceProvider(){ return 'uma'; }
-  async function startRelaxContinuous() {
-    if(!FEATURES.RELAX_LOOP) { console.warn('[feature] RELAX_LOOP disabled'); return { disabled:true }; }
+  // Continuous loops with request pacing and exponential backoff on server overload.
+  // Contract:
+  //  - Make at most one network step request per configured pacing interval (minStepIntervalMs, default 30ms) in normal operation.
+  //  - Adjustable at runtime via setMinStepInterval(ms).
+  //  - If a step returns an error (http or parse caught inside relaxStep/mdStep), apply
+  //    exponential backoff starting at 200ms (200,400,800,... up to 5s) before retrying next step.
+  //  - Abort if another simulation is already running or stopSimulation() called.
+  //  - For relax: attempt up to maxSteps (default 200) or until an error streak exceeds threshold.
+  //  - For md: run fixed number of steps unless aborted.
+  async function startRelaxContinuous({ maxSteps=200 }={}) {
+  if(!featureFlags().RELAX_LOOP) { console.warn('[feature] RELAX_LOOP disabled'); return { disabled:true }; }
     __count('index#startRelaxContinuous');
-    if (running.kind) return;
+    if (running.kind) return { ignored:true };
     running.kind='relax';
-    for (let i=0;i<200;i++){ await relaxStep(); recordInteraction('relaxStep'); }
-    running.kind=null;
-    return { converged:true };
-  }
-  async function startMDContinuous({ steps=200, delayMs=0, calculator='uma', temperature=298, timestep_fs=1.0, friction=0.02 }={}){
-    if(!FEATURES.MD_LOOP){ console.warn('[feature] MD_LOOP disabled'); return { disabled:true }; }
-    if(running.kind) return;
-    running.kind='md';
-    for(let i=0;i<steps && running.kind==='md'; i++){
-      await mdStep({ calculator, temperature, timestep_fs, friction });
-      if(delayMs>0 && running.kind==='md') await new Promise(r=>setTimeout(r,delayMs));
+  const minInterval = getConfig().minStepIntervalMs; // ms pacing between successful requests (configurable)
+    let lastTime=0;
+    let backoffMs=0; // 0 means no backoff active
+    const baseBackoff=200; const maxBackoff=5000;
+    let errorStreak=0; const maxErrorStreak=10;
+    let stepsDone=0;
+    while(running.kind==='relax' && stepsDone<maxSteps){
+      const now=performance.now();
+      const since= now - lastTime;
+      if(backoffMs>0){
+        await new Promise(r=>setTimeout(r, backoffMs));
+      } else if (since < minInterval){
+        await new Promise(r=>setTimeout(r, minInterval - since));
+      }
+      if(running.kind!=='relax') break;
+      const res = await relaxStep();
+      stepsDone++;
+      lastTime = performance.now();
+      if(res && res.error){
+        errorStreak++;
+        if(errorStreak>=maxErrorStreak){ console.warn('[relaxRun] aborting due to error streak'); break; }
+        backoffMs = backoffMs? Math.min(backoffMs*2, maxBackoff) : baseBackoff;
+      } else {
+        errorStreak=0; backoffMs=0;
+      }
     }
-    const finished = running.kind==='md';
+    const converged = errorStreak===0 && stepsDone>=maxSteps; // simplistic criterion
     running.kind=null;
-    return { completed: finished };
+    return { converged, steps: stepsDone };
+  }
+  async function startMDContinuous({ steps=200, calculator='uma', temperature=298, timestep_fs=1.0, friction=0.02 }={}){
+  if(!featureFlags().MD_LOOP){ console.warn('[feature] MD_LOOP disabled'); return { disabled:true }; }
+    if(running.kind) return { ignored:true };
+    running.kind='md';
+  const minInterval = getConfig().minStepIntervalMs; let lastTime=0;
+    let backoffMs=0; const baseBackoff=200; const maxBackoff=5000; let errorStreak=0; const maxErrorStreak=10;
+    let i=0;
+    while(i<steps && running.kind==='md'){
+      const now=performance.now(); const since=now-lastTime;
+      if(backoffMs>0){ await new Promise(r=>setTimeout(r, backoffMs)); }
+      else if(since<minInterval){ await new Promise(r=>setTimeout(r, minInterval - since)); }
+      if(running.kind!=='md') break;
+      const res = await mdStep({ calculator, temperature, timestep_fs, friction });
+      lastTime=performance.now();
+      if(res && res.error){
+        errorStreak++; if(errorStreak>=maxErrorStreak){ console.warn('[mdRun] aborting due to error streak'); break; }
+        backoffMs = backoffMs? Math.min(backoffMs*2, maxBackoff) : baseBackoff;
+      } else { errorStreak=0; backoffMs=0; i++; }
+    }
+    const completed = (i>=steps && errorStreak===0);
+    running.kind=null;
+    return { completed, steps: i };
   }
   function stopSimulation(){ running.kind=null; }
 
@@ -489,7 +567,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   function debugRecordInteraction(kind){ recordInteraction(kind||'debug'); }
   function getForceCacheVersion(){ return state.forceCache?.version; }
   function shutdown(){ __renderActive=false; try{ engine.stopRenderLoop && engine.stopRenderLoop(); }catch{} }
-  return { state, bondService, selection, ff, dynamics, view, picking, vr, recomputeBonds, relaxStep, mdStep, startRelaxContinuous, startMDContinuous, stopSimulation, setForceProvider, getMetrics, debugEnergySeriesLength, debugRecordInteraction, manipulation: wrappedManipulation, scene, engine, camera, baselineEnergy, setForceVectorsEnabled, getForceCacheVersion, shutdown };
+  return { state, bondService, selection, ff, dynamics, view, picking, vr, recomputeBonds, relaxStep, mdStep, startRelaxContinuous, startMDContinuous, stopSimulation, setForceProvider, getMetrics, debugEnergySeriesLength, debugRecordInteraction, manipulation: wrappedManipulation, scene, engine, camera, baselineEnergy, setForceVectorsEnabled, getForceCacheVersion, shutdown, enableFeatureFlag, setMinStepInterval };
 }
 
 // Ensure global viewerApi for tests if not already set

@@ -554,6 +554,11 @@ export function createVRSupport(scene, { picking } = {}) {
   function activeSession(){ try { return _rawSession(); } catch { return null; } }
   function sessionMode(){ try { const s=activeSession(); if(!s) return _sessionModeInternal(); if(xrHelper?._sessionMode) return xrHelper._sessionMode; return _sessionModeInternal(); } catch { return 'unknown'; } }
   function environmentBlend(){ try { return activeSession()?.environmentBlendMode || 'unknown'; } catch { return 'unknown'; } }
+  // --- BEGIN cleanup logging helpers (non-breaking) ---
+  const __vrLogVerbose = ()=>{ try { return (typeof window!=='undefined') && (window.VR_VERBOSE || /[?&]vrverbose=1/.test(window.location?.search||'')); } catch { return false; } };
+  function vrLogInfo(msg, meta){ try { if(__vrLogVerbose()) meta!==undefined? console.log('[VR]', msg, meta): console.log('[VR]', msg); } catch{} }
+  function vrLogWarn(msg, meta){ try { meta!==undefined? console.warn('[VR]', msg, meta): console.warn('[VR]', msg); } catch{} }
+  // --- END cleanup logging helpers ---
   async function enterAR(){
     console.log('[VR][AR] enterAR requested');
     const ok = await supportsSession('immersive-ar');
