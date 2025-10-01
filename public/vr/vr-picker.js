@@ -12,13 +12,16 @@
 //  - Else (miss) attempt expanded radius heuristic: sample a few forward offsets along ray and re-run pick (cheap) to mitigate race near cylinder tips.
 //  - Provide separate helpers pickBondWithRay(ray) / pickAtomWithRay(ray) mirroring legacy naming for easier integration.
 
+import { __count } from '../util/funcCount.js';
 export function createVRPicker({ scene, view }) {
+  __count('vrPicker#createVRPicker');
   if (!scene || typeof scene.pickWithRay !== 'function') throw new Error('createVRPicker requires a Babylon scene with pickWithRay');
   if (!view || typeof view.resolveAtomPick !== 'function' || typeof view.resolveBondPick !== 'function') {
     throw new Error('createVRPicker requires a molecule view with resolveAtomPick & resolveBondPick');
   }
   const debugLast = { bondPickRaw:null, atomPickRaw:null, durations:null };
   function pickCore(ray) {
+    __count('vrPicker#pickCore');
     if (!ray) return null;
     const t0 = performance.now();
     const pick = scene.pickWithRay(ray);
@@ -31,17 +34,19 @@ export function createVRPicker({ scene, view }) {
     debugLast.durations = { total: performance.now()-t0 }; return null;
   }
   function pickBondWithRay(ray) {
+    __count('vrPicker#pickBondWithRay');
     if (!ray) return null;
     const pick = scene.pickWithRay(ray);
     if (!pick || !pick.hit) return null;
     return view.resolveBondPick(pick);
   }
   function pickAtomWithRay(ray) {
+    __count('vrPicker#pickAtomWithRay');
     if (!ray) return null;
     const pick = scene.pickWithRay(ray);
     if (!pick || !pick.hit) return null;
     return view.resolveAtomPick(pick);
   }
-  function pickWithRay(ray) { return pickCore(ray); }
+  function pickWithRay(ray) { __count('vrPicker#pickWithRay'); return pickCore(ray); }
   return { pickWithRay, pickBondWithRay, pickAtomWithRay, debugLast };
 }

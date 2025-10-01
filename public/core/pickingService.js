@@ -13,12 +13,18 @@
 // wraps operations to recompute forces + recordInteraction. However, user desktop drags flow
 // through this pickingService path. To keep energy plot consistent, we optionally accept
 // an energyHook({ kind }) callback invoked on drag move/end when geometry changes.
+import { __count } from '../util/funcCount.js';
+// Consolidated Interaction Controller: picking + drag + rotation entry points
 export function createPickingService(scene, view, selectionService, { manipulation, camera, energyHook } = {}) {
+  __count('pickingService#createPickingService');
   let cameraDetachedForDrag = false;
   let cameraLock = null; // { alpha,beta,radius,target }
   let dragActive = false;
+  // Public interaction surface (populated below) returned at end
+  const api = { pickAtPointer, beginAtomDrag, updateDragFromPointer, endDrag, rotateSelectedBond, freezeCameraFrame, selection: selectionService.get };
   // Helper to fully freeze camera even if Babylon processes some inputs (inertia or event ordering)
   function freezeCameraFrame() {
+    __count('pickingService#freezeCameraFrame');
     if (!cameraDetachedForDrag || !camera) return;
     // Force inertial offsets to zero to stop momentum updates
     if ('inertialAlphaOffset' in camera) camera.inertialAlphaOffset = 0;
@@ -39,6 +45,7 @@ export function createPickingService(scene, view, selectionService, { manipulati
     }
   }
   function pickAtPointer() {
+    __count('pickingService#pickAtPointer');
     const pick = scene.pick(scene.pointerX, scene.pointerY);
     if (!pick || !pick.hit) return null;
     const atom = view.resolveAtomPick(pick);
@@ -48,6 +55,7 @@ export function createPickingService(scene, view, selectionService, { manipulati
     return null;
   }
   function handlePointerDown() {
+    __count('pickingService#handlePointerDown');
     const res = pickAtPointer();
     if (!res) {
       // Fallback: if no pick result and at least one atom exists, select atom 0 for drag (helps automated tests)
@@ -80,7 +88,7 @@ export function createPickingService(scene, view, selectionService, { manipulati
           return null;
         }
       };
-      started = manipulation.beginDrag(intersector);
+  started = beginAtomDrag(intersector);
       if (started && camera && camera.detachControl && !cameraDetachedForDrag) {
         const canvas = scene.getEngine && scene.getEngine().getRenderingCanvas ? scene.getEngine().getRenderingCanvas() : undefined;
         try { camera.detachControl(canvas); cameraDetachedForDrag = true; } catch (e) { /* ignore */ }
@@ -90,6 +98,7 @@ export function createPickingService(scene, view, selectionService, { manipulati
     }
   }
   function handlePointerMove() {
+    __count('pickingService#handlePointerMove');
     if (!manipulation || !cameraDetachedForDrag || !dragActive) return;
     const intersector = (planePoint, planeNormal) => {
       try {
@@ -104,14 +113,15 @@ export function createPickingService(scene, view, selectionService, { manipulati
         return { x: hit.x, y: hit.y, z: hit.z };
       } catch { return null; }
     };
-    const changed = manipulation.updateDrag(intersector);
+  const changed = updateDragFromPointer(intersector);
     if (changed && typeof energyHook === 'function') {
       try { energyHook({ kind:'dragMove' }); } catch {}
     }
   }
   function handlePointerUp() {
+    __count('pickingService#handlePointerUp');
     if (!manipulation || !cameraDetachedForDrag) return;
-    manipulation.endDrag();
+    endDrag();
     dragActive = false;
     if (typeof energyHook === 'function') {
       try { energyHook({ kind:'dragEnd' }); } catch {}
@@ -135,5 +145,27 @@ export function createPickingService(scene, view, selectionService, { manipulati
   }
   // Per-frame observer to enforce freeze while dragging
   scene.onBeforeRenderObservable && scene.onBeforeRenderObservable.add(freezeCameraFrame);
-  return { pickAtPointer, _debug: { get dragActive(){ return dragActive; } } };
+  // --- Unified interaction helpers ---
+  function beginAtomDrag(intersector){
+    __count('pickingService#beginAtomDrag');
+    if (!manipulation) return false;
+    return manipulation.beginDrag(intersector);
+  }
+  function updateDragFromPointer(intersector){
+    __count('pickingService#updateDragFromPointer');
+    if (!manipulation) return false;
+    return manipulation.updateDrag(intersector);
+  }
+  function endDrag(){
+    __count('pickingService#endDragUnified');
+    if (!manipulation) return;
+    manipulation.endDrag();
+  }
+  function rotateSelectedBond(deltaAngle){
+    __count('pickingService#rotateSelectedBond');
+    if (!manipulation) return false;
+    return manipulation.rotateBond(deltaAngle);
+  }
+  // Expose consolidated API (supports existing pickAtPointer usage + new helpers)
+  return { ...api, _debug: { get dragActive(){ return dragActive; } } };
 }

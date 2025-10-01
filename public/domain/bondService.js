@@ -1,13 +1,18 @@
 import { computeBondsNoState } from '../bond_render.js';
+import { __count } from '../util/funcCount.js';
 
 export function createBondService(molState) {
+  __count('bondService#createBondService');
   function baseAtomArray() {
+    __count('bondService#baseAtomArray');
     return molState.positions.map((p, i) => ({ element: molState.elements[i], pos:[p.x,p.y,p.z] }));
   }
   function hasCell() {
+    __count('bondService#hasCell');
     const c = molState.cell; return !!(c && c.enabled && c.a && c.b && c.c) && !c.synthetic; // skip synthetic bounding box for periodic expansion
   }
   function computePeriodicBonds() {
+    __count('bondService#computePeriodicBonds');
     // Non-periodic path: preserve full opacity shaping from computeBondsNoState (legacy smooth transparency)
     if (!hasCell()) return computeBondsNoState(baseAtomArray()).map(b=>({ i:b.i,j:b.j,length:b.length,opacity:b.opacity ?? 1 }));
     const { a, b, c } = molState.cell;
@@ -84,6 +89,7 @@ export function createBondService(molState) {
     return out;
   }
   function recomputeAndStore() {
+    __count('bondService#recomputeAndStore');
     const bonds = computePeriodicBonds();
     // Store opacity for renderer so it can apply group alpha (harmless to existing logic using only i,j)
     molState.bonds = bonds.map(b=>({ i:b.i, j:b.j, opacity:b.opacity }));

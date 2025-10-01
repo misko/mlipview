@@ -8,6 +8,7 @@ import { createPickingService } from './core/pickingService.js';
 import { createManipulationService } from './domain/manipulationService.js';
 import { createVRSupport } from './vr/setup.js';
 import { createVRPicker } from './vr/vr-picker.js';
+import { __count } from './util/funcCount.js';
 
 // Minimal periodic table map for elements we currently load; extend as needed.
 const SYMBOL_TO_Z = {
@@ -22,7 +23,11 @@ function elementToZ(e){
 }
 
 export async function initNewViewer(canvas, { elements, positions, bonds } ) {
+  __count('index#initNewViewer');
   const state = createMoleculeState({ elements, positions, bonds });
+  // Wrap markPositionsChanged to invalidate force cache deterministically
+  const __origMarkPositionsChanged = state.markPositionsChanged ? state.markPositionsChanged.bind(state) : null;
+  state.markPositionsChanged = (...a)=>{ structureVersion++; state.forceCache && (state.forceCache.stale = true); if(__origMarkPositionsChanged) return __origMarkPositionsChanged(...a); };
   const bondService = createBondService(state);
   const selection = createSelectionService(state);
   // Remote UMA force provider via /simple_calculate
@@ -35,6 +40,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   }
   let __apiSeq = window.__MLIPVIEW_API_SEQ || 0;
   function debugApi(kind, phase, meta){
+    __count('index#debugApi');
     if(!window.__MLIPVIEW_DEBUG_API) return;
     try {
       const stamp = new Date().toISOString();
@@ -57,11 +63,20 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   window.__MLIPVIEW_API_ENABLE = function(on){ window.__MLIPVIEW_DEBUG_API = !!on; console.log('[API] debug set to', window.__MLIPVIEW_DEBUG_API); };
   window.__MLIPVIEW_API_SEQ = __apiSeq;
 
+  // Versioned force cache: state.forceCache = { version, energy, forces, stress, stale }
+  state.forceCache = { version:0, energy:NaN, forces:[], stress:null, stale:true };
+  let structureVersion = 0; // increments when positions (or elements) change
   async function fetchRemoteForces({ awaitResult=false }={}){
+    __count('index#fetchRemoteForces');
     if(inFlight && !awaitResult) return;
     while(inFlight && awaitResult) { await new Promise(r=>setTimeout(r,10)); }
     inFlight = true;
     try {
+  // If cache is fresh (not stale and matches current structureVersion) return it.
+  if(!state.forceCache.stale && state.forceCache.version === structureVersion){
+        lastForceResult = { energy: state.forceCache.energy, forces: state.forceCache.forces };
+        return lastForceResult;
+      }
   // Skip remote call until we actually have atoms; prevents 500 errors on empty initial state
   if(!state.elements || state.elements.length === 0){
         return lastForceResult;
@@ -96,6 +111,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
           lastForceResult = { energy: res.energy, forces: res.forces||[] };
           state.dynamics = state.dynamics || {}; state.dynamics.energy = res.energy;
           window.__RELAX_FORCES = res.forces||[];
+          state.forceCache = { version: structureVersion, energy: res.energy, forces: res.forces||[], stress: res.stress||null, stale:false };
         }
       }
     } catch(_e) { /* silent for now */ } finally { inFlight=false; }
@@ -105,6 +121,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const dynamics = { stepMD: ()=>{}, stepRelax: ({ forceFn })=>{ forceFn(); } };
   // Remote relaxation: call backend /relax
   async function callRelaxEndpoint(steps=1){
+    __count('index#callRelaxEndpoint');
     const pos = state.positions.map(p=>[p.x,p.y,p.z]);
   const atomic_numbers = state.elements.map(e=> elementToZ(e));
     const body = { atomic_numbers, coordinates: pos, steps, calculator:'uma' };
@@ -141,18 +158,22 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   let vrPicker = null;
   try { vrPicker = createVRPicker({ scene, view }); } catch (e) { console.warn('[VR] vrPicker init failed', e?.message||e); }
   function recomputeBonds() {
+    __count('index#recomputeBonds');
     const bonds = bondService.recomputeAndStore();
     view.rebuildBonds(bonds);
     recordInteraction('rebonds');
+    // Bond topology change invalidates force cache
+    structureVersion++; if(state.forceCache) state.forceCache.stale = true;
   }
   // If no bonds yet, ensure at least a recompute so initial energy uses bond term if applicable
   if (!state.bonds || state.bonds.length===0) {
     try { recomputeBonds(); } catch {}
   }
   async function relaxStep() {
+    __count('index#relaxStep');
     try {
       const data = await callRelaxEndpoint(1); // single step
-      const { positions, forces, final_energy } = data;
+  const { positions, forces, final_energy } = data;
       // Apply positions
       if(Array.isArray(positions) && positions.length === state.positions.length){
         for(let i=0;i<positions.length;i++){
@@ -164,13 +185,58 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       }
       window.__RELAX_FORCES = forces;
       state.dynamics = state.dynamics || {}; state.dynamics.energy = final_energy;
+      if(forces && forces.length){
+        lastForceResult = { energy: final_energy, forces };
+        state.forceCache = { version: structureVersion, energy: final_energy, forces, stress: data.stress||null, stale:false };
+      }
       return { energy: final_energy };
     } catch(e){
       console.warn('[relaxStep] failed', e);
       return { error: e?.message||String(e) };
     }
   }
-  function mdStep() { /* no-op in minimal build */ }
+
+  // --- MD step (backend-only logic, but callable from UI) ---
+  async function callMDEndpoint({ steps=1, calculator='uma', temperature=298, timestep_fs=1.0, friction=0.02 }={}){
+    __count('index#callMDEndpoint');
+    const pos = state.positions.map(p=>[p.x,p.y,p.z]);
+    const atomic_numbers = state.elements.map(e=> elementToZ(e));
+    const body = { atomic_numbers, coordinates: pos, steps, temperature, timestep_fs, friction, calculator };
+    const base = (window.__MLIPVIEW_SERVER || '').replace(/\/$/,'');
+    const url = (base? base : '') + '/md';
+    const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
+    const t0 = performance.now();
+    debugApi('md','request',{ seq, url, body });
+    let resp, json; try { resp = await fetch(url,{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }); } catch(netErr){ debugApi('md','network-error',{ seq, url, error: netErr?.message||String(netErr) }); throw netErr; }
+    const t1 = performance.now(); const timingMs = Math.round((t1 - t0)*100)/100;
+    if(!resp.ok){ const txt = await resp.text(); debugApi('md','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt }); throw new Error('MD request failed '+resp.status+': '+txt); }
+    try { json = await resp.json(); } catch(parseErr){ debugApi('md','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
+    debugApi('md','response',{ seq, url, timingMs, status: resp.status, response: json });
+    return json;
+  }
+  async function mdStep(opts={}){
+    __count('index#mdStep');
+    try {
+      const data = await callMDEndpoint({ steps:1, ...opts });
+      const { positions, forces, final_energy } = data;
+      if(Array.isArray(positions) && positions.length === state.positions.length){
+        for(let i=0;i<positions.length;i++){
+          const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2];
+        }
+        state.markPositionsChanged();
+      }
+      window.__RELAX_FORCES = forces;
+      state.dynamics = state.dynamics || {}; state.dynamics.energy = final_energy;
+      if(forces && forces.length){
+        lastForceResult = { energy: final_energy, forces };
+        state.forceCache = { version: structureVersion, energy: final_energy, forces, stress: null, stale:false };
+      }
+      return { energy: final_energy };
+    } catch(e){
+      console.warn('[mdStep] failed', e);
+      return { error: e?.message||String(e) };
+    }
+  }
 
   // Interaction & energy time series
   const interactions = [];
@@ -182,6 +248,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // scattering plotting logic across services. We seed an initial 'init' interaction after
   // the first force compute so a single point is drawn (dot) before any steps.
   function recordInteraction(kind){
+    __count('index#recordInteraction');
     const E = state.dynamics.energy ?? 0;
     const idx = interactions.length;
     interactions.push({ i:idx, kind, E });
@@ -195,6 +262,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     }
   }
   async function baselineEnergy(){
+    __count('index#baselineEnergy');
     interactions.length = 0;
     energySeries.length = 0;
     let res;
@@ -207,21 +275,22 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     if (forceVis.enabled) { try { updateForceVectors(); } catch {} }
   }
   // Wrap atomic-changing operations (relax/MD steps already wrapped below)
-  const origRelaxStep = relaxStep; relaxStep = async ()=>{ await origRelaxStep(); recordInteraction('relaxStep'); };
-  const origMdStep = mdStep; mdStep = ()=>{ origMdStep(); recordInteraction('mdStep'); };
+  const origRelaxStep = relaxStep; relaxStep = async ()=>{ const r = await origRelaxStep(); recordInteraction('relaxStep'); return r; };
+  const origMdStep = mdStep; mdStep = async (o)=>{ const r = await origMdStep(o); recordInteraction('mdStep'); return r; };
   // Wrap manipulation (drag & bond rotation) so any geometry change recomputes energy and updates plot.
   const wrappedManipulation = {
     beginDrag: (...a)=> manipulation.beginDrag(...a),
     updateDrag: (...a)=> { const r = manipulation.updateDrag(...a); if (r) { ff.computeForces(); recordInteraction('dragMove'); } return r; },
-    endDrag: (...a)=> { const r = manipulation.endDrag(...a); ff.computeForces(); recordInteraction('dragEnd'); return r; },
+    endDrag: (...a)=> { const r = manipulation.endDrag(...a); structureVersion++; if(state.forceCache) state.forceCache.stale=true; ff.computeForces(); recordInteraction('dragEnd'); return r; },
     setDragPlane: (...a)=> manipulation.setDragPlane(...a),
-    rotateBond: (...a)=> { const r = manipulation.rotateBond(...a); if (r) { ff.computeForces(); recordInteraction('bondRotate'); } return r; }
+    rotateBond: (...a)=> { const r = manipulation.rotateBond(...a); if (r) { structureVersion++; if(state.forceCache) state.forceCache.stale=true; ff.computeForces(); recordInteraction('bondRotate'); } return r; }
   };
   wrappedManipulationRef = wrappedManipulation;
   // Selection or manipulation events could be hooked similarly via bus later
 
   let energyCtx=null; let energyCanvas=null; let energyLabel=null;
   function initEnergyCanvas(){
+    __count('index#initEnergyCanvas');
     if (energyCanvas) return;
     energyCanvas = document.getElementById('energyCanvas');
     if (!energyCanvas) return;
@@ -229,6 +298,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     energyLabel = document.getElementById('energyLabel');
   }
   function drawEnergy(){
+    __count('index#drawEnergy');
     initEnergyCanvas(); if(!energyCtx) return;
     const W=energyCanvas.width, H=energyCanvas.height;
     energyCtx.clearRect(0,0,W,H);
@@ -270,31 +340,55 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   });
 
   // --- Continuous simulation orchestration (relax / MD) ---
+  // Feature flags (can be toggled at build time via define plugin):
+  const FEATURES = (typeof window !== 'undefined' && window.__MLIP_FEATURES) || { RELAX_LOOP:false, MD_LOOP:false, ENERGY_TRACE:true, FORCE_VECTORS:true };
   let running = { kind: null, abort: null };
   function setForceProvider(){ return 'uma'; }
-  // Simple async loop wrappers
   async function startRelaxContinuous() {
+    if(!FEATURES.RELAX_LOOP) { console.warn('[feature] RELAX_LOOP disabled'); return { disabled:true }; }
+    __count('index#startRelaxContinuous');
     if (running.kind) return;
     running.kind='relax';
-  for (let i=0;i<200;i++){ await relaxStep(); recordInteraction('relaxStep'); }
+    for (let i=0;i<200;i++){ await relaxStep(); recordInteraction('relaxStep'); }
     running.kind=null;
     return { converged:true };
   }
-  async function startMDContinuous(){ /* no-op */ }
+  async function startMDContinuous({ steps=200, delayMs=0, calculator='uma', temperature=298, timestep_fs=1.0, friction=0.02 }={}){
+    if(!FEATURES.MD_LOOP){ console.warn('[feature] MD_LOOP disabled'); return { disabled:true }; }
+    if(running.kind) return;
+    running.kind='md';
+    for(let i=0;i<steps && running.kind==='md'; i++){
+      await mdStep({ calculator, temperature, timestep_fs, friction });
+      if(delayMs>0 && running.kind==='md') await new Promise(r=>setTimeout(r,delayMs));
+    }
+    const finished = running.kind==='md';
+    running.kind=null;
+    return { completed: finished };
+  }
   function stopSimulation(){ running.kind=null; }
 
   const lastMetrics = { energy:null, maxForce:null, maxStress:null };
-  function getMetrics(){ return { energy: state.dynamics?.energy, running: running.kind }; }
+  function getMetrics(){ __count('index#getMetrics'); return { energy: state.dynamics?.energy, running: running.kind }; }
 
   // Initial energy baseline (compute once to seed plot so first interaction can draw a segment)
   try { await baselineEnergy(); } catch(e) { /* ignore */ }
 
-  engine.runRenderLoop(()=>{ scene.render(); });
+  let __renderActive = true;
+  function __renderLoop(){ if(!__renderActive) return; scene.render(); requestAnimationFrame(__renderLoop); }
+  // Use requestAnimationFrame to allow graceful shutdown in tests
+  if (typeof requestAnimationFrame === 'function') { requestAnimationFrame(__renderLoop); } else { engine.runRenderLoop(()=>{ scene.render(); }); }
 
   // --- Force vector visualization (legacy per-arrow implementation) ---
-  const forceVis = { enabled:true, root:null, arrows:[], maxLen:1.0 };
+  // Force vectors: always enabled (requirement). We'll auto-refresh on positionsChanged and each frame.
+  const forceVis = { enabled: true, root:null, arrows:[], maxLen:1.0 };
   function ensureForceRoot(){
+    __count('index#ensureForceRoot');
     if(!forceVis.root){ forceVis.root = new BABYLON.TransformNode('forceArrowsRoot', scene); }
+    // If molecule top-level transform exists (e.g., an atom master mesh parent) attach to it so arrows inherit VR rotations.
+    if(forceVis.root && !forceVis.root.parent){
+      const anyAtom = scene.meshes.find(m=>m && /^atom_/i.test(m.name));
+      if(anyAtom && anyAtom.parent){ forceVis.root.parent = anyAtom.parent; }
+    }
     return forceVis.root;
   }
   const forceMaterial = new BABYLON.StandardMaterial('forceMat', scene);
@@ -302,8 +396,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   forceMaterial.emissiveColor = new BABYLON.Color3(0.6,0.05,0.05);
   forceMaterial.specularColor = new BABYLON.Color3(0.2,0.2,0.2);
   forceMaterial.disableLighting = false;
-  function disposeArrows(){ if(forceVis.arrows){ for(const a of forceVis.arrows){ try{ a.dispose(); }catch{} } } forceVis.arrows=[]; }
+  function disposeArrows(){ __count('index#disposeArrows'); if(forceVis.arrows){ for(const a of forceVis.arrows){ try{ a.dispose(); }catch{} } } forceVis.arrows=[]; }
   function createArrow(name){
+    __count('index#createArrow');
     const body = BABYLON.MeshBuilder.CreateCylinder(name+'_body',{height:1,diameter:0.04,tessellation:12},scene);
     const tip  = BABYLON.MeshBuilder.CreateCylinder(name+'_tip',{height:0.25,diameterTop:0,diameterBottom:0.12,tessellation:12},scene);
     tip.position.y = 0.5 + 0.125; tip.parent = body;
@@ -311,6 +406,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     body.isPickable=false; tip.isPickable=false; body.visibility=1; return body;
   }
   function updateForceVectors(){
+    __count('index#updateForceVectors');
     if(!forceVis.enabled) return;
     const forces = window.__RELAX_FORCES || [];
     if(!forces.length || !state.positions.length) return;
@@ -345,12 +441,19 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     root.setEnabled(forceVis.enabled);
   }
   function setForceVectorsEnabled(on){
-    forceVis.enabled = !!on;
-    if(!forceVis.enabled){ if(forceVis.root) forceVis.root.setEnabled(false); }
-    else { updateForceVectors(); }
+    __count('index#setForceVectorsEnabled');
+    // Always-on policy now; ignore external off requests but keep API for backward compatibility
+    forceVis.enabled = true;
+    updateForceVectors();
   }
-  // schedule initial draw
-  setTimeout(()=>{ if(forceVis.enabled) try{ updateForceVectors(); }catch{} },0);
+  // schedule initial draw & continuous updates
+  setTimeout(()=>{ try{ updateForceVectors(); }catch{} },0);
+  // Refresh arrows when atom positions mutate
+  state.bus.on('positionsChanged', () => { try { updateForceVectors(); } catch {} });
+  // Per-frame (lightweight) orientation sync in case root parenting occurs after dynamic scene changes
+  if(scene.onBeforeRenderObservable){
+    scene.onBeforeRenderObservable.add(()=>{ if(forceVis.enabled) { try { updateForceVectors(); } catch {} } });
+  }
 
   // VR support is lazy; user can call vr.init() explicitly later.
   const vr = createVRSupport(scene, { picking: { ...picking, view, vrPicker, selectionService: selection, manipulation, molState: state } });
@@ -360,7 +463,25 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   } catch (e) { console.warn('[VR] auto init failed', e); }
   function debugEnergySeriesLength(){ return energySeries.length; }
   function debugRecordInteraction(kind){ recordInteraction(kind||'debug'); }
-  return { state, bondService, selection, ff, dynamics, view, picking, vr, recomputeBonds, relaxStep, mdStep, startRelaxContinuous, startMDContinuous, stopSimulation, setForceProvider, getMetrics, debugEnergySeriesLength, debugRecordInteraction, manipulation: wrappedManipulation, scene, engine, camera, baselineEnergy, setForceVectorsEnabled };
+  function getForceCacheVersion(){ return state.forceCache?.version; }
+  function shutdown(){ __renderActive=false; try{ engine.stopRenderLoop && engine.stopRenderLoop(); }catch{} }
+  return { state, bondService, selection, ff, dynamics, view, picking, vr, recomputeBonds, relaxStep, mdStep, startRelaxContinuous, startMDContinuous, stopSimulation, setForceProvider, getMetrics, debugEnergySeriesLength, debugRecordInteraction, manipulation: wrappedManipulation, scene, engine, camera, baselineEnergy, setForceVectorsEnabled, getForceCacheVersion, shutdown };
+}
+
+// Ensure global viewerApi for tests if not already set
+if (typeof window !== 'undefined') {
+  try {
+    if (!window.viewerApi && typeof initNewViewer === 'function') {
+      // Will be assigned after user calls initNewViewer; patch the function to set it.
+      const __origInit = initNewViewer;
+      // Redefine only once
+      Object.defineProperty(window, 'initNewViewer', { value: async function(...args){
+        const api = await __origInit(...args);
+        window.viewerApi = api; // expose globally for tests & debug inspector
+        return api;
+      }, configurable: true });
+    }
+  } catch(_) { /* ignore */ }
 }
 
 // Debug / test helpers injected after definition (non-enumerable minimal surface impact)

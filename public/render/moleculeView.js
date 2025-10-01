@@ -1,59 +1,64 @@
 import { elInfo } from '../elements.js';
 import { computeBondsNoState } from '../bond_render.js';
+import { __count } from '../util/funcCount.js';
 
 export function createMoleculeView(scene, molState) {
+  __count('moleculeView#createMoleculeView');
   const atomGroups = new Map();
   const bondGroups = new Map();
   const ghostAtomGroups = new Map(); // separate to keep pickable flag false
   const ghostBondGroups = new Map();
+  // Geometry version stamping: increment outside (molState.geometryVersion++) when topology changes
+  if (typeof molState.geometryVersion !== 'number') molState.geometryVersion = 0;
+  let cachedAtomVersion = -1;
+  let cachedBondVersion = -1;
   let cellLines = null; // line system for cell outline
   // Highlight meshes (single reusable shell each for selected atom or bond)
   const highlight = { atom:null, bond:null };
   function keyOf(i,j){ const a=molState.elements[i], b=molState.elements[j]; return [a,b].sort().join('-'); }
-  function ensureAtomGroup(el) {
-    if (atomGroups.has(el)) return atomGroups.get(el);
-    const info = elInfo(el);
-    const mat = new BABYLON.StandardMaterial('mat_'+el, scene);
-    mat.diffuseColor = info.color.clone();
-    mat.emissiveColor = info.color.scale(0.06);
-    const master = BABYLON.MeshBuilder.CreateSphere('atom_'+el,{diameter:1,segments:24},scene);
-    master.material = mat; master.isPickable = true; master.thinInstanceEnablePicking = true;
-    // Keep master enabled; thin instances render on top but some pipelines rely on master visibility for picking bounds.
-    if (typeof master.setEnabled === 'function') master.setEnabled(true); else master.isVisible = true;
-    const g = { master, mats:[], indices:[] }; atomGroups.set(el,g); return g;
+  function ensureGroup(map, key, kind){
+    // kind: 'atom' | 'ghostAtom' | 'bond' | 'ghostBond'
+    const store = map;
+    if (store.has(key)) return store.get(key);
+    let mat, master;
+    if (kind === 'atom') {
+      const info = elInfo(key);
+      mat = new BABYLON.StandardMaterial('mat_'+key, scene);
+      mat.diffuseColor = info.color.clone();
+      mat.emissiveColor = info.color.scale(0.06);
+      master = BABYLON.MeshBuilder.CreateSphere('atom_'+key,{diameter:1,segments:24},scene);
+      master.isPickable = true; master.thinInstanceEnablePicking = true;
+      if (typeof master.setEnabled === 'function') master.setEnabled(true); else master.isVisible = true;
+    } else if (kind === 'ghostAtom') {
+      const info = elInfo(key);
+      mat = new BABYLON.StandardMaterial('ghost_atom_'+key, scene);
+      mat.diffuseColor = info.color.clone();
+      mat.emissiveColor = info.color.scale(0.02);
+      mat.alpha = 0.35;
+      master = BABYLON.MeshBuilder.CreateSphere('ghost_atom_'+key,{diameter:1,segments:16},scene);
+      master.isPickable=false; master.thinInstanceEnablePicking=false;
+    } else if (kind === 'ghostBond') {
+      mat = new BABYLON.StandardMaterial('ghost_bond_'+key, scene);
+      mat.diffuseColor = new BABYLON.Color3(0.55,0.58,0.60);
+      mat.emissiveColor = mat.diffuseColor.scale(0.02); mat.alpha = 0.25;
+      master = BABYLON.MeshBuilder.CreateCylinder('ghost_bond_'+key,{height:1,diameter:1,tessellation:12},scene);
+      master.isPickable=false; master.thinInstanceEnablePicking=false;
+    } else if (kind === 'bond') {
+      mat = new BABYLON.StandardMaterial('bond_'+key, scene);
+      mat.diffuseColor = new BABYLON.Color3(0.75,0.78,0.80);
+      mat.emissiveColor = mat.diffuseColor.scale(0.05);
+      master = BABYLON.MeshBuilder.CreateCylinder('bond_'+key,{height:1,diameter:1,tessellation:22},scene);
+      master.isPickable=true; master.thinInstanceEnablePicking=true;
+    }
+    if (master && mat) master.material = mat;
+    const g = { master, mats:[], indices:[] }; store.set(key,g); return g;
   }
-  function ensureGhostAtomGroup(el) {
-    if (ghostAtomGroups.has(el)) return ghostAtomGroups.get(el);
-    const info = elInfo(el);
-    const mat = new BABYLON.StandardMaterial('ghost_atom_'+el, scene);
-    mat.diffuseColor = info.color.clone();
-    mat.emissiveColor = info.color.scale(0.02);
-    mat.alpha = 0.35;
-    const master = BABYLON.MeshBuilder.CreateSphere('ghost_atom_'+el,{diameter:1,segments:16},scene);
-    master.material = mat; master.isPickable = false; master.thinInstanceEnablePicking = false;
-    const g = { master, mats:[], indices:[] }; ghostAtomGroups.set(el,g); return g;
-  }
-  function ensureGhostBondGroup(key) {
-    if (ghostBondGroups.has(key)) return ghostBondGroups.get(key);
-    const mat = new BABYLON.StandardMaterial('ghost_bond_'+key, scene);
-    mat.diffuseColor = new BABYLON.Color3(0.55,0.58,0.60);
-    mat.emissiveColor = mat.diffuseColor.scale(0.02);
-    mat.alpha = 0.25;
-    const master = BABYLON.MeshBuilder.CreateCylinder('ghost_bond_'+key,{height:1,diameter:1,tessellation:12},scene);
-    master.material=mat; master.isPickable=false; master.thinInstanceEnablePicking=false;
-    const g = { master, mats:[], indices:[] }; ghostBondGroups.set(key,g); return g;
-  }
-  function ensureBondGroup(key) {
-    if (bondGroups.has(key)) return bondGroups.get(key);
-    const mat = new BABYLON.StandardMaterial('bond_'+key, scene);
-    mat.diffuseColor = new BABYLON.Color3(0.75,0.78,0.80);
-    mat.emissiveColor = mat.diffuseColor.scale(0.05);
-  const master = BABYLON.MeshBuilder.CreateCylinder('bond_'+key,{height:1,diameter:1,tessellation:22},scene);
-  // IMPORTANT: bonds must be pickable for bond selection highlight (was false previously, preventing bond highlight in runtime)
-  master.material=mat; master.isPickable=true; master.thinInstanceEnablePicking=true;
-    const g = { master, mats:[], indices:[] }; bondGroups.set(key,g); return g;
-  }
+  const ensureAtomGroup = (el)=>{ __count('moleculeView#ensureAtomGroup'); return ensureGroup(atomGroups, el, 'atom'); };
+  const ensureGhostAtomGroup = (el)=>{ __count('moleculeView#ensureGhostAtomGroup'); return ensureGroup(ghostAtomGroups, el, 'ghostAtom'); };
+  const ensureGhostBondGroup = (key)=>{ __count('moleculeView#ensureGhostBondGroup'); return ensureGroup(ghostBondGroups, key, 'ghostBond'); };
+  const ensureBondGroup = (key)=>{ __count('moleculeView#ensureBondGroup'); return ensureGroup(bondGroups, key, 'bond'); };
   function buildInitial() {
+    __count('moleculeView#buildInitial');
     for (let i=0;i<molState.positions.length;i++) {
       const el = molState.elements[i];
       const g = ensureAtomGroup(el);
@@ -76,6 +81,7 @@ export function createMoleculeView(scene, molState) {
     return BABYLON.Matrix.Compose(new BABYLON.Vector3(radius*2,len,radius*2), rot, mid);
   }
   function rebuildBonds(bondData) {
+    __count('moleculeView#rebuildBonds');
     for (const g of bondGroups.values()) { g.mats=[]; g.indices=[]; }
     const source = bondData || molState.bonds;
     // Debug logging removed (previously controlled by debug=1 query param) to reduce console noise.
@@ -120,6 +126,7 @@ export function createMoleculeView(scene, molState) {
     }
   }
   function rebuildGhosts() {
+    __count('moleculeView#rebuildGhosts');
     // Clear previous ghost buffers
     for (const g of ghostAtomGroups.values()) { g.mats.length = 0; g.indices.length = 0; }
     for (const g of ghostBondGroups.values()) { g.mats.length = 0; g.indices.length = 0; }
@@ -169,6 +176,7 @@ export function createMoleculeView(scene, molState) {
     for (const g of ghostBondGroups.values()) g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
   }
   function rebuildCellLines() {
+    __count('moleculeView#rebuildCellLines');
     if (!molState.showCell || !molState.cell?.enabled) { if (cellLines) { cellLines.dispose(); cellLines=null; } return; }
     const { a,b,c, originOffset } = molState.cell;
     const O = originOffset || {x:0,y:0,z:0};
@@ -195,6 +203,7 @@ export function createMoleculeView(scene, molState) {
     cellLines.isPickable = false;
   }
   function rebuildAtoms() {
+    __count('moleculeView#rebuildAtoms');
     // Clear current groups and rebuild from molState.elements/positions
     for (const g of atomGroups.values()) { g.mats.length = 0; g.indices.length = 0; }
     for (let i=0;i<molState.positions.length;i++) {
@@ -208,6 +217,7 @@ export function createMoleculeView(scene, molState) {
     // (debug log suppressed)
   }
   function updatePositions() {
+    __count('moleculeView#updatePositions');
     for (const [el,g] of atomGroups) {
       for (let k=0;k<g.indices.length;k++) {
         const idx = g.indices[k];
@@ -257,6 +267,7 @@ export function createMoleculeView(scene, molState) {
   molState.bus.on('cellChanged', () => { rebuildCellLines(); rebuildGhosts(); });
   // Selection highlight management
   function ensureHighlightMeshes() {
+    __count('moleculeView#ensureHighlightMeshes');
     if (!highlight.atom) {
       const mat = new BABYLON.StandardMaterial('highlight_atom', scene);
       mat.diffuseColor = new BABYLON.Color3(0.0, 0.9, 0.95); // cyan tint
@@ -290,6 +301,7 @@ export function createMoleculeView(scene, molState) {
     }
   }
   function updateSelectionHighlight() {
+    __count('moleculeView#updateSelectionHighlight');
     ensureHighlightMeshes();
     const sel = molState.selection;
     // Hide both first
@@ -433,6 +445,7 @@ export function createMoleculeView(scene, molState) {
   // Initialize highlight once after initial build
   ensureHighlightMeshes();
   function resolveAtomPick(pick) {
+    __count('moleculeView#resolveAtomPick');
     if (!pick?.hit || !pick.pickedMesh) return null;
     for (const [el,g] of atomGroups) {
       if (g.master === pick.pickedMesh) {
@@ -445,6 +458,7 @@ export function createMoleculeView(scene, molState) {
     return null;
   }
   function resolveBondPick(pick) {
+    __count('moleculeView#resolveBondPick');
     if (!pick?.hit || !pick.pickedMesh) return null;
     for (const [key,g] of bondGroups) {
       if (g.master === pick.pickedMesh) {

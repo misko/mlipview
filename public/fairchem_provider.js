@@ -4,9 +4,11 @@
 //   1. Explicit global window.__FAIRCHEM_URL (full base URL, no trailing slash required)
 //   2. Fallback to relative '/simple_calculate'
 // Prior hardcoded host: http://127.0.0.1:8002 (removed to avoid mixed-origin & CORS hassles in LAN / HTTPS dev).
+import { __count } from './util/funcCount.js';
 const FC_BASE = (typeof window !== 'undefined' && window.__FAIRCHEM_URL) || null;
 
 export async function fairchemCalculate(positions, elements, { properties = ['energy','forces'] } = {}) {
+  __count('fairchem#fairchemCalculate');
   // positions: array of [x,y,z]; elements: array of symbols
   const periodicTable = ['H','He','Li','Be','B','C','N','O','F','Ne','Na','Mg','Al','Si','P','S','Cl','Ar'];
   const atomic_numbers = elements.map(el => {
@@ -70,12 +72,14 @@ export async function fairchemCalculate(positions, elements, { properties = ['en
 }
 
 export function createFairChemForcefield(state){
+  __count('fairchem#createFairChemForcefield');
   return {
     /**
      * Compute energy & forces.
      * @param {Array<[number,number,number]>} overridePos Optional array of xyz used instead of state.positions.
      */
     async computeForces(overridePos){
+      __count('fairchem#computeForces');
       const pos = overridePos ? overridePos : state.positions.map(p=>[p.x,p.y,p.z]);
       const { energy, forces } = await fairchemCalculate(pos, state.elements);
       // If we used override positions (line-search trial), do not mutate state positions here; caller handles commit.

@@ -65,6 +65,7 @@ export default defineConfig({
       '/simple_calculate': { target: backendTarget, changeOrigin: true, secure: false },
       '/calculate': { target: backendTarget, changeOrigin: true, secure: false },
       '/relax': { target: backendTarget, changeOrigin: true, secure: false },
+      '/md': { target: backendTarget, changeOrigin: true, secure: false },
       '/health': { target: backendTarget, changeOrigin: true, secure: false }
     }
   },

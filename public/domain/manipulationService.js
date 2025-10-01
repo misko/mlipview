@@ -8,9 +8,11 @@
 // Emits position change via molState.markPositionsChanged(); does not recompute bonds.
 
 import { orientationToSide } from '../selection-model.js';
+import { __count } from '../util/funcCount.js';
 
 // Optional deps: { bondService } to trigger bond recomputation after an atom drag.
 export function createManipulationService(molState, { bondService } = {}) {
+  __count('manipulationService#createManipulationService');
   let dragState = null; // { atomIndex, startPos:{x,y,z}, grabOffset:{x,y,z}, planeNormal:{x,y,z}, planePoint:{x,y,z} }
   // Debug instrumentation (re-added to surface desktop drag logs after migration).
   const DRAG_LOG = false; // silenced (set to true locally if detailed drag diagnostics needed)
@@ -19,6 +21,7 @@ export function createManipulationService(molState, { bondService } = {}) {
   function setAtomPosition(i, p) { molState.positions[i].x=p.x; molState.positions[i].y=p.y; molState.positions[i].z=p.z; }
 
   function beginDrag(intersector) {
+    __count('manipulationService#beginDrag');
     if (dragState) return false;
     if (!molState.selection || molState.selection.kind !== 'atom') return false;
     const atomIndex = molState.selection.data.index;
@@ -33,11 +36,13 @@ export function createManipulationService(molState, { bondService } = {}) {
     return true;
   }
   function setDragPlane(point, normal) {
+    __count('manipulationService#setDragPlane');
     if (!dragState) return;
     dragState.planePoint = { ...point };
     dragState.planeNormal = { ...normal };
   }
   function updateDrag(intersector) {
+    __count('manipulationService#updateDrag');
     if (!dragState) return false;
     const hit = intersector(dragState.planePoint, dragState.planeNormal);
     if (!hit) return false;
@@ -54,6 +59,7 @@ export function createManipulationService(molState, { bondService } = {}) {
     return true;
   }
   function endDrag() {
+    __count('manipulationService#endDrag');
     if (!dragState) return;
     // Capture whether the atom actually moved (compare to startPos)
     const { atomIndex, startPos } = dragState;
@@ -73,6 +79,7 @@ export function createManipulationService(molState, { bondService } = {}) {
 
   // Bond rotation: rotate all atoms on one side around axis defined by bond i-j passing through atom i (if side==='j') or j (if side==='i').
   function rotateBond(deltaAngle, sideOverride) {
+    __count('manipulationService#rotateBond');
     if (!molState.selection || molState.selection.kind !== 'bond') return false;
     const { i, j, orientation } = molState.selection.data;
     const side = sideOverride || orientationToSide(orientation); // 'i' or 'j'

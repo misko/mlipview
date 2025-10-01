@@ -1,4 +1,6 @@
+import { __count } from '../util/funcCount.js';
 export function createForceField(molState, { kBond = 200, r0 = 1.1, ljEpsilon = 0.02, ljSigma = 3.4 } = {}) {
+  __count('forcefield#createForceField');
   function approximateVolume() {
     const c = molState.cell;
     if (c && c.enabled && c.a && c.b && c.c) {
@@ -15,6 +17,7 @@ export function createForceField(molState, { kBond = 200, r0 = 1.1, ljEpsilon = 
     return (maxX-minX+1e-6)*(maxY-minY+1e-6)*(maxZ-minZ+1e-6);
   }
   function computeForces() {
+    __count('forcefield#computeForces');
     const N = molState.positions.length;
     let F = molState.dynamics.forces;
     let energy = 0;

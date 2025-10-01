@@ -7,6 +7,7 @@ This project provides a lightweight viewer + backend integration for running rem
 Key FastAPI endpoints (served by `fairchem_local_server/server.py`):
 * `POST /simple_calculate` – single-point energy / forces (and optional stress) for a given geometry.
 * `POST /relax` – fixed number of BFGS steps returning final positions, forces, stress, and energies.
+* `POST /md` – advance NVT MD a fixed number of steps (VelocityVerlet + per-step velocity rescale thermostat).
 
 Both endpoints accept a `calculator` field (`uma` | `lj`). UMA uses a cached FairChem MLIP; `lj` uses ASE's built-in Lennard-Jones calculator.
 
@@ -51,6 +52,30 @@ Response:
 }
 ```
 Response (abridged):
+`/md` request body (advance 5 MD steps @298K):
+```json
+{
+  "atomic_numbers": [8,1,1],
+  "coordinates": [[0,0,0],[0.96,0,0],[-0.24,0.93,0]],
+  "steps": 5,
+  "temperature": 298.0,
+  "timestep_fs": 1.0,
+  "calculator": "uma"
+}
+```
+Response (abridged):
+```json
+{
+  "initial_energy": -75.90,
+  "final_energy": -75.85,
+  "positions": [[...],[...],[...]],
+  "velocities": [[...],[...],[...]],
+  "forces": [[...],[...],[...]],
+  "steps_completed": 5,
+  "temperature": 301.2,
+  "calculator": "uma"
+}
+```
 ```json
 {
   "initial_energy": -75.9,
@@ -67,6 +92,7 @@ Response (abridged):
 
 * UMA calculator objects are cached per composition to amortize graph construction.
 * Relaxations run a fixed number of BFGS steps; early convergence (fmax) is logged but not yet used to stop.
+* MD uses a lightweight deterministic NVT scheme (VelocityVerlet + velocity rescale each step) chosen for interactive stability and minimal state.
 * Switching calculators is a constant-time enum branch; adding more backends would extend the enum + selection logic.
 * Client code fetches forces/energies remotely; no physics or optimizer logic remains in the browser bundle.
 
@@ -76,6 +102,23 @@ Run type & lint checks (if configured) and the Jest tests:
 ```bash
 npm test
 ```
+
+### Dev Proxy /md
+
+The frontend calls all backend endpoints (`/simple_calculate`, `/relax`, `/md`, `/health`) using relative paths so that in development Vite proxies them to the FastAPI process. If you receive a 404 for `/md` in the browser while other endpoints work, confirm:
+
+1. `vite.config.js` contains a proxy entry for `/md` (it should look like `'/md': { target: backendTarget, changeOrigin: true, secure: false }`).
+2. The FastAPI backend is actually running (check `curl http://127.0.0.1:8000/health`).
+3. You're not hardcoding an absolute different origin in `window.__MLIPVIEW_SERVER` (leave it unset for proxy).
+4. If using a custom hostname (e.g. `https://kalman:5173`), the name is listed in `allowedHosts` in `vite.config.js`.
+
+Override backend target with env vars before launching Vite:
+```bash
+export FASTAPI_HOST=kalman
+export FASTAPI_PORT=8000
+npx vite
+```
+HTTPS dev certs (optional): place `localhost-key.pem` and `localhost-cert.pem` in repo root or set `NO_VITE_HTTPS=1` to force HTTP.
 
 ### Backend ML API (Python)
 
@@ -91,6 +134,21 @@ uvicorn fairchem_local_server.server:app --host 0.0.0.0 --port 8000
 Key endpoints:
 * `POST /simple_calculate` (single point) – body: `{ atomic_numbers, coordinates, properties:["energy","forces"], calculator:"uma"|"lj" }`
 * `POST /relax` (fixed BFGS steps) – body adds `steps` and optional `fmax` (currently informational)
+* `POST /md` (NVT MD) – body adds `steps`, `temperature` (K), optional `timestep_fs` (default 1.0)
+
+### Frontend MD Controls
+
+HUD buttons:
+* `MD Step` – performs one 1 fs MD step via `/md`.
+* `MD Run` – continuous MD loop (enable via `window.__MLIP_FEATURES.MD_LOOP = true`).
+
+Console temperature override:
+```js
+window.__MD_TEMP = 500; // target 500 K for subsequent mdStep / runs
+viewerApi.mdStep();
+```
+The backend returns instantaneous kinetic temperature; exposed as `viewerApi.state.dynamics.temperature`.
+Safety: MD aborts server-side if any per-step displacement > 5 Å or coordinates become non-finite.
 
 ### Integration Test (Water Relax Parity)
 

@@ -33,7 +33,9 @@ function rotateVec(q,v){ // v:[x,y,z]
 
 // Apply incremental yaw (world Y) and pitch (camera right axis) to accumulated quaternion.
 // dYaw/dPitch are raw small deltas (already sign-adjusted by caller). Sensitivity & clamps applied here.
+import { __count } from '../util/funcCount.js';
 export function applyIncrement(accQ, dYaw, dPitch, cameraRight, opts={}){
+  __count('vrRotation#applyIncrement');
   const sens = opts.sens != null ? opts.sens : 0.9;
   const maxStep = opts.maxStep != null ? opts.maxStep : 0.05; // radians per frame
   const clamp=(v)=> Math.max(-maxStep, Math.min(maxStep, v));
@@ -50,8 +52,8 @@ export function applyIncrement(accQ, dYaw, dPitch, cameraRight, opts={}){
   return out;
 }
 
-export function identityQ(){ return {x:0,y:0,z:0,w:1}; }
-export function rotateForward(q){ return rotateVec(q,[0,0,1]); }
+export function identityQ(){ __count('vrRotation#identityQ'); return {x:0,y:0,z:0,w:1}; }
+export function rotateForward(q){ __count('vrRotation#rotateForward'); return rotateVec(q,[0,0,1]); }
 
 // For tests
 export const __private = { quatMul, quatFromAxisAngle, rotateVec, quatNormalize };

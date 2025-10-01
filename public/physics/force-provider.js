@@ -26,7 +26,7 @@ export function createLocalLJProvider(molState, opts={}) {
         mp.x = p[0]; mp.y = p[1]; mp.z = p[2];
       }
     }
-    // Ensure force array exists (mirrors integrators initialization logic)
+  // Ensure force array exists
     if (!molState.dynamics.forces || !molState.dynamics.forces.length) {
       molState.dynamics.forces = molState.positions.map(()=>({x:0,y:0,z:0}));
     }

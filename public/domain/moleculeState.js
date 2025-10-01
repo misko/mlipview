@@ -1,6 +1,8 @@
 import { createEventBus } from './eventBus.js';
+import { __count } from '../util/funcCount.js';
 
 export function createMoleculeState({ elements = [], positions = [], bonds = [], cell = null } = {}) {
+  __count('moleculeState#createMoleculeState');
   const bus = createEventBus();
   const state = {
     bus,
@@ -22,15 +24,16 @@ export function createMoleculeState({ elements = [], positions = [], bonds = [],
     selection: { kind:null, data:null },
     dynamics: { velocities: [], forces: [], mass: [], temperature: 0 },
     versions: { positions:0, bonds:0, cell:0, selection:0, topology:0, dynamics:0 },
-    markPositionsChanged() { this.versions.positions++; bus.emit('positionsChanged', state); },
-    markBondsChanged() { this.versions.bonds++; bus.emit('bondsChanged', state); },
-  markCellChanged() { this.versions.cell++; bus.emit('cellChanged', state); },
-  toggleCellVisibility() { this.showCell = !this.showCell; this.markCellChanged(); },
-  toggleGhostCells() { this.showGhostCells = !this.showGhostCells; this.markCellChanged(); },
+    markPositionsChanged() { __count('moleculeState#markPositionsChanged'); this.versions.positions++; bus.emit('positionsChanged', state); },
+    markBondsChanged() { __count('moleculeState#markBondsChanged'); this.versions.bonds++; bus.emit('bondsChanged', state); },
+  markCellChanged() { __count('moleculeState#markCellChanged'); this.versions.cell++; bus.emit('cellChanged', state); },
+  toggleCellVisibility() { __count('moleculeState#toggleCellVisibility'); this.showCell = !this.showCell; this.markCellChanged(); },
+  toggleGhostCells() { __count('moleculeState#toggleGhostCells'); this.showGhostCells = !this.showGhostCells; this.markCellChanged(); },
   // Enhanced toggle: if user turns cell on but underlying cell is disabled (no lattice metadata loaded),
   // we synthesize a bounding box cell from current atom positions so something visible appears.
   // This avoids the confusing "Cell ON" label with no visual change.
   toggleCellVisibilityEnhanced() {
+    __count('moleculeState#toggleCellVisibilityEnhanced');
     this.showCell = !this.showCell;
     if (this.showCell && (!this.cell || !this.cell.enabled)) {
       if (!this.cell) this.cell = { a:{x:1,y:0,z:0}, b:{x:0,y:1,z:0}, c:{x:0,y:0,z:1}, enabled:false, originOffset:{x:0,y:0,z:0} };
@@ -61,8 +64,8 @@ export function createMoleculeState({ elements = [], positions = [], bonds = [],
     }
     this.markCellChanged();
   },
-    markSelectionChanged() { this.versions.selection++; bus.emit('selectionChanged', state.selection); },
-    markDynamicsChanged() { this.versions.dynamics++; bus.emit('dynamicsChanged', state); }
+    markSelectionChanged() { __count('moleculeState#markSelectionChanged'); this.versions.selection++; bus.emit('selectionChanged', state.selection); },
+    markDynamicsChanged() { __count('moleculeState#markDynamicsChanged'); this.versions.dynamics++; bus.emit('dynamicsChanged', state); }
   };
   return state;
 }

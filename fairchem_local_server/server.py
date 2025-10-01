@@ -176,6 +176,35 @@ class RelaxResult(BaseModel):
     trace_energies: Optional[list[float]] = None
 
 
+# ----------------------------- MD API ---------------------------------
+class MDIn(BaseModel):
+    atomic_numbers: list[int]
+    coordinates: list[list[float]]
+    steps: int = 1  # number of MD integration steps to advance
+    temperature: float = 298.0  # Kelvin target (NVT)
+    timestep_fs: float = 1.0  # femtoseconds per step
+    friction: float = 0.02  # Langevin friction gamma (1/fs) – slightly higher for stability
+    calculator: RelaxCalculatorName = RelaxCalculatorName.uma
+    cell: Optional[list[list[float]]] = None
+    pbc: Optional[list[bool]] = None
+    charge: Optional[int] = 0
+    spin_multiplicity: Optional[int] = 1
+    return_trajectory: bool = False  # if true, return per-step energies & positions (lightweight)
+
+
+class MDResult(BaseModel):
+    initial_energy: float
+    final_energy: float
+    positions: list[list[float]]
+    velocities: list[list[float]]
+    forces: list[list[float]]
+    steps_completed: int
+    temperature: float  # instantaneous final temperature (kinetic)
+    energies: Optional[list[float]] = None  # per-step potential energies if requested
+    calculator: RelaxCalculatorName
+    # No fallback indicator now: MD uses the requested calculator directly.
+
+
 ###############################
 # NOTE: Using ASE's built-in LennardJones calculator now. The previous
 # custom implementation has been removed for simplicity & correctness.
@@ -424,40 +453,36 @@ def relax(inp: RelaxIn):
         except Exception as ee:
             raise HTTPException(status_code=500, detail=f"Initial energy failed: {ee}")
 
-        # --- Optimizer selection ---
-        opt_name = (inp.optimizer or "bfgs").lower()
-        opt_params = dict(inp.optimizer_params or {})
+        # --- Optimizer selection (factored) ---
+        def _make_optimizer(name: str, opt_params_in: Dict[str, Any]):
+            name = (name or "bfgs").lower()
+            params = dict(opt_params_in or {})
+            max_step = float(inp.max_step or 0.2)
+            if name in {"bfgs", "bfgs_ls", "lbfgs"} and "maxstep" not in params:
+                params["maxstep"] = max_step
+            try:
+                if name == "bfgs":
+                    from ase.optimize import BFGS as _BFGS
+                    return name, _BFGS(atoms, logfile=None, **{k:v for k,v in params.items() if k in {"maxstep","alpha","memory"}})
+                if name == "bfgs_ls":
+                    from ase.optimize import BFGSLineSearch as _BFGSLS
+                    return name, _BFGSLS(atoms, logfile=None, **{k:v for k,v in params.items() if k in {"maxstep","alpha"}})
+                if name == "lbfgs":
+                    from ase.optimize import LBFGS as _LBFGS
+                    allowed = {"maxstep","alpha","memory","use_line_search"}
+                    return name, _LBFGS(atoms, logfile=None, **{k:v for k,v in params.items() if k in allowed})
+                if name == "fire":
+                    from ase.optimize import FIRE as _FIRE
+                    allowed = {"dt","maxmove","force_consistent"}
+                    return name, _FIRE(atoms, logfile=None, **{k:v for k,v in params.items() if k in allowed})
+                raise HTTPException(status_code=400, detail=f"Unknown optimizer '{name}'")
+            except HTTPException:
+                raise
+            except Exception as oe:
+                raise HTTPException(status_code=500, detail=f"Optimizer init failed: {oe}")
+
+        opt_name, optimizer = _make_optimizer(inp.optimizer or "bfgs", inp.optimizer_params or {})
         trace: list[float] = []
-
-        # Normalized common parameter mapping
-        max_step = float(inp.max_step or 0.2)
-        if opt_name in {"bfgs", "bfgs_ls", "lbfgs"}:
-            # unify parameter key names
-            if "maxstep" not in opt_params:
-                opt_params["maxstep"] = max_step
-        try:
-            if opt_name == "bfgs":
-                from ase.optimize import BFGS as _BFGS
-                optimizer = _BFGS(atoms, logfile=None, **{k:v for k,v in opt_params.items() if k in {"maxstep","alpha","memory"}})
-            elif opt_name == "bfgs_ls":
-                from ase.optimize import BFGSLineSearch as _BFGSLS
-                optimizer = _BFGSLS(atoms, logfile=None, **{k:v for k,v in opt_params.items() if k in {"maxstep","alpha"}})
-            elif opt_name == "lbfgs":
-                from ase.optimize import LBFGS as _LBFGS
-
-                # Some ASE versions support use_line_search; include if requested
-                allowed = {"maxstep","alpha","memory","use_line_search"}
-                optimizer = _LBFGS(atoms, logfile=None, **{k:v for k,v in opt_params.items() if k in allowed})
-            elif opt_name == "fire":
-                from ase.optimize import FIRE as _FIRE
-                allowed = {"dt","maxmove","force_consistent"}
-                optimizer = _FIRE(atoms, logfile=None, **{k:v for k,v in opt_params.items() if k in allowed})
-            else:
-                raise HTTPException(status_code=400, detail=f"Unknown optimizer '{opt_name}'")
-        except HTTPException:
-            raise
-        except Exception as oe:
-            raise HTTPException(status_code=500, detail=f"Optimizer init failed: {oe}")
 
         # Run steps with optional early stop
         steps_completed = 0
@@ -512,6 +537,110 @@ def relax(inp: RelaxIn):
     except Exception as e:
         tb = traceback.format_exc()
         print("[ERROR] /relax exception:\n", tb)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/md", response_model=MDResult)
+def md_step(inp: MDIn):
+    """Run a basic NVT MD segment using ASE's Langevin integrator.
+
+    Advances the provided coordinates by `steps` integration steps with
+    timestep `timestep_fs` (fs) toward a target temperature using a Langevin
+    thermostat (friction gamma = inp.friction 1/fs). No calculator fallback:
+    the specified calculator is used directly.
+    """
+    try:
+        import numpy as _np
+        from ase import Atoms as _Atoms
+        from ase import units as _units
+        from ase.md.langevin import Langevin
+        from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+
+        if inp.steps <= 0:
+            raise HTTPException(status_code=400, detail="steps must be >0")
+
+        # Build Atoms (reuse relax helper style)
+        Z = inp.atomic_numbers
+        if len(Z) != len(inp.coordinates):
+            raise HTTPException(status_code=400, detail="Length mismatch atomic_numbers vs coordinates")
+        pbc = (
+            inp.pbc
+            if inp.pbc is not None
+            else ([True, True, True] if inp.cell else [False, False, False])
+        )
+        atoms = _Atoms(
+            numbers=Z,
+            positions=_np.array(inp.coordinates, dtype=float),
+            cell=inp.cell,
+            pbc=pbc,
+        )
+        atoms.info.update({"charge": inp.charge or 0, "spin": inp.spin_multiplicity or 1})
+
+        # Attach the requested calculator directly
+        if inp.calculator == RelaxCalculatorName.uma:
+            _pu, _calc = get_cached_unit_and_calculator(Z)
+            atoms.calc = _calc
+        elif inp.calculator == RelaxCalculatorName.lj:
+            if LennardJones is None:
+                raise HTTPException(status_code=500, detail="ASE LJ unavailable")
+            atoms.calc = LennardJones(rc=3.0)
+        else:  # pragma: no cover
+            raise HTTPException(status_code=400, detail="Unknown calculator")
+
+        # Initialize velocities with Maxwell-Boltzmann distribution (Å/fs units internally)
+        MaxwellBoltzmannDistribution(atoms, temperature_K=inp.temperature)
+
+        # Baseline energy (any error surfaces directly)
+        try:
+            initial_energy = float(atoms.get_potential_energy())
+        except Exception as ee:
+            raise HTTPException(status_code=500, detail=f"Initial energy failed: {ee}")
+        natoms = len(Z)
+        mass = atoms.get_masses()  # amu (not directly used but kept for potential extensions)
+
+        timestep = float(inp.timestep_fs) * _units.fs
+        dyn = Langevin(atoms, timestep, temperature_K=inp.temperature, friction=inp.friction, logfile=None)
+
+        energies = [] if inp.return_trajectory else None
+        prev_positions = atoms.get_positions().copy()
+
+        for _ in range(int(inp.steps)):
+            dyn.run(1)
+            if energies is not None:
+                try:
+                    energies.append(float(atoms.get_potential_energy()))
+                except Exception:
+                    energies.append(float('nan'))
+            new_pos = atoms.get_positions()
+            max_disp = _np.sqrt(((new_pos - prev_positions) ** 2).sum(axis=1)).max()
+            if not _np.isfinite(max_disp) or max_disp > 5.0:
+                raise HTTPException(status_code=500, detail=f"MD instability detected (max step disp {max_disp:.2f} Å)")
+            prev_positions[:] = new_pos
+
+        final_energy = float(atoms.get_potential_energy())
+        final_forces = atoms.get_forces()
+        final_vel = atoms.get_velocities()
+        # Kinetic energy & temperature using ASE helper (atoms.get_kinetic_energy already in eV)
+        KE = float(atoms.get_kinetic_energy())  # eV
+        # Equipartition: KE = (3/2) N kB T  -> T = 2*KE / (3 N kB)
+        final_T = (2.0 * KE) / (3.0 * natoms * _units.kB) if natoms > 0 else 0.0
+        print(f"[md] calc={inp.calculator} natoms={natoms} steps={inp.steps} T_target={inp.temperature:.1f}K T_final={final_T:.1f}K E0={initial_energy:.6f} Efin={final_energy:.6f}")
+        return MDResult(
+            initial_energy=initial_energy,
+            final_energy=final_energy,
+            positions=atoms.get_positions().tolist(),
+            velocities=final_vel.tolist(),
+            forces=final_forces.tolist(),
+            steps_completed=int(inp.steps),
+            temperature=float(final_T),
+            energies=energies,
+            calculator=inp.calculator,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        tb = traceback.format_exc()
+        print("[ERROR] /md exception:\n", tb)
         raise HTTPException(status_code=500, detail=str(e))
 
 
