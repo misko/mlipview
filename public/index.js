@@ -373,10 +373,34 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // Initial energy baseline (compute once to seed plot so first interaction can draw a segment)
   try { await baselineEnergy(); } catch(e) { /* ignore */ }
 
+  // --- Render loop (critical for Babylon WebXR) ---
+  // NOTE: WebXR integration in Babylon expects engine.runRenderLoop to own the frame pump so it can
+  // swap to XR's requestAnimationFrame internally. Replacing it with a raw requestAnimationFrame can
+  // cause enterXRAsync to hang or never resolve. Re-introduce runRenderLoop as default, keeping a
+  // test-mode fallback for environments (like unit tests / jsdom) that lack a proper RAF or canvas.
   let __renderActive = true;
-  function __renderLoop(){ if(!__renderActive) return; scene.render(); requestAnimationFrame(__renderLoop); }
-  // Use requestAnimationFrame to allow graceful shutdown in tests
-  if (typeof requestAnimationFrame === 'function') { requestAnimationFrame(__renderLoop); } else { engine.runRenderLoop(()=>{ scene.render(); }); }
+  const __testMode = (typeof window !== 'undefined') && !!window.__MLIPVIEW_TEST_MODE;
+  function __rafLoop(){
+    if(!__renderActive) return;
+    try { scene.render(); } catch(e){ console.warn('[Render][raf] render error', e); }
+    if(typeof requestAnimationFrame === 'function') requestAnimationFrame(__rafLoop);
+  }
+  try {
+    if(!__testMode && engine?.runRenderLoop){
+      console.log('[Render] starting engine.runRenderLoop (XR compatible)');
+      engine.runRenderLoop(()=>{
+        if(!__renderActive){ return; }
+        try { scene.render(); } catch(e){ console.warn('[Render] loop error', e); }
+      });
+    } else {
+      console.log('[Render] starting requestAnimationFrame loop (test mode fallback)');
+      if(typeof requestAnimationFrame === 'function') requestAnimationFrame(__rafLoop);
+      else if(engine?.runRenderLoop){ engine.runRenderLoop(()=>{ if(!__renderActive) return; scene.render(); }); }
+    }
+  } catch(e){
+    console.warn('[Render] primary loop init failed; falling back to rAF', e);
+    if(typeof requestAnimationFrame === 'function') requestAnimationFrame(__rafLoop);
+  }
 
   // --- Force vector visualization (legacy per-arrow implementation) ---
   // Force vectors: always enabled (requirement). We'll auto-refresh on positionsChanged and each frame.

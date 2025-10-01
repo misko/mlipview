@@ -28,7 +28,6 @@ export async function setupVR(engine, scene, picking){
   vrLog('[VR Setup] Initializing...');
   if(!scene?.createDefaultXRExperienceAsync){ console.warn('[VR Setup] Missing createDefaultXRExperienceAsync'); return null; }
   try{
-    console.log('[VR][diag] setupVR begin', { hasEngine: !!engine, hasScene: !!scene, sceneUid: scene?.uid, engineVer: (typeof BABYLON!=='undefined' && BABYLON.Engine?.Version)||null });
     engine?.setHardwareScalingLevel?.(1.0);
     scene.skipPointerMovePicking=true; scene.autoClear=true; scene.autoClearDepthAndStencil=true;
     const xrHelper=await scene.createDefaultXRExperienceAsync({
@@ -40,7 +39,6 @@ export async function setupVR(engine, scene, picking){
       disableTeleportation:true,
       useStablePlugins:false
     });
-    console.log('[VR][diag] defaultXRExperience created', { hasBase: !!xrHelper?.baseExperience, supported: !!xrHelper, sessionMode: xrHelper?._sessionMode });
     try {
       if(xrHelper?.pointerSelection){
         console.log('[XR][Input] pointerSelection already present');
@@ -49,11 +47,6 @@ export async function setupVR(engine, scene, picking){
         console.log('[XR][Input] pointerSelection enabled via featuresManager', !!ps);
       }
     } catch(e){ console.warn('[XR][Input] pointerSelection enable failed', e); }
-    try {
-      const fm = xrHelper && xrHelper.featuresManager;
-      const fmPlugins = fm && fm._features ? fm._features.map(f=> (f && f.constructor && f.constructor.name) || 'unknown') : null;
-      console.log('[VR][diag] features', { fm: !!fm, fmPlugins });
-    } catch {}
     return setupVRFeatures(xrHelper, scene, picking);
   }catch(e){ console.error('[VR Setup] failed', e?.message||e); return null; }
 }
@@ -525,6 +518,17 @@ export function createVRSupport(scene, { picking } = {}) {
   async function supportsSession(mode){
     try { if(!navigator?.xr?.isSessionSupported) return false; return await navigator.xr.isSessionSupported(mode); } catch { return false; }
   }
+  function _rawSession(){
+    try { return xrHelper?.baseExperience?.sessionManager?.session || xrHelper?.baseExperience?.sessionManager?._session || xrHelper?.baseExperience?.sessionManager?._xrSession || null; } catch { return null; }
+  }
+  function _sessionModeInternal(){
+    try {
+      if(xrHelper?._sessionMode) return xrHelper._sessionMode;
+      const rs=_rawSession();
+      if(rs && rs.environmentBlendMode) return 'immersive';
+    } catch{}
+    return 'unknown';
+  }
   function setTransparent(on){
     try {
       if(!scene) return;
@@ -547,53 +551,9 @@ export function createVRSupport(scene, { picking } = {}) {
       console.log('[VR][AR toggle] applied', { on, autoClearAfter:scene.autoClear, clearColorAfter:ccAfter });
     } catch(e){ /* silent */ }
   }
-  function activeSession(){ try { return xrHelper?.baseExperience?.sessionManager?._xrSession || null; } catch { return null; } }
-  // More robust session / mode detection (Babylon 8.x may rename internal fields)
-  function _rawSession(){
-    try {
-      const sm = xrHelper?.baseExperience?.sessionManager;
-      return sm?.session || sm?._session || sm?._xrSession || null;
-    } catch { return null; }
-  }
-  function activeSession(){
-    try {
-      const sm = xrHelper?.baseExperience?.sessionManager;
-      if(!sm) return null;
-      if(sm.isInXRSession?.()) return _rawSession() || { stub:true };
-      return _rawSession();
-    } catch { return null; }
-  }
-  function sessionMode(){
-    try {
-      const s = activeSession();
-      if(!s) return xrHelper?._sessionMode||'unknown';
-      // WebXR session has mode implicitly via xrHelper._sessionMode or features
-      if(xrHelper?._sessionMode) return xrHelper._sessionMode;
-      // Fallback heuristic: if environmentBlendMode present but no _sessionMode set yet, assume immersive-vr
-      return (s.environmentBlendMode && /alpha|additive|opaque|passthrough/i.test(s.environmentBlendMode)) ? 'immersive-vr' : 'immersive';
-    } catch { return 'unknown'; }
-  }
-  function environmentBlend(){
-    try { const s=_rawSession(); return s?.environmentBlendMode || 'unknown'; } catch { return 'unknown'; }
-  }
-  function _sessionDebugDump(){
-    try {
-      const sm = xrHelper?.baseExperience?.sessionManager;
-      const raw = _rawSession();
-      return {
-        hasHelper: !!xrHelper,
-        hasSM: !!sm,
-        isInXRSession: sm?.isInXRSession?.(),
-        rawKeys: raw && Object.getOwnPropertyNames(raw),
-        environmentBlendMode: raw?.environmentBlendMode,
-        visibilityState: raw?.visibilityState,
-        mode: sessionMode(),
-        helperMode: xrHelper?._sessionMode,
-        autoClear: scene?.autoClear,
-        clearColor: scene?.clearColor && { r:scene.clearColor.r,g:scene.clearColor.g,b:scene.clearColor.b,a:scene.clearColor.a }
-      };
-    } catch(e){ return { error: e?.message||String(e) }; }
-  }
+  function activeSession(){ try { return _rawSession(); } catch { return null; } }
+  function sessionMode(){ try { const s=activeSession(); if(!s) return _sessionModeInternal(); if(xrHelper?._sessionMode) return xrHelper._sessionMode; return _sessionModeInternal(); } catch { return 'unknown'; } }
+  function environmentBlend(){ try { return activeSession()?.environmentBlendMode || 'unknown'; } catch { return 'unknown'; } }
   async function enterAR(){
     console.log('[VR][AR] enterAR requested');
     const ok = await supportsSession('immersive-ar');
@@ -605,7 +565,6 @@ export function createVRSupport(scene, { picking } = {}) {
       try { await exitXR(); } catch {}
     }
     try {
-      console.log('[VR][AR] calling enterXRAsync (immersive-ar) ...');
       await xrHelper?.baseExperience?.enterXRAsync?.('immersive-ar','local-floor');
       if(xrHelper) xrHelper._sessionMode='immersive-ar';
       console.log('[VR][AR] entered immersive-ar session', { blend: environmentBlend() });
@@ -658,39 +617,43 @@ export function createVRSupport(scene, { picking } = {}) {
     } catch(e){ console.warn('[VR][AR] enter immersive-ar failed', e?.message||e); return false; }
   }
   async function enterVR(){
+    console.log('[VR] enterVR requested');
     try {
-      console.log('[VR] enterVR requested');
-      const supportedVR = await supportsSession('immersive-vr');
-      console.log('[VR][diag] immersive-vr support', supportedVR);
-      await xrHelper?.baseExperience?.enterXRAsync?.('immersive-vr','local-floor');
+      const support = await supportsSession('immersive-vr');
+      console.log('[VR][diag] isSessionSupported(immersive-vr)=', support);
+      if(!support){ console.warn('[VR] immersive-vr not supported'); return false; }
+      if(!xrHelper?.baseExperience?.enterXRAsync){ console.warn('[VR] baseExperience.enterXRAsync missing'); return false; }
+      const pre = { modeBefore: sessionMode(), activeBefore: !!activeSession() };
+      console.log('[VR][diag] pre-enter state', pre);
+      await xrHelper.baseExperience.enterXRAsync('immersive-vr','local-floor');
       if(xrHelper) xrHelper._sessionMode='immersive-vr';
-      console.log('[VR] entered immersive-vr', { blend: environmentBlend(), mode: sessionMode() });
-      setTimeout(()=>{ try { console.log('[VR][post-enter] session debug', _sessionDebugDump()); } catch{} }, 250);
-    } catch(e){ console.warn('[VR] enter immersive-vr failed', e?.message||e); }
+      const post = { modeAfter: sessionMode(), activeAfter: !!activeSession(), blend: environmentBlend() };
+      console.log('[VR] entered immersive-vr', post);
+      setTimeout(()=>{ try { console.log('[VR][diag] post-enter delayed check', { active: !!activeSession(), mode: sessionMode(), blend: environmentBlend() }); } catch{} }, 300);
+      return true;
+    } catch(e){ console.warn('[VR] enter immersive-vr failed', e?.message||e); return false; }
   }
   async function exitXR(){ try { await xrHelper?.baseExperience?.exitXR?.(); console.log('[VR] XR session exited'); } catch(e){ console.warn('[VR] exit XR failed', e?.message||e); } }
   async function switchXR(target){
     // target: 'vr' | 'ar' | 'none'
     console.log('[XR] switch request', target);
-    try { console.log('[XR][diag] pre-switch state', { active: !!activeSession(), currentMode: sessionMode(), envBlend: environmentBlend(), transparent: scene?.autoClear===false }); } catch{}
+    try { console.log('[XR][diag] pre-switch', { target, active: !!activeSession(), mode: sessionMode(), blend: environmentBlend(), supportedFlag: supported }); } catch{}
     if(target==='none'){ await exitXR(); return true; }
     const wantsAR = target==='ar';
     const active = !!activeSession();
     if(wantsAR){
       if(active){ await exitXR(); }
       const ok = await enterAR();
-      console.log('[XR][diag] post-enterAR', { ok, mode: sessionMode(), envBlend: environmentBlend(), active: !!activeSession() });
       if(ok) setTransparent(true); // auto-enable transparency in AR
       if(ok) try { console.log('[XR][HUD] attempting create (AR branch)'); ensureXRHUD(); } catch(e){ console.warn('[XR][HUD] create failed', e); }
       if(ok) { try { setTimeout(()=>{ try { forceWorldHUD(); } catch(e){ console.warn('[XR][HUD] auto worldHUD failed', e); } }, 600); } catch{} }
       return ok;
     } else {
-      if(active){ await exitXR(); }
-      await enterVR();
-      console.log('[XR][diag] post-enterVR', { mode: sessionMode(), envBlend: environmentBlend(), active: !!activeSession() });
+      if(active){ console.log('[XR] existing session before VR; exiting first'); await exitXR(); }
+      const okVR = await enterVR();
+      console.log('[XR][diag] after enterVR', { okVR, active: !!activeSession(), mode: sessionMode(), blend: environmentBlend() });
       // Restore opaque background for VR unless user manually toggled otherwise
       setTransparent(false);
-      try { console.log('[XR][diag] sessionDump after setTransparent', _sessionDebugDump()); } catch{}
       try { console.log('[XR][HUD] attempting create (VR branch)'); ensureXRHUD(); } catch(e){ console.warn('[XR][HUD] create failed', e); }
       try { setTimeout(()=>{ try { forceWorldHUD(); } catch(e){ console.warn('[XR][HUD] auto worldHUD failed', e); } }, 600); } catch{}
       return true;
@@ -855,7 +818,6 @@ export function createVRSupport(scene, { picking } = {}) {
       // Fabricate shim environment for unit tests (no real XR / render loop)
       supported=true;
       xrHelper = xrHelper || { input:{ controllers:[] }, baseExperience:{ sessionManager:{} } };
-      console.log('[VR][init] shim environment activated (nodeLike or lacksRenderLoop)');
       // Provide a fake controller with __press that simulates an atom tap selection
       const fakeCtrl = { uniqueId:'shimController', __press:()=>{
         // Simulate tap selecting atom index 5 (matches tests/vrTrigger expectation)
@@ -872,17 +834,15 @@ export function createVRSupport(scene, { picking } = {}) {
     }
     try {
       if(!engineRef && scene?.getEngine) engineRef=scene.getEngine();
-      console.log('[VR][init] calling setupVR');
-  // Pass picking through so selection/drag helpers function in real XR
-  xrHelper=await setupVR(engineRef, scene, picking);
-      console.log('[VR][init] setupVR returned', { hasHelper: !!xrHelper, mode: xrHelper?._sessionMode, baseExp: !!xrHelper?.baseExperience });
+      console.log('[VR][init] calling setupVR (createDefaultXRExperienceAsync)...');
+      xrHelper=await setupVR(engineRef, scene, picking);
       supported=!!xrHelper;
+      console.log('[VR][init] setupVR result', { supported, hasHelper: !!xrHelper, hasBase: !!xrHelper?.baseExperience, hasSM: !!xrHelper?.baseExperience?.sessionManager });
     } catch(e){
       // Fall back to shim on failure
+      console.warn('[VR][init] setupVR failed; falling back to shim', e?.message||e);
       supported=true; xrHelper={ input:{ controllers:[] }, baseExperience:{ sessionManager:{} } };
-      console.warn('[VR][init] setupVR failed; using shim', e?.message||e);
     }
-    try { console.log('[VR][init] final state', { supported, hasXRHelper: !!xrHelper, controllers: (xrHelper?.input?.controllers||[]).length }); } catch{}
     return { supported };
   }
   // Legacy API names kept: enterVR/exitVR
@@ -903,8 +863,7 @@ export function createVRSupport(scene, { picking } = {}) {
   }
   try { if(typeof window!=='undefined') window.vrDebugInfo = debugInfo; } catch {}
   function forceWorldHUD(){ if(window.__XR_HUD_FALLBACK){ console.log('[XR][HUD] fallback already exists'); return window.__XR_HUD_FALLBACK; } spawnWorldPanelFallback(); return window.__XR_HUD_FALLBACK; }
-  return { init, isSupported, enterVR:legacyEnterVR, exitVR:legacyExitVR, enterAR, exitXR, switchXR, controllers, controllerStates, setTransparent, debugInfo, ensureXRHUD, forceWorldHUD, inspectSession: _sessionDebugDump, _debugHUD:()=>({ created:_xrHudCreated, pollAttempts:_hudPollAttempts, session:sessionMode(), hasADT: !!window.__XR_HUD_ADT, hasFallback: !!window.__XR_HUD_FALLBACK }) };
-  // (inspectSession provided later if needed)
+  return { init, isSupported, enterVR:legacyEnterVR, exitVR:legacyExitVR, enterAR, exitXR, switchXR, controllers, controllerStates, setTransparent, debugInfo, ensureXRHUD, forceWorldHUD, _debugHUD:()=>({ created:_xrHudCreated, pollAttempts:_hudPollAttempts, session:sessionMode(), hasADT: !!window.__XR_HUD_ADT, hasFallback: !!window.__XR_HUD_FALLBACK }) }; 
 }
 
 export default { setupVR, setupVRFeatures, createVRSupport };
