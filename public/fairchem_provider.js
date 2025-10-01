@@ -17,7 +17,16 @@ export async function fairchemCalculate(positions, elements, { properties = ['en
   const payload = { atomic_numbers, coordinates: positions, properties };
   const maxAttempts = 3;
   let attempt = 0; let lastErr = null;
-  const endpoint = FC_BASE ? (FC_BASE.replace(/\/$/, '') + '/simple_calculate') : '/simple_calculate';
+  // Build endpoint; in browser we can use relative path. In Node (tests) fetch requires absolute URL.
+  let endpoint;
+  if (FC_BASE) {
+    endpoint = FC_BASE.replace(/\/$/, '') + '/simple_calculate';
+  } else if (typeof window === 'undefined') {
+    const base = process.env.FAIRCHEM_TEST_BASE || 'http://127.0.0.1:8000';
+    endpoint = base.replace(/\/$/, '') + '/simple_calculate';
+  } else {
+    endpoint = '/simple_calculate';
+  }
   if (typeof window !== 'undefined' && !window.__FAIRCHEM_FALLBACK_LOGGED) {
     window.__FAIRCHEM_FALLBACK_LOGGED = true;
     console.debug('[fairchem-provider:standalone]', 'endpoint =', endpoint, 'origin =', (typeof location!=='undefined'?location.origin:'(no window)'));

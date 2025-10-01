@@ -1,17 +1,33 @@
-# server.py
 import os
 import threading
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-from ase.io.jsonio import decode, encode
-from fairchem.core import pretrained_mlip  # fairchem-core >= 2.x
-from fairchem.core import FAIRChemCalculator
-from fairchem.core.units.mlip_unit import InferenceSettings
+from enum import Enum
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+from fairchem.core import pretrained_mlip
+from fairchem.core.calculate.ase_calculator import FAIRChemCalculator  # updated path
+from fairchem.core.units.mlip_unit import InferenceSettings
+from ase.io.jsonio import encode, decode
+
+
+class RelaxCalculatorName(str, Enum):
+    uma = "uma"
+    lj = "lj"
+
+try:
+    from ase.calculators.lj import LennardJones  # standard ASE LJ
+except Exception:  # pragma: no cover
+    LennardJones = None  # type: ignore
+
+try:
+    from ase.optimize import BFGS  # ASE optimizer
+except Exception:
+    BFGS = None  # type: ignore
 
 # --- configure model ---
 MODEL_NAME = os.environ.get("UMA_MODEL", "uma-s-1p1")  # UMA small
@@ -123,6 +139,71 @@ class SimpleIn(BaseModel):
     properties: Optional[List[str]] = None
     # Optional 3x3 cell matrix (a,b,c) row vectors
     cell: Optional[list[list[float]]] = None
+    calculator: RelaxCalculatorName = RelaxCalculatorName.uma  # uma|lj
+
+
+## Duplicate RelaxCalculatorName definition removed (was previously here)
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "model": MODEL_NAME, "device": DEVICE}
+
+
+class RelaxIn(BaseModel):
+    atomic_numbers: list[int]
+    coordinates: list[list[float]]  # N x 3
+    steps: int = 20  # number of BFGS steps to perform
+    calculator: RelaxCalculatorName = RelaxCalculatorName.uma
+    cell: Optional[list[list[float]]] = None  # 3x3 or None
+    pbc: Optional[list[bool]] = None  # length 3 or None -> infer from cell
+    charge: Optional[int] = 0
+    spin_multiplicity: Optional[int] = 1
+    fmax: float = 0.05  # convergence threshold (still run fixed steps for now)
+    max_step: float = 0.2  # not directly used by ASE BFGS but kept for parity
+
+
+class RelaxResult(BaseModel):
+    initial_energy: float
+    final_energy: float
+    positions: list[list[float]]
+    forces: list[list[float]]
+    stress: Optional[list[float]] = None
+    steps_completed: int
+    calculator: RelaxCalculatorName
+
+
+###############################
+# NOTE: Using ASE's built-in LennardJones calculator now. The previous
+# custom implementation has been removed for simplicity & correctness.
+###############################
+
+
+def _build_atoms_from_relax(inp: RelaxIn):  # helper
+    import numpy as _np
+    from ase import Atoms as _Atoms
+
+    Z = inp.atomic_numbers
+    xyz = inp.coordinates
+    if len(Z) != len(xyz):
+        raise HTTPException(
+            status_code=400,
+            detail="Length mismatch atomic_numbers vs coordinates",
+        )
+    pbc = (
+        inp.pbc
+        if inp.pbc is not None
+        else ([True, True, True] if inp.cell else [False, False, False])
+    )
+    atoms = _Atoms(
+        numbers=Z,
+        positions=_np.array(xyz, dtype=float),
+        cell=inp.cell,
+        pbc=pbc,
+    )
+    atoms.info.update(
+        {"charge": inp.charge or 0, "spin": inp.spin_multiplicity or 1}
+    )
+    return atoms
 
 
 @app.post("/simple_calculate")
@@ -170,9 +251,16 @@ def simple_calculate(inp: SimpleIn):
             }
         )
         props = tuple(inp.properties or ("energy", "forces"))
-        # Use / create cached calculator based on composition
-        _pu, _calc = get_cached_unit_and_calculator(Z)
-        atoms.calc = _calc
+        # Choose calculator
+        if inp.calculator == RelaxCalculatorName.lj:
+            if LennardJones is None:
+                raise HTTPException(
+                    status_code=500, detail="ASE LJ unavailable"
+                )
+            atoms.calc = LennardJones(rc=3.0)
+        else:  # default UMA (uma)
+            _pu, _calc = get_cached_unit_and_calculator(Z)
+            atoms.calc = _calc
         results = {}
         # --- compute selected properties ---
         if "energy" in props or "free_energy" in props:
@@ -296,6 +384,86 @@ def calculate(inp: CalcIn):
                 f.write(tb)
         except Exception:
             pass
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/relax", response_model=RelaxResult)
+def relax(inp: RelaxIn):
+    """Run a fixed-number BFGS atomic relaxation starting from given positions.
+
+    Always performs exactly `steps` BFGS steps (unless a step raises).
+    Convergence via fmax is not enforced early (could be extended later).
+    """
+    try:
+        if BFGS is None:  # pragma: no cover
+            raise HTTPException(
+                status_code=500, detail="ASE BFGS not available"
+            )
+        atoms = _build_atoms_from_relax(inp)
+        # Select calculator
+        if inp.calculator == RelaxCalculatorName.uma:
+            _pu, _calc = get_cached_unit_and_calculator(inp.atomic_numbers)
+            atoms.calc = _calc
+        elif inp.calculator == RelaxCalculatorName.lj:
+            if LennardJones is None:  # pragma: no cover
+                raise HTTPException(
+                    status_code=500, detail="ASE LJ unavailable"
+                )
+            # Default sigma=1, epsilon=1; cutoff 3*sigma similar to prior logic
+            atoms.calc = LennardJones(rc=3.0)
+        else:  # pragma: no cover - Enum guards this
+            raise HTTPException(status_code=400, detail="Unknown calculator")
+
+        # Capture initial energy (single point)
+        try:
+            initial_energy = float(atoms.get_potential_energy())
+        except Exception as ee:
+            raise HTTPException(
+                status_code=500, detail=f"Initial energy failed: {ee}"
+            )
+
+    # Run fixed number of steps collecting latest forces/stress
+        steps_completed = 0
+        forces = None
+        stress = None
+        opt = BFGS(atoms, logfile=None)
+        for _ in range(max(0, inp.steps)):
+            try:
+                opt.step()
+                steps_completed += 1
+                forces = atoms.get_forces()
+                try:
+                    stress = atoms.get_stress()  # may fail for LJ
+                except Exception:
+                    stress = None
+            except Exception as ste:
+                print(
+                    f"[relax] step failed after {steps_completed} steps: {ste}"
+                )
+                break
+
+        final_energy = float(atoms.get_potential_energy())
+        if forces is None:
+            forces = atoms.get_forces()
+        print(
+            f"[relax] calc={inp.calculator} natoms={len(inp.atomic_numbers)} "
+            f"steps={steps_completed}/{inp.steps} E0={initial_energy:.6f} "
+            f"Efin={final_energy:.6f}"
+        )
+        return RelaxResult(
+            initial_energy=initial_energy,
+            final_energy=final_energy,
+            positions=atoms.get_positions().tolist(),
+            forces=forces.tolist(),
+            stress=(stress.tolist() if stress is not None else None),
+            steps_completed=steps_completed,
+            calculator=inp.calculator,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        tb = traceback.format_exc()
+        print("[ERROR] /relax exception:\n", tb)
         raise HTTPException(status_code=500, detail=str(e))
 
 

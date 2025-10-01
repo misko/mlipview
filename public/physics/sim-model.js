@@ -108,4 +108,4 @@ export function setStressFromVoigt(stress, arr){ [stress.xx,stress.yy,stress.zz,
 export function updatePositions(state, newPos){ for(let i=0;i<state.Z.length;i++){ state.pos[3*i]=newPos[3*i]; state.pos[3*i+1]=newPos[3*i+1]; state.pos[3*i+2]=newPos[3*i+2]; } }
 
 // Placeholder hook for unit conversions (if FairChem differs later)
-export function ensureUnits(state, fairchemMeta){ return state; }
+// Removed obsolete ensureUnits hook (FairChem units now assumed consistent).

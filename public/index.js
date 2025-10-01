@@ -1,7 +1,6 @@
 import { createMoleculeState } from './domain/moleculeState.js';
 import { createBondService } from './domain/bondService.js';
 import { createSelectionService } from './domain/selectionService.js';
-import { ljEnergyForces, createBFGSStepper } from './lj_bfgs.js';
 import { createFairChemForcefield } from './fairchem_provider.js';
 import { createScene } from './render/scene.js';
 import { createMoleculeView } from './render/moleculeView.js';
@@ -14,26 +13,43 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const state = createMoleculeState({ elements, positions, bonds });
   const bondService = createBondService(state);
   const selection = createSelectionService(state);
-  // Minimal dynamics placeholder
-  let providerKind = 'lj';
-  let ff = { computeForces: ()=>{ const pos=state.positions.map(p=>[p.x,p.y,p.z]); const { energy, forces } = ljEnergyForces(pos); state.dynamics = state.dynamics||{}; state.dynamics.energy = energy; return { energy, forces }; } };
-  const dynamics = { stepMD: ()=>{}, stepRelax: ({ forceFn })=>{ forceFn(); } };
-  // BFGS stepper (lazy)
-  let bfgsStepper = null;
-  function ensureStepper(){
-    if(!bfgsStepper){
-      const pos = state.positions.map(p=>[p.x,p.y,p.z]);
-      const compute = async p => {
-        if (providerKind === 'fairchem') {
-          // Evaluate FairChem energy/forces at trial positions p without mutating state until accepted.
-          return await ff.computeForces(p);
+  // Remote UMA force provider via /simple_calculate
+  let lastForceResult = { energy: NaN, forces: [] };
+  let inFlight = false;
+  async function fetchRemoteForces(){
+    if(inFlight) return;
+    inFlight = true;
+    try {
+      const atomic_numbers = state.elements.map(e=> e.Z || e.atomicNumber || e.z || 0);
+      const coordinates = state.positions.map(p=>[p.x,p.y,p.z]);
+      const body = { atomic_numbers, coordinates, properties:['energy','forces'], calculator:'uma' };
+      const base = (window.__MLIPVIEW_SERVER||'').replace(/\/$/,'');
+      const resp = await fetch(base + '/simple_calculate', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      if(resp.ok){
+        const json = await resp.json();
+        const res = json.results||{};
+        if(typeof res.energy === 'number'){
+          lastForceResult = { energy: res.energy, forces: res.forces||[] };
+          state.dynamics = state.dynamics || {}; state.dynamics.energy = res.energy;
+          window.__RELAX_FORCES = res.forces||[];
         }
-        return ljEnergyForces(p);
-      };
-      bfgsStepper = createBFGSStepper({ positions: pos, fmax:0.05, maxStep:0.2, compute });
-      for(let i=0;i<state.positions.length;i++){ state.positions[i].x=pos[i][0]; state.positions[i].y=pos[i][1]; state.positions[i].z=pos[i][2]; }
+      }
+    } catch(_e) { /* silent */ } finally { inFlight=false; }
+  }
+  const ff = { computeForces: ()=>{ if(!inFlight) fetchRemoteForces(); return lastForceResult; } };
+  const dynamics = { stepMD: ()=>{}, stepRelax: ({ forceFn })=>{ forceFn(); } };
+  // Remote relaxation: call backend /relax
+  async function callRelaxEndpoint(steps=1){
+    const pos = state.positions.map(p=>[p.x,p.y,p.z]);
+    const atomic_numbers = state.elements.map(e=> e.Z || e.atomicNumber || e.z || 0);
+    const body = { atomic_numbers, coordinates: pos, steps, calculator:'uma' };
+    const url = (window.__MLIPVIEW_SERVER || '').replace(/\/$/, '') + '/relax';
+    const resp = await fetch(url || '/relax', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+    if(!resp.ok){
+      const txt = await resp.text();
+      throw new Error('Relax request failed '+resp.status+': '+txt);
     }
-    return bfgsStepper;
+    return await resp.json();
   }
   const { engine, scene, camera } = await createScene(canvas);
   const view = createMoleculeView(scene, state);
@@ -54,28 +70,25 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     try { recomputeBonds(); } catch {}
   }
   async function relaxStep() {
-    const stepper = ensureStepper();
-  const res = await stepper.step();
-  const cur = await stepper.getCurrent();
-  // Commit energy for accepted geometry (FairChem state energy committed here rather than in compute)
-  state.dynamics = state.dynamics || {}; state.dynamics.energy = cur.energy;
-    window.__RELAX_FORCES = cur.forces;
-    // Sync updated numeric positions from stepper back into state objects
-    if (stepper.positions && stepper.positions.length === state.positions.length) {
-      for (let i=0;i<state.positions.length;i++) {
-        const sp = stepper.positions[i];
-        const tp = state.positions[i];
-        if (tp.x !== sp[0] || tp.y !== sp[1] || tp.z !== sp[2]) {
-          tp.x = sp[0]; tp.y = sp[1]; tp.z = sp[2];
+    try {
+      const data = await callRelaxEndpoint(1); // single step
+      const { positions, forces, final_energy } = data;
+      // Apply positions
+      if(Array.isArray(positions) && positions.length === state.positions.length){
+        for(let i=0;i<positions.length;i++){
+          const p=positions[i]; const tp=state.positions[i];
+          tp.x=p[0]; tp.y=p[1]; tp.z=p[2];
         }
+        state.markPositionsChanged();
+        try { view.rebuildBonds(); } catch {}
       }
-      // Emit position change so view updates atom thin instances and highlights
-      state.markPositionsChanged();
-      // Bonds: if bond cylinders depend on positions only (length/orientation) we can trigger a lightweight rebuild
-      // Instead of full recompute of connectivity, just refresh transform buffers
-      try { view.rebuildBonds(); } catch {}
+      window.__RELAX_FORCES = forces;
+      state.dynamics = state.dynamics || {}; state.dynamics.energy = final_energy;
+      return { energy: final_energy };
+    } catch(e){
+      console.warn('[relaxStep] failed', e);
+      return { error: e?.message||String(e) };
     }
-    return { energy: cur.energy, fmax: cur.fmax, converged: res?.converged };
   }
   function mdStep() { /* no-op in minimal build */ }
 
@@ -106,15 +119,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     energySeries.length = 0;
     let res;
     try {
-      if (providerKind === 'fairchem') {
-        const pos = state.positions.map(p=>[p.x,p.y,p.z]);
-        // Use provider with explicit positions; commit energy to state
-        res = await ff.computeForces(pos);
-        state.dynamics = state.dynamics || {}; state.dynamics.energy = res.energy;
-      } else {
-        res = ff.computeForces();
-        state.dynamics = state.dynamics || {}; state.dynamics.energy = res.energy;
-      }
+      res = ff.computeForces();
+      state.dynamics = state.dynamics || {}; state.dynamics.energy = res.energy;
     } catch(e){ res = { energy: NaN, forces: [] }; }
     window.__RELAX_FORCES = res.forces;
     recordInteraction('init');
@@ -185,25 +191,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
 
   // --- Continuous simulation orchestration (relax / MD) ---
   let running = { kind: null, abort: null };
-  function setForceProvider(kind){
-    if (kind === providerKind) return providerKind;
-    providerKind = kind === 'fairchem' ? 'fairchem' : 'lj';
-    // Replace forcefield
-    if (providerKind === 'fairchem') {
-      ff = createFairChemForcefield(state);
-    } else {
-      ff = { computeForces: ()=>{ const pos=state.positions.map(p=>[p.x,p.y,p.z]); const { energy, forces } = ljEnergyForces(pos); state.dynamics = state.dynamics||{}; state.dynamics.energy = energy; return { energy, forces }; } };
-    }
-    // Reset stepper so it uses new compute
-    bfgsStepper = null;
-  try { baselineEnergy(); } catch {}
-    return providerKind;
-  }
+  function setForceProvider(){ return 'uma'; }
   // Simple async loop wrappers
   async function startRelaxContinuous() {
     if (running.kind) return;
     running.kind='relax';
-    for (let i=0;i<200;i++){ await relaxStep(); recordInteraction('relaxStep'); }
+  for (let i=0;i<200;i++){ await relaxStep(); recordInteraction('relaxStep'); }
     running.kind=null;
     return { converged:true };
   }

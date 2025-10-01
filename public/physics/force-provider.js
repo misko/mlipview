@@ -1,5 +1,4 @@
-//WARNING THIS FILE IS MOST LIKELY DEPRECATED!!!!!
-
+// Simplified local force provider (deprecated multi-provider abstraction removed).
 import { createForceField } from './forcefield.js';
 
 // Minimal periodic table subset for Z lookup (extend as needed)
@@ -45,67 +44,4 @@ export function createLocalLJProvider(molState, opts={}) {
   return { compute, capabilities };
 }
 
-// FairChem remote provider hitting FastAPI endpoint. By default we assume the backend is exposed
-// on the SAME origin (served or reverse-proxied) and we call a relative path '/simple_calculate'.
-// You can still override with a full baseUrl (e.g. http://host:8000) by passing { baseUrl } or
-// setting window.__FAIRCHEM_URL. If baseUrl is omitted we use relative fetch for zero CORS hassle.
-export function createFairChemProvider({ baseUrl } = {}) {
-  if (!baseUrl && typeof window !== 'undefined' && window.__FAIRCHEM_URL) {
-    baseUrl = window.__FAIRCHEM_URL; // explicit global override
-  }
-  try {
-    const tag = '[fairchem-provider]';
-    if (typeof window !== 'undefined' && window.location) {
-      // Only log once per session unless forced
-      if (!window.__FAIRCHEM_BASEURL_LOGGED) {
-        window.__FAIRCHEM_BASEURL_LOGGED = true;
-        console.debug(tag, 'resolved baseUrl =', baseUrl || '(relative /simple_calculate)', 'page origin=', window.location.origin);
-      }
-    } else {
-      console.debug('[fairchem-provider]', 'resolved baseUrl (non-browser)=', baseUrl || '(relative /simple_calculate)');
-    }
-  } catch {}
-  const capabilities = { supportsStress: true, supportsCellRelax: true, name: 'fairchem-remote' };
-  async function compute({ elements = [], positions = [], cell = null, wantStress = true } = {}) {
-    const Z = ensureZ(elements);
-    const coords = positions.map(p => Array.isArray(p) ? p : [p.x, p.y, p.z]);
-    const props = ['energy', 'forces'];
-    if (wantStress) props.push('stress');
-    const body = { atomic_numbers: Z, coordinates: coords, properties: props };
-    if (cell) body.cell = cell; // Expect 3x3 array
-    let respData = null;
-    try {
-      const url = baseUrl ? (baseUrl.replace(/\/$/, '') + '/simple_calculate') : '/simple_calculate';
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      respData = await resp.json();
-    } catch (e) {
-      // Network or server failure -> provide deterministic mock
-      const n = Z.length;
-      return { energy: n * 0.05, forces: Z.map(()=>[0,0,0]), stress: wantStress ? { tensor:null, voigt:null } : null, error: e.message };
-    }
-    const results = respData.results || respData || {};
-    const energy = results.energy;
-    const forces = (results.forces || []).map(f => [f[0], f[1], f[2]]);
-    let stress = null;
-    if (wantStress && Array.isArray(results.stress)) {
-      const v = results.stress;
-      if (v.length === 6) {
-        stress = { tensor: { xx:v[0], yy:v[1], zz:v[2], yz:v[3], xz:v[4], xy:v[5] }, voigt: v.slice() };
-      }
-    }
-    return { energy, forces, stress };
-  }
-  return { compute, capabilities };
-}
-
-// Generic factory based on type string.
-export function createForceProvider(kind, opts) {
-  if (kind === 'local') return createLocalLJProvider(opts.molState, opts);
-  if (kind === 'fairchem') return createFairChemProvider(opts);
-  throw new Error('Unknown force provider kind: ' + kind);
-}
+// NOTE: createFairChemProvider & createForceProvider removed as unused after cleanup.
