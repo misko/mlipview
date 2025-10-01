@@ -9,6 +9,18 @@ import { createManipulationService } from './domain/manipulationService.js';
 import { createVRSupport } from './vr/setup.js';
 import { createVRPicker } from './vr/vr-picker.js';
 
+// Minimal periodic table map for elements we currently load; extend as needed.
+const SYMBOL_TO_Z = {
+  H:1, He:2, C:6, N:7, O:8, F:9, Ne:10, S:16, Cl:17, Fe:26, Co:27, Ni:28, Cu:29, Zn:30,
+  Si:14, P:15, Br:35, I:53, Au:79, Ag:47, Al:13, Ca:20, K:19, Na:11, Li:3
+};
+function elementToZ(e){
+  if (e==null) return 0;
+  if (typeof e === 'number') return e; // already Z
+  if (typeof e === 'string') return SYMBOL_TO_Z[e] || 0;
+  return e.Z || e.atomicNumber || e.z || (SYMBOL_TO_Z[e.symbol] || SYMBOL_TO_Z[e.sym] || SYMBOL_TO_Z[e.S] || 0) || 0;
+}
+
 export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const state = createMoleculeState({ elements, positions, bonds });
   const bondService = createBondService(state);
@@ -16,40 +28,108 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // Remote UMA force provider via /simple_calculate
   let lastForceResult = { energy: NaN, forces: [] };
   let inFlight = false;
-  async function fetchRemoteForces(){
-    if(inFlight) return;
+  // --- API debug instrumentation ---
+  if (window.__MLIPVIEW_DEBUG_API == null) {
+    // default ON until user disables explicitly
+    window.__MLIPVIEW_DEBUG_API = true;
+  }
+  let __apiSeq = window.__MLIPVIEW_API_SEQ || 0;
+  function debugApi(kind, phase, meta){
+    if(!window.__MLIPVIEW_DEBUG_API) return;
+    try {
+      const stamp = new Date().toISOString();
+      // We copy a shallow subset to avoid huge spam (positions trimmed)
+      if(meta && meta.body && meta.body.coordinates && meta.body.coordinates.length>30){
+        meta = { ...meta, body: { ...meta.body, coordinates:`<${meta.body.coordinates.length} coords>` } };
+      }
+      if(meta && meta.response && meta.response.positions && meta.response.positions.length>30){
+        meta = { ...meta, response: { ...meta.response, positions:`<${meta.response.positions.length} positions>` } };
+      }
+      // Energy summary convenience
+      if(meta && meta.response && typeof meta.response.final_energy === 'number'){
+        meta.energy = meta.response.final_energy;
+      } else if(meta && meta.response && meta.response.results && typeof meta.response.results.energy === 'number'){
+        meta.energy = meta.response.results.energy;
+      }
+      console.log(`[API][${kind}][${phase}]#${meta.seq} t=${meta.timingMs!=null?meta.timingMs+'ms':''} ${stamp}`, meta);
+    } catch(e){ /* ignore logging errors */ }
+  }
+  window.__MLIPVIEW_API_ENABLE = function(on){ window.__MLIPVIEW_DEBUG_API = !!on; console.log('[API] debug set to', window.__MLIPVIEW_DEBUG_API); };
+  window.__MLIPVIEW_API_SEQ = __apiSeq;
+
+  async function fetchRemoteForces({ awaitResult=false }={}){
+    if(inFlight && !awaitResult) return;
+    while(inFlight && awaitResult) { await new Promise(r=>setTimeout(r,10)); }
     inFlight = true;
     try {
-      const atomic_numbers = state.elements.map(e=> e.Z || e.atomicNumber || e.z || 0);
+  // Skip remote call until we actually have atoms; prevents 500 errors on empty initial state
+  if(!state.elements || state.elements.length === 0){
+        return lastForceResult;
+      }
+  const atomic_numbers = state.elements.map(e=> elementToZ(e));
       const coordinates = state.positions.map(p=>[p.x,p.y,p.z]);
       const body = { atomic_numbers, coordinates, properties:['energy','forces'], calculator:'uma' };
       const base = (window.__MLIPVIEW_SERVER||'').replace(/\/$/,'');
-      const resp = await fetch(base + '/simple_calculate', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      const url = (base? base : '') + '/simple_calculate'; // relative when base empty so Vite proxy handles it
+      const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
+      const t0 = performance.now();
+      debugApi('simple_calculate','request',{ seq, url, body });
+      let resp, json;
+      try {
+        resp = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      } catch(netErr){
+        debugApi('simple_calculate','network-error',{ seq, url, error: netErr?.message||String(netErr) });
+        throw netErr;
+      }
+      const t1 = performance.now();
+      const timingMs = Math.round((t1 - t0)*100)/100;
       if(resp.ok){
-        const json = await resp.json();
-        const res = json.results||{};
+        try { json = await resp.json(); } catch(parseErr){ debugApi('simple_calculate','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); }
+        debugApi('simple_calculate','response',{ seq, url, timingMs, status: resp.status, response: json });
+      } else {
+        const txt = await resp.text();
+        debugApi('simple_calculate','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt });
+      }
+      if(resp.ok){
+        const res = json?.results||{};
         if(typeof res.energy === 'number'){
           lastForceResult = { energy: res.energy, forces: res.forces||[] };
           state.dynamics = state.dynamics || {}; state.dynamics.energy = res.energy;
           window.__RELAX_FORCES = res.forces||[];
         }
       }
-    } catch(_e) { /* silent */ } finally { inFlight=false; }
+    } catch(_e) { /* silent for now */ } finally { inFlight=false; }
+    return lastForceResult;
   }
-  const ff = { computeForces: ()=>{ if(!inFlight) fetchRemoteForces(); return lastForceResult; } };
+  const ff = { computeForces: ({ sync }={})=>{ if(sync) return fetchRemoteForces({ awaitResult:true }); if(!inFlight) fetchRemoteForces(); return lastForceResult; } };
   const dynamics = { stepMD: ()=>{}, stepRelax: ({ forceFn })=>{ forceFn(); } };
   // Remote relaxation: call backend /relax
   async function callRelaxEndpoint(steps=1){
     const pos = state.positions.map(p=>[p.x,p.y,p.z]);
-    const atomic_numbers = state.elements.map(e=> e.Z || e.atomicNumber || e.z || 0);
+  const atomic_numbers = state.elements.map(e=> elementToZ(e));
     const body = { atomic_numbers, coordinates: pos, steps, calculator:'uma' };
-    const url = (window.__MLIPVIEW_SERVER || '').replace(/\/$/, '') + '/relax';
-    const resp = await fetch(url || '/relax', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+    const base = (window.__MLIPVIEW_SERVER || '').replace(/\/$/, '');
+    const url = (base? base : '') + '/relax';
+    const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
+    const t0 = performance.now();
+    debugApi('relax','request',{ seq, url, body });
+    let resp, json;
+    try {
+      resp = await fetch(url || '/relax', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+    } catch(netErr){
+      debugApi('relax','network-error',{ seq, url, error: netErr?.message||String(netErr) });
+      throw netErr;
+    }
+    const t1 = performance.now();
+    const timingMs = Math.round((t1 - t0)*100)/100;
     if(!resp.ok){
       const txt = await resp.text();
+      debugApi('relax','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt });
       throw new Error('Relax request failed '+resp.status+': '+txt);
     }
-    return await resp.json();
+    try { json = await resp.json(); } catch(parseErr){ debugApi('relax','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
+    debugApi('relax','response',{ seq, url, timingMs, status: resp.status, response: json });
+    return json;
   }
   const { engine, scene, camera } = await createScene(canvas);
   const view = createMoleculeView(scene, state);
@@ -119,10 +199,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     energySeries.length = 0;
     let res;
     try {
-      res = ff.computeForces();
+      res = await ff.computeForces({ sync: !!window.__FORCE_SYNC_REMOTE__ });
       state.dynamics = state.dynamics || {}; state.dynamics.energy = res.energy;
     } catch(e){ res = { energy: NaN, forces: [] }; }
-    window.__RELAX_FORCES = res.forces;
+    window.__RELAX_FORCES = res.forces||[];
     recordInteraction('init');
     if (forceVis.enabled) { try { updateForceVectors(); } catch {} }
   }
@@ -282,3 +362,17 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   function debugRecordInteraction(kind){ recordInteraction(kind||'debug'); }
   return { state, bondService, selection, ff, dynamics, view, picking, vr, recomputeBonds, relaxStep, mdStep, startRelaxContinuous, startMDContinuous, stopSimulation, setForceProvider, getMetrics, debugEnergySeriesLength, debugRecordInteraction, manipulation: wrappedManipulation, scene, engine, camera, baselineEnergy, setForceVectorsEnabled };
 }
+
+// Debug / test helpers injected after definition (non-enumerable minimal surface impact)
+Object.defineProperty(window, '__dumpCurrentAtoms', { value: function(){
+  try {
+    if(!window.viewerApi) return null;
+    const st = window.viewerApi.state;
+    return {
+      elements: st.elements.map(e=> e.symbol||e.sym||e.S||e.Z||e.atomicNumber||'?'),
+      atomic_numbers: st.elements.map(e=> (typeof e==='string'? (SYMBOL_TO_Z[e]||0) : (e && (e.Z||e.atomicNumber||e.z|| (SYMBOL_TO_Z[e.symbol]||SYMBOL_TO_Z[e.sym]||SYMBOL_TO_Z[e.S]||0))) || 0)),
+      positions: st.positions.map(p=> [p.x,p.y,p.z]),
+      energy: st.dynamics?.energy
+    };
+  } catch(e){ return { error: e?.message||String(e) }; }
+}, writable:false });

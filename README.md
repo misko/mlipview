@@ -77,9 +77,59 @@ Run type & lint checks (if configured) and the Jest tests:
 npm test
 ```
 
+### Backend ML API (Python)
+
+Relaxation, forces and energies are provided by FastAPI app `fairchem_local_server/server.py`.
+
+Start it manually for local hacking (if not relying on Jest global setup):
+
+```bash
+source mlipview_venv/bin/activate  # or set MLIPVIEW_PYTHON to another env
+uvicorn fairchem_local_server.server:app --host 0.0.0.0 --port 8000
+```
+
+Key endpoints:
+* `POST /simple_calculate` (single point) – body: `{ atomic_numbers, coordinates, properties:["energy","forces"], calculator:"uma"|"lj" }`
+* `POST /relax` (fixed BFGS steps) – body adds `steps` and optional `fmax` (currently informational)
+
+### Integration Test (Water Relax Parity)
+
+Jest global setup now launches BOTH servers automatically:
+1. Node static server (port 4000)
+2. Python uvicorn ML server (port 8000)
+
+Override Python interpreter with `MLIPVIEW_PYTHON=/path/to/python`.
+
+Run just the parity test:
+```bash
+npm test -- -t "water relax step energy parity"
+```
+It prints initial, relaxed and reference energies; ensures relaxed energy is not higher and reference matches the initial single-point.
+
+### Removal of Legacy Client Optimizer
+
+File `public/lj_bfgs.js` (in-browser LJ potential + BFGS) was removed. All relaxations must go through `/relax`.
+
 Regenerate a relaxation trace directly via Python for debugging:
 ```bash
 python fairchem_local_server/relax_water_http.py
+```
+
+### Playwright E2E Tests
+
+UI tests in `tests-e2e/` are run with Playwright (`npx playwright test`). Global setup starts Node + Python servers only if their ports are free. Two added relax sanity tests:
+
+* `waterDirectRelax.spec.js` – calls `viewerApi.relaxStep()` directly and logs before/after energy.
+* `uiRelaxParity.spec.js` – simulates a user click on the Relax Step button.
+
+Run just those:
+```bash
+npx playwright test tests-e2e/waterDirectRelax.spec.js tests-e2e/uiRelaxParity.spec.js
+```
+
+Use a custom Python interpreter:
+```bash
+MLIPVIEW_PYTHON=/path/to/python npx playwright test
 ```
 
 ## Future Work

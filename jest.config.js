@@ -5,5 +5,7 @@ export default {
   transform: {
     '^.+\\.js$': 'babel-jest'
   },
-  setupFilesAfterEnv: ['<rootDir>/tests/jest.setup.js']
+  setupFilesAfterEnv: ['<rootDir>/tests/jest.setup.js'],
+  globalSetup: '<rootDir>/tests/globalSetup.cjs',
+  globalTeardown: '<rootDir>/tests/globalTeardown.cjs'
 };

@@ -123,6 +123,7 @@
   btnForces.onclick = ()=>{ if(!viewerApi) return; const en = btnForces.dataset.enabled === '1'; btnForces.dataset.enabled = en ? '0':'1'; btnForces.style.background = en ? '' : '#284'; if (viewerApi.setForceVectorsEnabled) viewerApi.setForceVectorsEnabled(!en); };
     // Simple molecule switch UI (development convenience)
   const switcher = document.createElement('select');
+  switcher.id = 'moleculeSelect'; // stable id for tests
   switcher.innerHTML = '<option value="molecules/roy.xyz">ROY</option><option value="molecules/benzene.xyz">Benzene</option><option value="molecules/water.xyz">Water</option>';
     switcher.onchange = async () => {
       if (!viewerApi) return;

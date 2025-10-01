@@ -34,6 +34,12 @@ function rootRedirectPlugin(){
   };
 }
 
+// Backend configuration: prefer explicit FASTAPI_URL, else compose from FASTAPI_PROTOCOL/HOST/PORT or default to http://127.0.0.1:8000
+const backendProtocol = process.env.FASTAPI_PROTOCOL || 'http';
+const backendHost = process.env.FASTAPI_HOST || '127.0.0.1';
+const backendPort = process.env.FASTAPI_PORT || '8000';
+const backendTarget = process.env.FASTAPI_URL || `${backendProtocol}://${backendHost}:${backendPort}`;
+
 export default defineConfig({
   root: path.resolve(__dirname, 'public'),
   publicDir: path.resolve(__dirname, 'public'),
@@ -54,13 +60,12 @@ export default defineConfig({
     allowedHosts: ['kalman'],
   https: !!httpsCfg && !process.env.NO_VITE_HTTPS ? httpsCfg : false,
   proxy: {
-      // Forward API calls to local FastAPI (FairChem) backend so frontend can just fetch('/simple_calculate').
-      '/simple_calculate': {
-        target: 'http://127.0.0.1:8000',
-        changeOrigin: true,
-        // If backend expects the exact path, leave rewrite out; kept for clarity if extended later.
-        // rewrite: path => path
-      }
+      // All API endpoints requested as relative paths from the frontend.
+      // In dev, these are forwarded to the FastAPI backend so production nginx (same host, different path) behavior is simulated.
+      '/simple_calculate': { target: backendTarget, changeOrigin: true, secure: false },
+      '/calculate': { target: backendTarget, changeOrigin: true, secure: false },
+      '/relax': { target: backendTarget, changeOrigin: true, secure: false },
+      '/health': { target: backendTarget, changeOrigin: true, secure: false }
     }
   },
   preview: {
