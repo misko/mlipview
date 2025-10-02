@@ -173,6 +173,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
           state.dynamics = state.dynamics || {}; state.dynamics.energy = res.energy;
           window.__RELAX_FORCES = res.forces||[];
           state.forceCache = { version: structureVersion, energy: res.energy, forces: res.forces||[], stress: res.stress||null, stale:false };
+          maybePlotEnergy('forces');
         }
       }
     } catch(_e) { /* silent for now */ } finally { inFlight=false; }
@@ -223,7 +224,16 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     __count('index#recomputeBonds');
     const bonds = bondService.recomputeAndStore();
     try { view.rebuildBonds(bonds); } catch {}
-    recordInteraction('rebonds');
+    // Avoid inflating energy step count for internal position change cascades. When
+    // markPositionsChanged fires (e.g., during a bond rotation or drag), we already
+    // log an interaction specific to the user action (bondRotate, dragMove/dragEnd, etc.).
+    // Logging an additional 'rebonds' event creates duplicate energy steps for a single
+    // conceptual action. We still log manual or external recomputes so they appear in the
+    // trace. If future workflows need explicit bond recompute steps, this guard can be
+    // refined (e.g., per-flag) but keeps default UX clean.
+    if (reason !== 'markPositionsChanged') {
+      recordInteraction('rebonds');
+    }
     console.log(`[bonds] recomputed after ${reason} (count=${bonds?bonds.length:0})`);
     return bonds;
   }
@@ -308,7 +318,23 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
 
   // Interaction & energy time series
   const interactions = [];
-  const energySeries = []; // {i, E}
+  const energySeries = []; // {i,E,kind}
+  let lastPlottedEnergy = undefined;
+  function maybePlotEnergy(kind){
+    try {
+      const E = state.dynamics?.energy;
+      if (typeof E !== 'number' || !isFinite(E)) return;
+      if (E === lastPlottedEnergy) return; // skip duplicate energy values
+      const idx = energySeries.length;
+      energySeries.push({ i: idx, E, kind });
+      lastPlottedEnergy = E;
+      window.__RELAX_TRACE = energySeries.map(e=>e.E);
+      drawEnergy();
+    } catch(_e) { /* ignore plot errors */ }
+  }
+  // Suppress the very next debounced generic 'posChange' interaction if a higher-level
+  // action (e.g. bondRotate) already recorded an energy step in the same logical edit.
+  let __suppressNextPosChange = false;
   // recordInteraction: central funnel for adding user/system events that should reflect
   // a (potential) energy change. Any geometry-changing action (drag move/end, bond rotate,
   // relax step, MD step, provider recompute) should either call recordInteraction directly
@@ -320,10 +346,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const E = state.dynamics.energy ?? 0;
     const idx = interactions.length;
     interactions.push({ i:idx, kind, E });
-    if (typeof E === 'number') energySeries.push({ i:idx, E });
-    // Expose for test harness
-    window.__RELAX_TRACE = energySeries.map(e=>e.E);
-    drawEnergy();
+    // Energy plot no longer advances here; only API energy returns call maybePlotEnergy.
     // Notify force visualization (now handled by moleculeView thin instances)
     if (kind && kind !== 'dragMove') {
       try {
@@ -341,7 +364,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   async function baselineEnergy(){
     __count('index#baselineEnergy');
     interactions.length = 0;
-    energySeries.length = 0;
+    energySeries.length = 0; // cleared; first API energy response will add first point
     let res;
     try {
       res = await ff.computeForces({ sync: !!window.__FORCE_SYNC_REMOTE__ });
@@ -358,18 +381,18 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         __updateForces(synth, { reason:'baselineEnergySynth' });
       }
     }
-    recordInteraction('init');
+    // Do not create an 'init' energy tick. First real API response will create the first point.
   }
   // Wrap atomic-changing operations (relax/MD steps already wrapped below)
-  const origRelaxStep = relaxStep; relaxStep = async ()=>{ recordInteraction('relaxStep:pending'); const r = await origRelaxStep(); recordInteraction('relaxStep'); return r; };
-  const origMdStep = mdStep; mdStep = async (o)=>{ recordInteraction('mdStep:pending'); const r = await origMdStep(o); recordInteraction('mdStep'); return r; };
+  const origRelaxStep = relaxStep; relaxStep = async ()=>{ const r = await origRelaxStep(); recordInteraction('relaxStep'); maybePlotEnergy('relax'); return r; };
+  const origMdStep = mdStep; mdStep = async (o)=>{ const r = await origMdStep(o); recordInteraction('mdStep'); maybePlotEnergy('md'); return r; };
   // Wrap manipulation (drag & bond rotation) so any geometry change recomputes energy and updates plot.
   const wrappedManipulation = {
     beginDrag: (...a)=> manipulation.beginDrag(...a),
     updateDrag: (...a)=> { const r = manipulation.updateDrag(...a); if (r) { ff.computeForces(); recordInteraction('dragMove'); } return r; },
     endDrag: (...a)=> { const r = manipulation.endDrag(...a); structureVersion++; if(state.forceCache) state.forceCache.stale=true; ff.computeForces(); recordInteraction('dragEnd'); return r; },
     setDragPlane: (...a)=> manipulation.setDragPlane(...a),
-    rotateBond: (...a)=> { const r = manipulation.rotateBond(...a); if (r) { structureVersion++; if(state.forceCache) state.forceCache.stale=true; ff.computeForces(); recordInteraction('bondRotate'); } return r; }
+    rotateBond: (...a)=> { const r = manipulation.rotateBond(...a); if (r) { structureVersion++; if(state.forceCache) state.forceCache.stale=true; ff.computeForces(); recordInteraction('bondRotate'); __suppressNextPosChange = true; } return r; }
   };
   wrappedManipulationRef = wrappedManipulation;
 
@@ -430,7 +453,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       if (!pendingPosEnergy) return;
       pendingPosEnergy=false;
       try { ff.computeForces(); } catch{}
-      recordInteraction('posChange');
+      if (__suppressNextPosChange) {
+        __suppressNextPosChange = false; // skip this generic interaction
+      } else {
+        recordInteraction('posChange');
+      }
     }, 50); // slight debounce to batch rapid pointer move events
   });
 

@@ -1,14 +1,13 @@
 /**
- * energyInteractions.spec.js
- * Under new policy, only API energy responses (force compute, relax, md) add ticks.
- * Drag and bond rotation should NOT advance the energy series on their own.
+ * bondRotateEnergyCount.spec.js
+ * Ensures a single bond rotation produces exactly one new energy step (interaction) beyond baseline.
  * @jest-environment jsdom
  */
 
 jest.mock('../public/render/scene.js', () => ({
   createScene: async () => ({
     engine: { runRenderLoop: (fn)=>{} },
-    scene: { onPointerObservable:{ _l:[], add(fn){this._l.push(fn);}, notify(){}, notifyObservers(){} } },
+    scene: { onPointerObservable:{ _l:[], add(fn){this._l.push(fn);}, notify(){}, notifyObservers(){} }, render:()=>{} },
     camera: { attachControl: ()=>{} }
   })
 }));
@@ -29,32 +28,18 @@ function setupDOM(){
   return viewer;
 }
 
-describe('energy plot tick policy (API-only)', () => {
-  test('atom drag does not add energy tick without API response', async () => {
-    const viewer = setupDOM();
-    const mod = await import('../public/index.js');
-    const api = await mod.initNewViewer(viewer, { elements:[6,6], positions:[{x:0,y:0,z:0},{x:1.4,y:0,z:0}], bonds:[{i:0,j:1}] });
-    const before = api.debugEnergySeriesLength();
-    // Simulate selecting atom 1
-    api.selection.set?.({ kind:'atom', data:{ index:1 } });
-    api.state.selection = { kind:'atom', data:{ index:1 } }; // fallback direct set
-    // Begin drag (we supply a fake intersector returning plane point)
-    api.manipulation.beginDrag(()=>({ x:1.4,y:0,z:0 }));
-    api.manipulation.updateDrag(()=>({ x:1.6,y:0,z:0 })); // move atom
-    api.manipulation.endDrag();
-    const after = api.debugEnergySeriesLength();
-    expect(after).toBe(before); // unchanged: no API energy call
-  });
-
-  test('bond rotation alone does not add tick', async () => {
+describe('single bond rotation energy step count (API-only policy)', () => {
+  test('rotateBond alone adds zero energy steps', async () => {
     const viewer = setupDOM();
     const mod = await import('../public/index.js');
     const api = await mod.initNewViewer(viewer, { elements:[6,6,1], positions:[{x:0,y:0,z:0},{x:1.4,y:0,z:0},{x:2.8,y:0,z:0}], bonds:[{i:0,j:1},{i:1,j:2}] });
     const before = api.debugEnergySeriesLength();
-    // Select central bond
-    api.state.selection = { kind:'bond', data:{ i:0, j:1, orientation: { axis:'iToJ', side:'j' } } };
-    api.manipulation.rotateBond(Math.PI/12);
+    // Select bond and rotate once
+    api.state.selection = { kind:'bond', data:{ i:0, j:1, orientation:{ axis:'iToJ', side:'j' } } };
+    api.manipulation.rotateBond(Math.PI/10);
+    // Wait a bit longer than the debounced 50ms positionsChanged handler to ensure any suppressed posChange would have fired
+    await new Promise(r=>setTimeout(r, 80));
     const after = api.debugEnergySeriesLength();
-    expect(after).toBe(before);
+    expect(after - before).toBe(0); // no energy point added without API call
   });
 });

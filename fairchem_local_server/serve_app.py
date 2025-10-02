@@ -35,7 +35,10 @@ _ingress_app = FastAPI(title="UMA Ray Serve batched API")
 _runtime_env = {}
 if os.environ.get("CUDA_VISIBLE_DEVICES"):
     # Propagate explicit restriction if user set it
-    _runtime_env["env_vars"] = {"CUDA_VISIBLE_DEVICES": os.environ["CUDA_VISIBLE_DEVICES"]}
+    _runtime_env["env_vars"] = {
+        "CUDA_VISIBLE_DEVICES": os.environ["CUDA_VISIBLE_DEVICES"]
+    }
+
 
 @serve.deployment(ray_actor_options={"num_gpus": 0.1, "runtime_env": _runtime_env})
 @serve.ingress(_ingress_app)
@@ -62,7 +65,6 @@ class Ingress:
             "model_loaded": bool(_MODEL_LOADED),
         }
 
-
     @_ingress_app.post("/serve/simple")
     async def _simple_one(self, body: Dict[str, Any]):  # type: ignore
         try:
@@ -72,7 +74,6 @@ class Ingress:
             return {"error": he.detail}
         except Exception as e:  # pragma: no cover
             return {"error": str(e)}
-
 
     @_ingress_app.post("/serve/simple/batch")
     async def _simple_batch(self, body: List[Dict[str, Any]]):  # type: ignore
@@ -91,7 +92,6 @@ class Ingress:
         except Exception as e:
             return {"error": str(e)}
 
-
     @_ingress_app.post("/serve/relax/batch")
     async def _relax_batch(self, body: List[Dict[str, Any]]):  # type: ignore
         out: List[Any] = []
@@ -108,7 +108,6 @@ class Ingress:
             return {"error": he.detail}
         except Exception as e:
             return {"error": str(e)}
-
 
     @_ingress_app.post("/serve/md/batch")
     async def _md_batch(self, body: List[Dict[str, Any]]):  # type: ignore
@@ -150,6 +149,7 @@ def deploy():
 if __name__ == "__main__":  # pragma: no cover
     deploy()
     import time
+
     print("Serve running at http://127.0.0.1:8000/serve/health")
     while True:
         time.sleep(60)

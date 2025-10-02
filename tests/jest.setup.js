@@ -25,3 +25,47 @@ if (!global.BABYLON) {
   };
   global.BABYLON = BABYLON;
 }
+
+// ---- Test Log Suppression Layer -------------------------------------------
+// Default: reduce noisy console output so test results highlight only warnings/errors.
+// Opt-out: set env TEST_VERBOSE=1 (e.g. `TEST_VERBOSE=1 npm test`).
+// Strategy:
+//  - Buffer frequent identical lines and only show the first occurrence plus a summary count at process exit.
+//  - Suppress per-test health logs (moved to debug level) unless verbose.
+//  - Preserve console.error and console.warn (still visible) but dedupe repeats.
+//  - Provide global helper `__logFlush()` for ad-hoc flushing within a test if needed.
+try {
+  const verbose = process.env.TEST_VERBOSE === '1';
+  if(!verbose){
+    const orig = { log: console.log, info: console.info, warn: console.warn, error: console.error };
+    const counts = new Map();
+    const firstLines = new Set();
+    function track(kind, args){
+      const key = args.map(a=> (typeof a==='string'? a : JSON.stringify(a))).join(' | ');
+      const c = counts.get(key) || { kind, n:0, line:key };
+      c.n++; counts.set(key,c);
+      if(!firstLines.has(key)){
+        firstLines.add(key);
+        // Show the very first occurrence (except per-test-health noise)
+        if(!/\[per-test-health\]/.test(key)) orig[kind](...args);
+      }
+    }
+    console.log = (...a)=> track('log', a);
+    console.info = (...a)=> track('info', a);
+    // Keep warnings & errors but still de-duplicate after first display
+    console.warn = (...a)=> track('warn', a);
+    console.error = (...a)=> track('error', a);
+    global.__logFlush = ()=>{
+      const summary = [];
+      for(const { kind, n, line } of counts.values()){
+        if(n>1) summary.push({ kind, occurrences:n, preview: line.slice(0,160) });
+      }
+      if(summary.length){
+        orig.log('\n[TestLogSummary]', summary.length,'collapsed lines');
+        for(const s of summary){ orig.log(`  [${s.kind}] x${s.occurrences}: ${s.preview}`); }
+      }
+    };
+    process.on('exit', ()=>{ try { global.__logFlush(); } catch{} });
+  }
+} catch {}
+// ---------------------------------------------------------------------------

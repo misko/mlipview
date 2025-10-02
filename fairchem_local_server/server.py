@@ -18,6 +18,7 @@ class RelaxCalculatorName(str, Enum):
     uma = "uma"
     lj = "lj"
 
+
 try:
     from ase.calculators.lj import LennardJones  # standard ASE LJ
 except Exception:  # pragma: no cover
@@ -46,14 +47,19 @@ _PREDICT_UNIT = None  # type: ignore
 _CALCULATOR = None  # type: ignore
 _MODEL_LOADED = False
 
+
 def ensure_model_loaded():  # callable from endpoints / serve_app actor
     global _PREDICT_UNIT, _CALCULATOR, _MODEL_LOADED
     if _MODEL_LOADED and _CALCULATOR is not None:
         return
     if not torch.cuda.is_available():
         # Strict GPU-only mode: fail here (not at import) so Ray controller can still import module
-        raise RuntimeError("CUDA not available but GPU-only mode enforced (deferred load).")
-    print(f"[model:init] loading UMA model on device={DEVICE} (requested={_requested_device})")
+        raise RuntimeError(
+            "CUDA not available but GPU-only mode enforced (deferred load)."
+        )
+    print(
+        f"[model:init] loading UMA model on device={DEVICE} (requested={_requested_device})"
+    )
     _PREDICT_UNIT = pretrained_mlip.get_predict_unit(
         MODEL_NAME,
         device=DEVICE,
@@ -66,24 +72,28 @@ def ensure_model_loaded():  # callable from endpoints / serve_app actor
             internal_graph_gen_version=2,
         ),
     )
-    from fairchem.core.calculate.ase_calculator import \
-        FAIRChemCalculator as _FC
+    from fairchem.core.calculate.ase_calculator import FAIRChemCalculator as _FC
+
     _CALCULATOR = _FC(_PREDICT_UNIT, task_name=TASK_NAME)
     _MODEL_LOADED = True
     print("[model:init] UMA model loaded and ready on", DEVICE)
+
 
 # Attempt eager load if CUDA visible now (normal python tests path)
 try:  # pragma: no cover (import-time branch)
     if torch.cuda.is_available():
         ensure_model_loaded()
     else:
-        print("[model:init] CUDA not visible at import; deferring model load until first use")
+        print(
+            "[model:init] CUDA not visible at import; deferring model load until first use"
+        )
 except Exception as _e:  # logged; will re-attempt on demand
     print("[model:init] deferred load exception:", _e)
 
 ## Removed legacy cache helpers (_composition_key, get_cached_unit_and_calculator)
 
 ## Removed legacy lazy-init & device resolver; single eager load above.
+
 
 ########################
 # Property helper
@@ -147,9 +157,16 @@ class SimpleIn(BaseModel):
 
 ## Duplicate RelaxCalculatorName definition removed (was previously here)
 
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": MODEL_NAME, "device": DEVICE, "cuda_available": torch.cuda.is_available(), "model_loaded": _MODEL_LOADED}
+    return {
+        "status": "ok",
+        "model": MODEL_NAME,
+        "device": DEVICE,
+        "cuda_available": torch.cuda.is_available(),
+        "model_loaded": _MODEL_LOADED,
+    }
 
 
 class RelaxIn(BaseModel):
@@ -186,13 +203,17 @@ class MDIn(BaseModel):
     steps: int = 1  # number of MD integration steps to advance
     temperature: float = 298.0  # Kelvin target (NVT)
     timestep_fs: float = 1.0  # femtoseconds per step
-    friction: float = 0.02  # Langevin friction gamma (1/fs) – slightly higher for stability
+    friction: float = (
+        0.02  # Langevin friction gamma (1/fs) – slightly higher for stability
+    )
     calculator: RelaxCalculatorName = RelaxCalculatorName.uma
     cell: Optional[list[list[float]]] = None
     pbc: Optional[list[bool]] = None
     charge: Optional[int] = 0
     spin_multiplicity: Optional[int] = 1
-    return_trajectory: bool = False  # if true, return per-step energies & positions (lightweight)
+    return_trajectory: bool = (
+        False  # if true, return per-step energies & positions (lightweight)
+    )
 
 
 class MDResult(BaseModel):
@@ -236,9 +257,7 @@ def _build_atoms_from_relax(inp: RelaxIn):  # helper
         cell=inp.cell,
         pbc=pbc,
     )
-    atoms.info.update(
-        {"charge": inp.charge or 0, "spin": inp.spin_multiplicity or 1}
-    )
+    atoms.info.update({"charge": inp.charge or 0, "spin": inp.spin_multiplicity or 1})
     return atoms
 
 
@@ -291,15 +310,13 @@ def simple_calculate(inp: SimpleIn):
         ensure_model_loaded()
         if inp.calculator == RelaxCalculatorName.lj:
             if LennardJones is None:
-                raise HTTPException(
-                    status_code=500, detail="ASE LJ unavailable"
-                )
+                raise HTTPException(status_code=500, detail="ASE LJ unavailable")
             atoms.calc = LennardJones(rc=3.0)
         else:  # default UMA (uma) lazy load
             atoms.calc = _CALCULATOR
         st = time.time()
         results = _compute_properties(atoms, props)
-        print("[simple_calculate] inference_time_s=", round(time.time()-st, 4))
+        print("[simple_calculate] inference_time_s=", round(time.time() - st, 4))
         dt = (_time.time() - t0) * 1000.0
         per_atom = dt / max(1, len(Z))
         has_stress = "stress" in results and results.get("stress") is not None
@@ -405,9 +422,7 @@ def relax(inp: RelaxIn):
     """
     try:
         if BFGS is None:  # pragma: no cover
-            raise HTTPException(
-                status_code=500, detail="ASE BFGS not available"
-            )
+            raise HTTPException(status_code=500, detail="ASE BFGS not available")
         atoms = _build_atoms_from_relax(inp)
         # Select calculator
         ensure_model_loaded()
@@ -415,9 +430,7 @@ def relax(inp: RelaxIn):
             atoms.calc = _CALCULATOR
         elif inp.calculator == RelaxCalculatorName.lj:
             if LennardJones is None:  # pragma: no cover
-                raise HTTPException(
-                    status_code=500, detail="ASE LJ unavailable"
-                )
+                raise HTTPException(status_code=500, detail="ASE LJ unavailable")
             # Default sigma=1, epsilon=1; cutoff 3*sigma similar to prior logic
             atoms.calc = LennardJones(rc=3.0)
         else:  # pragma: no cover - Enum guards this
@@ -431,6 +444,7 @@ def relax(inp: RelaxIn):
 
         # Optimizer: only BFGS kept
         from ase.optimize import BFGS as _BFGS
+
         optimizer = _BFGS(atoms, logfile=None, maxstep=float(inp.max_step or 0.2))
         opt_name = "bfgs"
         trace: list[float] = []
@@ -440,7 +454,9 @@ def relax(inp: RelaxIn):
         forces = None
         stress = None
         max_steps = max(0, int(inp.steps))
-        per_step_debug = os.environ.get("RELAX_VERBOSE", "0") == "1" or bool(inp.return_trace)
+        per_step_debug = os.environ.get("RELAX_VERBOSE", "0") == "1" or bool(
+            inp.return_trace
+        )
         for step_idx in range(max_steps):
             try:
                 optimizer.step()
@@ -459,8 +475,10 @@ def relax(inp: RelaxIn):
                     try:
                         E_step = float(atoms.get_potential_energy())
                     except Exception:
-                        E_step = float('nan')
-                    print(f"[relax:step] idx={step_idx+1}/{max_steps} calc={inp.calculator} E={E_step:.6f}")
+                        E_step = float("nan")
+                    print(
+                        f"[relax:step] idx={step_idx+1}/{max_steps} calc={inp.calculator} E={E_step:.6f}"
+                    )
             except Exception as ste:
                 print(f"[relax] step failed after {steps_completed} steps: {ste}")
                 break
@@ -513,7 +531,9 @@ def md_step(inp: MDIn):
         # Build Atoms (reuse relax helper style)
         Z = inp.atomic_numbers
         if len(Z) != len(inp.coordinates):
-            raise HTTPException(status_code=400, detail="Length mismatch atomic_numbers vs coordinates")
+            raise HTTPException(
+                status_code=400, detail="Length mismatch atomic_numbers vs coordinates"
+            )
         pbc = (
             inp.pbc
             if inp.pbc is not None
@@ -525,7 +545,9 @@ def md_step(inp: MDIn):
             cell=inp.cell,
             pbc=pbc,
         )
-        atoms.info.update({"charge": inp.charge or 0, "spin": inp.spin_multiplicity or 1})
+        atoms.info.update(
+            {"charge": inp.charge or 0, "spin": inp.spin_multiplicity or 1}
+        )
 
         # Attach the requested calculator directly
         ensure_model_loaded()
@@ -547,10 +569,18 @@ def md_step(inp: MDIn):
         except Exception as ee:
             raise HTTPException(status_code=500, detail=f"Initial energy failed: {ee}")
         natoms = len(Z)
-        mass = atoms.get_masses()  # amu (not directly used but kept for potential extensions)
+        mass = (
+            atoms.get_masses()
+        )  # amu (not directly used but kept for potential extensions)
 
         timestep = float(inp.timestep_fs) * _units.fs
-        dyn = Langevin(atoms, timestep, temperature_K=inp.temperature, friction=inp.friction, logfile=None)
+        dyn = Langevin(
+            atoms,
+            timestep,
+            temperature_K=inp.temperature,
+            friction=inp.friction,
+            logfile=None,
+        )
 
         energies = [] if inp.return_trajectory else None
         prev_positions = atoms.get_positions().copy()
@@ -561,11 +591,14 @@ def md_step(inp: MDIn):
                 try:
                     energies.append(float(atoms.get_potential_energy()))
                 except Exception:
-                    energies.append(float('nan'))
+                    energies.append(float("nan"))
             new_pos = atoms.get_positions()
             max_disp = _np.sqrt(((new_pos - prev_positions) ** 2).sum(axis=1)).max()
             if not _np.isfinite(max_disp) or max_disp > 5.0:
-                raise HTTPException(status_code=500, detail=f"MD instability detected (max step disp {max_disp:.2f} Å)")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"MD instability detected (max step disp {max_disp:.2f} Å)",
+                )
             prev_positions[:] = new_pos
 
         final_energy = float(atoms.get_potential_energy())
@@ -575,7 +608,9 @@ def md_step(inp: MDIn):
         KE = float(atoms.get_kinetic_energy())  # eV
         # Equipartition: KE = (3/2) N kB T  -> T = 2*KE / (3 N kB)
         final_T = (2.0 * KE) / (3.0 * natoms * _units.kB) if natoms > 0 else 0.0
-        print(f"[md] calc={inp.calculator} natoms={natoms} steps={inp.steps} T_target={inp.temperature:.1f}K T_final={final_T:.1f}K E0={initial_energy:.6f} Efin={final_energy:.6f}")
+        print(
+            f"[md] calc={inp.calculator} natoms={natoms} steps={inp.steps} T_target={inp.temperature:.1f}K T_final={final_T:.1f}K E0={initial_energy:.6f} Efin={final_energy:.6f}"
+        )
         return MDResult(
             initial_energy=initial_energy,
             final_energy=final_energy,
