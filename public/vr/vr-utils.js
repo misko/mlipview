@@ -1,6 +1,19 @@
 // Utility helpers for VR molecule transforms.
-// These functions provide cached access to molecule master meshes and
-// world/local transform helpers used by the new VR interaction layer.
+// ---------------------------------------------------------------------------
+// DESIGN (post-refactor):
+// The render layer now creates a single TransformNode named 'molecule_root'
+// and parents every master thin‑instance host (atoms, bonds, forces, ghosts,
+// highlights) to it. A registry is exposed at molState.__masters plus the
+// root node at molState.moleculeRoot.  VR code SHOULD prefer those when
+// present. Older regex-scanning master detection is kept as a backward
+// compatible fallback (and for tests that construct scenes without the new
+// root).  This file therefore attempts (in order):
+//   1. Use explicit molecule_root if found.
+//   2. Use molState.__masters (if caller passes a scene embedding it globally).
+//   3. Fallback to legacy heuristic regex scan (_isMasterCandidate).
+// The exported helpers keep the same shape so existing VR modules require no
+// changes aside from benefiting from the more stable root anchor.
+// ---------------------------------------------------------------------------
 
 let _mastersCache = null;
 let _mastersCacheSceneId = null;
@@ -18,8 +31,25 @@ function _isMasterCandidate(m){
   return false;
 }
 
-export function refreshMoleculeMasters(scene, { force } = {}){
+export function refreshMoleculeMasters(scene, { force, molState } = {}){
   if(!scene) return [];
+  // Fast path: if a molecule_root exists, treat it as the single authoritative master
+  try {
+    const explicitRoot = (scene.meshes||[]).find(m=> m && m.name === 'molecule_root');
+    if(explicitRoot){
+      _mastersCache = [ explicitRoot ];
+      _mastersCacheSceneId = scene.uid;
+      _mastersCacheVersion++;
+      return _mastersCache;
+    }
+  } catch {}
+  // Alternate path: if caller supplied molState with registry
+  if(molState && molState.moleculeRoot){
+    _mastersCache = [ molState.moleculeRoot ];
+    _mastersCacheSceneId = scene.uid;
+    _mastersCacheVersion++;
+    return _mastersCache;
+  }
   try {
     if(force || !_mastersCache || _mastersCacheSceneId !== scene.uid){
       _mastersCache = (scene.meshes||[]).filter(_isMasterCandidate);
@@ -45,21 +75,21 @@ export function refreshMoleculeMasters(scene, { force } = {}){
   return _mastersCache;
 }
 
-export function getMoleculeMasters(scene){
+export function getMoleculeMasters(scene, opts={}){
   if(!scene) return [];
   if(!_mastersCache || _mastersCacheSceneId !== scene.uid || !_mastersCache.length){
-    refreshMoleculeMasters(scene, { force:true });
+    refreshMoleculeMasters(scene, { force:true, molState: opts.molState });
   }
   return _mastersCache;
 }
 
-export function getAnyMaster(scene){
-  const m = getMoleculeMasters(scene);
+export function getAnyMaster(scene, opts={}){
+  const m = getMoleculeMasters(scene, opts);
   return m && m.length ? m[0] : null;
 }
 
-export function getMoleculeDiag(scene){
-  const masters = getMoleculeMasters(scene);
+export function getMoleculeDiag(scene, opts={}){
+  const masters = getMoleculeMasters(scene, opts);
   if(!masters.length || typeof BABYLON==='undefined') return 0.0001;
   let min = new BABYLON.Vector3(Number.POSITIVE_INFINITY,Number.POSITIVE_INFINITY,Number.POSITIVE_INFINITY);
   let max = new BABYLON.Vector3(Number.NEGATIVE_INFINITY,Number.NEGATIVE_INFINITY,Number.POSITIVE_INFINITY);
@@ -78,10 +108,10 @@ export function getMoleculeDiag(scene){
 // Transform a local (molecule-space) vector into world coordinates using
 // first master mesh rotation, scaling, and translation plus accumulated
 // quaternion if present (optional) - kept simple for now.
-export function transformLocalToWorld(scene, local){
+export function transformLocalToWorld(scene, local, opts={}){
   // Reverted to manual composition (scale -> rotate -> translate) using first master.
   if(typeof BABYLON==='undefined') return { x: local.x, y: local.y, z: local.z };
-  const m = getAnyMaster(scene);
+  const m = getAnyMaster(scene, opts);
   const v = new BABYLON.Vector3(local.x, local.y, local.z);
   if(m){
     const s = m.scaling || BABYLON.Vector3.One();

@@ -4,6 +4,28 @@ import { __count } from '../util/funcCount.js';
 
 export function createMoleculeView(scene, molState) {
   __count('moleculeView#createMoleculeView');
+  // === Molecule Master Root & Registry =====================================
+  // We introduce a single transform node (moleculeRoot) that becomes the parent
+  // of every master thin‑instance host (atoms, bonds, forces, ghosts, highlights).
+  // VR / AR systems should manipulate ONLY this root when applying global
+  // rotations / translations / scaling. This eliminates regex heuristics over
+  // mesh names and provides a stable anchor even if internal naming changes.
+  //
+  // A lightweight registry is also exposed on molState.__masters for debugging
+  // and for fallback consumers. Each entry is { kind, mesh }. The registry is
+  // append‑only during a molecule’s lifetime; on a full molecule swap a new
+  // view (with a new root & registry) is constructed.
+  // ===========================================================================
+  let moleculeRoot = new BABYLON.TransformNode('molecule_root', scene);
+  moleculeRoot.metadata = { role: 'moleculeRoot' };
+  const mastersRegistry = []; // array of { kind: 'atomMaster'|'bondMaster'|'forceMaster'|'ghostAtomMaster'|'ghostBondMaster', mesh }
+  function registerMaster(kind, mesh) {
+    try { if (mesh && mesh.parent !== moleculeRoot) mesh.parent = moleculeRoot; } catch {}
+    mastersRegistry.push({ kind, mesh });
+  }
+  // Expose for VR/services (read‑only intended):
+  molState.moleculeRoot = moleculeRoot;
+  molState.__masters = mastersRegistry;
   const atomGroups = new Map();
   const bondGroups = new Map();
   // Force vectors rendered as thin instances (similar to bonds) for VR/AR consistency
@@ -31,6 +53,7 @@ export function createMoleculeView(scene, molState) {
       master = BABYLON.MeshBuilder.CreateSphere('atom_'+key,{diameter:1,segments:24},scene);
       master.isPickable = true; master.thinInstanceEnablePicking = true;
       if (typeof master.setEnabled === 'function') master.setEnabled(true); else master.isVisible = true;
+      registerMaster('atomMaster', master);
     } else if (kind === 'ghostAtom') {
       const info = elInfo(key);
       mat = new BABYLON.StandardMaterial('ghost_atom_'+key, scene);
@@ -39,18 +62,21 @@ export function createMoleculeView(scene, molState) {
       mat.alpha = 0.35;
       master = BABYLON.MeshBuilder.CreateSphere('ghost_atom_'+key,{diameter:1,segments:16},scene);
       master.isPickable=false; master.thinInstanceEnablePicking=false;
+      registerMaster('ghostAtomMaster', master);
     } else if (kind === 'ghostBond') {
       mat = new BABYLON.StandardMaterial('ghost_bond_'+key, scene);
       mat.diffuseColor = new BABYLON.Color3(0.55,0.58,0.60);
       mat.emissiveColor = mat.diffuseColor.scale(0.02); mat.alpha = 0.25;
       master = BABYLON.MeshBuilder.CreateCylinder('ghost_bond_'+key,{height:1,diameter:1,tessellation:12},scene);
       master.isPickable=false; master.thinInstanceEnablePicking=false;
+      registerMaster('ghostBondMaster', master);
     } else if (kind === 'bond') {
       mat = new BABYLON.StandardMaterial('bond_'+key, scene);
       mat.diffuseColor = new BABYLON.Color3(0.75,0.78,0.80);
       mat.emissiveColor = mat.diffuseColor.scale(0.05);
       master = BABYLON.MeshBuilder.CreateCylinder('bond_'+key,{height:1,diameter:1,tessellation:22},scene);
       master.isPickable=true; master.thinInstanceEnablePicking=true;
+      registerMaster('bondMaster', master);
     }
     if (master && mat) master.material = mat;
     const g = { master, mats:[], indices:[] }; store.set(key,g); return g;
@@ -75,6 +101,7 @@ export function createMoleculeView(scene, molState) {
     if (typeof master.setEnabled === 'function') master.setEnabled(false); else master.isVisible=false;
     const g = { master, mats:[], indices:[], colors:[] };
     forceGroups.set('force', g);
+    registerMaster('forceMaster', master);
     return g;
   }
   function buildInitial() {
