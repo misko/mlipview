@@ -173,6 +173,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
           state.dynamics = state.dynamics || {}; state.dynamics.energy = res.energy;
           window.__RELAX_FORCES = res.forces||[];
           state.forceCache = { version: structureVersion, energy: res.energy, forces: res.forces||[], stress: res.stress||null, stale:false };
+          // Commit forces to state & notify renderer each successful fetch so visualization updates.
+          if (Array.isArray(res.forces) && res.forces.length) {
+            __updateForces(res.forces, { reason:'fetchRemoteForces' });
+          }
           maybePlotEnergy('forces');
         }
       }
@@ -266,6 +270,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       if(forces && forces.length){
         lastForceResult = { energy: final_energy, forces };
         state.forceCache = { version: structureVersion, energy: final_energy, forces, stress: data.stress||null, stale:false };
+        // IMPORTANT: commit forces to state so renderer (which prefers molState.forces over window.__RELAX_FORCES)
+        // sees updated vectors during relaxation sequences.
+        try { __updateForces(forces, { reason:'relaxStep' }); } catch {}
       }
       return { energy: final_energy };
     } catch(e){
@@ -308,6 +315,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       if(forces && forces.length){
         lastForceResult = { energy: final_energy, forces };
         state.forceCache = { version: structureVersion, energy: final_energy, forces, stress: null, stale:false };
+        // Commit forces so visualization updates during MD sequences
+        try { __updateForces(forces, { reason:'mdStep' }); } catch {}
       }
       return { energy: final_energy };
     } catch(e){
