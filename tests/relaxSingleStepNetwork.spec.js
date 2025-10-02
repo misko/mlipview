@@ -1,10 +1,10 @@
 import { jest } from '@jest/globals';
 
-// This test simulates viewer init and a single relaxStep to ensure only one /relax network call
-// occurs and NO immediate /simple_calculate call follows (cooldown logic active).
+// This test simulates viewer init and a single relaxStep to ensure only one /serve/relax network call
+// occurs and NO immediate /serve/simple call follows (cooldown logic active).
 
 describe('network: single relax step does not trigger extra simple_calculate', () => {
-  test('relaxStep triggers exactly one /relax and zero /simple_calculate within cooldown window', async () => {
+  test('relaxStep triggers exactly one /serve/relax and zero /serve/simple within cooldown window', async () => {
     const calls = [];
     const fakeResponse = {
       initial_energy: -10,
@@ -17,10 +17,10 @@ describe('network: single relax step does not trigger extra simple_calculate', (
     // Mock fetch: record url; respond with relax payload or simple_calculate payload
     global.fetch = jest.fn(async (url, opts) => {
       calls.push(url);
-      if(url.endsWith('/relax')){
+      if(url.endsWith('/serve/relax')){
         return { ok:true, status:200, json: async ()=> fakeResponse };
       }
-      if(url.endsWith('/simple_calculate')){
+      if(url.endsWith('/serve/simple')){
         return { ok:true, status:200, json: async ()=> ({ results:{ energy:-10, forces:[[0,0,0]] } }) };
       }
       throw new Error('Unexpected URL '+url);
@@ -65,8 +65,8 @@ describe('network: single relax step does not trigger extra simple_calculate', (
     calls.length = 0; // reset after init baseline fetches
   await api.relaxStep();
     // Filter calls in cooldown period window
-    const relaxCalls = calls.filter(u=>u.endsWith('/relax'));
-    const simpleCalls = calls.filter(u=>u.endsWith('/simple_calculate'));
+  const relaxCalls = calls.filter(u=>u.endsWith('/serve/relax'));
+  const simpleCalls = calls.filter(u=>u.endsWith('/serve/simple'));
     expect(relaxCalls.length).toBe(1);
     expect(simpleCalls.length).toBe(0);
     api.shutdown && api.shutdown();

@@ -1,18 +1,14 @@
 /** @jest-environment node */
 // 250-step UMA MD stability test: ensure coordinates remain finite and bounded.
-import http from 'http';
-
-function post(path, body){
-  return new Promise((resolve,reject)=>{
-    const data = JSON.stringify(body);
-    const req = http.request('http://127.0.0.1:8000'+path,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data)}},res=>{
-      const chunks=[];res.on('data',c=>chunks.push(c));res.on('end',()=>{
-        const txt=Buffer.concat(chunks).toString('utf8');
-        try{ resolve({ status:res.statusCode, ok:res.statusCode>=200&&res.statusCode<300, json: JSON.parse(txt), raw:txt }); }
-        catch{ resolve({ status:res.statusCode, ok:false, raw:txt }); }
-      });});
-    req.on('error',reject);req.write(data);req.end();
-  });
+async function post(path, body, timeoutMs=5000){
+  const ac = new AbortController();
+  const t = setTimeout(()=>ac.abort(), timeoutMs);
+  try {
+    const r = await fetch('http://127.0.0.1:8000'+path, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body), signal: ac.signal });
+    const txt = await r.text();
+    let json=null; try { json = JSON.parse(txt); } catch{}
+    return { status:r.status, ok:r.ok, json, raw:txt };
+  } finally { clearTimeout(t); }
 }
 
 async function haveServer(){

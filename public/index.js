@@ -1,4 +1,5 @@
 import { createMoleculeState } from './domain/moleculeState.js';
+import { getEndpointSync } from './api_endpoints.js';
 import { createBondService } from './domain/bondService.js';
 import { createSelectionService } from './domain/selectionService.js';
 import { createFairChemForcefield } from './fairchem_provider.js';
@@ -36,6 +37,38 @@ function elementToZ(e){
   if (typeof e === 'number') return e; // already Z
   if (typeof e === 'string') return SYMBOL_TO_Z[e] || 0;
   return e.Z || e.atomicNumber || e.z || (SYMBOL_TO_Z[e.symbol] || SYMBOL_TO_Z[e.sym] || SYMBOL_TO_Z[e.S] || 0) || 0;
+}
+
+// Resolve API base URL across browser + Jest (node) environments.
+function __resolveApiBase(){
+  // Browser environment: prefer explicit override, then same-origin, then test globals.
+  if (typeof window !== 'undefined') {
+    // 1. Explicit override (developer can set before viewer init): window.__MLIPVIEW_SERVER = 'https://host:port'
+    if (window.__MLIPVIEW_SERVER) return String(window.__MLIPVIEW_SERVER).replace(/\/$/, '');
+    // 2. If running in a real browser (or served via proxy) use same-origin so calls stay on the page host (avoids mixed-content & CORS).
+    try {
+      if (window.location && window.location.origin && window.location.origin !== 'null') {
+        // In jsdom this is usually 'http://localhost'. We still may want a better test base; handle below.
+        const origin = window.location.origin;
+        // If jsdom default AND a test global is provided, defer to test global.
+        if (origin === 'http://localhost' && typeof global !== 'undefined' && global.__MLIP_API_URL) {
+          return global.__MLIP_API_URL.replace(/\/$/, '');
+        }
+        return origin.replace(/\/$/, '');
+      }
+    } catch { /* ignore */ }
+    // 3. Fallback: if test harness placed API URL on global (jsdom env) use it.
+    if (typeof global !== 'undefined' && global.__MLIP_API_URL) {
+      return global.__MLIP_API_URL.replace(/\/$/, '');
+    }
+  }
+  // Node/Jest (no window) fallback: prefer globals or env vars injected by harness.
+  if (typeof global !== 'undefined') {
+    const g = global.__MLIP_API_URL || process.env.MLIP_API_URL || process.env.MLIPVIEW_SERVER;
+    if (g) return g.replace(/\/$/, '');
+  }
+  // Final hard-coded development fallback (direct Ray Serve default port)
+  return 'http://127.0.0.1:8000';
 }
 
 export async function initNewViewer(canvas, { elements, positions, bonds } ) {
@@ -99,8 +132,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const atomic_numbers = state.elements.map(e=> elementToZ(e));
       const coordinates = state.positions.map(p=>[p.x,p.y,p.z]);
       const body = { atomic_numbers, coordinates, properties:['energy','forces'], calculator:'uma' };
-      const base = (window.__MLIPVIEW_SERVER||'').replace(/\/$/,'');
-      const url = (base? base : '') + '/simple_calculate'; // relative when base empty so Vite proxy handles it
+    const base = __resolveApiBase();
+    const ep = getEndpointSync('simple');
+    const url = base + ep;
       const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
       const t0 = performance.now();
       debugApi('simple_calculate','request',{ seq, url, body });
@@ -140,8 +174,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const pos = state.positions.map(p=>[p.x,p.y,p.z]);
   const atomic_numbers = state.elements.map(e=> elementToZ(e));
     const body = { atomic_numbers, coordinates: pos, steps, calculator:'uma' };
-    const base = (window.__MLIPVIEW_SERVER || '').replace(/\/$/, '');
-    const url = (base? base : '') + '/relax';
+    const base = __resolveApiBase();
+    const ep = getEndpointSync('relax');
+    const url = base + ep;
     const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
     const t0 = performance.now();
     debugApi('relax','request',{ seq, url, body });
@@ -223,8 +258,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const pos = state.positions.map(p=>[p.x,p.y,p.z]);
     const atomic_numbers = state.elements.map(e=> elementToZ(e));
     const body = { atomic_numbers, coordinates: pos, steps, temperature, timestep_fs, friction, calculator };
-    const base = (window.__MLIPVIEW_SERVER || '').replace(/\/$/,'');
-    const url = (base? base : '') + '/md';
+    const base = __resolveApiBase();
+    const ep = getEndpointSync('md');
+    const url = base + ep;
     const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
     const t0 = performance.now();
     debugApi('md','request',{ seq, url, body });
@@ -295,8 +331,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     if (forceVis.enabled) { try { updateForceVectors(); } catch {} }
   }
   // Wrap atomic-changing operations (relax/MD steps already wrapped below)
-  const origRelaxStep = relaxStep; relaxStep = async ()=>{ const r = await origRelaxStep(); recordInteraction('relaxStep'); return r; };
-  const origMdStep = mdStep; mdStep = async (o)=>{ const r = await origMdStep(o); recordInteraction('mdStep'); return r; };
+  const origRelaxStep = relaxStep; relaxStep = async ()=>{ recordInteraction('relaxStep:pending'); const r = await origRelaxStep(); recordInteraction('relaxStep'); return r; };
+  const origMdStep = mdStep; mdStep = async (o)=>{ recordInteraction('mdStep:pending'); const r = await origMdStep(o); recordInteraction('mdStep'); return r; };
   // Wrap manipulation (drag & bond rotation) so any geometry change recomputes energy and updates plot.
   const wrappedManipulation = {
     beginDrag: (...a)=> manipulation.beginDrag(...a),
@@ -306,6 +342,15 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     rotateBond: (...a)=> { const r = manipulation.rotateBond(...a); if (r) { structureVersion++; if(state.forceCache) state.forceCache.stale=true; ff.computeForces(); recordInteraction('bondRotate'); } return r; }
   };
   wrappedManipulationRef = wrappedManipulation;
+
+  // Provide explicit cleanup to help Jest teardown
+  if (typeof window !== 'undefined') {
+    window.__MLIPVIEW_CLEANUP = window.__MLIPVIEW_CLEANUP || [];
+    window.__MLIPVIEW_CLEANUP.push(()=>{
+      try { engine && engine.stopRenderLoop && engine.stopRenderLoop(); } catch {}
+      try { if(scene && scene.dispose) scene.dispose(); } catch {}
+    });
+  }
   // Selection or manipulation events could be hooked similarly via bus later
 
   let energyCtx=null; let energyCanvas=null; let energyLabel=null;

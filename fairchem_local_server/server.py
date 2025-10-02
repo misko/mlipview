@@ -1,5 +1,5 @@
 import os
-import threading
+import time
 import traceback
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
@@ -7,8 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 from ase.io.jsonio import decode, encode
 from fairchem.core import pretrained_mlip
-from fairchem.core.calculate.ase_calculator import \
-    FAIRChemCalculator  # updated path
+from fairchem.core.calculate.ase_calculator import FAIRChemCalculator
 from fairchem.core.units.mlip_unit import InferenceSettings
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,88 +31,92 @@ except Exception:
 # --- configure model ---
 MODEL_NAME = os.environ.get("UMA_MODEL", "uma-s-1p1")  # UMA small
 TASK_NAME = os.environ.get("UMA_TASK", "omol")  # task: omol|omat|oc20|odac|omc
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+"""Server providing UMA model inference + simple LJ baseline.
 
-# Load a default predict unit at startup (fallback / first use)
-_default_predict_unit = pretrained_mlip.get_predict_unit(
-    MODEL_NAME,
-    device=DEVICE,
-    inference_settings=InferenceSettings(
-        tf32=True,
-        activation_checkpointing=False,
-        merge_mole=True,
-        compile=False,
-        external_graph_gen=False,
-        internal_graph_gen_version=2,
-    ),
-)
-_default_calc = FAIRChemCalculator(_default_predict_unit, task_name=TASK_NAME)
+Device selection: single variable DEVICE determined once from UMA_DEVICE env
+or CUDA availability. No secondary _MODEL_DEVICE variable needed.
+"""
+_requested_device = os.environ.get("UMA_DEVICE", "cuda")
+if not _requested_device.startswith("cuda"):
+    raise RuntimeError("UMA_DEVICE must be 'cuda' (GPU-only mode enforced)")
+DEVICE = "cuda"  # logical device target (single model design)
 
-# ----------------------------------------------------------------------------
-# Composition-based predict unit + calculator cache
-# ----------------------------------------------------------------------------
-# Some UMA model internal graph building / compilation work can benefit from
-# reusing a predict unit + calculator for identical compositions (multiset of
-# atomic numbers). We store a cache keyed by a hashable composition signature.
+# Defer model load if CUDA not yet visible (e.g. importing inside Ray controller process)
+_PREDICT_UNIT = None  # type: ignore
+_CALCULATOR = None  # type: ignore
+_MODEL_LOADED = False
 
-_cache_lock = threading.RLock()
-_composition_cache: Dict[
-    Tuple[Tuple[int, int], ...], Tuple[Any, FAIRChemCalculator]
-] = {}
+def ensure_model_loaded():  # callable from endpoints / serve_app actor
+    global _PREDICT_UNIT, _CALCULATOR, _MODEL_LOADED
+    if _MODEL_LOADED and _CALCULATOR is not None:
+        return
+    if not torch.cuda.is_available():
+        # Strict GPU-only mode: fail here (not at import) so Ray controller can still import module
+        raise RuntimeError("CUDA not available but GPU-only mode enforced (deferred load).")
+    print(f"[model:init] loading UMA model on device={DEVICE} (requested={_requested_device})")
+    _PREDICT_UNIT = pretrained_mlip.get_predict_unit(
+        MODEL_NAME,
+        device=DEVICE,
+        inference_settings=InferenceSettings(
+            tf32=True,
+            activation_checkpointing=False,
+            merge_mole=False,
+            compile=False,
+            external_graph_gen=False,
+            internal_graph_gen_version=2,
+        ),
+    )
+    from fairchem.core.calculate.ase_calculator import \
+        FAIRChemCalculator as _FC
+    _CALCULATOR = _FC(_PREDICT_UNIT, task_name=TASK_NAME)
+    _MODEL_LOADED = True
+    print("[model:init] UMA model loaded and ready on", DEVICE)
 
+# Attempt eager load if CUDA visible now (normal python tests path)
+try:  # pragma: no cover (import-time branch)
+    if torch.cuda.is_available():
+        ensure_model_loaded()
+    else:
+        print("[model:init] CUDA not visible at import; deferring model load until first use")
+except Exception as _e:  # logged; will re-attempt on demand
+    print("[model:init] deferred load exception:", _e)
 
-def _composition_key(atomic_numbers: List[int]) -> Tuple[Tuple[int, int], ...]:
-    """Return a canonical hashable key for a list of atomic numbers.
+## Removed legacy cache helpers (_composition_key, get_cached_unit_and_calculator)
 
-    Key is a tuple of (Z, count) pairs sorted by Z. Order-invariant.
-    """
-    from collections import Counter
+## Removed legacy lazy-init & device resolver; single eager load above.
 
-    c = Counter(int(z) for z in atomic_numbers)
-    return tuple(sorted(c.items()))
-
-
-def get_cached_unit_and_calculator(atomic_numbers: List[int]):
-    """Return (predict_unit, calculator) for the given atomic numbers.
-
-    Reuses cached objects for identical compositions to avoid repeated model
-    instantiation / graph setup cost. Falls back to a default global instance
-    when atomic_numbers is empty or too small to justify a separate entry.
-    """
-    if not atomic_numbers:
-        return _default_predict_unit, _default_calc
-    key = _composition_key(atomic_numbers)
-    with _cache_lock:
-        hit = _composition_cache.get(key)
-        if hit is not None:
-            return hit
-        # Miss: create a new predict unit + calculator.
-        # NOTE: We reuse the same MODEL_NAME / TASK_NAME but could extend this
-        # to adapt hyperparameters based on composition size if needed.
-        pu = pretrained_mlip.get_predict_unit(
-            MODEL_NAME,
-            device=DEVICE,
-            inference_settings=InferenceSettings(
-                tf32=True,
-                activation_checkpointing=False,
-                merge_mole=True,
-                compile=False,
-                external_graph_gen=False,
-                internal_graph_gen_version=2,
-            ),
-        )
-        calculator = FAIRChemCalculator(pu, task_name=TASK_NAME)
-        _composition_cache[key] = (pu, calculator)
-        print(
-            "[cache] created new predict_unit for composition="
-            f"{key} cache_size={len(_composition_cache)}"
-        )
-        return pu, calculator
+########################
+# Property helper
+########################
+def _compute_properties(atoms, props: tuple[str, ...]):
+    results: Dict[str, Any] = {}
+    if "energy" in props or "free_energy" in props:
+        results["energy"] = float(atoms.get_potential_energy())
+        results["free_energy"] = results["energy"]
+    if "forces" in props:
+        results["forces"] = atoms.get_forces().tolist()
+    if "stress" in props:
+        try:
+            results["stress"] = atoms.get_stress().tolist()
+        except Exception:
+            results["stress"] = None
+    return results
 
 
 app = FastAPI(title="UMA-small ASE HTTP server")
 # Re-export encode for test modules
-__all__ = ["app", "encode", "get_cached_unit_and_calculator"]
+__all__ = [
+    "app",
+    "encode",
+    # removed helper exports
+    # models for tests
+    "RelaxIn",
+    "RelaxResult",
+    "MDIn",
+    "MDResult",
+    "SimpleIn",
+    "RelaxCalculatorName",
+]
 
 # Allow local browser dev (adjust origins in production)
 app.add_middleware(
@@ -146,7 +149,7 @@ class SimpleIn(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": MODEL_NAME, "device": DEVICE}
+    return {"status": "ok", "model": MODEL_NAME, "device": DEVICE, "cuda_available": torch.cuda.is_available(), "model_loaded": _MODEL_LOADED}
 
 
 class RelaxIn(BaseModel):
@@ -158,7 +161,7 @@ class RelaxIn(BaseModel):
     pbc: Optional[list[bool]] = None  # length 3 or None -> infer from cell
     charge: Optional[int] = 0
     spin_multiplicity: Optional[int] = 1
-    fmax: float = 0.05  # convergence threshold (still run fixed steps for now)
+    fmax: float = 0.05  # convergence threshold; if <=0 disable early break
     max_step: float = 0.2  # not directly used by ASE BFGS but kept for parity
     optimizer: Optional[str] = "bfgs"  # bfgs|bfgs_ls|lbfgs|fire (extensible)
     optimizer_params: Optional[Dict[str, Any]] = None  # forwarded filtered params
@@ -285,27 +288,18 @@ def simple_calculate(inp: SimpleIn):
         )
         props = tuple(inp.properties or ("energy", "forces"))
         # Choose calculator
+        ensure_model_loaded()
         if inp.calculator == RelaxCalculatorName.lj:
             if LennardJones is None:
                 raise HTTPException(
                     status_code=500, detail="ASE LJ unavailable"
                 )
             atoms.calc = LennardJones(rc=3.0)
-        else:  # default UMA (uma)
-            _pu, _calc = get_cached_unit_and_calculator(Z)
-            atoms.calc = _calc
-        results = {}
-        # --- compute selected properties ---
-        if "energy" in props or "free_energy" in props:
-            results["energy"] = float(atoms.get_potential_energy())
-            results["free_energy"] = results["energy"]
-        if "forces" in props:
-            results["forces"] = atoms.get_forces().tolist()
-        if "stress" in props:
-            try:
-                results["stress"] = atoms.get_stress().tolist()
-            except Exception:
-                results["stress"] = None
+        else:  # default UMA (uma) lazy load
+            atoms.calc = _CALCULATOR
+        st = time.time()
+        results = _compute_properties(atoms, props)
+        print("[simple_calculate] inference_time_s=", round(time.time()-st, 4))
         dt = (_time.time() - t0) * 1000.0
         per_atom = dt / max(1, len(Z))
         has_stress = "stress" in results and results.get("stress") is not None
@@ -358,30 +352,12 @@ def calculate(inp: CalcIn):
         # Attach calculator, run single point
         # Determine composition for caching (Atoms with numbers attr)
         try:
-            Z = list(
-                getattr(
-                    atoms,
-                    "numbers",
-                    getattr(atoms, "get_atomic_numbers")(),
-                )
-            )
+            Z = list(getattr(atoms, "numbers", getattr(atoms, "get_atomic_numbers")()))
         except Exception:  # fallback if Atoms style accessor fails
             Z = []
-        _pu, _calc = get_cached_unit_and_calculator(Z)
-        atoms.calc = _calc
-        results = {}
-        if "energy" in props or "free_energy" in props:
-            results["energy"] = float(atoms.get_potential_energy())
-            # some ASE front-ends expect free_energy = energy for MLIPs
-            results["free_energy"] = results["energy"]
-        if "forces" in props:
-            results["forces"] = atoms.get_forces().tolist()
-        if "stress" in props:
-            try:
-                results["stress"] = atoms.get_stress().tolist()
-            except Exception:
-                # stress may be unavailable for some tasks/geometries
-                results["stress"] = None
+        ensure_model_loaded()
+        atoms.calc = _CALCULATOR
+        results = _compute_properties(atoms, props)
         dt = (_time.time() - t0) * 1000.0
         natoms = (
             len(atoms.get_atomic_numbers())
@@ -434,9 +410,9 @@ def relax(inp: RelaxIn):
             )
         atoms = _build_atoms_from_relax(inp)
         # Select calculator
+        ensure_model_loaded()
         if inp.calculator == RelaxCalculatorName.uma:
-            _pu, _calc = get_cached_unit_and_calculator(inp.atomic_numbers)
-            atoms.calc = _calc
+            atoms.calc = _CALCULATOR
         elif inp.calculator == RelaxCalculatorName.lj:
             if LennardJones is None:  # pragma: no cover
                 raise HTTPException(
@@ -453,44 +429,19 @@ def relax(inp: RelaxIn):
         except Exception as ee:
             raise HTTPException(status_code=500, detail=f"Initial energy failed: {ee}")
 
-        # --- Optimizer selection (factored) ---
-        def _make_optimizer(name: str, opt_params_in: Dict[str, Any]):
-            name = (name or "bfgs").lower()
-            params = dict(opt_params_in or {})
-            max_step = float(inp.max_step or 0.2)
-            if name in {"bfgs", "bfgs_ls", "lbfgs"} and "maxstep" not in params:
-                params["maxstep"] = max_step
-            try:
-                if name == "bfgs":
-                    from ase.optimize import BFGS as _BFGS
-                    return name, _BFGS(atoms, logfile=None, **{k:v for k,v in params.items() if k in {"maxstep","alpha","memory"}})
-                if name == "bfgs_ls":
-                    from ase.optimize import BFGSLineSearch as _BFGSLS
-                    return name, _BFGSLS(atoms, logfile=None, **{k:v for k,v in params.items() if k in {"maxstep","alpha"}})
-                if name == "lbfgs":
-                    from ase.optimize import LBFGS as _LBFGS
-                    allowed = {"maxstep","alpha","memory","use_line_search"}
-                    return name, _LBFGS(atoms, logfile=None, **{k:v for k,v in params.items() if k in allowed})
-                if name == "fire":
-                    from ase.optimize import FIRE as _FIRE
-                    allowed = {"dt","maxmove","force_consistent"}
-                    return name, _FIRE(atoms, logfile=None, **{k:v for k,v in params.items() if k in allowed})
-                raise HTTPException(status_code=400, detail=f"Unknown optimizer '{name}'")
-            except HTTPException:
-                raise
-            except Exception as oe:
-                raise HTTPException(status_code=500, detail=f"Optimizer init failed: {oe}")
-
-        opt_name, optimizer = _make_optimizer(inp.optimizer or "bfgs", inp.optimizer_params or {})
+        # Optimizer: only BFGS kept
+        from ase.optimize import BFGS as _BFGS
+        optimizer = _BFGS(atoms, logfile=None, maxstep=float(inp.max_step or 0.2))
+        opt_name = "bfgs"
         trace: list[float] = []
 
-        # Run steps with optional early stop
+        # Run fixed number of steps (no early stopping to preserve parity)
         steps_completed = 0
         forces = None
         stress = None
-        target_fmax = float(inp.fmax or 0.0)
         max_steps = max(0, int(inp.steps))
-        for _ in range(max_steps):
+        per_step_debug = os.environ.get("RELAX_VERBOSE", "0") == "1" or bool(inp.return_trace)
+        for step_idx in range(max_steps):
             try:
                 optimizer.step()
                 steps_completed += 1
@@ -501,16 +452,15 @@ def relax(inp: RelaxIn):
                     except Exception:
                         pass
                 try:
-                    stress = atoms.get_stress()  # may fail for LJ
+                    stress = atoms.get_stress()
                 except Exception:
                     stress = None
-                if target_fmax > 0:
-                    import numpy as _np
-                    fmax_val = float((_np.square(forces).sum(axis=1)) ** 0.5 if hasattr(forces, 'shape') else 0.0)
-                    # Actually compute max norm per-atom
-                    fmax_val = float((_np.square(forces).sum(axis=1) ** 0.5).max())
-                    if fmax_val < target_fmax:
-                        break
+                if per_step_debug:
+                    try:
+                        E_step = float(atoms.get_potential_energy())
+                    except Exception:
+                        E_step = float('nan')
+                    print(f"[relax:step] idx={step_idx+1}/{max_steps} calc={inp.calculator} E={E_step:.6f}")
             except Exception as ste:
                 print(f"[relax] step failed after {steps_completed} steps: {ste}")
                 break
@@ -520,7 +470,8 @@ def relax(inp: RelaxIn):
             forces = atoms.get_forces()
         print(
             f"[relax] calc={inp.calculator} opt={opt_name} natoms={len(inp.atomic_numbers)} "
-            f"steps={steps_completed}/{inp.steps} E0={initial_energy:.6f} Efin={final_energy:.6f} trace_len={len(trace)}"
+            f"steps={steps_completed}/{inp.steps} E0={initial_energy:.6f} Efin={final_energy:.6f} "
+            f"trace_len={len(trace)}"
         )
         return RelaxResult(
             initial_energy=initial_energy,
@@ -577,9 +528,9 @@ def md_step(inp: MDIn):
         atoms.info.update({"charge": inp.charge or 0, "spin": inp.spin_multiplicity or 1})
 
         # Attach the requested calculator directly
+        ensure_model_loaded()
         if inp.calculator == RelaxCalculatorName.uma:
-            _pu, _calc = get_cached_unit_and_calculator(Z)
-            atoms.calc = _calc
+            atoms.calc = _CALCULATOR
         elif inp.calculator == RelaxCalculatorName.lj:
             if LennardJones is None:
                 raise HTTPException(status_code=500, detail="ASE LJ unavailable")

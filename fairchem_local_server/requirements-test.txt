@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pytest
+httpx
+ray[serve]
+ase
+torch
+fairchem-core

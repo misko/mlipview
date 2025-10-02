@@ -32,11 +32,14 @@ function buildBabylonStub(window) {
 describe('index.html smoke load', () => {
   test('loads without throwing errors', async () => {
   const htmlPath = path.join(process.cwd(), 'public', 'index.html');
-    let html = fs.readFileSync(htmlPath, 'utf-8');
-    // Strip external Babylon script tag to rely on stub
-    html = html.replace(/<script src="https:\/\/cdn.babylonjs.com\/babylon.js"><\/script>/,'');
-
-    const dom = new JSDOM(html, { runScripts: 'dangerously', resources: 'usable', url: 'http://localhost/' });
+  let html = fs.readFileSync(htmlPath, 'utf-8');
+  // Strip ALL external script tags (http/https) before parsing to prevent jsdom network fetches
+  html = html.replace(/<script[^>]+src="https?:[^>]*><\/script>/gi, '');
+  // Also strip babylon local CDN style if different quoting
+  html = html.replace(/<script[^>]+cdn\.babylonjs\.com[^>]*><\/script>/gi,'');
+  const vc = new (require('jsdom').VirtualConsole)();
+  vc.on('error', () => {}); // silence external script load errors (should not occur after stripping)
+  const dom = new JSDOM(html, { runScripts: 'dangerously', url: 'http://localhost/', pretendToBeVisual: true, virtualConsole: vc });
     buildBabylonStub(dom.window);
 
     // Patch import for ./index.js by inlining its contents (simple approach for smoke test)

@@ -1,3 +1,14 @@
+// Ensure fetch exists (Node 20 should, but polyfill defensively for Jest env inconsistencies)
+try {
+  if (typeof fetch === 'undefined') {
+    // cross-fetch/polyfill will install globalThis.fetch
+    require('cross-fetch/polyfill');
+  }
+} catch (e) {
+  // eslint-disable-next-line no-console
+  console.warn('[jest.setup] fetch polyfill not installed', e?.message||e);
+}
+
 // Global BABYLON mock for tests needing molecule/cell logic
 if (!global.BABYLON) {
   const BABYLON = {

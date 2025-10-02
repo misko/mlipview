@@ -7,44 +7,30 @@ from pathlib import Path
 
 import pytest
 
+# Determine repository root: this file is at fairchem_local_server/tests_py/legacy/
+# so repo root is parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[3]
+NODE = os.environ.get("NODE_BIN", "node")
+SCRIPT = REPO_ROOT / "scripts" / "relax_via_api.js"
+
 try:
     from ase.build import molecule
-    from ase.optimize import BFGS
     from ase.calculators.lj import LennardJones
+    from ase.optimize import BFGS
 except Exception:  # pragma: no cover
     molecule = None
     BFGS = None
     LennardJones = None
 
-
-SERVER_URL = os.environ.get("RELAX_PARITY_SERVER", "http://127.0.0.1:8000")
-REPO_ROOT = Path(__file__).resolve().parents[1]
-NODE = os.environ.get("NODE_BIN", "node")
-SCRIPT = REPO_ROOT / "scripts" / "relax_via_api.js"
+DEFAULT_SERVER = "http://127.0.0.1:8000"
+SERVER_URL = os.environ.get("RELAX_PARITY_SERVER", DEFAULT_SERVER)
 
 
 def have_server():
-    """Return True if the FastAPI server responds 200 to a minimal valid request.
-
-    We send a syntactically valid /simple_calculate body (1 atom, dummy coords).
-    A 422 previously caused false negatives; only treat network/5xx as failure.
-    """
+    """Ping the prefixed modern health endpoint; treat any 2xx as available."""
     import urllib.request
-    import json as _json
-    payload = _json.dumps({
-        "atomic_numbers": [1],
-        "coordinates": [[0,0,0]],
-        "properties": ["energy"],
-        "calculator": "lj"
-    }).encode()
-    req = urllib.request.Request(
-        f"{SERVER_URL}/simple_calculate",
-        method="POST",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-    )
     try:
-        with urllib.request.urlopen(req, timeout=2) as resp:
+        with urllib.request.urlopen(f"{SERVER_URL}/serve/health", timeout=2) as resp:
             code = getattr(resp, 'status', resp.getcode())
             return 200 <= code < 300
     except Exception:
@@ -52,7 +38,11 @@ def have_server():
 
 
 @pytest.mark.parametrize("calculator", ["lj", "uma"])
-def test_js_relax_matches_direct(calculator):
+def test_js_relax_matches_direct(calculator, ray_serve_app):
+    # ray_serve_app fixture ensures Ray Serve ingress up; prefer its URL unless user overrides env
+    global SERVER_URL
+    if SERVER_URL == DEFAULT_SERVER:
+        SERVER_URL = ray_serve_app
     if not have_server():
         pytest.skip("Server not reachable on %s" % SERVER_URL)
     if molecule is None or BFGS is None:
@@ -82,17 +72,20 @@ def test_js_relax_matches_direct(calculator):
         try:
             from fairchem.core import pretrained_mlip
             # Updated path for FAIRChemCalculator in current fairchem version
-            from fairchem.core.calculate.ase_calculator import FAIRChemCalculator
+            from fairchem.core.calculate.ase_calculator import \
+                FAIRChemCalculator
             from fairchem.core.units.mlip_unit import InferenceSettings
         except Exception:
             pytest.skip("FairChem not available for UMA direct reference")
+        # Use CUDA for the reference calculation to match server behavior.
+        # Falls back internally if CUDA not actually available.
         pu = pretrained_mlip.get_predict_unit(
             os.environ.get("UMA_MODEL", "uma-s-1p1"),
-            device="cpu",
+            device="cuda",
             inference_settings=InferenceSettings(
-                tf32=False,
+                tf32=True,  # align with server inference settings
                 activation_checkpointing=False,
-                merge_mole=True,
+                merge_mole=False,  # match server simplification
                 compile=False,
                 external_graph_gen=False,
                 internal_graph_gen_version=2,
@@ -102,12 +95,12 @@ def test_js_relax_matches_direct(calculator):
 
     initial_energy_ref = float(at2.get_potential_energy())
     opt = BFGS(at2, logfile=None)
-    steps = 20
+    steps = 20  # Require full 20-step relaxation parity for both calculators
     for _ in range(steps):
         opt.step()
     final_energy_ref = float(at2.get_potential_energy())
 
-    # Call server via Node script (JS client path)
+    # Call server via Node script (JS client path) hitting prefixed /serve routes internally
     cmd = [
         NODE,
         str(SCRIPT),
@@ -117,6 +110,10 @@ def test_js_relax_matches_direct(calculator):
         calculator,
         "--steps",
         str(steps),
+        "--fmax",
+        "-1",
+        "--return-trace",
+        "true",
         "--atomic-numbers",
         json.dumps(numbers),
         "--coords",

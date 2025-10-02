@@ -12,7 +12,7 @@ describe('force cache: repeated force computations without geometry change hit c
     function nextEnergy(){ energyCounter += 0.1; return Number(energyCounter.toFixed(4)); }
     global.fetch = jest.fn(async (url, opts) => {
       calls.push(url);
-      if(url.endsWith('/simple_calculate')){
+  if(url.endsWith('/serve/simple')){
         const E = nextEnergy();
         return { ok:true, status:200, json: async ()=> ({ results:{ energy: E, forces:[[0.2,0,0]], stress:null } }) };
       }
@@ -67,18 +67,18 @@ describe('force cache: repeated force computations without geometry change hit c
     // Because initNewViewer performs a baseline force fetch, cache is now primed.
     // First explicit compute should be a cache hit: expect zero network calls.
     await api.ff.computeForces({ sync:true });
-    expect(calls.filter(u=>u.endsWith('/simple_calculate')).length).toBe(0);
+  expect(calls.filter(u=>u.endsWith('/serve/simple')).length).toBe(0);
 
     // Mutate geometry to invalidate cache
     api.state.positions[0].x += 0.5; api.state.markPositionsChanged();
     calls.length = 0;
     await api.ff.computeForces({ sync:true });
-    expect(calls.filter(u=>u.endsWith('/simple_calculate')).length).toBe(1);
+  expect(calls.filter(u=>u.endsWith('/serve/simple')).length).toBe(1);
 
     // Second call after invalidation (no further mutation) should be cache hit again
     calls.length = 0;
     await api.ff.computeForces({ sync:true });
-    expect(calls.filter(u=>u.endsWith('/simple_calculate')).length).toBe(0);
+  expect(calls.filter(u=>u.endsWith('/serve/simple')).length).toBe(0);
     api.shutdown && api.shutdown();
   });
 });

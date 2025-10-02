@@ -24,7 +24,8 @@
     "jest-environment-jsdom": "^29.7.0",
     "@playwright/test": "^1.55.1",
     "supertest": "^6.3.4",
-    "vite": "^7.1.7"
+    "vite": "^7.1.7",
+    "cross-fetch": "^4.0.0"
   },
   "engines": {
     "node": ">=20.19.0"

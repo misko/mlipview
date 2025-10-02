@@ -7,10 +7,10 @@ describe('relax + force cache integration', () => {
     const calls = [];
     global.fetch = jest.fn(async (url, opts) => {
       calls.push(url);
-      if(url.endsWith('/relax')){
+  if(url.endsWith('/serve/relax')){
         return { ok:true, status:200, json: async ()=> ({ initial_energy:-5, final_energy:-4.9, positions:[[0,0,0]], forces:[[0.05,0,0]], steps_completed:1 }) };
       }
-      if(url.endsWith('/simple_calculate')){
+  if(url.endsWith('/serve/simple')){
         return { ok:true, status:200, json: async ()=> ({ results:{ energy:-4.9, forces:[[0.05,0,0]] } }) };
       }
       throw new Error('Unexpected URL '+url);
@@ -52,20 +52,20 @@ describe('relax + force cache integration', () => {
 
     // Run relax step: expect one /relax call only
     await api.relaxStep();
-    const relaxCalls = calls.filter(u=>u.endsWith('/relax'));
+  const relaxCalls = calls.filter(u=>u.endsWith('/serve/relax'));
     expect(relaxCalls.length).toBe(1);
-    expect(calls.filter(u=>u.endsWith('/simple_calculate')).length).toBe(0);
+  expect(calls.filter(u=>u.endsWith('/serve/simple')).length).toBe(0);
 
     // Force compute should hit cache (seeded by relax forces) => no simple_calculate
     calls.length = 0;
     await api.ff.computeForces({ sync:true });
-    expect(calls.filter(u=>u.endsWith('/simple_calculate')).length).toBe(0);
+  expect(calls.filter(u=>u.endsWith('/serve/simple')).length).toBe(0);
 
     // Mutate geometry to invalidate
     api.state.positions[0].x += 0.25; api.state.markPositionsChanged();
     calls.length = 0;
     await api.ff.computeForces({ sync:true });
-    expect(calls.filter(u=>u.endsWith('/simple_calculate')).length).toBe(1);
+  expect(calls.filter(u=>u.endsWith('/serve/simple')).length).toBe(1);
 
     api.shutdown && api.shutdown();
   });

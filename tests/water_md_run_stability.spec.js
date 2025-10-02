@@ -2,6 +2,7 @@
 // Continuous MD run stability test: ensures 200 steps proceed without NaNs or divergence.
 import http from 'http';
 import https from 'https';
+import { haveServer } from './helpers/server.js';
 
 // Polyfill fetch (same style as relax parity test) for jsdom node env
 if (typeof fetch === 'undefined') {
@@ -27,7 +28,7 @@ if (typeof fetch === 'undefined') {
 }
 
 function post(path, body){ return new Promise((resolve,reject)=>{ const data=JSON.stringify(body); const req = http.request('http://127.0.0.1:8000'+path,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data)}},res=>{ const chunks=[];res.on('data',c=>chunks.push(c));res.on('end',()=>{ const txt=Buffer.concat(chunks).toString('utf8'); try{ resolve({ status:res.statusCode, ok:res.statusCode>=200&&res.statusCode<300, json: JSON.parse(txt), raw:txt }); } catch{ resolve({ status:res.statusCode, ok:false, raw:txt }); } });}); req.on('error',reject); req.write(data); req.end(); }); }
-async function haveServer(){ const r = await post('/simple_calculate',{atomic_numbers:[8,1,1],coordinates:[[0,0,0],[0.95,0,0],[-0.24,0.93,0]],properties:['energy'],calculator:'lj'}); return r.ok; }
+// haveServer imported (checks /serve/health)
 
 beforeAll(()=>{
   if(!global.BABYLON){

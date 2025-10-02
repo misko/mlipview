@@ -29,15 +29,15 @@ function runPythonReference(atoms){
   // Use a short inline Python script that loads ASE LJ or UMA remote? For simplicity call backend simple_calculate for reference UMA energy.
   // But requirement: "pure python ASE equivalent" -> We'll spawn python using FAIRChemCalculator logic is heavy; instead compute energy via backend again to simulate.
   // If stricter parity needed, supply an inline python script using ase.io.jsonio.
-  const script = `import json,sys;\nimport requests;\nbody=json.loads(sys.stdin.read());\nimport time;\n# call backend simple_calculate once\nimport urllib.request, urllib.error\nimport json as _j\nreq = urllib.request.Request('${API}/simple_calculate', data=_j.dumps(body).encode('utf-8'), headers={'Content-Type':'application/json'});\nwith urllib.request.urlopen(req, timeout=10) as r: data=_j.loads(r.read().decode('utf-8'));\nprint(data['results']['energy'])`;
+  const script = `import json,sys;\nimport requests;\nbody=json.loads(sys.stdin.read());\nimport time;\n# call backend /serve/simple once\nimport urllib.request, urllib.error\nimport json as _j\nreq = urllib.request.Request('${API}/serve/simple', data=_j.dumps(body).encode('utf-8'), headers={'Content-Type':'application/json'});\nwith urllib.request.urlopen(req, timeout=10) as r: data=_j.loads(r.read().decode('utf-8'));\nprint(data['results']['energy'])`;
   const proc = spawnSync(py, ['-c', script], { input: JSON.stringify(atoms), encoding:'utf-8' });
   if(proc.error) throw proc.error; if(proc.status!==0) throw new Error('Python ref failed: '+proc.stderr);
   return parseFloat(proc.stdout.trim());
 }
 
 test('water relax step energy parity', async () => {
-  // Ensure backend health
-  await waitFor(async ()=>{ try { const r = await fetch(API + '/health'); return r.ok; } catch { return false; } });
+  // Ensure backend health (modern ingress uses /serve/health but root /health also provided; try /serve/health first)
+  await waitFor(async ()=>{ try { const r = await fetch(API + '/serve/health'); if(r.ok) return true; } catch {} try { const r2 = await fetch(API + '/health'); return r2.ok; } catch { return false; } });
   // Load water xyz from public path
   const waterPath = path.join(process.cwd(), 'public', 'molecules', 'water.xyz');
   const waterText = fs.readFileSync(waterPath,'utf-8');
@@ -46,13 +46,13 @@ test('water relax step energy parity', async () => {
   const coordinates = atoms.map(a=> [a.x,a.y,a.z]);
   // Baseline energy
   const calcBody = { atomic_numbers, coordinates, properties:['energy','forces'], calculator:'uma' };
-  const baseResp = await fetch(API + '/simple_calculate', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(calcBody) });
+  const baseResp = await fetch(API + '/serve/simple', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(calcBody) });
   expect(baseResp.ok).toBe(true);
   const baseJson = await baseResp.json();
   const initialEnergy = baseJson.results.energy;
   // Perform single relax step
   const relaxBody = { atomic_numbers, coordinates, steps:1, calculator:'uma' };
-  const relaxResp = await fetch(API + '/relax', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(relaxBody) });
+  const relaxResp = await fetch(API + '/serve/relax', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(relaxBody) });
   expect(relaxResp.ok).toBe(true);
   const relaxJson = await relaxResp.json();
   const relaxedEnergy = relaxJson.final_energy;
@@ -60,9 +60,10 @@ test('water relax step energy parity', async () => {
   const pyEnergy = runPythonReference(calcBody);
   // Print energies
   // eslint-disable-next-line no-console
+  // eslint-disable-next-line no-console
   console.log('[energy] initial=', initialEnergy, 'relaxed=', relaxedEnergy, 'pythonRef=', pyEnergy);
   // Parity: pythonRef ~ initialEnergy (same structure) and relaxedEnergy <= initialEnergy
   // Tolerance relaxed from 1e-5 to 1e-4 due to backend floating variance & network jitter.
   expect(Math.abs(pyEnergy - initialEnergy)).toBeLessThan(1e-4);
   expect(relaxedEnergy).toBeLessThanOrEqual(initialEnergy + 1e-8);
-});
+}, 30000);

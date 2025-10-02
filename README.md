@@ -97,6 +97,19 @@ Response (abridged):
 * Client code fetches forces/energies remotely; no physics or optimizer logic remains in the browser bundle.
 
 ## Development
+### API Endpoints (Post-Cleanup)
+
+The viewer now exclusively uses Ray Serve namespaced endpoints:
+
+Canonical:
+  * `/serve/health`
+  * `/serve/simple`  (single-point energy/forces)
+  * `/serve/relax`   (BFGS relaxation steps)
+  * `/serve/md`      (MD integration steps)
+
+Previously supported root aliases (`/simple_calculate`, `/relax`, `/md`, `/calculate`, `/health`) have been removed.
+If you had scripts using legacy paths, update them to the `/serve/*` equivalents.
+
 
 Run type & lint checks (if configured) and the Jest tests:
 ```bash

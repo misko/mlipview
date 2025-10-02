@@ -16,7 +16,7 @@ function post(path, body){
 }
 
 async function haveServer(){
-  const r = await post('/simple_calculate',{atomic_numbers:[8,1,1],coordinates:[[0,0,0],[0.95,0,0],[-0.24,0.93,0]],properties:['energy'],calculator:'lj'});
+  const r = await post('/serve/simple',{atomic_numbers:[8,1,1],coordinates:[[0,0,0],[0.95,0,0],[-0.24,0.93,0]],properties:['energy'],calculator:'lj'});
   return r.ok;
 }
 
@@ -33,7 +33,7 @@ describe('LJ MD 250-step stability', () => {
     let positions=[[0,0,0],[0.95,0,0],[-0.24,0.93,0]];
     for(let step=0; step<250; step++){
       const body = { atomic_numbers:[8,1,1], coordinates:positions, steps:1, temperature:298, timestep_fs:1.0, friction:0.02, calculator:'lj' };
-      const r = await post('/md', body);
+  const r = await post('/serve/md', body);
       expect(r.ok).toBe(true);
       const resp = r.json;
       positions = resp.positions;

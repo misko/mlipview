@@ -1,6 +1,7 @@
 /** @jest-environment jsdom */
 // Repeatedly invokes mdStep 500 times on water and ensures no explosion.
 import http from 'http';
+import { haveServer } from './helpers/server.js';
 import https from 'https';
 
 if (typeof fetch === 'undefined') {
@@ -25,7 +26,6 @@ if (typeof fetch === 'undefined') {
   };
 }
 
-function haveServer(url='http://127.0.0.1:8000'){ return new Promise(resolve=>{ const body=JSON.stringify({atomic_numbers:[1],coordinates:[[0,0,0]],properties:['energy'],calculator:'lj'}); const req=http.request(url+'/simple_calculate',{method:'POST',headers:{'Content-Type':'application/json'}},res=>resolve(res.statusCode>=200&&res.statusCode<300)); req.on('error',()=>resolve(false)); req.setTimeout(500,()=>{ try{req.destroy();}catch{} resolve(false);}); req.end(body); }); }
 
 beforeAll(()=>{
   if(!global.BABYLON){

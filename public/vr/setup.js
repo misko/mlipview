@@ -793,6 +793,17 @@ export function createVRSupport(scene, { picking } = {}) {
     } catch(e){ console.warn('[XR][HUD][poll] error', e); }
   }
   const _hudPollInterval = setInterval(_hudPollTick, 1200);
+  try {
+    if(typeof window !== 'undefined'){
+      window.__MLIPVIEW_CLEANUP = window.__MLIPVIEW_CLEANUP || [];
+      window.__MLIPVIEW_CLEANUP.push(()=>{ try{ clearInterval(_hudPollInterval); }catch{} });
+    } else if (typeof global !== 'undefined') {
+      // jsdom environment without window; attach to global for teardown
+      global.__MLIPVIEW_CLEANUP = global.__MLIPVIEW_CLEANUP || [];
+      global.__MLIPVIEW_CLEANUP.push(()=>{ try{ clearInterval(_hudPollInterval); }catch{} });
+    }
+  } catch {}
+  try { if(typeof window !== 'undefined') window.__XR_HUD_POLL_INTERVAL = _hudPollInterval; } catch {}
   // Global pointer ray debug (controller forward ray pick) to verify intersection with HUD
   try {
     if(scene && !scene.__xrGlobalRayDebug){

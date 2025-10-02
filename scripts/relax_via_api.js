@@ -14,6 +14,8 @@ function parseArg(name, def){
 const baseUrl = parseArg('url','http://127.0.0.1:8000');
 const calc = parseArg('calc','uma');
 const steps = parseInt(parseArg('steps','5'),10);
+const fmax = parseFloat(parseArg('fmax','0.05'));
+const returnTrace = parseArg('return-trace','false') === 'true';
 const anStr = parseArg('atomic-numbers','[8,1,1]');
 const coordsStr = parseArg('coords','[[0,0,0],[0.96,0,0],[-0.24,0.93,0]]');
 
@@ -22,8 +24,9 @@ try { atomic_numbers = JSON.parse(anStr); } catch { console.error('Bad atomic-nu
 try { coordinates = JSON.parse(coordsStr); } catch { console.error('Bad coords JSON'); process.exit(1); }
 
 async function main(){
-  const body = { atomic_numbers, coordinates, steps, calculator: calc };
-  const resp = await fetch(baseUrl + '/relax', {
+  const body = { atomic_numbers, coordinates, steps, calculator: calc, fmax, return_trace: returnTrace };
+  // Updated to use prefixed modern endpoint
+  const resp = await fetch(baseUrl + '/serve/relax', {
     method:'POST',
     headers:{ 'Content-Type':'application/json' },
     body: JSON.stringify(body)

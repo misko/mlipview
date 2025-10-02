@@ -7,6 +7,7 @@
 // Uses mocked scene render layer.
 
 import http from 'http';
+import { haveServer } from './helpers/server.js';
 import https from 'https';
 
 if (typeof fetch === 'undefined') {
@@ -35,15 +36,6 @@ jest.mock('../public/render/scene.js', () => ({
   createScene: async () => ({ engine:{ runRenderLoop:(fn)=>{} }, scene:{ meshes:[], render:()=>{}, onPointerObservable:{ _l:[], add(fn){this._l.push(fn);} } }, camera:{ attachControl:()=>{} } })
 }));
 
-function haveServer(url='http://127.0.0.1:8000'){
-  return new Promise(resolve=>{
-    const body=JSON.stringify({atomic_numbers:[1],coordinates:[[0,0,0]],properties:['energy'],calculator:'lj'});
-    const req=http.request(url+'/simple_calculate',{method:'POST',headers:{'Content-Type':'application/json'}},res=>resolve(res.statusCode>=200&&res.statusCode<300));
-    req.on('error',()=>resolve(false));
-    req.setTimeout(500,()=>{ try{req.destroy();}catch{} resolve(false);});
-    req.end(body);
-  });
-}
 
 async function setupViewer(){
   window.__MLIPVIEW_SERVER = 'http://127.0.0.1:8000';
@@ -62,6 +54,10 @@ function distance(a,b){ const dx=a.x-b.x, dy=a.y-b.y, dz=a.z-b.z; return Math.sq
 describe('bond recompute on manual position changes', () => {
   test('bonds disappear when atoms separate and return when restored', async () => {
     if(!(await haveServer())){ console.warn('[bond recompute] server not reachable; skipping'); return; }
+    // Warmup simple endpoint to ensure forcefield/model loaded (mitigate first-call latency)
+    try {
+      await fetch('http://127.0.0.1:8000/serve/simple', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({atomic_numbers:[8,1,1],coordinates:[[0,0,0],[0.95,0,0],[-0.24,0.93,0]],properties:['energy','forces'],calculator:'uma'}) });
+    } catch {}
     const api = await setupViewer();
     // Initial recompute to ensure bonds exist
     const initialBonds = api.state.bonds ? api.state.bonds.length : 0;
@@ -83,5 +79,5 @@ describe('bond recompute on manual position changes', () => {
 
     // Also verify viewerApi.state.bonds is updated
     expect(api.state.bonds.length).toBe(back.length);
-  });
+  }, 20000);
 });

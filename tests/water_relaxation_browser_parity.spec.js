@@ -2,6 +2,7 @@
 // Playwright-style parity test simulated under jsdom.
 // Compares incremental 1-step relaxStep calls vs aggregate /relax 20-step result.
 import http from 'http';
+import { haveServer } from './helpers/server.js';
 import https from 'https';
 
 // Minimal fetch polyfill for Node <18 or test env without global fetch
@@ -27,9 +28,8 @@ if (typeof fetch === 'undefined') {
   };
 }
 
-function haveServer(url='http://127.0.0.1:8000'){ return new Promise(resolve=>{ const body=JSON.stringify({atomic_numbers:[1],coordinates:[[0,0,0]],properties:['energy'],calculator:'lj'}); const req=http.request(url+'/simple_calculate',{method:'POST',headers:{'Content-Type':'application/json'}},res=>resolve(res.statusCode>=200&&res.statusCode<300)); req.on('error',()=>resolve(false)); req.setTimeout(500,()=>{ try{req.destroy();}catch{} resolve(false);}); req.end(body); }); }
 
-async function callRelax(calculator){ const atomic_numbers=[8,1,1]; const coordinates=[[0,0,0],[0.9575,0,0],[-0.2399872,0.92662721,0]]; const body={ atomic_numbers, coordinates, steps:20, calculator }; const resp = await fetch('http://127.0.0.1:8000/relax',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }); if(!resp.ok) throw new Error('relax failed '+resp.status); return await resp.json(); }
+async function callRelax(calculator){ const atomic_numbers=[8,1,1]; const coordinates=[[0,0,0],[0.9575,0,0],[-0.2399872,0.92662721,0]]; const body={ atomic_numbers, coordinates, steps:20, calculator }; const resp = await fetch('http://127.0.0.1:8000/serve/relax',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }); if(!resp.ok) throw new Error('relax failed '+resp.status); return await resp.json(); }
 
 // Minimal BABYLON mocks required by index.js
 beforeAll(()=>{
@@ -79,7 +79,7 @@ async function performBrowserSteps(api, n=20){ for(let i=0;i<n;i++){ await api.r
       expect(trace.length).toBeGreaterThanOrEqual(1);
       // Fetch initial single-point energy via /simple_calculate for the calculator in use
       const initBody = { atomic_numbers:[8,1,1], coordinates:[[0,0,0],[0.9575,0,0],[-0.2399872,0.92662721,0]], properties:['energy'], calculator:calc };
-      const initResp = await fetch('http://127.0.0.1:8000/simple_calculate', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(initBody) });
+  const initResp = await fetch('http://127.0.0.1:8000/serve/simple', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(initBody) });
       const initJson = await initResp.json();
       const initEnergy = initJson.results.energy;
       const finalBrowser = trace[trace.length-1];

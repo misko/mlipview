@@ -60,13 +60,10 @@ export default defineConfig({
     allowedHosts: ['kalman'],
   https: !!httpsCfg && !process.env.NO_VITE_HTTPS ? httpsCfg : false,
   proxy: {
-      // All API endpoints requested as relative paths from the frontend.
-      // In dev, these are forwarded to the FastAPI backend so production nginx (same host, different path) behavior is simulated.
-      '/simple_calculate': { target: backendTarget, changeOrigin: true, secure: false },
-      '/calculate': { target: backendTarget, changeOrigin: true, secure: false },
-      '/relax': { target: backendTarget, changeOrigin: true, secure: false },
-      '/md': { target: backendTarget, changeOrigin: true, secure: false },
-      '/health': { target: backendTarget, changeOrigin: true, secure: false }
+    '/serve/simple': { target: backendTarget, changeOrigin: true, secure: false },
+    '/serve/relax': { target: backendTarget, changeOrigin: true, secure: false },
+    '/serve/md': { target: backendTarget, changeOrigin: true, secure: false },
+    '/serve/health': { target: backendTarget, changeOrigin: true, secure: false }
     }
   },
   preview: {

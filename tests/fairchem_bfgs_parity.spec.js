@@ -4,10 +4,10 @@ import http from 'http';
 // Helper to check server availability quickly
 function checkServer(url='http://127.0.0.1:8000') {
   return new Promise(resolve => {
-    const req = http.request(url + '/simple_calculate', { method:'POST' }, res => { resolve(true); });
+    const req = http.request(url + '/serve/health', { method:'GET' }, res => { resolve(res.statusCode===200); });
     req.on('error', ()=> resolve(false));
     req.setTimeout(500, ()=>{ try { req.destroy(); } catch{} resolve(false); });
-    req.end(JSON.stringify({ atomic_numbers:[1], coordinates:[[0,0,0]] }));
+    req.end();
   });
 }
 
@@ -23,9 +23,17 @@ async function callRelaxFairChem() {
   const coordinates = [ [0,0,0], [0.9575,0,0], [-0.2399872,0.92662721,0] ];
   // Request up to 20 steps; backend may early-stop sooner under new simplified relax loop.
   const body = JSON.stringify({ atomic_numbers, coordinates, steps:20, calculator:'uma' });
-  const res = await fetch('http://127.0.0.1:8000/relax', { method:'POST', headers:{'Content-Type':'application/json'}, body });
-  if(!res.ok){ throw new Error('relax failed '+res.status); }
-  return await res.json();
+  // Retry a few times in case the deployment route isn't ready yet.
+  let lastErr=null;
+  for(let attempt=0; attempt<5; attempt++){
+    try {
+      const res = await fetch('http://127.0.0.1:8000/serve/relax', { method:'POST', headers:{'Content-Type':'application/json'}, body });
+      if(res.ok){ return await res.json(); }
+      lastErr=new Error('relax failed '+res.status);
+    } catch(e){ lastErr=e; }
+    await new Promise(r=>setTimeout(r,250));
+  }
+  throw lastErr || new Error('relax failed unknown');
 }
 
 describe('fairchem water BFGS parity via server /relax', () => {

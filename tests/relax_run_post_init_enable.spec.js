@@ -1,11 +1,11 @@
 /** @jest-environment jsdom */
 // Verifies enabling RELAX_LOOP after viewer init now works (dynamic flags).
-import http from 'http';
 import https from 'https';
+import { haveServer } from './helpers/server.js';
 if (typeof fetch === 'undefined') {
   global.fetch = function(nodeUrl, opts={}){ return new Promise((resolve,reject)=>{ try{ const url=new URL(nodeUrl); const lib=url.protocol==='https:'?https:http; const req=lib.request(url,{method:opts.method||'GET',headers:opts.headers||{}},res=>{ const chunks=[];res.on('data',d=>chunks.push(d));res.on('end',()=>{ const body=Buffer.concat(chunks).toString('utf8'); resolve({ ok:res.statusCode>=200&&res.statusCode<300, status:res.statusCode, json:async()=>JSON.parse(body), text:async()=>body }); });}); req.on('error',reject); if(opts.body) req.write(opts.body); req.end(); } catch(e){ reject(e); } });};
 }
-function haveServer(){ return new Promise(resolve=>{ const data=JSON.stringify({atomic_numbers:[8,1,1],coordinates:[[0,0,0],[0.95,0,0],[-0.24,0.93,0]],properties:['energy'],calculator:'uma'}); const req=http.request('http://127.0.0.1:8000/simple_calculate',{method:'POST',headers:{'Content-Type':'application/json'}},res=>resolve(res.statusCode>=200&&res.statusCode<300)); req.on('error',()=>resolve(false)); req.setTimeout(500,()=>{ try{req.destroy();}catch{} resolve(false);}); req.end(data); }); }
+// haveServer imported from helpers/server.js (uses /serve/health)
 
 beforeAll(()=>{ if(!global.BABYLON){ global.BABYLON={ TransformNode:class{}, MeshBuilder:{ CreateCylinder:()=>({ dispose(){}, setEnabled(){}, position:{ set(){} }, rotationQuaternion:null, scaling:{}, isPickable:false, visibility:1 }) }, StandardMaterial:class{constructor(){this.diffuseColor={};this.emissiveColor={};this.specularColor={};}}, Color3:class{}, Vector3:class{ constructor(x=0,y=0,z=0){this.x=x;this.y=y;this.z=z;} static Up(){return new global.BABYLON.Vector3(0,1,0);} }, Quaternion:class{ static Identity(){return{};}}, Scene:class{} }; }});
 

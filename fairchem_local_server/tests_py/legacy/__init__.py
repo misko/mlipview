@@ -1,0 +1,1 @@
+"""Legacy tests migrated from fairchem_local_server root."""
