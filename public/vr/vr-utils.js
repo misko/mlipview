@@ -9,9 +9,12 @@ let _mastersCacheVersion = 0;
 
 function _isMasterCandidate(m){
   if(!m || !m.name) return false;
-  // Exclude canonical highlight meshes only; VR-specific vrBondSel/vrAtomSel removed.
+  // Exclude highlight helpers
   if(/^highlight_/i.test(m.name)) return false;
-  if(/(base_|bond_|atom_|sphere_|cyl|mol|molecule|root)/i.test(m.name)) return true;
+  // We want atom_*, bond_* masters first; force_vector_master should only be included in addition, not alone
+  if(/^(atom_|bond_)/i.test(m.name)) return true;
+  if(/(base_|sphere_|cyl|mol|molecule|root)/i.test(m.name)) return true;
+  if(/force_vector_master/i.test(m.name)) return true; // allowed, but we'll post-filter if it's the only one
   return false;
 }
 
@@ -20,6 +23,11 @@ export function refreshMoleculeMasters(scene, { force } = {}){
   try {
     if(force || !_mastersCache || _mastersCacheSceneId !== scene.uid){
       _mastersCache = (scene.meshes||[]).filter(_isMasterCandidate);
+      // If we only captured the force master (e.g. async race where atoms/bonds not yet built), defer until next refresh
+      if(_mastersCache.length===1 && /force_vector_master/i.test(_mastersCache[0].name)) {
+        // Leave cache empty so next call after atoms appear repopulates
+        _mastersCache = [];
+      }
       if(_mastersCache.length <= 2){
         const extra = new Set(_mastersCache);
         for(const m of [..._mastersCache]){

@@ -6,6 +6,8 @@ export function createMoleculeView(scene, molState) {
   __count('moleculeView#createMoleculeView');
   const atomGroups = new Map();
   const bondGroups = new Map();
+  // Force vectors rendered as thin instances (similar to bonds) for VR/AR consistency
+  const forceGroups = new Map(); // single group keyed by 'force' currently; extensible for per-type later
   const ghostAtomGroups = new Map(); // separate to keep pickable flag false
   const ghostBondGroups = new Map();
   // Geometry version stamping: increment outside (molState.geometryVersion++) when topology changes
@@ -57,6 +59,24 @@ export function createMoleculeView(scene, molState) {
   const ensureGhostAtomGroup = (el)=>{ __count('moleculeView#ensureGhostAtomGroup'); return ensureGroup(ghostAtomGroups, el, 'ghostAtom'); };
   const ensureGhostBondGroup = (key)=>{ __count('moleculeView#ensureGhostBondGroup'); return ensureGroup(ghostBondGroups, key, 'ghostBond'); };
   const ensureBondGroup = (key)=>{ __count('moleculeView#ensureBondGroup'); return ensureGroup(bondGroups, key, 'bond'); };
+  function ensureForceGroup(){
+    __count('moleculeView#ensureForceGroup');
+    if (forceGroups.has('force')) return forceGroups.get('force');
+    const mat = new BABYLON.StandardMaterial('force_vec_mat', scene);
+    mat.diffuseColor = new BABYLON.Color3(0.95,0.20,0.20);
+    mat.emissiveColor = mat.diffuseColor.scale(0.55);
+    mat.specularColor = new BABYLON.Color3(0.1,0.1,0.1);
+    mat.disableLighting = true; // keep vivid in dim VR/AR lighting
+    // Use unit diameter & scale per-instance so radius logic matches bonds; previous tiny base made arrows microscopic
+    const master = BABYLON.MeshBuilder.CreateCylinder('force_vector_master',{height:1,diameter:1,tessellation:14},scene);
+    master.isPickable = false; master.thinInstanceEnablePicking = false;
+    master.material = mat;
+    // Hide until we have instances
+    if (typeof master.setEnabled === 'function') master.setEnabled(false); else master.isVisible=false;
+    const g = { master, mats:[], indices:[], colors:[] };
+    forceGroups.set('force', g);
+    return g;
+  }
   function buildInitial() {
     __count('moleculeView#buildInitial');
     for (let i=0;i<molState.positions.length;i++) {
@@ -124,6 +144,79 @@ export function createMoleculeView(scene, molState) {
       }
       // (debug log suppressed)
     }
+    // After bonds are rebuilt, rebuild forces to stay in sync with transforms (shared masters for VR)
+    try { rebuildForces(); } catch {}
+  }
+  // Force vector thin instance matrix builder (arrow style: cylinder scaled & rotated)
+  function forceMatrix(p, f, length, radius){
+    // p: {x,y,z}; f: [fx,fy,fz]; length: fixed length for debug visualization
+    const fx=f[0], fy=f[1], fz=f[2];
+    const mag = Math.hypot(fx,fy,fz) || 1e-9;
+    const dir = new BABYLON.Vector3(fx/mag, fy/mag, fz/mag);
+    const up = new BABYLON.Vector3(0,1,0);
+    let rot; const dot = BABYLON.Vector3.Dot(up, dir);
+    if (dot>0.9999) rot = BABYLON.Quaternion.Identity();
+    else if (dot<-0.9999) rot = BABYLON.Quaternion.RotationAxis(new BABYLON.Vector3(1,0,0), Math.PI);
+    else { const axis = BABYLON.Vector3.Cross(up, dir).normalize(); rot = BABYLON.Quaternion.RotationAxis(axis, Math.acos(Math.min(1,Math.max(-1,dot)))); }
+    // Position: offset so base sits at atom, cylinder centered => shift half-length along dir
+    const mid = new BABYLON.Vector3(p.x + dir.x*length/2, p.y + dir.y*length/2, p.z + dir.z*length/2);
+    return BABYLON.Matrix.Compose(new BABYLON.Vector3(radius*2, length, radius*2), rot, mid);
+  }
+  function rebuildForces(){
+    __count('moleculeView#rebuildForces');
+    const DBG = (typeof window !== 'undefined') && (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search||''));
+    if (DBG) console.log('[Forces][rebuild] start');
+    const g = ensureForceGroup();
+    g.mats.length = 0; g.indices.length = 0;
+    // Accept forces from molState.forces OR molState.dynamics?.forces OR global window.__RELAX_FORCES for backward compat
+    let forces = molState.forces || (molState.dynamics && molState.dynamics.forces && molState.dynamics.forces.map(f=>[f.x,f.y,f.z])) || (typeof window!=='undefined' && window.__RELAX_FORCES) || [];
+    if (!Array.isArray(forces)) forces = [];
+    const n = Math.min(forces.length, molState.positions.length);
+    if (!n) {
+      if (DBG) console.log('[Forces][rebuild] no forces or positions (n=0)');
+      g.master.thinInstanceSetBuffer('matrix', new Float32Array());
+      if (typeof g.master.setEnabled === 'function') g.master.setEnabled(false); else g.master.isVisible=false;
+      return;
+    }
+    // Scaling controls
+    const search = (typeof window !== 'undefined') ? (window.location?.search||'') : '';
+    const qs = Object.fromEntries(Array.from(new URLSearchParams(search)).map(([k,v])=>[k,v]));
+    const forcedFixed = ('forceFixed' in qs) || window.FORCE_FIXED; // keep constant length if set
+    const forceScale = parseFloat(qs.forceScale || window.FORCE_SCALE || '0.4'); // length per |f| unit
+    const maxLen = parseFloat(qs.forceMax || window.FORCE_MAX || '1.2');
+    const minLen = parseFloat(qs.forceMin || window.FORCE_MIN || '0.12');
+    const radius = parseFloat(qs.forceRadius || window.FORCE_RADIUS || '0.05');
+    let maxMag = 0; if (!forcedFixed) { for (let i=0;i<n;i++){ const f=forces[i]; if(!f) continue; const m=Math.hypot(f[0],f[1],f[2]); if(m>maxMag) maxMag=m; } }
+    if (DBG) console.log('[Forces][params]', { forcedFixed, forceScale, maxLen, minLen, radius, maxMag: maxMag.toFixed ? maxMag.toFixed(4):maxMag });
+    const fixedLen = forcedFixed ? (parseFloat(qs.forceFixed) || 0.9) : null;
+    for (let i=0;i<n;i++){
+      const p = molState.positions[i]; const f = forces[i];
+      if(!p || !f) continue;
+      const mag = Math.hypot(f[0],f[1],f[2]);
+      if(mag < 1e-10) continue;
+      let drawLen;
+      if (fixedLen != null) drawLen = fixedLen; else drawLen = Math.min(maxLen, Math.max(minLen, mag * forceScale));
+      const mat = forceMatrix(p, f, drawLen, radius);
+      g.mats.push(mat); g.indices.push({ atom:i, mag });
+      if (DBG && i < 8) console.log('[Forces][rebuild] atom', i, 'f=', f, 'mag=', mag.toFixed(4));
+    }
+    g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
+    try { g.master.thinInstanceRefreshBoundingInfo && g.master.thinInstanceRefreshBoundingInfo(); } catch {}
+    // Per-instance color (solid red, alpha 1)
+    if (g.mats.length) {
+      const cols = new Float32Array(g.mats.length * 4);
+      for (let i=0;i<g.mats.length;i++) { cols[i*4+0]=0.95; cols[i*4+1]=0.05; cols[i*4+2]=0.05; cols[i*4+3]=1.0; }
+      try { g.master.thinInstanceSetBuffer('color', cols, 4); } catch {}
+    } else {
+      try { g.master.thinInstanceSetBuffer('color', new Float32Array(), 4); } catch {}
+    }
+    if (DBG) console.log('[Forces][rebuild] instances=', g.mats.length);
+    if (g.mats.length) {
+      if (typeof g.master.setEnabled === 'function') g.master.setEnabled(true); else g.master.isVisible=true;
+    } else {
+      if (typeof g.master.setEnabled === 'function') g.master.setEnabled(false); else g.master.isVisible=false;
+    }
+    if (DBG) console.log('[Forces][rebuild] complete visible=', g.mats.length>0);
   }
   function rebuildGhosts() {
     __count('moleculeView#rebuildGhosts');
@@ -237,6 +330,7 @@ export function createMoleculeView(scene, molState) {
     if (topologyChanged) rebuildAtoms();
     rebuildBonds();
     rebuildGhosts();
+  try { rebuildForces(); } catch {}
     // Decide if current selection is still valid
     let invalidate = false;
     if (molState.selection && molState.selection.kind) {
@@ -265,6 +359,14 @@ export function createMoleculeView(scene, molState) {
     // (debug logs suppressed)
   });
   molState.bus.on('cellChanged', () => { rebuildCellLines(); rebuildGhosts(); });
+  // Forces update event (consumer code can emit this when new forces computed)
+  if (molState.bus && typeof molState.bus.on === 'function') {
+    molState.bus.on('forcesChanged', () => {
+      const DBG = (typeof window !== 'undefined') && (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search||''));
+      if (DBG) console.log('[Forces][event] forcesChanged received');
+      try { rebuildForces(); } catch(e){ if (DBG) console.warn('[Forces][event] rebuild error', e); }
+    });
+  }
   // Selection highlight management
   function ensureHighlightMeshes() {
     __count('moleculeView#ensureHighlightMeshes');
@@ -470,5 +572,5 @@ export function createMoleculeView(scene, molState) {
     }
     return null;
   }
-  return { rebuildBonds, rebuildGhosts, _internals:{ atomGroups, bondGroups, ghostAtomGroups, ghostBondGroups, highlight }, resolveAtomPick, resolveBondPick };
+  return { rebuildBonds, rebuildGhosts, rebuildForces, _internals:{ atomGroups, bondGroups, forceGroups, ghostAtomGroups, ghostBondGroups, highlight }, resolveAtomPick, resolveBondPick };
 }

@@ -114,6 +114,18 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // Versioned force cache: state.forceCache = { version, energy, forces, stress, stale }
   state.forceCache = { version:0, energy:NaN, forces:[], stress:null, stale:true };
   let structureVersion = 0; // increments when positions (or elements) change
+  function __updateForces(forces, { reason }={}) {
+    const DBG = (typeof window !== 'undefined') && (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search||''));
+    try {
+      if (Array.isArray(forces) && forces.length) {
+        state.forces = forces;
+        if (DBG) console.log('[Forces][update]', reason||'?', 'len=', forces.length);
+        state.bus?.emit && state.bus.emit('forcesChanged');
+      } else if (DBG) {
+        console.warn('[Forces][update] empty set for reason', reason);
+      }
+    } catch(e){ if (DBG) console.warn('[Forces][update] error', e); }
+  }
   async function fetchRemoteForces({ awaitResult=false }={}){
     __count('index#fetchRemoteForces');
     if(inFlight && !awaitResult) return;
@@ -312,9 +324,18 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     // Expose for test harness
     window.__RELAX_TRACE = energySeries.map(e=>e.E);
     drawEnergy();
-    // Update force vectors on meaningful geometry/energy events (skip high-frequency dragMove handled separately)
-    if (forceVis.enabled && kind && kind !== 'dragMove') {
-      try { updateForceVectors(); } catch {}
+    // Notify force visualization (now handled by moleculeView thin instances)
+    if (kind && kind !== 'dragMove') {
+      try {
+        if (state.bus.emit) {
+          const DBG = (typeof window !== 'undefined') && (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search||''));
+          if (!state.forces && window.__RELAX_FORCES && window.__RELAX_FORCES.length) {
+            __updateForces(window.__RELAX_FORCES, { reason:'lateAttachInteraction' });
+          }
+          if (DBG) console.log('[Forces][emit] forcesChanged due to interaction kind=', kind, 'haveForces=', !!state.forces);
+          state.bus.emit('forcesChanged');
+        }
+      } catch {}
     }
   }
   async function baselineEnergy(){
@@ -327,8 +348,17 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       state.dynamics = state.dynamics || {}; state.dynamics.energy = res.energy;
     } catch(e){ res = { energy: NaN, forces: [] }; }
     window.__RELAX_FORCES = res.forces||[];
+    if (res.forces && res.forces.length) {
+      __updateForces(res.forces, { reason:'baselineEnergy' });
+    } else {
+      const DBG=(typeof window!=='undefined') && (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search||''));
+      if (DBG) {
+        const synth = state.positions.map(p=>{ const r=Math.hypot(p.x,p.y,p.z)||1; return [p.x/r*0.3, p.y/r*0.3, p.z/r*0.3]; });
+        window.__RELAX_FORCES = synth;
+        __updateForces(synth, { reason:'baselineEnergySynth' });
+      }
+    }
     recordInteraction('init');
-    if (forceVis.enabled) { try { updateForceVectors(); } catch {} }
   }
   // Wrap atomic-changing operations (relax/MD steps already wrapped below)
   const origRelaxStep = relaxStep; relaxStep = async ()=>{ recordInteraction('relaxStep:pending'); const r = await origRelaxStep(); recordInteraction('relaxStep'); return r; };
@@ -525,82 +555,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     if(typeof requestAnimationFrame === 'function') requestAnimationFrame(__rafLoop);
   }
 
-  // --- Force vector visualization (legacy per-arrow implementation) ---
-  // Force vectors: always enabled (requirement). We'll auto-refresh on positionsChanged and each frame.
-  const forceVis = { enabled: true, root:null, arrows:[], maxLen:1.0 };
-  function ensureForceRoot(){
-    __count('index#ensureForceRoot');
-    if(!forceVis.root){ forceVis.root = new BABYLON.TransformNode('forceArrowsRoot', scene); }
-    // If molecule top-level transform exists (e.g., an atom master mesh parent) attach to it so arrows inherit VR rotations.
-    if(forceVis.root && !forceVis.root.parent){
-      const anyAtom = scene.meshes.find(m=>m && /^atom_/i.test(m.name));
-      if(anyAtom && anyAtom.parent){ forceVis.root.parent = anyAtom.parent; }
-    }
-    return forceVis.root;
-  }
-  const forceMaterial = new BABYLON.StandardMaterial('forceMat', scene);
-  forceMaterial.diffuseColor = new BABYLON.Color3(0.9,0.1,0.1);
-  forceMaterial.emissiveColor = new BABYLON.Color3(0.6,0.05,0.05);
-  forceMaterial.specularColor = new BABYLON.Color3(0.2,0.2,0.2);
-  forceMaterial.disableLighting = false;
-  function disposeArrows(){ __count('index#disposeArrows'); if(forceVis.arrows){ for(const a of forceVis.arrows){ try{ a.dispose(); }catch{} } } forceVis.arrows=[]; }
-  function createArrow(name){
-    __count('index#createArrow');
-    const body = BABYLON.MeshBuilder.CreateCylinder(name+'_body',{height:1,diameter:0.04,tessellation:12},scene);
-    const tip  = BABYLON.MeshBuilder.CreateCylinder(name+'_tip',{height:0.25,diameterTop:0,diameterBottom:0.12,tessellation:12},scene);
-    tip.position.y = 0.5 + 0.125; tip.parent = body;
-    body.material = forceMaterial; tip.material = forceMaterial;
-    body.isPickable=false; tip.isPickable=false; body.visibility=1; return body;
-  }
-  function updateForceVectors(){
-    __count('index#updateForceVectors');
-    if(!forceVis.enabled) return;
-    const forces = window.__RELAX_FORCES || [];
-    if(!forces.length || !state.positions.length) return;
-    const root = ensureForceRoot();
-    if(!root.parent){
-      const sample = scene.meshes.find(m=>m && m.name && /^atom_/i.test(m.name));
-      if(sample && sample.parent){ root.parent = sample.parent; }
-    }
-    if(forceVis.arrows.length !== forces.length){
-      disposeArrows();
-      for(let i=0;i<forces.length;i++){ const a=createArrow('forceArrow'+i); a.parent = root; forceVis.arrows.push(a); }
-    }
-    // Compute max magnitude for scaling
-    let maxMag=0; const mags=new Array(forces.length);
-    for(let i=0;i<forces.length;i++){ const f=forces[i]; const mag=Math.hypot(f[0],f[1],f[2]); mags[i]=mag; if(mag>maxMag) maxMag=mag; }
-    const baseScale = maxMag>0 ? 0.6/maxMag : 0;
-    for(let i=0;i<forces.length;i++){
-      const f=forces[i]; const mag=mags[i]; const p=state.positions[i]; const arrow=forceVis.arrows[i];
-      if(!p || mag<1e-8){ arrow.setEnabled(false); continue; } else { arrow.setEnabled(true); }
-      const dir = new BABYLON.Vector3(f[0],f[1],f[2]); dir.normalize();
-      const up = BABYLON.Vector3.Up(); let q; const dot=BABYLON.Vector3.Dot(up,dir);
-      if(Math.abs(dot-1)<1e-6) q = BABYLON.Quaternion.Identity();
-      else if(Math.abs(dot+1)<1e-6) q = BABYLON.Quaternion.RotationAxis(BABYLON.Vector3.Right(), Math.PI);
-      else { const axis = BABYLON.Vector3.Cross(up,dir).normalize(); const angle=Math.acos(dot); q = BABYLON.Quaternion.RotationAxis(axis, angle); }
-      arrow.rotationQuaternion = q;
-      const length = mag*baseScale; const clampedLen = Math.min(Math.max(length,0.05),1.2);
-      arrow.scaling = new BABYLON.Vector3(1, clampedLen, 1);
-      const offset = new BABYLON.Vector3(0, clampedLen/2, 0);
-      const rotatedOffset = offset.rotateByQuaternionToRef(q, new BABYLON.Vector3());
-      arrow.position.set(p.x + rotatedOffset.x, p.y + rotatedOffset.y, p.z + rotatedOffset.z);
-    }
-    root.setEnabled(forceVis.enabled);
-  }
-  function setForceVectorsEnabled(on){
-    __count('index#setForceVectorsEnabled');
-    // Always-on policy now; ignore external off requests but keep API for backward compatibility
-    forceVis.enabled = true;
-    updateForceVectors();
-  }
-  // schedule initial draw & continuous updates
-  setTimeout(()=>{ try{ updateForceVectors(); }catch{} },0);
-  // Refresh arrows when atom positions mutate
-  state.bus.on('positionsChanged', () => { try { updateForceVectors(); } catch {} });
-  // Per-frame (lightweight) orientation sync in case root parenting occurs after dynamic scene changes
-  if(scene.onBeforeRenderObservable){
-    scene.onBeforeRenderObservable.add(()=>{ if(forceVis.enabled) { try { updateForceVectors(); } catch {} } });
-  }
+  // Force vectors now rendered via moleculeView thin instances (see moleculeView.rebuildForces).
+  function setForceVectorsEnabled(on){ /* kept for backward compatibility; no-op */ }
 
   // VR support is lazy; user can call vr.init() explicitly later.
   const vr = createVRSupport(scene, { picking: { ...picking, view, vrPicker, selectionService: selection, manipulation, molState: state } });
