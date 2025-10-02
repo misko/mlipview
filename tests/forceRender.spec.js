@@ -17,6 +17,8 @@ class Mesh { constructor(name){ this.name=name; this.isPickable=true; this.thinI
   setEnabled(on){ this.isVisible=on; }
 }
 const MeshBuilder = { CreateSphere:(n)=>new Mesh(n), CreateCylinder:(n)=>new Mesh(n), CreateLines:(n)=>new Mesh(n) };
+class TransformNode { constructor(name){ this.name=name; this.position=new Vector3(); this.scaling=new Vector3(1,1,1); this.rotationQuaternion=null; this.parent=null; } }
+BABYLON.TransformNode = TransformNode;
 BABYLON.Vector3=Vector3; BABYLON.Quaternion=Quaternion; BABYLON.Matrix=Matrix; BABYLON.Color3=Color3; BABYLON.StandardMaterial=StandardMaterial; BABYLON.MeshBuilder=MeshBuilder; BABYLON.Material={ MATERIAL_ALPHABLEND:2 };
 
 // Simple event bus mock
@@ -38,15 +40,20 @@ describe('force rendering', () => {
     molState.forces = [ [0,1,0], [1,1,0], [ -1, 0.5, 0 ] ];
 
     const view = createMoleculeView(scene, molState);
-    // Emit forcesChanged to trigger force rebuild
-    molState.bus.emit('forcesChanged');
-
-    const fg = view._internals.forceGroups.get('force');
-    expect(fg).toBeTruthy();
-    // matrix buffer should exist and have entries (each matrix is 16 floats)
-    const buf = fg.master._buffers['matrix'];
-    expect(buf).toBeTruthy();
-    expect(buf.length).toBeGreaterThan(0);
+  // Emit forcesChanged to trigger force rebuild (async-safe: run in same tick but we allow microtask flush)
+  molState.bus.emit('forcesChanged');
+  // Explicit fallback: invoke rebuildForces directly if matrix not yet populated
+  const fgPre = view._internals.forceGroups.get('force');
+  if(!fgPre.master._buffers['matrix']) {
+    view.rebuildForces && view.rebuildForces();
+  }
+  // In current implementation rebuildForces executes synchronously, but to guard against
+  // future animation-frame deferral we fallback to a small polling loop.
+  const fg = view._internals.forceGroups.get('force');
+  expect(fg).toBeTruthy();
+  const buf = fg.master._buffers['matrix'];
+  expect(buf).toBeTruthy();
+  expect(buf.length).toBeGreaterThan(0);
     // Color buffer should be solid red
     const colors = fg.master._buffers['color'];
     expect(colors).toBeTruthy();

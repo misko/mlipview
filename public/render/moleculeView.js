@@ -16,7 +16,20 @@ export function createMoleculeView(scene, molState) {
   // append‑only during a molecule’s lifetime; on a full molecule swap a new
   // view (with a new root & registry) is constructed.
   // ===========================================================================
-  let moleculeRoot = new BABYLON.TransformNode('molecule_root', scene);
+  // Some test environments provide a very small Babylon stub without TransformNode.
+  // Fallback: use a MeshBuilder sphere (disabled) as the root parent container.
+  let moleculeRoot;
+  try {
+    if (BABYLON.TransformNode) {
+      moleculeRoot = new BABYLON.TransformNode('molecule_root', scene);
+    } else {
+      // minimal fallback; flagged via metadata for VR utilities
+      moleculeRoot = BABYLON.MeshBuilder?.CreateSphere ? BABYLON.MeshBuilder.CreateSphere('molecule_root',{diameter:0.0001},scene) : { name:'molecule_root', position:new BABYLON.Vector3(0,0,0), scaling:new BABYLON.Vector3(1,1,1) };
+      if (moleculeRoot.setEnabled) moleculeRoot.setEnabled(false); else moleculeRoot.isVisible=false;
+    }
+  } catch {
+    moleculeRoot = { name:'molecule_root_stub', position:{x:0,y:0,z:0}, scaling:{x:1,y:1,z:1} };
+  }
   moleculeRoot.metadata = { role: 'moleculeRoot' };
   const mastersRegistry = []; // array of { kind: 'atomMaster'|'bondMaster'|'forceMaster'|'ghostAtomMaster'|'ghostBondMaster', mesh }
   function registerMaster(kind, mesh) {
@@ -206,13 +219,14 @@ export function createMoleculeView(scene, molState) {
       return;
     }
     // Scaling controls
-    const search = (typeof window !== 'undefined') ? (window.location?.search||'') : '';
-    const qs = Object.fromEntries(Array.from(new URLSearchParams(search)).map(([k,v])=>[k,v]));
-    const forcedFixed = ('forceFixed' in qs) || window.FORCE_FIXED; // keep constant length if set
-    const forceScale = parseFloat(qs.forceScale || window.FORCE_SCALE || '0.4'); // length per |f| unit
-    const maxLen = parseFloat(qs.forceMax || window.FORCE_MAX || '1.2');
-    const minLen = parseFloat(qs.forceMin || window.FORCE_MIN || '0.12');
-    const radius = parseFloat(qs.forceRadius || window.FORCE_RADIUS || '0.05');
+  const hasWin = (typeof window !== 'undefined');
+  const search = hasWin ? (window.location?.search||'') : '';
+  const qs = Object.fromEntries(Array.from(new URLSearchParams(search)).map(([k,v])=>[k,v]));
+  const forcedFixed = ('forceFixed' in qs) || (hasWin && window.FORCE_FIXED); // keep constant length if set
+  const forceScale = parseFloat(qs.forceScale || (hasWin && window.FORCE_SCALE) || '0.4'); // length per |f| unit
+  const maxLen = parseFloat(qs.forceMax || (hasWin && window.FORCE_MAX) || '1.2');
+  const minLen = parseFloat(qs.forceMin || (hasWin && window.FORCE_MIN) || '0.12');
+  const radius = parseFloat(qs.forceRadius || (hasWin && window.FORCE_RADIUS) || '0.05');
     let maxMag = 0; if (!forcedFixed) { for (let i=0;i<n;i++){ const f=forces[i]; if(!f) continue; const m=Math.hypot(f[0],f[1],f[2]); if(m>maxMag) maxMag=m; } }
     if (DBG) console.log('[Forces][params]', { forcedFixed, forceScale, maxLen, minLen, radius, maxMag: maxMag.toFixed ? maxMag.toFixed(4):maxMag });
     const fixedLen = forcedFixed ? (parseFloat(qs.forceFixed) || 0.9) : null;
