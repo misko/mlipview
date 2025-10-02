@@ -14,6 +14,8 @@ import { __count } from '../util/funcCount.js';
 export function createManipulationService(molState, { bondService } = {}) {
   __count('manipulationService#createManipulationService');
   let dragState = null; // { atomIndex, startPos:{x,y,z}, grabOffset:{x,y,z}, planeNormal:{x,y,z}, planePoint:{x,y,z} }
+  // Constant max drag radius (absolute world units)
+  const MAX_DRAG_RADIUS = 50; // configurable constant; previously 5x farthest initial atom
   // Debug instrumentation (re-added to surface desktop drag logs after migration).
   const DRAG_LOG = false; // silenced (set to true locally if detailed drag diagnostics needed)
 
@@ -24,14 +26,14 @@ export function createManipulationService(molState, { bondService } = {}) {
     __count('manipulationService#beginDrag');
     if (dragState) return false;
     if (!molState.selection || molState.selection.kind !== 'atom') return false;
-    const atomIndex = molState.selection.data.index;
-    const pos = getAtomPosition(atomIndex);
+  const atomIndex = molState.selection.data.index;
+  const pos = getAtomPosition(atomIndex);
   // Use Y-up horizontal plane so dragging feels natural relative to ground.
   const planeNormal = { x:0, y:1, z:0 }; // default; caller can override later via setDragPlane
     const planePoint = { ...pos };
     const hit = intersector(planePoint, planeNormal);
     const grabOffset = hit ? { x:pos.x-hit.x, y:pos.y-hit.y, z:pos.z-hit.z } : { x:0,y:0,z:0 };
-    dragState = { atomIndex, startPos: { ...pos }, grabOffset, planeNormal, planePoint };
+  dragState = { atomIndex, startPos: { ...pos }, grabOffset, planeNormal, planePoint };
   if (DRAG_LOG) console.log('[drag][start]', { atomIndex, startPos: { ...pos }, planePoint: { ...planePoint }, planeNormal: { ...planeNormal } }); // retained behind flag
     return true;
   }
@@ -47,7 +49,14 @@ export function createManipulationService(molState, { bondService } = {}) {
     const hit = intersector(dragState.planePoint, dragState.planeNormal);
     if (!hit) return false;
     const prev = { ...molState.positions[dragState.atomIndex] };
-    const newPos = { x: hit.x + dragState.grabOffset.x, y: hit.y + dragState.grabOffset.y, z: hit.z + dragState.grabOffset.z };
+    let newPos = { x: hit.x + dragState.grabOffset.x, y: hit.y + dragState.grabOffset.y, z: hit.z + dragState.grabOffset.z };
+  // Enforce constant max radius
+  const maxR = MAX_DRAG_RADIUS;
+    const r = Math.hypot(newPos.x, newPos.y, newPos.z);
+    if (r > maxR) {
+      const s = maxR / r;
+      newPos = { x: newPos.x * s, y: newPos.y * s, z: newPos.z * s };
+    }
     setAtomPosition(dragState.atomIndex, newPos);
     molState.markPositionsChanged();
     if (DRAG_LOG) {

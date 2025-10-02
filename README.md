@@ -236,6 +236,18 @@ MLIPVIEW_PYTHON=/path/to/python npx playwright test
 * Additional calculators (e.g., EAM, GAP) behind the same abstraction.
 * Optional stress-aware relaxations with cell degrees of freedom.
 
+## 2025-10 UI Updates
+
+Recent interface refinements (October 2025):
+* Simplified HUD: removed Stop, Reset Energy, and Recompute Bonds buttons.
+* Relax controls condensed to: `Relax: (step) (run)` where the run button toggles to `stop` while a continuous relaxation is active.
+* MD controls now mirror Relax: `MD: (step) (run)` with identical run↔stop toggle behavior.
+* Scene background (desktop & XR base) set to white for cleaner embedding and screenshots.
+* XR dropdown initial label changed from `XR:none` to `SelectVR` for clearer action affordance.
+* Atom dragging now respects a maximum radius: an atom cannot be moved farther than 5× its initial radial distance from the origin at drag start (prevents losing atoms far off screen).
+
+These changes are non-breaking for programmatic APIs; only the HUD markup and initial XR label string changed.
+
 ## License
 
 See repository root for license information.

@@ -5,7 +5,7 @@
   <title>MLIP Viewer 2</title>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <style>
-    html,body { margin:0; padding:0; height:100%; background:#0b0f14; font-family: system-ui, sans-serif; color:#d8e6f3; }
+  html,body { margin:0; padding:0; height:100%; background:#ffffff; font-family: system-ui, sans-serif; color:#222; }
     #app { position:relative; width:100%; height:100%; overflow:hidden; }
     canvas { width:100%; height:100%; display:block; }
     .hud { position:absolute; top:8px; left:8px; background:rgba(20,26,34,0.65); border:1px solid rgba(255,255,255,0.07); border-radius:8px; padding:8px 12px; font-size:13px; backdrop-filter: blur(4px); }
@@ -30,20 +30,19 @@
   <div id="app">
     <canvas id="viewer"></canvas>
   <div class="hud">
-  <button id="btnRelax">Relax Step</button>
-  <button id="btnRelaxRun">Relax Run</button>
-  <button id="btnMD">MD Step</button>
-  <button id="btnMDRun">MD Run</button>
-  <button id="btnStopSim">Stop</button>
-  <button id="btnResetEnergy" title="Reset energy plot to current structure">Reset Energy</button>
+  <span style="margin-right:4px;">Relax:</span>
+  <button id="btnRelax" title="Single relaxation step">step</button>
+  <button id="btnRelaxRun" title="Continuous relaxation run">run</button>
+  <span style="margin-left:10px;margin-right:4px;">MD:</span>
+  <button id="btnMD" title="Single MD step">step</button>
+  <button id="btnMDRun" title="Continuous MD run">run</button>
   <select id="forceProviderSel"><option value="fairchem">UMA (Remote)</option></select>
-      <button id="btnRebonds">Recompute Bonds</button>
   <button id="btnCell">Cell</button>
   <button id="btnGhosts">Ghosts</button>
   <button id="btnToggleForces" title="Toggle force vectors (normalized)">Forces</button>
       <span id="status">Ready</span>
       <select id="xrModeSelect" style="margin-left:6px" title="Switch XR mode">
-        <option value="none">XR:none</option>
+        <option value="none">SelectVR</option>
         <option value="vr">VR</option>
         <option value="ar">AR</option>
       </select>
@@ -103,19 +102,40 @@
         window.__MLIP_DEFAULT_LOADED = true; // still allow tests to proceed
       }
     })();
-  document.getElementById('btnRelax').onclick=async()=>{ if (!viewerApi) return; await viewerApi.relaxStep(); document.getElementById('status').textContent='Relax step'; };
-  document.getElementById('btnRelaxRun').onclick=async()=>{ if(!viewerApi) return; document.getElementById('status').textContent='Relax running'; viewerApi.startRelaxContinuous({}).then(r=>{ document.getElementById('status').textContent = r?.converged? 'Relax converged':'Relax stopped'; }); };
-    document.getElementById('btnMD').onclick=()=>{ if (!viewerApi) return; viewerApi.mdStep(); document.getElementById('status').textContent=`MD T=${viewerApi.state.dynamics.temperature.toFixed(2)}`; };
-  document.getElementById('btnMDRun').onclick=()=>{ if(!viewerApi) return; document.getElementById('status').textContent='MD running'; viewerApi.startMDContinuous({}); };
-  document.getElementById('btnStopSim').onclick=()=>{ if(!viewerApi) return; viewerApi.stopSimulation(); document.getElementById('status').textContent='Stopped'; };
+  // Relax controls (step / run-toggle)
+  const relaxStepBtn = document.getElementById('btnRelax');
+  const relaxRunBtn = document.getElementById('btnRelaxRun');
+  let relaxRunning = false;
+  relaxStepBtn.onclick = async ()=>{ if(!viewerApi || relaxRunning) return; await viewerApi.relaxStep(); document.getElementById('status').textContent='Relax step'; };
+  relaxRunBtn.onclick = async ()=>{
+    if(!viewerApi) return;
+    if(!relaxRunning){
+      relaxRunning = true; relaxRunBtn.textContent='stop'; document.getElementById('status').textContent='Relax running';
+      viewerApi.startRelaxContinuous({}).then(r=>{ relaxRunning=false; relaxRunBtn.textContent='run'; document.getElementById('status').textContent = r?.converged? 'Relax converged':'Relax stopped'; });
+    } else {
+      viewerApi.stopSimulation(); relaxRunning=false; relaxRunBtn.textContent='run'; document.getElementById('status').textContent='Relax stopped';
+    }
+  };
+  // MD controls (step / run-toggle)
+  const mdStepBtn = document.getElementById('btnMD');
+  const mdRunBtn = document.getElementById('btnMDRun');
+  let mdRunning = false;
+  mdStepBtn.onclick = ()=>{ if(!viewerApi || mdRunning) return; viewerApi.mdStep(); document.getElementById('status').textContent=`MD step T=${viewerApi.state.dynamics.temperature.toFixed(1)}`; };
+  mdRunBtn.onclick = ()=>{
+    if(!viewerApi) return;
+    if(!mdRunning){
+      mdRunning = true; mdRunBtn.textContent='stop'; document.getElementById('status').textContent='MD running';
+      viewerApi.startMDContinuous({}).then(()=>{ mdRunning=false; mdRunBtn.textContent='run'; /* status updated by metrics loop */ });
+    } else {
+      viewerApi.stopSimulation(); mdRunning=false; mdRunBtn.textContent='run'; document.getElementById('status').textContent='MD stopped';
+    }
+  };
   document.getElementById('forceProviderSel').onchange = (e)=>{ if(!viewerApi) return; const kind=e.target.value; viewerApi.setForceProvider(kind); document.getElementById('status').textContent='Provider '+kind; };
 
   // Periodic metrics HUD updater
   setInterval(()=>{ if(!viewerApi) return; const m=viewerApi.getMetrics(); if(!m.running) return; const parts=[]; if(m.energy!=null) parts.push('E='+m.energy.toFixed(3)); if(m.maxForce!=null) parts.push('Fmax='+m.maxForce.toExponential(2)); if(m.maxStress!=null) parts.push('Smax='+m.maxStress.toExponential(2)); document.getElementById('status').textContent = (m.running||'idle')+' '+parts.join(' '); }, 500);
-    document.getElementById('btnRebonds').onclick=()=>{ if (!viewerApi) return; viewerApi.recomputeBonds(); document.getElementById('status').textContent='Recomputed bonds'; };
   document.getElementById('btnCell').onclick=()=>{ if(!viewerApi) return; (viewerApi.state.toggleCellVisibilityEnhanced||viewerApi.state.toggleCellVisibility).call(viewerApi.state); document.getElementById('status').textContent = viewerApi.state.showCell? 'Cell ON':'Cell OFF'; };
   document.getElementById('btnGhosts').onclick=()=>{ if(!viewerApi) return; viewerApi.state.toggleGhostCells(); document.getElementById('status').textContent = viewerApi.state.showGhostCells? 'Ghosts ON':'Ghosts OFF'; };
-  document.getElementById('btnResetEnergy').onclick=()=>{ if(!viewerApi) return; try { viewerApi.baselineEnergy?.(); document.getElementById('status').textContent='Energy reset'; } catch(e){ document.getElementById('status').textContent='Reset failed'; } };
   // Forces toggle (default ON)
   const btnForces = document.getElementById('btnToggleForces');
   btnForces.dataset.enabled = '1';

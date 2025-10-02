@@ -21,7 +21,8 @@ export async function createScene(canvas) {
       canvas.addEventListener('pointerdown', e => { scene.onPointerObservable.notify({ type: BABYLON.PointerEventTypes ? BABYLON.PointerEventTypes.POINTERDOWN : 1, event:e }); });
     }
   }
-  scene.clearColor = new BABYLON.Color4(0.02,0.02,0.03,1);
+  // Set background to white (desktop + baseline for XR background override)
+  scene.clearColor = new BABYLON.Color4(1,1,1,1);
   const camera = new BABYLON.ArcRotateCamera('cam', Math.PI/4, Math.PI/3, 25, new BABYLON.Vector3(0,0,0), scene);
   camera.attachControl(canvas, true);
   new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0,1,0), scene);
