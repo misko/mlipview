@@ -105,35 +105,53 @@
   // Relax controls (step / run-toggle)
   const relaxStepBtn = document.getElementById('btnRelax');
   const relaxRunBtn = document.getElementById('btnRelaxRun');
-  let relaxRunning = false;
-  relaxStepBtn.onclick = async ()=>{ if(!viewerApi || relaxRunning) return; await viewerApi.relaxStep(); document.getElementById('status').textContent='Relax step'; };
+  function isRelaxRunning(){ try { return !!(viewerApi && viewerApi.getMetrics().running === 'relax'); } catch { return false; } }
+  function applyRunningDisable(){
+    const runningKind = viewerApi && viewerApi.getMetrics().running;
+    const disabled = !!runningKind;
+    // Disable all four when anything running
+    // But only keep the active run button enabled (for stopping) when running
+    relaxStepBtn.disabled = disabled;
+    mdStepBtn.disabled = disabled;
+    relaxRunBtn.disabled = false; // toggling logic inside
+    mdRunBtn.disabled = false;
+    if(runningKind === 'relax'){
+      mdRunBtn.disabled = true; mdStepBtn.disabled = true;
+    } else if(runningKind === 'md') {
+      relaxRunBtn.disabled = true; relaxStepBtn.disabled = true;
+    }
+  }
+  relaxStepBtn.onclick = async ()=>{ if(!viewerApi || isRelaxRunning() || isMdRunning()) return; await viewerApi.relaxStep(); document.getElementById('status').textContent='Relax step'; };
   relaxRunBtn.onclick = async ()=>{
     if(!viewerApi) return;
-    if(!relaxRunning){
-      relaxRunning = true; relaxRunBtn.textContent='stop'; document.getElementById('status').textContent='Relax running';
-      viewerApi.startRelaxContinuous({}).then(r=>{ relaxRunning=false; relaxRunBtn.textContent='run'; document.getElementById('status').textContent = r?.converged? 'Relax converged':'Relax stopped'; });
+    if(!isRelaxRunning()){
+      relaxRunBtn.textContent='stop'; document.getElementById('status').textContent='Relax running';
+      applyRunningDisable();
+      viewerApi.startRelaxContinuous({ maxSteps:500 }).then(r=>{ relaxRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent = r?.converged? 'Relax converged':'Relax stopped'; });
     } else {
-      viewerApi.stopSimulation(); relaxRunning=false; relaxRunBtn.textContent='run'; document.getElementById('status').textContent='Relax stopped';
+      viewerApi.stopSimulation(); relaxRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='Relax stopped';
     }
   };
   // MD controls (step / run-toggle)
   const mdStepBtn = document.getElementById('btnMD');
   const mdRunBtn = document.getElementById('btnMDRun');
-  let mdRunning = false;
-  mdStepBtn.onclick = ()=>{ if(!viewerApi || mdRunning) return; viewerApi.mdStep(); document.getElementById('status').textContent=`MD step T=${viewerApi.state.dynamics.temperature.toFixed(1)}`; };
+  // Derive MD running state from viewerApi.getMetrics() so auto-start logic stays in sync.
+  function isMdRunning(){ try { return !!(viewerApi && viewerApi.getMetrics().running === 'md'); } catch { return false; } }
+  mdStepBtn.onclick = ()=>{ if(!viewerApi || isMdRunning() || isRelaxRunning()) return; viewerApi.mdStep(); document.getElementById('status').textContent=`MD step T=${viewerApi.state.dynamics.temperature.toFixed(1)}`; };
   mdRunBtn.onclick = ()=>{
     if(!viewerApi) return;
-    if(!mdRunning){
-      mdRunning = true; mdRunBtn.textContent='stop'; document.getElementById('status').textContent='MD running';
-      viewerApi.startMDContinuous({}).then(()=>{ mdRunning=false; mdRunBtn.textContent='run'; /* status updated by metrics loop */ });
+    if(!isMdRunning()){
+      mdRunBtn.textContent='stop'; document.getElementById('status').textContent='MD running';
+      applyRunningDisable();
+      viewerApi.startMDContinuous({ steps:500 }).then(()=>{ if(!isMdRunning()) { mdRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='MD stopped'; } });
     } else {
-      viewerApi.stopSimulation(); mdRunning=false; mdRunBtn.textContent='run'; document.getElementById('status').textContent='MD stopped';
+      viewerApi.stopSimulation(); mdRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='MD stopped';
     }
   };
   document.getElementById('forceProviderSel').onchange = (e)=>{ if(!viewerApi) return; const kind=e.target.value; viewerApi.setForceProvider(kind); document.getElementById('status').textContent='Provider '+kind; };
 
   // Periodic metrics HUD updater
-  setInterval(()=>{ if(!viewerApi) return; const m=viewerApi.getMetrics(); if(!m.running) return; const parts=[]; if(m.energy!=null) parts.push('E='+m.energy.toFixed(3)); if(m.maxForce!=null) parts.push('Fmax='+m.maxForce.toExponential(2)); if(m.maxStress!=null) parts.push('Smax='+m.maxStress.toExponential(2)); document.getElementById('status').textContent = (m.running||'idle')+' '+parts.join(' '); }, 500);
+  setInterval(()=>{ if(!viewerApi) return; const m=viewerApi.getMetrics(); applyRunningDisable(); if(!m.running) return; const parts=[]; if(m.energy!=null) parts.push('E='+m.energy.toFixed(3)); if(m.maxForce!=null) parts.push('Fmax='+m.maxForce.toExponential(2)); if(m.maxStress!=null) parts.push('Smax='+m.maxStress.toExponential(2)); document.getElementById('status').textContent = (m.running||'idle')+' '+parts.join(' '); }, 500);
   document.getElementById('btnCell').onclick=()=>{ if(!viewerApi) return; (viewerApi.state.toggleCellVisibilityEnhanced||viewerApi.state.toggleCellVisibility).call(viewerApi.state); document.getElementById('status').textContent = viewerApi.state.showCell? 'Cell ON':'Cell OFF'; };
   document.getElementById('btnGhosts').onclick=()=>{ if(!viewerApi) return; viewerApi.state.toggleGhostCells(); document.getElementById('status').textContent = viewerApi.state.showGhostCells? 'Ghosts ON':'Ghosts OFF'; };
   // Forces toggle (default ON)

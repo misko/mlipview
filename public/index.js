@@ -562,6 +562,38 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // Initial energy baseline (compute once to seed plot so first interaction can draw a segment)
   try { await baselineEnergy(); } catch(e) { /* ignore */ }
 
+  // --- Auto-start MD (optional) ---
+  // Requirement: Start continuous MD automatically after the very first successful energy/force
+  // acquisition (baselineEnergy above). We only run this in normal browser mode (not test mode)
+  // and allow users/tests to opt out via window.__MLIPVIEW_NO_AUTO_MD = true before init.
+  // We trigger via the public API so UI state (run/stop button text) can reflect the run.
+  try {
+    const autoOk = (typeof window !== 'undefined') && !window.__MLIPVIEW_TEST_MODE && !window.__MLIPVIEW_NO_AUTO_MD;
+    if (autoOk) {
+      // Defer a tick to allow index.html script (buttons & handlers) to finish wiring viewerApi
+      setTimeout(()=>{
+        try {
+          // Avoid starting if another loop already active
+            if(!window.viewerApi) return; // safety
+            const m = window.viewerApi.getMetrics();
+            if(m.running) return; // already running something
+            // Start MD with default parameters; UI interval/metrics loop will update status label.
+            window.viewerApi.startMDContinuous({}).then(()=>{
+              // When MD finishes naturally, UI code resets the button text; we could optionally log.
+              if (window.__MLIPVIEW_DEBUG_API) console.log('[autoMD] completed initial MD run');
+            });
+            // Update button text immediately if present to mimic user click path.
+            try {
+              const btn = document.getElementById && document.getElementById('btnMDRun');
+              if(btn){ btn.textContent = 'stop'; }
+              const statusEl = document.getElementById && document.getElementById('status');
+              if(statusEl){ statusEl.textContent = 'MD running'; }
+            } catch {}
+        } catch(e){ console.warn('[autoMD] start failed', e?.message||e); }
+      }, 0);
+    }
+  } catch(_e){ /* ignore auto start errors */ }
+
   // --- Render loop (critical for Babylon WebXR) ---
   // NOTE: WebXR integration in Babylon expects engine.runRenderLoop to own the frame pump so it can
   // swap to XR's requestAnimationFrame internally. Replacing it with a raw requestAnimationFrame can
