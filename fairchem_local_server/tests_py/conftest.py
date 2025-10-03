@@ -1,31 +1,37 @@
-import json
-import math
 import os
 import sys
 import time
 
-import httpx
 import pytest
-import ray
-from ase import Atoms
+import requests
+import torch
 from ase.io import read
+from fairchem.core import pretrained_mlip
+from fairchem.core.calculate.ase_calculator import FAIRChemCalculator
+from fairchem.core.units.mlip_unit import InferenceSettings
+from ray import serve
 
-# Ensure project root on sys.path (two levels up from this file)
+# --- Project path / PYTHONPATH ------------------------------------------------
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
-    # Also propagate PYTHONPATH so Ray worker processes (separate Python interpreters)
-    # can import the local package when unpickling deployment definitions.
+    # Ensure worker processes can import your package
     os.environ["PYTHONPATH"] = (
         PROJECT_ROOT + os.pathsep + os.environ.get("PYTHONPATH", "")
     )
 
-from fairchem_local_server.server import MDIn, RelaxIn, SimpleIn
+# Prefer importing models directly from your package
+from fairchem_local_server.model_runtime import MODEL_NAME, TASK_NAME
+from fairchem_local_server.models import (  # noqa: F401  (used by tests via import)
+    MDIn,
+    RelaxIn,
+    SimpleIn,
+)
 
+# --- Molecule fixtures --------------------------------------------------------
 DATA_DIR = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "..", "public", "molecules"
 )
-
 MOLECULE_FILES = {
     "water": "water.xyz",
     "benzene": "benzene.xyz",
@@ -33,82 +39,110 @@ MOLECULE_FILES = {
 }
 
 
-@pytest.fixture(scope="session")  # molecules
+@pytest.fixture(scope="session")
+def local_uma_calculator():
+    assert torch.cuda.is_available(), "UMA calculator fixture requires CUDA"
+    return FAIRChemCalculator(
+        pretrained_mlip.get_predict_unit(
+            MODEL_NAME,
+            device="cuda",
+        ),
+        task_name=TASK_NAME,
+    )
+
+
+@pytest.fixture(scope="session")
 def molecules():
     out = {}
     for name, fn in MOLECULE_FILES.items():
         path = os.path.abspath(os.path.join(DATA_DIR, fn))
-        atoms = read(path)
-        out[name] = atoms
+        out[name] = read(path)
     return out
 
 
-@pytest.fixture(scope="session")  # calculator
-def uma_calculator():
-    # Acquire calculator from cache for a typical composition (water)
-    read(os.path.join(DATA_DIR, "water.xyz"))  # warm IO path
-    # Single global calculator now
-    from fairchem_local_server import server as _server
+# --- Molecule fixtures --------------------------------------------------------
+DATA_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "..", "public", "molecules"
+)
+MOLECULE_FILES = {
+    "water": "water.xyz",
+    "benzene": "benzene.xyz",
+    "roy": "roy.xyz",
+}
 
-    return _server._CALCULATOR
+
+@pytest.fixture(scope="session")
+def molecules():
+    out = {}
+    for name, fn in MOLECULE_FILES.items():
+        path = os.path.abspath(os.path.join(DATA_DIR, fn))
+        out[name] = read(path)
+    return out
 
 
+# --- Debug print for device per test -----------------------------------------
 @pytest.fixture(autouse=True)
 def debug_device_capability():
-    """Print device diagnostics for each test to confirm CUDA vs CPU usage."""
-    import torch as _torch
+    import torch
 
-    from fairchem_local_server import server as _server
-
-    dev = "cuda" if _torch.cuda.is_available() else "cpu"
+    # DEVICE is defined in your model_runtime; this import is cheap and safe.
+    try:
+        from fairchem_local_server.model_runtime import DEVICE  # type: ignore
+    except Exception:
+        DEVICE = "unknown"
     print(
         "[TEST-DEVICE] cuda=%s UMA_DEVICE=%s srv=%s torch=%s"
         % (
-            _torch.cuda.is_available(),
+            torch.cuda.is_available(),
             os.environ.get("UMA_DEVICE"),
-            getattr(_server, "DEVICE", "n/a"),
-            dev,
+            DEVICE,
+            "cuda" if torch.cuda.is_available() else "cpu",
         )
     )
     yield
 
 
-@pytest.fixture(scope="session")  # ray serve
+# --- Ray Serve app (HTTP) bootstrap ------------------------------------------
+@pytest.fixture(scope="session")
 def ray_serve_app():
-    # Start ray serve deployment (imports serve_app.deploy)
-    import fairchem_local_server.serve_app as serve_app
+    """
+    Starts the Ray Serve application (HTTP ingress + UMA batched predictor) once
+    for the entire test session by calling serve_app.deploy().
 
-    if not ray.is_initialized():
-        # Keep PYTHONPATH; skip working_dir to avoid packaging venv
-        # Exclude common large dirs explicitly if Ray still attempts packaging.
-        ray.init(
-            include_dashboard=False,
-            ignore_reinit_error=True,
-            runtime_env={
-                # Avoid uploading virtualenv & large artifacts.
-                "excludes": [
-                    "mlipview_venv",
-                    "**/mlipview_venv/**",
-                    "**/.git/**",
-                    "**/__pycache__/**",
-                ],
-                "env_vars": {"PYTHONPATH": os.environ.get("PYTHONPATH", "")},
-            },
-        )
+    Returns the base URL for tests that hit HTTP endpoints.
+    """
+    os.environ["UMA_BATCH_MAX"] = "64"
+    os.environ["UMA_BATCH_WAIT_S"] = "0.05"  # 50 ms makes batching obvious in tests
+    # Ray is started implicitly by serve.run() in deploy(); no explicit ray.init needed.
+    from fairchem_local_server import serve_app  # your Serve-owns-HTTP entrypoint
+
+    base_url = "http://127.0.0.1:8000"  # serve_app.deploy() binds to this
+
+    # Deploy (idempotent across repeated calls)
     serve_app.deploy()
-    # Ray Serve default HTTP server binds to 8000 unless configured otherwise.
-    base_url = "http://127.0.0.1:8000"
-    # quick readiness probe
-    import time as _t
 
-    import requests
-
-    for _ in range(30):
+    # Probe readiness: /serve/health returns 200 when FastAPI ingress is live.
+    deadline = time.time() + 30.0
+    last_err = None
+    while time.time() < deadline:
         try:
-            r = requests.get(base_url + "/serve/relax")  # 405 means up
-            if r.status_code in (404, 405):
+            r = requests.get(base_url + "/serve/health", timeout=1.0)
+            if r.status_code == 200:
                 break
-        except Exception:
-            _t.sleep(0.2)
+            last_err = f"status={r.status_code}, text={r.text[:200]}"
+        except Exception as e:
+            last_err = str(e)
+        time.sleep(0.2)
+    else:
+        pytest.fail(f"Serve app did not become ready: {last_err}")
+
     yield base_url
-    ray.shutdown()
+
+    # Teardown: shut down Ray to free the HTTP port for subsequent sessions.
+    # (serve.shutdown() is implicit in ray.shutdown())
+    import ray
+
+    try:
+        ray.shutdown()
+    except Exception:
+        pass

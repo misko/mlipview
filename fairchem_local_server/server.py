@@ -2,11 +2,11 @@ from ase.io.jsonio import encode
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import md_step, relax, simple_calculate
-from .model_runtime import ensure_model_loaded, get_calculator, health_snapshot
+from .model_runtime import health_snapshot
 from .models import MDIn, MDResult, RelaxCalculatorName, RelaxIn, RelaxResult, SimpleIn
+from .services import md_step, relax, simple_calculate
 
-app = FastAPI(title="UMA-small ASE HTTP server (slim)")
+app = FastAPI(title="UMA-small ASE HTTP server (slim)", debug=True)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -47,22 +47,4 @@ __all__ = [
     "RelaxResult",
     "MDResult",
     "RelaxCalculatorName",
-    "_PREDICT_UNIT",
 ]
-
-
-class _PredictUnitProxy:
-    def __getattr__(self, item):
-        ensure_model_loaded()
-        from .model_runtime import _predict_unit as _pu  # type: ignore
-
-        return getattr(_pu, item)
-
-    def __call__(self):
-        ensure_model_loaded()
-        from .model_runtime import _predict_unit as _pu  # type: ignore
-
-        return _pu
-
-
-_PREDICT_UNIT = _PredictUnitProxy()

@@ -1,15 +1,7 @@
-"""Pure function API implementations (no FastAPI or Ray specifics).
-
-These functions:
-- Build ASE Atoms from request payloads
-- Attach the requested calculator (UMA via get_calculator() or LJ)
-- Perform the computation
-- Return Pydantic response models
-"""
+"""Pure service functions (no FastAPI / Ray specifics)."""
 
 from __future__ import annotations
 
-import os
 from typing import List
 
 from ase.calculators.lj import LennardJones
@@ -22,18 +14,16 @@ from .model_runtime import get_calculator
 from .models import MDIn, MDResult, RelaxCalculatorName, RelaxIn, RelaxResult, SimpleIn
 
 
-def _attach_calc(atoms, which: RelaxCalculatorName) -> None:
-    """Attach the requested calculator to an ASE Atoms instance."""
+def _attach_calc(atoms, which: RelaxCalculatorName):
     if which == RelaxCalculatorName.uma:
-        atoms.calc = get_calculator()  # backed by Ray Serve batched predictor
+        atoms.calc = get_calculator()
     elif which == RelaxCalculatorName.lj:
         atoms.calc = LennardJones(rc=3.0)
     else:  # pragma: no cover
-        raise HTTPException(status_code=400, detail=f"Unknown calculator: {which}")
+        raise HTTPException(status_code=400, detail="Unknown calculator")
 
 
-def simple_calculate(inp: SimpleIn) -> dict:
-    """Compute simple properties (energy/forces/stress) for a single snapshot."""
+def simple_calculate(inp: SimpleIn):
     atoms = build_atoms(
         inp.atomic_numbers,
         inp.coordinates,
@@ -42,24 +32,20 @@ def simple_calculate(inp: SimpleIn) -> dict:
         spin=inp.spin_multiplicity or 1,
     )
     _attach_calc(atoms, inp.calculator)
-
     props = tuple(inp.properties or ("energy", "forces"))
     results = compute_properties(atoms, props)
-
     log_event(
         "simple_calc",
         natoms=len(inp.atomic_numbers),
         props=list(props),
         stress=bool(results.get("stress") is not None),
     )
-    # Keep response shape stable for callers that expect {"results": {...}}
     return {"results": results}
 
 
 def relax(inp: RelaxIn) -> RelaxResult:
-    """Run a fixed-step BFGS relaxation and return energies, forces, etc."""
     if inp.steps <= 0:
-        raise HTTPException(status_code=400, detail="steps must be > 0")
+        raise HTTPException(status_code=400, detail="steps must be >0")
 
     atoms = build_atoms(
         inp.atomic_numbers,
@@ -71,7 +57,6 @@ def relax(inp: RelaxIn) -> RelaxResult:
     )
     _attach_calc(atoms, inp.calculator)
 
-    # Initial energy (helps surface calculator problems early)
     try:
         initial_energy = float(atoms.get_potential_energy())
     except Exception as ee:
@@ -79,27 +64,22 @@ def relax(inp: RelaxIn) -> RelaxResult:
 
     opt = _BFGS(atoms, logfile=None, maxstep=float(inp.max_step or 0.2))
 
+    trace_enabled = bool(inp.return_trace)
     trace: List[float] = []
     steps_completed = 0
+
     for step_idx in range(int(inp.steps)):
         try:
             opt.step()
             steps_completed += 1
-            if inp.return_trace:
+
+            if trace_enabled:
                 try:
                     trace.append(float(atoms.get_potential_energy()))
                 except Exception:
-                    # Keep trace aligned even if an intermediate query fails
+                    # Keep trace length consistent even on transient failures
                     trace.append(float("nan"))
-            if os.environ.get("RELAX_VERBOSE") == "1":  # optional debug
-                ene = float(atoms.get_potential_energy())
-                log_event(
-                    "relax_step",
-                    step=step_idx + 1,
-                    total=int(inp.steps),
-                    energy=ene,
-                    calc=inp.calculator,
-                )
+
         except Exception as ste:
             log_event("relax_step_error", step=step_idx + 1, error=str(ste))
             break
@@ -107,7 +87,7 @@ def relax(inp: RelaxIn) -> RelaxResult:
     final_energy = float(atoms.get_potential_energy())
     forces = atoms.get_forces().tolist()
     try:
-        stress = atoms.get_stress().tolist()  # type: ignore[assignment]
+        stress = atoms.get_stress().tolist()  # type: ignore
     except Exception:
         stress = None
 
@@ -117,7 +97,7 @@ def relax(inp: RelaxIn) -> RelaxResult:
         steps=steps_completed,
         initial=initial_energy,
         final=final_energy,
-        trace_len=len(trace),
+        trace_len=(len(trace) if trace_enabled else 0),
         calc=inp.calculator,
     )
 
@@ -129,14 +109,13 @@ def relax(inp: RelaxIn) -> RelaxResult:
         stress=stress,
         steps_completed=steps_completed,
         calculator=inp.calculator,
-        trace_energies=(trace if inp.return_trace else None),
+        trace_energies=(trace if trace_enabled else None),
     )
 
 
 def md_step(inp: MDIn) -> MDResult:
-    """Run Langevin MD for N steps and return the final state (and optional energy trace)."""
     if inp.steps <= 0:
-        raise HTTPException(status_code=400, detail="steps must be > 0")
+        raise HTTPException(status_code=400, detail="steps must be >0")
 
     atoms = build_atoms(
         inp.atomic_numbers,
@@ -180,7 +159,7 @@ def md_step(inp: MDIn) -> MDResult:
                 energies.append(float("nan"))
 
         new_pos = atoms.get_positions()
-        max_disp = np.sqrt(((new_pos - prev) ** 2).sum(axis=1)).max()
+        max_disp = float(np.sqrt(((new_pos - prev) ** 2).sum(axis=1)).max())
         if not np.isfinite(max_disp) or max_disp > 5.0:
             raise HTTPException(
                 status_code=500,
@@ -197,7 +176,7 @@ def md_step(inp: MDIn) -> MDResult:
     log_event(
         "md_done",
         natoms=len(inp.atomic_numbers),
-        steps=int(inp.steps),
+        steps=inp.steps,
         initial=initial_energy,
         final=final_energy,
         T=Tfinal,
