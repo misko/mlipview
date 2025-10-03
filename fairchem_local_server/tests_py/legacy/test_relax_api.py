@@ -8,8 +8,10 @@ from ase.io import read  # for loading ROY xyz
 from ase.optimize import BFGS
 from fastapi.testclient import TestClient
 
-from fairchem_local_server import \
-    server  # adjust to import via module path if package, else fallback
+from fairchem_local_server import (
+    server,
+)  # adjust to import via module path if package, else fallback
+from fairchem_local_server.model_runtime import get_calculator
 from fairchem_local_server.server import app
 
 try:
@@ -17,10 +19,12 @@ try:
 except Exception:  # pragma: no cover
     _LJ = None
 
+
 def LennardJonesCalculator():  # shim to match previous test usage
     if _LJ is None:
         raise RuntimeError("ASE LennardJones unavailable")
     return _LJ(rc=3.0)
+
 
 client = TestClient(app)
 
@@ -30,7 +34,11 @@ ENERGY_TOL = 1e-6  # direct vs API should be nearly identical
 POS_TOL = 1e-6
 
 # Extended test constants for ROY long relaxation
-ROY_STEPS = int(os.environ.get('MLIPVIEW_ROY_STEPS', '400')) if 'MLIPVIEW_ROY_STEPS' in os.environ else 400
+ROY_STEPS = (
+    int(os.environ.get("MLIPVIEW_ROY_STEPS", "400"))
+    if "MLIPVIEW_ROY_STEPS" in os.environ
+    else 400
+)
 ROY_INIT_ENERGY_ABS_TOL = 5e-3  # UMA model slight nondeterminism tolerance (initial)
 ROY_FINAL_ENERGY_ABS_TOL = 1e-2  # final energy tolerance after 400 steps
 
@@ -46,10 +54,12 @@ def load_roy_atoms():
     # Try ascending up to 5 levels to find 'public/molecules/roy.xyz'
     for up in range(1, 6):
         candidate_root = here.parents[up]
-        xyz_path = candidate_root / 'public' / 'molecules' / 'roy.xyz'
+        xyz_path = candidate_root / "public" / "molecules" / "roy.xyz"
         if xyz_path.is_file():
             return read(xyz_path)
-    raise FileNotFoundError("ROY xyz not found by ascending search from legacy test file")
+    raise FileNotFoundError(
+        "ROY xyz not found by ascending search from legacy test file"
+    )
 
 
 def run_direct_bfgs(atoms, steps: int, fmax_stop: float | None = None):
@@ -101,9 +111,7 @@ def test_relax_lj_water():
     atoms_cmp = molecule("H2O")
     atoms_cmp.calc = LennardJonesCalculator()
     energies_cmp, pos_cmp, _ = run_direct_bfgs(atoms_cmp, STEPS)
-    assert math.isclose(
-        data["final_energy"], energies_cmp[-1], rel_tol=0, abs_tol=1e-5
-    )
+    assert math.isclose(data["final_energy"], energies_cmp[-1], rel_tol=0, abs_tol=1e-5)
 
     # Position comparison
     for a, b in zip(data["positions"], pos_cmp):
@@ -116,7 +124,7 @@ def test_relax_uma_water():
     torch.manual_seed(0)
     atoms = molecule("H2O")
     # direct UMA relaxation
-    atoms.calc = server._CALCULATOR
+    atoms.calc = get_calculator()
     energies_direct, pos_direct, _ = run_direct_bfgs(atoms, STEPS)
 
     atoms2 = molecule("H2O")
@@ -132,12 +140,10 @@ def test_relax_uma_water():
 
     # initial energy
     atoms_init = molecule("H2O")
-    atoms_init.calc = server._CALCULATOR
+    atoms_init.calc = get_calculator()
     e0_direct = float(atoms_init.get_potential_energy())
     # Allow slightly looser tolerance (ML model nondeterminism / device differences)
-    assert math.isclose(
-        data["initial_energy"], e0_direct, rel_tol=0, abs_tol=5e-4
-    )
+    assert math.isclose(data["initial_energy"], e0_direct, rel_tol=0, abs_tol=5e-4)
 
     # final energy tolerance looser due to possible tiny nondeterminism
     assert math.isclose(
@@ -163,64 +169,80 @@ def test_relax_uma_roy_400_steps_energy():
     torch.manual_seed(0)
     atoms = load_roy_atoms()
     # obtain UMA calculator
-    atoms.calc = server._CALCULATOR
+    atoms.calc = get_calculator()
     # Direct BFGS (ROY_STEPS)
-    direct_energies, _pos_direct, _forces_direct = run_direct_bfgs(atoms, ROY_STEPS, fmax_stop=1e-3)
+    direct_energies, _pos_direct, _forces_direct = run_direct_bfgs(
+        atoms, ROY_STEPS, fmax_stop=1e-3
+    )
 
     # Fresh atoms for initial energy (direct) reference
     atoms_init = load_roy_atoms()
-    atoms_init.calc = server._CALCULATOR
+    atoms_init.calc = get_calculator()
     e0_direct = float(atoms_init.get_potential_energy())
 
     # Build API payload (fresh geometry so starting coordinates match API expectation)
     atoms_api = load_roy_atoms()
     payload = {
-        'atomic_numbers': atoms_api.get_atomic_numbers().tolist(),
-        'coordinates': atoms_api.get_positions().tolist(),
-        'steps': ROY_STEPS,
-        'calculator': 'uma'
+        "atomic_numbers": atoms_api.get_atomic_numbers().tolist(),
+        "coordinates": atoms_api.get_positions().tolist(),
+        "steps": ROY_STEPS,
+        "calculator": "uma",
     }
-    resp = client.post('/relax', json=payload)
+    resp = client.post("/relax", json=payload)
     assert resp.status_code == 200, resp.text
     data = resp.json()
 
     # Initial energy parity (allow modest absolute tolerance)
-    assert math.isclose(data['initial_energy'], e0_direct, rel_tol=0, abs_tol=ROY_INIT_ENERGY_ABS_TOL), (
-        f"ROY initial energy mismatch: api={data['initial_energy']}, direct={e0_direct}" )
+    assert math.isclose(
+        data["initial_energy"], e0_direct, rel_tol=0, abs_tol=ROY_INIT_ENERGY_ABS_TOL
+    ), f"ROY initial energy mismatch: api={data['initial_energy']}, direct={e0_direct}"
 
     # Final energy parity (looser abs tolerance; relative tolerance tiny due to magnitude)
-    api_final = data['final_energy']
+    api_final = data["final_energy"]
     direct_final = direct_energies[-1]
-    assert math.isclose(api_final, direct_final, rel_tol=1e-5, abs_tol=ROY_FINAL_ENERGY_ABS_TOL), (
-        f"ROY final energy mismatch: api={api_final}, direct={direct_final}" )
+    assert math.isclose(
+        api_final, direct_final, rel_tol=1e-5, abs_tol=ROY_FINAL_ENERGY_ABS_TOL
+    ), f"ROY final energy mismatch: api={api_final}, direct={direct_final}"
 
     # --- Sequential 1-step API sampling to obtain per-step energy trace ---
     # Rebuild fresh atoms for stepwise sequence so that initial geometry matches again.
     step_atoms = load_roy_atoms()
     seq_payload_base = {
-        'atomic_numbers': step_atoms.get_atomic_numbers().tolist(),
-        'calculator': 'uma',
-        'steps': 1
+        "atomic_numbers": step_atoms.get_atomic_numbers().tolist(),
+        "calculator": "uma",
+        "steps": 1,
     }
     step_positions = step_atoms.get_positions().tolist()
     api_step_energies = []
     # initial single-point energy via simple_calculate (optional) omitted; we rely on first relax step call's initial_energy
-    for i in range(min(ROY_STEPS, 120)):  # cap trace length for runtime if ROY_STEPS huge
-        seq_payload_base['coordinates'] = step_positions
-        r = client.post('/relax', json=seq_payload_base)
+    for i in range(
+        min(ROY_STEPS, 120)
+    ):  # cap trace length for runtime if ROY_STEPS huge
+        seq_payload_base["coordinates"] = step_positions
+        r = client.post("/relax", json=seq_payload_base)
         assert r.status_code == 200, f"step {i} status {r.status_code} body={r.text}"
         jd = r.json()
-        api_step_energies.append(jd['final_energy'])
-        step_positions = jd['positions']
+        api_step_energies.append(jd["final_energy"])
+        step_positions = jd["positions"]
     # Print energies for external inspection (pytest -s)
-    print('\nROY_API_STEP_ENERGIES', api_step_energies)
-    print('ROY_DIRECT_FINAL', direct_final, 'ROY_API_AGG_FINAL', api_final, 'SEQ_LEN', len(api_step_energies))
+    print("\nROY_API_STEP_ENERGIES", api_step_energies)
+    print(
+        "ROY_DIRECT_FINAL",
+        direct_final,
+        "ROY_API_AGG_FINAL",
+        api_final,
+        "SEQ_LEN",
+        len(api_step_energies),
+    )
 
     # Basic oscillation / monotonicity heuristic: count sign of successive diffs
     if len(api_step_energies) > 2:
-        diffs = [api_step_energies[i+1]-api_step_energies[i] for i in range(len(api_step_energies)-1)]
-        up = sum(1 for d in diffs if d>0)
-        down = sum(1 for d in diffs if d<0)
+        diffs = [
+            api_step_energies[i + 1] - api_step_energies[i]
+            for i in range(len(api_step_energies) - 1)
+        ]
+        up = sum(1 for d in diffs if d > 0)
+        down = sum(1 for d in diffs if d < 0)
         print(f"ROY_API_TRACE_DIFFS up={up} down={down} totalSteps={len(diffs)}")
 
     # (Future extension) Force / position parity: once baseline established we can compare
@@ -237,27 +259,27 @@ def test_relax_uma_water_bfgs_linesearch_trace():
     torch.manual_seed(0)
     atoms = molecule("H2O")
     payload = {
-        'atomic_numbers': atoms.get_atomic_numbers().tolist(),
-        'coordinates': atoms.get_positions().tolist(),
-        'steps': 5,
-        'calculator': 'uma',
-    'optimizer': 'bfgs',  # adjusted: server now only implements plain BFGS
-        'optimizer_params': { 'maxstep': 0.15 },
-        'return_trace': True,
-        'fmax': 0.0
+        "atomic_numbers": atoms.get_atomic_numbers().tolist(),
+        "coordinates": atoms.get_positions().tolist(),
+        "steps": 5,
+        "calculator": "uma",
+        "optimizer": "bfgs",  # adjusted: server now only implements plain BFGS
+        "optimizer_params": {"maxstep": 0.15},
+        "return_trace": True,
+        "fmax": 0.0,
     }
-    resp = client.post('/relax', json=payload)
+    resp = client.post("/relax", json=payload)
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert 'trace_energies' in data and data['trace_energies'] is not None
-    trace = data['trace_energies']
+    assert "trace_energies" in data and data["trace_energies"] is not None
+    trace = data["trace_energies"]
     # steps_completed may be < requested if an internal failure (should not) or early stop; we disabled early stop with fmax=0.0
-    assert len(trace) == data['steps_completed']
-    assert 1 <= data['steps_completed'] <= 5
+    assert len(trace) == data["steps_completed"]
+    assert 1 <= data["steps_completed"] <= 5
     for e in trace:
         assert isinstance(e, (float, int))
     # Sanity: energy numeric and negative (model typical)
-    assert data['initial_energy'] < 0 and data['final_energy'] < 0
+    assert data["initial_energy"] < 0 and data["final_energy"] < 0
 
 
 def test_relax_uma_roy_400_steps_bfgs_linesearch_trace():
@@ -270,27 +292,33 @@ def test_relax_uma_roy_400_steps_bfgs_linesearch_trace():
     steps = ROY_STEPS
     atoms_api = load_roy_atoms()
     payload = {
-        'atomic_numbers': atoms_api.get_atomic_numbers().tolist(),
-        'coordinates': atoms_api.get_positions().tolist(),
-        'steps': steps,
-        'calculator': 'uma',
-    'optimizer': 'bfgs',  # adjusted: server now only implements plain BFGS
-        'optimizer_params': { 'maxstep': 0.15 },
-        'return_trace': True,
-        'fmax': 0.0
+        "atomic_numbers": atoms_api.get_atomic_numbers().tolist(),
+        "coordinates": atoms_api.get_positions().tolist(),
+        "steps": steps,
+        "calculator": "uma",
+        "optimizer": "bfgs",  # adjusted: server now only implements plain BFGS
+        "optimizer_params": {"maxstep": 0.15},
+        "return_trace": True,
+        "fmax": 0.0,
     }
-    resp = client.post('/relax', json=payload)
+    resp = client.post("/relax", json=payload)
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    trace = data.get('trace_energies') or []
-    print(f"ROY_LS_TRACE_LEN {len(trace)} steps_completed {data['steps_completed']} requested {steps}")
+    trace = data.get("trace_energies") or []
+    print(
+        f"ROY_LS_TRACE_LEN {len(trace)} steps_completed {data['steps_completed']} requested {steps}"
+    )
     if trace:
-        diffs = [trace[i+1]-trace[i] for i in range(len(trace)-1)]
-        up = sum(1 for d in diffs if d>0)
-        down = sum(1 for d in diffs if d<0)
-        print(f"ROY_LS_TRACE_DIFFS up={up} down={down} total={len(diffs)} firstE={trace[0]} lastE={trace[-1]}")
+        diffs = [trace[i + 1] - trace[i] for i in range(len(trace) - 1)]
+        up = sum(1 for d in diffs if d > 0)
+        down = sum(1 for d in diffs if d < 0)
+        print(
+            f"ROY_LS_TRACE_DIFFS up={up} down={down} total={len(diffs)} firstE={trace[0]} lastE={trace[-1]}"
+        )
         # Heuristic: expect fewer sign flips ratio vs vanilla BFGS (not enforcing yet)
         # We only assert basic sanity to avoid flakiness.
-        assert len(trace) == data['steps_completed']
-        assert data['steps_completed'] <= steps
-        assert isinstance(trace[0], (float,int)) and isinstance(trace[-1], (float,int))
+        assert len(trace) == data["steps_completed"]
+        assert data["steps_completed"] <= steps
+        assert isinstance(trace[0], (float, int)) and isinstance(
+            trace[-1], (float, int)
+        )

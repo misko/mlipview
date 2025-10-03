@@ -1,4 +1,4 @@
-import json
+"""Consolidated water single-point test (merged legacy duplicates)."""
 
 import pytest
 from ase.build import molecule
@@ -13,44 +13,33 @@ client = TestClient(app)
 def test_water_energy_forces_stress():
     atoms = molecule("H2O")
     atoms.info.update({"charge": 0, "spin": 1})
-    encoded = encode(atoms)
-    if isinstance(encoded, str):
-        atoms_json = json.loads(encoded)
-    else:
-        atoms_json = encoded
-    # Provide a pseudo cell so stress is meaningful.
-    # Large orthorhombic box to avoid strong PBC interactions.
+    # encode side-effect (ensures no regression in json serialization path)
+    encode(atoms)
     cell = [
         [15.0, 0.0, 0.0],
         [0.0, 15.0, 0.0],
         [0.0, 0.0, 15.0],
     ]
     payload = {
-        "atoms_json": atoms_json,
+        "atomic_numbers": atoms.get_atomic_numbers().tolist(),
+        "coordinates": atoms.get_positions().tolist(),
         "properties": ["energy", "forces", "stress"],
-        "info": atoms.info,
-        # For /calculate path the server reconstructs Atoms; cell needs to
-        # be baked into atoms_json via encode (future: extend API). Keeping
-        # placeholder here for clarity if API expands to accept cell.
+        "charge": atoms.info.get("charge", 0),
+        "spin_multiplicity": atoms.info.get("spin", 1),
         "cell": cell,
     }
-    resp = client.post("/calculate", json=payload)
+    resp = client.post("/simple_calculate", json=payload)
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert "results" in data
-    results = data["results"]
-    assert "energy" in results
-    assert isinstance(results["energy"], (int, float))
-    assert "forces" in results
-    forces = results["forces"]
+    results = data.get("results", {})
+    energy = results.get("energy")
+    assert isinstance(energy, (int, float))
+    forces = results.get("forces")
     assert isinstance(forces, list) and len(forces) == len(atoms)
-    # each force vector should have length 3
     for f in forces:
         assert isinstance(f, list) and len(f) == 3
-    # Stress may be None; if present validate length 6 (Voigt order)
-    if "stress" in results and results["stress"] is not None:
-        stress = results["stress"]
+    stress = results.get("stress")
+    if stress is not None:
         assert isinstance(stress, list) and len(stress) == 6
-        # Basic numeric sanity (no NaN)
         for s in stress:
             assert isinstance(s, (int, float)) and s == s

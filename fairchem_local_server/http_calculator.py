@@ -1,12 +1,12 @@
 import json
 import os
-from typing import Any, Optional, Sequence
+from typing import Optional
 
 import requests
 from ase.calculators.calculator import CalculationFailed, Calculator, all_changes
 from ase.io.jsonio import encode
 
-#FAIRCHEM_SERVER_URL = os.environ.get("FAIRCHEM_SERVER_URL", "http://127.0.0.1:8000")
+# Default server URL (override with FAIRCHEM_SERVER_URL env var)
 FAIRCHEM_SERVER_URL = os.environ.get("FAIRCHEM_SERVER_URL", "http://nanoview.net:8000")
 
 
@@ -18,7 +18,9 @@ class FairChemHTTP(Calculator):
         self.url = url or FAIRCHEM_SERVER_URL
         self.timeout = timeout
 
-    def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):  # type: ignore[override]
+    def calculate(
+        self, atoms=None, properties=("energy",), system_changes=all_changes
+    ):  # type: ignore[override]
         Calculator.calculate(self, atoms, properties, system_changes)
         if atoms is None:
             raise CalculationFailed("No atoms provided")
@@ -34,15 +36,20 @@ class FairChemHTTP(Calculator):
             "info": atoms.info or {},
         }
         try:
+            # Updated endpoint name after refactor (/calculate removed)
             resp = requests.post(
-                f"{self.url}/calculate", json=payload, timeout=self.timeout
+                f"{self.url}/simple_calculate",
+                json=payload,
+                timeout=self.timeout,
             )
         except requests.RequestException as e:  # pragma: no cover
             raise CalculationFailed(f"HTTP request failed: {e}")
         if resp.status_code != 200:
             raise CalculationFailed(f"Server error {resp.status_code}: {resp.text}")
         data = resp.json()
-        results = data.get("results", {})
+        # New API returns energy/forces/stress at top-level keys
+        # but still guard for legacy nested structure
+        results = data.get("results") or data
         energy = results.get("energy")
         if energy is not None:
             self.results["energy"] = float(energy)

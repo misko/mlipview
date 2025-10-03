@@ -3,16 +3,24 @@
 Exposes key server objects for tests and external imports.
 """
 
-from .server import (MDIn, MDResult, RelaxCalculatorName,  # noqa: F401
-                     RelaxIn, RelaxResult, SimpleIn, app, encode)
+from .models import RelaxCalculatorName  # noqa: F401
+from .server import (
+    MDIn,
+    MDResult,
+    RelaxIn,
+    RelaxResult,  # noqa: F401
+    SimpleIn,
+    app,
+    encode,
+)
 
 __all__ = [
-	'app',
-	'encode',
-	'RelaxCalculatorName',
-	'RelaxIn',
-	'RelaxResult',
-	'MDIn',
-	'MDResult',
-	'SimpleIn',
+    "app",
+    "encode",
+    "RelaxCalculatorName",
+    "RelaxIn",
+    "RelaxResult",
+    "MDIn",
+    "MDResult",
+    "SimpleIn",
 ]

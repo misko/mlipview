@@ -1,8 +1,10 @@
 fastapi
 uvicorn
 pytest
+pytest-timeout
 httpx
 ray[serve]
 ase
 torch
 fairchem-core
+python-multipart
