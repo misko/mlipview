@@ -292,3 +292,6 @@ Response excerpt:
 ```
 
 Use this when orchestrating single-step loops client-side to cut latency and redundant model evaluations.
+
+### Frontend Automatic Precomputed Injection
+The viewer now automatically attaches a `precomputed` block (energy, forces, stress) to `/serve/relax` and `/serve/md` requests when a fresh force cache is available for the current geometry. This avoids an initial backend calculator call for single-step operations. The cache is invalidated on any user geometry edit (drag, bond rotation, etc.). No user action is required—this is transparent and logged via `[API][relax][precomputed-attach]` or `[API][md][precomputed-attach]` debug messages when API debug is enabled.

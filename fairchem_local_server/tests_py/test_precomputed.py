@@ -1,11 +1,12 @@
 import math
+
 from fairchem_local_server.models import (
-    RelaxIn,
     MDIn,
-    RelaxCalculatorName,
     PrecomputedValues,
+    RelaxCalculatorName,
+    RelaxIn,
 )
-from fairchem_local_server.services import relax, md_step
+from fairchem_local_server.services import md_step, relax
 
 # Lightweight tests using LJ calculator so no UMA / Ray dependency
 
@@ -96,9 +97,15 @@ def test_relax_precomputed_stress_voigt():
 def test_relax_precomputed_stress_matrix():
     # 3x3 row-major flattened matrix -> convert to Voigt
     matrix = [
-        1.0, 2.0, 3.0,
-        4.0, 5.0, 6.0,
-        7.0, 8.0, 9.0,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
     ]
     res = relax(
         RelaxIn(

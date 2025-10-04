@@ -3,7 +3,6 @@ import time
 from fastapi import FastAPI
 from ray import serve
 
-from .api import md_step, relax, simple_calculate
 from .model_runtime import (
     MODEL_NAME,
     TASK_NAME,
@@ -12,8 +11,9 @@ from .model_runtime import (
     install_predict_handle,
 )
 from .models import MDIn, RelaxIn, SimpleIn
+from .services import md_step, relax, simple_calculate
 
-app = FastAPI(title="UMA Serve API")
+app = FastAPI(title="UMA Serve API", debug=True)
 
 
 @serve.deployment(ray_actor_options={"num_gpus": 0})

@@ -109,6 +109,7 @@ class BatchedPredictUnit:
         self.device = "cuda"
 
     def predict(self, *args, **kwargs):
+        # print("RUNNING INFERENCE", flush=True)
         # NOTE: This is called from sync code (e.g., FastAPI sync handler running
         # in a thread pool). DeploymentResponse.result() is safe in that context.
         resp = self._handle.predict.remote((args, kwargs))  # type: ignore[attr-defined]

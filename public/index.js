@@ -199,6 +199,20 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     return lastForceResult;
   }
   const ff = { computeForces: ({ sync }={})=>{ if(sync) return fetchRemoteForces({ awaitResult:true }); if(!inFlight) fetchRemoteForces(); return lastForceResult; } };
+
+  // Helper: construct precomputed object if force cache is fresh and matches structure
+  function buildPrecomputedIfFresh(){
+    const fc = state.forceCache;
+    if(!fc || fc.stale) return null;
+    if(fc.version !== structureVersion) return null;
+    const n = state.elements.length;
+    if(!Array.isArray(fc.forces) || fc.forces.length !== n) return null;
+    if(!Number.isFinite(fc.energy)) return null;
+    const pre = { energy: fc.energy, forces: fc.forces };
+    if (fc.stress && Array.isArray(fc.stress) && fc.stress.length === 6) pre.stress = fc.stress;
+    return pre;
+  }
+
   const dynamics = { stepMD: ()=>{}, stepRelax: ({ forceFn })=>{ forceFn(); } };
   // Remote relaxation: call backend /relax
   async function callRelaxEndpoint(steps=1){
@@ -206,6 +220,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const pos = state.positions.map(p=>[p.x,p.y,p.z]);
   const atomic_numbers = state.elements.map(e=> elementToZ(e));
   const body = { atomic_numbers, coordinates: pos, steps, calculator:'uma' };
+  const maybePre = buildPrecomputedIfFresh();
+  if(maybePre){ body.precomputed = maybePre; debugApi('relax','precomputed-attach',{ seq: __apiSeq+1, keys:Object.keys(maybePre) }); }
   const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion;
     const base = __resolveApiBase();
     const ep = getEndpointSync('relax');
@@ -311,6 +327,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const pos = state.positions.map(p=>[p.x,p.y,p.z]);
     const atomic_numbers = state.elements.map(e=> elementToZ(e));
   const body = { atomic_numbers, coordinates: pos, steps, temperature, timestep_fs, friction, calculator };
+  const maybePre = buildPrecomputedIfFresh();
+  if(maybePre){ body.precomputed = maybePre; debugApi('md','precomputed-attach',{ seq: __apiSeq+1, keys:Object.keys(maybePre) }); }
   const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion;
     const base = __resolveApiBase();
     const ep = getEndpointSync('md');

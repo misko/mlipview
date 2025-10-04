@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import List
 
 from ase.calculators.lj import LennardJones
@@ -14,11 +15,11 @@ from .model_runtime import get_calculator
 from .models import (
     MDIn,
     MDResult,
+    PrecomputedValues,
     RelaxCalculatorName,
     RelaxIn,
     RelaxResult,
     SimpleIn,
-    PrecomputedValues,
 )
 
 
@@ -69,6 +70,8 @@ def relax(inp: RelaxIn) -> RelaxResult:
     pre_applied: list[str] = _maybe_apply_precomputed(
         atoms, inp.precomputed, len(inp.atomic_numbers)
     )
+    atoms.get_potential_energy()
+    atoms.get_potential_energy()
 
     # If energy was precomputed we already placed it in calc.results; avoid
     # triggering a fresh calculation just to read it again.
@@ -78,9 +81,7 @@ def relax(inp: RelaxIn) -> RelaxResult:
         try:
             initial_energy = float(atoms.get_potential_energy())
         except Exception as ee:
-            raise HTTPException(
-                status_code=500, detail=f"Initial energy failed: {ee}"
-            )
+            raise HTTPException(status_code=500, detail=f"Initial energy failed: {ee}")
 
     opt = _BFGS(atoms, logfile=None, maxstep=float(inp.max_step or 0.2))
 
@@ -88,7 +89,7 @@ def relax(inp: RelaxIn) -> RelaxResult:
     trace: List[float] = []
     steps_completed = 0
 
-    for step_idx in range(int(inp.steps)):
+    for step_idx in range(min(10, int(inp.steps))):
         try:
             opt.step()
             steps_completed += 1
@@ -167,9 +168,7 @@ def md_step(inp: MDIn) -> MDResult:
         try:
             initial_energy = float(atoms.get_potential_energy())
         except Exception as ee:
-            raise HTTPException(
-                status_code=500, detail=f"Initial energy failed: {ee}"
-            )
+            raise HTTPException(status_code=500, detail=f"Initial energy failed: {ee}")
 
     dyn = Langevin(
         atoms,
@@ -195,9 +194,7 @@ def md_step(inp: MDIn) -> MDResult:
         if not np.isfinite(max_disp) or max_disp > 5.0:
             raise HTTPException(
                 status_code=500,
-                detail=(
-                    f"MD instability detected (max step disp {max_disp:.2f} Å)"
-                ),
+                detail=(f"MD instability detected (max step disp {max_disp:.2f} Å)"),
             )
         prev[:] = new_pos
 
@@ -254,9 +251,7 @@ def _maybe_apply_precomputed(
     if pre.energy is not None:
         e = float(pre.energy)
         if not np.isfinite(e):
-            raise HTTPException(
-                status_code=400, detail="precomputed.energy not finite"
-            )
+            raise HTTPException(status_code=400, detail="precomputed.energy not finite")
         calc.results["energy"] = e
         calc.results["free_energy"] = e
         applied.append("energy")
@@ -273,6 +268,7 @@ def _maybe_apply_precomputed(
             )
         calc.results["forces"] = f
         applied.append("forces")
+        calc.atoms = atoms.copy()
 
     if pre.stress is not None:
         s = np.array(pre.stress, dtype=float)
