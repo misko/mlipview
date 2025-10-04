@@ -97,9 +97,17 @@ export function createManipulationService(molState, { bondService } = {}) {
     const side = sideOverride || orientationToSide(orientation); // 'i' or 'j'
     const anchor = side === 'i' ? j : i; // rotate the opposite side around anchor->moving axis
     const movingRoot = side === 'i' ? i : j; // starting atom of moving side
-    // Build adjacency
+    // Build adjacency with opacity filtering: exclude "soft" bonds from rigid rotation graph.
+    // Bonds with opacity below threshold are considered visually/structurally weak and do not propagate rotation.
+    const ROTATION_BOND_OPACITY_MIN = 0.85; // Tunable: strong bonds typically near 1.0; soft/crossing ~0.5.
     const adj = Array.from({ length: molState.positions.length }, () => []);
-    for (const b of molState.bonds) { adj[b.i].push(b.j); adj[b.j].push(b.i); }
+    for (const b of molState.bonds) {
+      const op = (b.opacity == null) ? 1 : b.opacity;
+      const isSelectedBond = ( (b.i===i && b.j===j) || (b.i===j && b.j===i) );
+      if (isSelectedBond || op >= ROTATION_BOND_OPACITY_MIN) {
+        adj[b.i].push(b.j); adj[b.j].push(b.i);
+      }
+    }
     // Collect side atoms via BFS starting at movingRoot but do not cross the anchor
     const sideAtoms = [];
     const queue=[movingRoot];
@@ -127,6 +135,8 @@ export function createManipulationService(molState, { bondService } = {}) {
       p.x = pAnchor.x + rx; p.y = pAnchor.y + ry; p.z = pAnchor.z + rz;
     }
     for (const idx of sideAtoms) rotatePoint(molState.positions[idx]);
+    // Capture debug info for tests (non-enumerable risk minimal here)
+    lastRotationDebug = { anchor, movingRoot, sideAtoms:[...sideAtoms] };
     molState.markPositionsChanged();
     if (bondService && typeof bondService.recomputeAndStore === 'function') {
       bondService.recomputeAndStore();
@@ -134,6 +144,10 @@ export function createManipulationService(molState, { bondService } = {}) {
     return true;
   }
   // Lightweight debug accessor (non-intrusive) for tests.
-  const _debug = { getDragState: () => dragState ? { ...dragState, planeNormal: { ...dragState.planeNormal }, planePoint: { ...dragState.planePoint }, grabOffset: { ...dragState.grabOffset } } : null };
+  let lastRotationDebug = null;
+  const _debug = { 
+    getDragState: () => dragState ? { ...dragState, planeNormal: { ...dragState.planeNormal }, planePoint: { ...dragState.planePoint }, grabOffset: { ...dragState.grabOffset } } : null,
+    getLastRotation: () => lastRotationDebug ? { ...lastRotationDebug, sideAtoms:[...lastRotationDebug.sideAtoms] } : null
+  };
   return { beginDrag, updateDrag, endDrag, setDragPlane, rotateBond, _debug };
 }
