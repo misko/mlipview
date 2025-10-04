@@ -251,3 +251,44 @@ These changes are non-breaking for programmatic APIs; only the HUD markup and in
 ## License
 
 See repository root for license information.
+
+### Precomputed Results Injection (Server Optimization)
+
+Clients that already possess MLIP (or other calculator) results for the *initial* geometry can now avoid the first backend compute by supplying a `precomputed` object in `/relax` or `/md` requests.
+
+Example:
+```json
+{
+  "atomic_numbers": [8,1,1],
+  "coordinates": [[0,0,0],[0.9575,0,0],[-0.2399872,0.92662721,0]],
+  "steps": 1,
+  "calculator": "lj",
+  "precomputed": {
+    "energy": -14.12345,
+    "forces": [[0,0,0],[0,0,0],[0,0,0]],
+    "stress": [0.1,0.2,0.3,0.01,0.02,0.03]
+  }
+}
+```
+
+Details:
+* All fields optional; supply any subset of `energy`, `forces`, `stress`.
+* `stress` may be Voigt length-6 `[xx, yy, zz, yz, xz, xy]` or flattened 3x3 length-9 row‑major (auto-converted to Voigt order).
+* Provided `energy` becomes `initial_energy` (skips first calculator evaluation). If only forces are provided an energy compute still occurs when needed.
+* Response includes `precomputed_applied` listing which items were injected.
+* Subsequent relax/MD steps always recompute using the attached calculator.
+* Non-finite or shape-mismatched inputs return HTTP 400.
+
+Response excerpt:
+```json
+{
+  "initial_energy": -14.12345,
+  "final_energy": -14.13001,
+  "forces": [[...],[...],[...]],
+  "steps_completed": 1,
+  "calculator": "lj",
+  "precomputed_applied": ["energy","forces","stress"]
+}
+```
+
+Use this when orchestrating single-step loops client-side to cut latency and redundant model evaluations.

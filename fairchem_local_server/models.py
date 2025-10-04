@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 
 
 class RelaxCalculatorName(str, Enum):
@@ -41,6 +41,7 @@ class RelaxIn(BaseModel):
     optimizer: Optional[str] = "bfgs"
     optimizer_params: Optional[Dict[str, Any]] = None
     return_trace: bool = False
+    precomputed: Optional["PrecomputedValues"] = None
 
 
 class RelaxResult(BaseModel):
@@ -52,6 +53,7 @@ class RelaxResult(BaseModel):
     steps_completed: int
     calculator: RelaxCalculatorName
     trace_energies: Optional[List[float]] = None
+    precomputed_applied: Optional[List[str]] = None
 
 
 class MDIn(BaseModel):
@@ -67,6 +69,7 @@ class MDIn(BaseModel):
     charge: Optional[int] = 0
     spin_multiplicity: Optional[int] = 1
     return_trajectory: bool = False
+    precomputed: Optional["PrecomputedValues"] = None
 
 
 class MDResult(BaseModel):
@@ -79,6 +82,38 @@ class MDResult(BaseModel):
     temperature: float
     energies: Optional[List[float]] = None
     calculator: RelaxCalculatorName
+    precomputed_applied: Optional[List[str]] = None
+
+
+class PrecomputedValues(BaseModel):
+    """Optional precomputed results a client can supply to skip first calc.
+
+    energy: potential energy (eV)
+    forces: N x 3 forces (eV/Å)
+    stress: Voigt 6-vector (eV/Å^3) consistent with ASE ordering
+            [xx, yy, zz, yz, xz, xy]. We also accept length-9 (3x3 row-major)
+            and convert to Voigt ordering.
+    """
+
+    energy: Optional[float] = None
+    forces: Optional[List[List[float]]] = None
+    stress: Optional[List[float]] = None
+
+    @validator("forces")
+    def _validate_forces(cls, v):  # type: ignore
+        if v is None:
+            return v
+        if not all(len(row) == 3 for row in v):
+            raise ValueError("forces must be a list of [x,y,z] vectors")
+        return v
+
+    @validator("stress")
+    def _validate_stress(cls, v):  # type: ignore
+        if v is None:
+            return v
+        if len(v) not in (6, 9):
+            raise ValueError("stress must have length 6 (Voigt) or 9 (matrix)")
+        return v
 
 
 __all__ = [
@@ -88,4 +123,5 @@ __all__ = [
     "RelaxResult",
     "MDIn",
     "MDResult",
+    "PrecomputedValues",
 ]

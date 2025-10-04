@@ -114,6 +114,21 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // Versioned force cache: state.forceCache = { version, energy, forces, stress, stale }
   state.forceCache = { version:0, energy:NaN, forces:[], stress:null, stale:true };
   let structureVersion = 0; // increments when positions (or elements) change
+  // Version counters:
+  // userInteractionVersion: increments ONLY on user geometry edits (drag, bond rotate, debounced posChange)
+  // totalInteractionVersion: increments on user edits AND accepted simulation (relax/md) steps.
+  let userInteractionVersion = 0;
+  let totalInteractionVersion = 0;
+  function bumpUserInteractionVersion(reason){
+    userInteractionVersion++; totalInteractionVersion++; structureVersion++;
+    if(state.forceCache) state.forceCache.stale = true;
+    if(window.__MLIPVIEW_DEBUG_API) console.debug('[version][user]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
+  }
+  function bumpSimulationVersion(reason){
+    // Simulation application affects totalInteractionVersion but structureVersion already bumped via markPositionsChanged.
+    totalInteractionVersion++;
+    if(window.__MLIPVIEW_DEBUG_API) console.debug('[version][sim]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
+  }
   function __updateForces(forces, { reason }={}) {
     const DBG = (typeof window !== 'undefined') && (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search||''));
     try {
@@ -190,7 +205,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     __count('index#callRelaxEndpoint');
     const pos = state.positions.map(p=>[p.x,p.y,p.z]);
   const atomic_numbers = state.elements.map(e=> elementToZ(e));
-    const body = { atomic_numbers, coordinates: pos, steps, calculator:'uma' };
+  const body = { atomic_numbers, coordinates: pos, steps, calculator:'uma' };
+  const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion;
     const base = __resolveApiBase();
     const ep = getEndpointSync('relax');
     const url = base + ep;
@@ -213,7 +229,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     }
     try { json = await resp.json(); } catch(parseErr){ debugApi('relax','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
     debugApi('relax','response',{ seq, url, timingMs, status: resp.status, response: json });
-    return json;
+    return { data: json, uivAtSend, tivAtSend };
   }
   const { engine, scene, camera } = await createScene(canvas);
   const view = createMoleculeView(scene, state);
@@ -257,24 +273,32 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   async function relaxStep() {
     __count('index#relaxStep');
     try {
-      const data = await callRelaxEndpoint(1); // single step
-  const { positions, forces, final_energy } = data;
-      // Apply positions
+      const { data, uivAtSend, tivAtSend } = await callRelaxEndpoint(1); // single step
+      if(uivAtSend !== userInteractionVersion){
+        if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][relax] userInteraction', { uivAtSend, userInteractionVersion, tivAtSend, totalInteractionVersion });
+        return { stale:true, staleReason:'userInteraction', userInteractionVersionAtSend:uivAtSend, totalInteractionVersionAtSend:tivAtSend, currentUserInteractionVersion:userInteractionVersion, currentTotalInteractionVersion: totalInteractionVersion };
+      }
+      if(tivAtSend !== totalInteractionVersion){
+        if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][relax] supersededSimulation', { uivAtSend, userInteractionVersion, tivAtSend, totalInteractionVersion });
+        return { stale:true, staleReason:'supersededSimulation', userInteractionVersionAtSend:uivAtSend, totalInteractionVersionAtSend:tivAtSend, currentUserInteractionVersion:userInteractionVersion, currentTotalInteractionVersion: totalInteractionVersion };
+      }
+      const { positions, forces, final_energy } = data;
       if(Array.isArray(positions) && positions.length === state.positions.length){
         for(let i=0;i<positions.length;i++){
           const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; }
-        state.markPositionsChanged(); // central wrapper handles bonds & logging
+        state.markPositionsChanged();
+        // Suppress the debounced generic posChange tick from counting as a user interaction
+        __suppressNextPosChange = true;
+        bumpSimulationVersion('relaxStepApply');
       }
       window.__RELAX_FORCES = forces;
       state.dynamics = state.dynamics || {}; state.dynamics.energy = final_energy;
       if(forces && forces.length){
         lastForceResult = { energy: final_energy, forces };
         state.forceCache = { version: structureVersion, energy: final_energy, forces, stress: data.stress||null, stale:false };
-        // IMPORTANT: commit forces to state so renderer (which prefers molState.forces over window.__RELAX_FORCES)
-        // sees updated vectors during relaxation sequences.
         try { __updateForces(forces, { reason:'relaxStep' }); } catch {}
       }
-      return { energy: final_energy };
+      return { applied:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'relax' };
     } catch(e){
       console.warn('[relaxStep] failed', e);
       return { error: e?.message||String(e) };
@@ -286,7 +310,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     __count('index#callMDEndpoint');
     const pos = state.positions.map(p=>[p.x,p.y,p.z]);
     const atomic_numbers = state.elements.map(e=> elementToZ(e));
-    const body = { atomic_numbers, coordinates: pos, steps, temperature, timestep_fs, friction, calculator };
+  const body = { atomic_numbers, coordinates: pos, steps, temperature, timestep_fs, friction, calculator };
+  const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion;
     const base = __resolveApiBase();
     const ep = getEndpointSync('md');
     const url = base + ep;
@@ -298,17 +323,27 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     if(!resp.ok){ const txt = await resp.text(); debugApi('md','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt }); throw new Error('MD request failed '+resp.status+': '+txt); }
     try { json = await resp.json(); } catch(parseErr){ debugApi('md','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
     debugApi('md','response',{ seq, url, timingMs, status: resp.status, response: json });
-    return json;
+    return { data: json, uivAtSend, tivAtSend };
   }
   async function mdStep(opts={}){
     __count('index#mdStep');
     try {
-      const data = await callMDEndpoint({ steps:1, ...opts });
+      const { data, uivAtSend, tivAtSend } = await callMDEndpoint({ steps:1, ...opts });
+      if(uivAtSend !== userInteractionVersion){
+        if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][md] userInteraction', { uivAtSend, userInteractionVersion, tivAtSend, totalInteractionVersion });
+        return { stale:true, staleReason:'userInteraction', userInteractionVersionAtSend:uivAtSend, totalInteractionVersionAtSend:tivAtSend, currentUserInteractionVersion:userInteractionVersion, currentTotalInteractionVersion: totalInteractionVersion };
+      }
+      if(tivAtSend !== totalInteractionVersion){
+        if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][md] supersededSimulation', { uivAtSend, userInteractionVersion, tivAtSend, totalInteractionVersion });
+        return { stale:true, staleReason:'supersededSimulation', userInteractionVersionAtSend:uivAtSend, totalInteractionVersionAtSend:tivAtSend, currentUserInteractionVersion:userInteractionVersion, currentTotalInteractionVersion: totalInteractionVersion };
+      }
       const { positions, forces, final_energy } = data;
       if(Array.isArray(positions) && positions.length === state.positions.length){
         for(let i=0;i<positions.length;i++){
           const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; }
-        state.markPositionsChanged(); // central wrapper handles bonds & logging
+        state.markPositionsChanged();
+        __suppressNextPosChange = true;
+        bumpSimulationVersion('mdStepApply');
       }
       window.__RELAX_FORCES = forces;
       state.dynamics = state.dynamics || {}; state.dynamics.energy = final_energy;
@@ -318,7 +353,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         // Commit forces so visualization updates during MD sequences
         try { __updateForces(forces, { reason:'mdStep' }); } catch {}
       }
-      return { energy: final_energy };
+      return { applied:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'md' };
     } catch(e){
       console.warn('[mdStep] failed', e);
       return { error: e?.message||String(e) };
@@ -393,15 +428,15 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     // Do not create an 'init' energy tick. First real API response will create the first point.
   }
   // Wrap atomic-changing operations (relax/MD steps already wrapped below)
-  const origRelaxStep = relaxStep; relaxStep = async ()=>{ const r = await origRelaxStep(); recordInteraction('relaxStep'); maybePlotEnergy('relax'); return r; };
-  const origMdStep = mdStep; mdStep = async (o)=>{ const r = await origMdStep(o); recordInteraction('mdStep'); maybePlotEnergy('md'); return r; };
+  const origRelaxStep = relaxStep; relaxStep = async ()=>{ const r = await origRelaxStep(); if(r && r.applied){ recordInteraction('relaxStep'); maybePlotEnergy('relax'); } return r; };
+  const origMdStep = mdStep; mdStep = async (o)=>{ const r = await origMdStep(o); if(r && r.applied){ recordInteraction('mdStep'); maybePlotEnergy('md'); } return r; };
   // Wrap manipulation (drag & bond rotation) so any geometry change recomputes energy and updates plot.
   const wrappedManipulation = {
     beginDrag: (...a)=> manipulation.beginDrag(...a),
-    updateDrag: (...a)=> { const r = manipulation.updateDrag(...a); if (r) { ff.computeForces(); recordInteraction('dragMove'); } return r; },
-    endDrag: (...a)=> { const r = manipulation.endDrag(...a); structureVersion++; if(state.forceCache) state.forceCache.stale=true; ff.computeForces(); recordInteraction('dragEnd'); return r; },
+    updateDrag: (...a)=> { const r = manipulation.updateDrag(...a); if (r) { bumpUserInteractionVersion('dragMove'); ff.computeForces(); recordInteraction('dragMove'); } return r; },
+    endDrag: (...a)=> { const r = manipulation.endDrag(...a); if(r){ bumpUserInteractionVersion('dragEnd'); } ff.computeForces(); recordInteraction('dragEnd'); return r; },
     setDragPlane: (...a)=> manipulation.setDragPlane(...a),
-    rotateBond: (...a)=> { const r = manipulation.rotateBond(...a); if (r) { structureVersion++; if(state.forceCache) state.forceCache.stale=true; ff.computeForces(); recordInteraction('bondRotate'); __suppressNextPosChange = true; } return r; }
+    rotateBond: (...a)=> { const r = manipulation.rotateBond(...a); if (r) { bumpUserInteractionVersion('bondRotate'); ff.computeForces(); recordInteraction('bondRotate'); __suppressNextPosChange = true; } return r; }
   };
   wrappedManipulationRef = wrappedManipulation;
 
@@ -465,6 +500,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       if (__suppressNextPosChange) {
         __suppressNextPosChange = false; // skip this generic interaction
       } else {
+        bumpUserInteractionVersion('posChange');
         recordInteraction('posChange');
       }
     }, 50); // slight debounce to batch rapid pointer move events
@@ -507,7 +543,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const baseBackoff=200; const maxBackoff=5000;
     let errorStreak=0; const maxErrorStreak=10;
     let stepsDone=0;
-    while(running.kind==='relax' && stepsDone<maxSteps){
+  while(running.kind==='relax' && stepsDone<maxSteps){
       const now=performance.now();
       const since= now - lastTime;
       if(backoffMs>0){
@@ -516,8 +552,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         await new Promise(r=>setTimeout(r, minInterval - since));
       }
       if(running.kind!=='relax') break;
-      const res = await relaxStep();
-      stepsDone++;
+  const res = await relaxStep();
+  if(res && res.applied){ stepsDone++; } // count only applied (non-stale) steps
       lastTime = performance.now();
       if(res && res.error){
         errorStreak++;
@@ -538,7 +574,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const minInterval = getConfig().minStepIntervalMs; let lastTime=0;
     let backoffMs=0; const baseBackoff=200; const maxBackoff=5000; let errorStreak=0; const maxErrorStreak=10;
     let i=0;
-    while(i<steps && running.kind==='md'){
+  while(i<steps && running.kind==='md'){
       const now=performance.now(); const since=now-lastTime;
       if(backoffMs>0){ await new Promise(r=>setTimeout(r, backoffMs)); }
       else if(since<minInterval){ await new Promise(r=>setTimeout(r, minInterval - since)); }
@@ -548,7 +584,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       if(res && res.error){
         errorStreak++; if(errorStreak>=maxErrorStreak){ console.warn('[mdRun] aborting due to error streak'); break; }
         backoffMs = backoffMs? Math.min(backoffMs*2, maxBackoff) : baseBackoff;
-      } else { errorStreak=0; backoffMs=0; i++; }
+      } else {
+        // Only advance step counter for applied (non-stale) MD results
+        if(res && res.applied){ i++; }
+        errorStreak=0; backoffMs=0;
+      }
     }
     const completed = (i>=steps && errorStreak===0);
     running.kind=null;
@@ -635,8 +675,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   function debugEnergySeriesLength(){ return energySeries.length; }
   function debugRecordInteraction(kind){ recordInteraction(kind||'debug'); }
   function getForceCacheVersion(){ return state.forceCache?.version; }
+  function getVersionInfo(){ return { userInteractionVersion, totalInteractionVersion }; }
   function shutdown(){ __renderActive=false; try{ engine.stopRenderLoop && engine.stopRenderLoop(); }catch{} }
-  return { state, bondService, selection, ff, dynamics, view, picking, vr, recomputeBonds, relaxStep, mdStep, startRelaxContinuous, startMDContinuous, stopSimulation, setForceProvider, getMetrics, debugEnergySeriesLength, debugRecordInteraction, manipulation: wrappedManipulation, scene, engine, camera, baselineEnergy, setForceVectorsEnabled, getForceCacheVersion, shutdown, enableFeatureFlag, setMinStepInterval };
+  return { state, bondService, selection, ff, dynamics, view, picking, vr, recomputeBonds, relaxStep, mdStep, startRelaxContinuous, startMDContinuous, stopSimulation, setForceProvider, getMetrics, debugEnergySeriesLength, debugRecordInteraction, manipulation: wrappedManipulation, scene, engine, camera, baselineEnergy, setForceVectorsEnabled, getForceCacheVersion, getVersionInfo, shutdown, enableFeatureFlag, setMinStepInterval };
 }
 
 // Ensure global viewerApi for tests if not already set

@@ -11,7 +11,15 @@ from fastapi import HTTPException
 from .atoms_utils import build_atoms, compute_properties
 from .log import log_event
 from .model_runtime import get_calculator
-from .models import MDIn, MDResult, RelaxCalculatorName, RelaxIn, RelaxResult, SimpleIn
+from .models import (
+    MDIn,
+    MDResult,
+    RelaxCalculatorName,
+    RelaxIn,
+    RelaxResult,
+    SimpleIn,
+    PrecomputedValues,
+)
 
 
 def _attach_calc(atoms, which: RelaxCalculatorName):
@@ -57,10 +65,22 @@ def relax(inp: RelaxIn) -> RelaxResult:
     )
     _attach_calc(atoms, inp.calculator)
 
-    try:
-        initial_energy = float(atoms.get_potential_energy())
-    except Exception as ee:
-        raise HTTPException(status_code=500, detail=f"Initial energy failed: {ee}")
+    # Apply precomputed results (if any) before first energy access
+    pre_applied: list[str] = _maybe_apply_precomputed(
+        atoms, inp.precomputed, len(inp.atomic_numbers)
+    )
+
+    # If energy was precomputed we already placed it in calc.results; avoid
+    # triggering a fresh calculation just to read it again.
+    if "energy" in pre_applied:
+        initial_energy = float(atoms.calc.results["energy"])  # type: ignore
+    else:
+        try:
+            initial_energy = float(atoms.get_potential_energy())
+        except Exception as ee:
+            raise HTTPException(
+                status_code=500, detail=f"Initial energy failed: {ee}"
+            )
 
     opt = _BFGS(atoms, logfile=None, maxstep=float(inp.max_step or 0.2))
 
@@ -99,6 +119,8 @@ def relax(inp: RelaxIn) -> RelaxResult:
         final=final_energy,
         trace_len=(len(trace) if trace_enabled else 0),
         calc=inp.calculator,
+        precomputed=bool(pre_applied),
+        precomputed_keys=pre_applied,
     )
 
     return RelaxResult(
@@ -110,6 +132,7 @@ def relax(inp: RelaxIn) -> RelaxResult:
         steps_completed=steps_completed,
         calculator=inp.calculator,
         trace_energies=(trace if trace_enabled else None),
+        precomputed_applied=(pre_applied if pre_applied else None),
     )
 
 
@@ -134,10 +157,19 @@ def md_step(inp: MDIn) -> MDResult:
 
     MaxwellBoltzmannDistribution(atoms, temperature_K=inp.temperature)
 
-    try:
-        initial_energy = float(atoms.get_potential_energy())
-    except Exception as ee:
-        raise HTTPException(status_code=500, detail=f"Initial energy failed: {ee}")
+    pre_applied: list[str] = _maybe_apply_precomputed(
+        atoms, inp.precomputed, len(inp.atomic_numbers)
+    )
+
+    if "energy" in pre_applied:
+        initial_energy = float(atoms.calc.results["energy"])  # type: ignore
+    else:
+        try:
+            initial_energy = float(atoms.get_potential_energy())
+        except Exception as ee:
+            raise HTTPException(
+                status_code=500, detail=f"Initial energy failed: {ee}"
+            )
 
     dyn = Langevin(
         atoms,
@@ -163,7 +195,9 @@ def md_step(inp: MDIn) -> MDResult:
         if not np.isfinite(max_disp) or max_disp > 5.0:
             raise HTTPException(
                 status_code=500,
-                detail=f"MD instability detected (max step disp {max_disp:.2f} Å)",
+                detail=(
+                    f"MD instability detected (max step disp {max_disp:.2f} Å)"
+                ),
             )
         prev[:] = new_pos
 
@@ -181,6 +215,8 @@ def md_step(inp: MDIn) -> MDResult:
         final=final_energy,
         T=Tfinal,
         calc=inp.calculator,
+        precomputed=bool(pre_applied),
+        precomputed_keys=pre_applied,
     )
 
     return MDResult(
@@ -193,7 +229,75 @@ def md_step(inp: MDIn) -> MDResult:
         temperature=Tfinal,
         energies=energies,
         calculator=inp.calculator,
+        precomputed_applied=(pre_applied if pre_applied else None),
     )
+
+
+def _maybe_apply_precomputed(
+    atoms, pre: PrecomputedValues | None, natoms: int
+) -> list[str]:
+    """Populate atoms.calc.results with client-provided precomputed values.
+
+    Returns list of applied keys. Validation beyond basic structural checks is
+    done here (finite numbers, shapes). Stress: support Voigt length-6 or
+    length-9 (interpreted row-major 3x3).
+    """
+    if pre is None:
+        return []
+    applied: list[str] = []
+    import numpy as np
+
+    calc = getattr(atoms, "calc", None)
+    if calc is None:
+        return []
+
+    if pre.energy is not None:
+        e = float(pre.energy)
+        if not np.isfinite(e):
+            raise HTTPException(
+                status_code=400, detail="precomputed.energy not finite"
+            )
+        calc.results["energy"] = e
+        calc.results["free_energy"] = e
+        applied.append("energy")
+
+    if pre.forces is not None:
+        f = np.array(pre.forces, dtype=float)
+        if f.shape != (natoms, 3):
+            raise HTTPException(
+                status_code=400, detail="precomputed.forces shape mismatch"
+            )
+        if not np.all(np.isfinite(f)):
+            raise HTTPException(
+                status_code=400, detail="precomputed.forces contain non-finite"
+            )
+        calc.results["forces"] = f
+        applied.append("forces")
+
+    if pre.stress is not None:
+        s = np.array(pre.stress, dtype=float)
+        if s.shape == (6,):
+            pass  # already Voigt
+        elif s.shape == (9,):
+            m = s.reshape(3, 3)
+            # ASE Voigt order: xx, yy, zz, yz, xz, xy
+            s = np.array(
+                [m[0, 0], m[1, 1], m[2, 2], m[1, 2], m[0, 2], m[0, 1]],
+                dtype=float,
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="precomputed.stress must have length 6 or 9",
+            )
+        if not np.all(np.isfinite(s)):
+            raise HTTPException(
+                status_code=400,
+                detail="precomputed.stress contain non-finite",
+            )
+        calc.results["stress"] = s
+        applied.append("stress")
+    return applied
 
 
 __all__ = ["simple_calculate", "relax", "md_step"]
