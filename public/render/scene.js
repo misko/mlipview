@@ -1,3 +1,5 @@
+import { attachConsistentLighting } from './lighting.js';
+
 export async function createScene(canvas) {
   const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer:true, stencil:true });
   const scene = new BABYLON.Scene(engine);
@@ -25,6 +27,6 @@ export async function createScene(canvas) {
   scene.clearColor = new BABYLON.Color4(1,1,1,1);
   const camera = new BABYLON.ArcRotateCamera('cam', Math.PI/4, Math.PI/3, 25, new BABYLON.Vector3(0,0,0), scene);
   camera.attachControl(canvas, true);
-  new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0,1,0), scene);
+  attachConsistentLighting(scene, camera, { ambientIntensity:0.2, directionalIntensity:0.9 });
   return { engine, scene, camera };
 }

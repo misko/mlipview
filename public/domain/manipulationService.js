@@ -22,19 +22,22 @@ export function createManipulationService(molState, { bondService } = {}) {
   function getAtomPosition(i) { return molState.positions[i]; }
   function setAtomPosition(i, p) { molState.positions[i].x=p.x; molState.positions[i].y=p.y; molState.positions[i].z=p.z; }
 
-  function beginDrag(intersector) {
+  function beginDrag(intersector, opts = {}) {
     __count('manipulationService#beginDrag');
     if (dragState) return false;
     if (!molState.selection || molState.selection.kind !== 'atom') return false;
   const atomIndex = molState.selection.data.index;
   const pos = getAtomPosition(atomIndex);
-  // Use Y-up horizontal plane so dragging feels natural relative to ground.
-  const planeNormal = { x:0, y:1, z:0 }; // default; caller can override later via setDragPlane
-    const planePoint = { ...pos };
-    const hit = intersector(planePoint, planeNormal);
-    const grabOffset = hit ? { x:pos.x-hit.x, y:pos.y-hit.y, z:pos.z-hit.z } : { x:0,y:0,z:0 };
-  dragState = { atomIndex, startPos: { ...pos }, grabOffset, planeNormal, planePoint };
-  if (DRAG_LOG) console.log('[drag][start]', { atomIndex, startPos: { ...pos }, planePoint: { ...planePoint }, planeNormal: { ...planeNormal } }); // retained behind flag
+      // Accept explicit plane from caller (preferred new path). Fallback only if absent.
+      let planePoint = opts.planePoint ? { ...opts.planePoint } : { ...pos };
+      let planeNormal = opts.planeNormal ? { ...opts.planeNormal } : { x:0, y:1, z:0 }; // fallback legacy if caller didn't supply
+      // First intersection to derive grab offset. For camera-aligned plane logic, caller sets plane so hit should ~= atom position.
+      const hit = intersector(planePoint, planeNormal);
+      let grabOffset = hit ? { x: pos.x - hit.x, y: pos.y - hit.y, z: pos.z - hit.z } : { x:0, y:0, z:0 };
+      // If offset is extremely small treat as zero to keep cursor perfectly over atom.
+      if (Math.hypot(grabOffset.x, grabOffset.y, grabOffset.z) < 1e-6) grabOffset = { x:0,y:0,z:0 };
+      dragState = { atomIndex, startPos: { ...pos }, grabOffset, planeNormal, planePoint };
+      if (DRAG_LOG) console.log('[drag][start]', { atomIndex, startPos: { ...pos }, planePoint: { ...planePoint }, planeNormal: { ...planeNormal } });
     return true;
   }
   function setDragPlane(point, normal) {
@@ -130,6 +133,7 @@ export function createManipulationService(molState, { bondService } = {}) {
     }
     return true;
   }
-
-  return { beginDrag, updateDrag, endDrag, setDragPlane, rotateBond };
+  // Lightweight debug accessor (non-intrusive) for tests.
+  const _debug = { getDragState: () => dragState ? { ...dragState, planeNormal: { ...dragState.planeNormal }, planePoint: { ...dragState.planePoint }, grabOffset: { ...dragState.grabOffset } } : null };
+  return { beginDrag, updateDrag, endDrag, setDragPlane, rotateBond, _debug };
 }

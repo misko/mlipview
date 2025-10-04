@@ -12,6 +12,8 @@
 // existing non‑VR app setup utilities if present.
 
 // Ensure we reuse any existing viewer engine/scene; never import deprecated setup code.
+import { attachConsistentLighting } from '../render/lighting.js';
+
 async function ensureBaseScene() {
 	// Prefer an existing global viewer API (desktop mode already running)
 	try {
@@ -33,9 +35,9 @@ async function ensureBaseScene() {
 	const engine = new BABYLON.Engine(canvas, false, { antialias: false });
 	const scene = new BABYLON.Scene(engine);
 	scene.clearColor = new BABYLON.Color4(0.043,0.059,0.078,1.0); // match desktop dark background (#0b0f14)
-	new BABYLON.HemisphericLight('vrHemi', new BABYLON.Vector3(0,1,0), scene);
 	const cam = new BABYLON.ArcRotateCamera('vrCam', Math.PI/4, Math.PI/3, 8, BABYLON.Vector3.Zero(), scene);
 	cam.attachControl(canvas, true);
+	attachConsistentLighting(scene, cam, { ambientIntensity:0.2, directionalIntensity:0.9 });
 	return { engine, scene, canvas, reuse: false };
 }
 

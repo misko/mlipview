@@ -45,6 +45,12 @@ async function cudaPreflight(pyEnv){
 }
 
 module.exports = async () => {
+  if (process.env.MLIPVIEW_SKIP_SERVERS === '1') {
+    // Lightweight path for unit tests that don't need backend / CUDA.
+    global.__MLIP_BASE_URL = 'http://localhost:4000';
+    global.__MLIP_API_URL = 'http://localhost:8000';
+    return; // skip heavy setup
+  }
   const log = fs.createWriteStream('./test-server.log');
   // Expose log stream for teardown so it can be closed (open fs handle can keep Node alive).
   global.__MLIP_LOG_STREAM = log;

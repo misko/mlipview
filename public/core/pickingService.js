@@ -70,9 +70,33 @@ export function createPickingService(scene, view, selectionService, { manipulati
     else if (res.kind === 'bond') selectionService.clickBond(res);
     // After selection, if atom selected and manipulation present, initiate drag baseline
     if (manipulation && selectionService.get().kind === 'atom') {
-      // Real intersector: ray -> plane (horizontal Y-up plane through atom start position)
       const atomSel = selectionService.get();
       let started = false;
+      // Compute camera-aligned drag plane: normal = (atomPos - cameraPos)
+      let planePoint = null; let planeNormal = null;
+      try {
+        if (camera && atomSel && atomSel.kind === 'atom') {
+          const atomPos = manipulation.molState ? manipulation.molState.positions[atomSel.data.index] : (view && view._internals && view._internals.highlight && view._internals.highlight.atom ? view._internals.highlight.atom.position : null);
+          // Fallback: take position from molState via selection if available
+          if (!atomPos && manipulation && manipulation._debug?.getDragState) {
+            /* no-op fallback */
+          }
+          if (atomPos) {
+            // Derive camera world position: ArcRotateCamera may expose position directly
+            const camPos = camera.position ? camera.position : (camera.getFrontPosition ? camera.getFrontPosition(0) : { x:0, y:0, z: -10 });
+            const nx = atomPos.x - camPos.x;
+            const ny = atomPos.y - camPos.y;
+            const nz = atomPos.z - camPos.z;
+            const len = Math.hypot(nx, ny, nz);
+            if (len > 1e-6) {
+              planeNormal = { x: nx/len, y: ny/len, z: nz/len };
+              planePoint = { x: atomPos.x, y: atomPos.y, z: atomPos.z };
+            }
+          }
+        }
+      } catch { /* ignore, fallback handled below */ }
+      if (!planeNormal) { planeNormal = { x:0, y:1, z:0 }; }
+      if (!planePoint) { planePoint = { x:0, y:0, z:0 }; }
       const intersector = (planePoint, planeNormal) => {
         try {
           const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, BABYLON.Matrix.Identity(), camera);
@@ -88,7 +112,7 @@ export function createPickingService(scene, view, selectionService, { manipulati
           return null;
         }
       };
-  started = beginAtomDrag(intersector);
+      started = beginAtomDrag(intersector, { planePoint, planeNormal });
       if (started && camera && camera.detachControl && !cameraDetachedForDrag) {
         const canvas = scene.getEngine && scene.getEngine().getRenderingCanvas ? scene.getEngine().getRenderingCanvas() : undefined;
         try { camera.detachControl(canvas); cameraDetachedForDrag = true; } catch (e) { /* ignore */ }
@@ -146,10 +170,10 @@ export function createPickingService(scene, view, selectionService, { manipulati
   // Per-frame observer to enforce freeze while dragging
   scene.onBeforeRenderObservable && scene.onBeforeRenderObservable.add(freezeCameraFrame);
   // --- Unified interaction helpers ---
-  function beginAtomDrag(intersector){
+  function beginAtomDrag(intersector, opts){
     __count('pickingService#beginAtomDrag');
     if (!manipulation) return false;
-    return manipulation.beginDrag(intersector);
+    return manipulation.beginDrag(intersector, opts);
   }
   function updateDragFromPointer(intersector){
     __count('pickingService#updateDragFromPointer');
