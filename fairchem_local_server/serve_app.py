@@ -1,3 +1,5 @@
+import time
+
 from fastapi import FastAPI
 from ray import serve
 
@@ -50,3 +52,5 @@ def deploy():
 
 if __name__ == "__main__":
     deploy()
+    while True:
+        time.sleep(60)
