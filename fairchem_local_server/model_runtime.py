@@ -115,9 +115,6 @@ class BatchedPredictUnit:
         resp = self._handle.predict.remote((args, kwargs))  # type: ignore[attr-defined]
         r = resp.result()
         assert r.keys() == {"energy", "forces", "stress"}
-        print(
-            f"[BatchedPredictUnit:predict] done x", args, kwargs, r.keys(), flush=True
-        )
         return r
 
     def __getattr__(self, item):  # pragma: no cover
