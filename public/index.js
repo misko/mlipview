@@ -673,7 +673,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
             if(m.running) return; // already running something
             // Start MD with default parameters; UI interval/metrics loop will update status label.
             window.viewerApi.startMDContinuous({}).then(()=>{
-              // When MD finishes naturally, UI code resets the button text; we could optionally log.
+              try {
+                const btn = document.getElementById && document.getElementById('btnMDRun');
+                if(btn && btn.textContent === 'stop') btn.textContent='run';
+                const statusEl = document.getElementById && document.getElementById('status');
+                if(statusEl && /MD running/.test(statusEl.textContent||'')) statusEl.textContent='MD stopped';
+              } catch{}
               if (window.__MLIPVIEW_DEBUG_API) console.log('[autoMD] completed initial MD run');
             });
             // Update button text immediately if present to mimic user click path.

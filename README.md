@@ -192,9 +192,9 @@ Safety: MD aborts server-side if any per-step displacement > 5 Å or coordinates
 #### Temperature Slider (Desktop HUD)
 The desktop HUD provides a temperature slider controlling the target thermostat temperature for MD steps and runs:
 
-* Range: 0–2000 K
+* Range: 0–3000 K
 * Resolution: 30 discrete steps (internally mapped; includes an exact 298 K step)
-* Visible tick labels: 0 K, 298 K, 400 K
+* Visible tick labels: 298 K, 400 K, 3000 K (positioned proportionally by value; 0 K omitted to avoid overlap)
 * Selected target stored at `window.__MLIP_TARGET_TEMPERATURE` (default 298) and mirrored to `viewerApi.state.dynamics.targetTemperature`.
 * UI buttons (MD step / MD run) pass this target value; programmatic calls can still supply an explicit `temperature` parameter overriding the slider.
 

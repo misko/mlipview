@@ -1,5 +1,5 @@
 // Temperature slider initialization.
-// Provides a discrete 30-step slider from 0K to 2000K (inclusive) with emphasized ticks at 0, 298, 2000.
+// Provides a discrete 30-step slider from 0K to 3000K (inclusive) with emphasized ticks at 298, 400, 3000 (0K tick removed to avoid label overlap).
 // Maintains target temperature in window.__MLIP_TARGET_TEMPERATURE (default 298) and mirrors to
 // viewerApi.state.dynamics.targetTemperature (non-intrusive additional field) when viewer is available.
 
@@ -8,9 +8,9 @@ export function initTemperatureSlider({ hudEl, getViewer }) {
   // Avoid duplicate init
   if (hudEl.querySelector('#tempSliderWrapper')) return;
 
-  // Build a lookup of 30 temperatures across 0-2000K; ensure 298K is exactly represented by replacing the closest value.
+  // Build a lookup of 30 temperatures across 0-3000K; ensure 298K is exactly represented by replacing the closest value.
   const steps = 30;
-  const MAX_K = 2000;
+  const MAX_K = 3000;
   let temps = Array.from({ length: steps }, (_, i) => Math.round(i * MAX_K / (steps - 1)));
   // Force include 298 by finding closest index and setting it; adjust neighbor if collision.
   let closestIdx = 0; let closestDiff = Infinity;
@@ -48,19 +48,26 @@ export function initTemperatureSlider({ hudEl, getViewer }) {
   slider.id = 'mdTempSlider';
   slider.style.width = '120px';
 
-  // Tick labels (0, 298, 400) positioned under slider using a simple flex container.
+  // Tick labels (298 K, 400 K, 3000 K) positioned under slider using absolute positioning for accurate value mapping.
   const ticks = document.createElement('div');
   ticks.style.position = 'relative';
   ticks.style.width = slider.style.width;
   ticks.style.height = '10px';
   ticks.style.fontSize = '9px';
-  ticks.style.display = 'flex';
-  ticks.style.justifyContent = 'space-between';
+  ticks.style.display = 'block';
   ticks.style.pointerEvents = 'none';
-  const tick0 = document.createElement('span'); tick0.textContent = '0K';
-  const tickMid = document.createElement('span'); tickMid.textContent = '298K';
-  const tickMax = document.createElement('span'); tickMax.textContent = '2000K';
-  ticks.appendChild(tick0); ticks.appendChild(tickMid); ticks.appendChild(tickMax);
+  function addTick(val, labelText){
+    const span = document.createElement('span');
+    span.textContent = labelText;
+    span.style.position = 'absolute';
+    span.style.transform = 'translateX(-50%)';
+    const pct = (val / MAX_K) * 100;
+    span.style.left = pct + '%';
+    ticks.appendChild(span);
+  }
+  addTick(298, '298K');
+  //addTick(400, '400K');
+  addTick(MAX_K, MAX_K + 'K');
 
   function getTempForIndex(idx) { return temps[idx] ?? 298; }
   function updateTarget(idx) {

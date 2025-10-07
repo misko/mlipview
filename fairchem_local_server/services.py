@@ -227,9 +227,7 @@ def md_step(inp: MDIn) -> MDResult:
         if not np.isfinite(max_disp) or max_disp > 5.0:
             raise HTTPException(
                 status_code=500,
-                detail=(
-                    f"MD instability detected (max step disp {max_disp:.2f} Å)"
-                ),
+                detail=(f"MD instability detected (max step disp {max_disp:.2f} Å)"),
             )
         prev[:] = new_pos
 

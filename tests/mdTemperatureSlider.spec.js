@@ -82,7 +82,7 @@ describe('MD temperature slider', () => {
     expect(mdBodies.length).toBe(1);
     const firstT = mdBodies[0].temperature;
     expect(typeof firstT).toBe('number');
-  // Change slider to another index (pick max index for near 2000K)
+  // Change slider to another index (pick max index for near 3000K)
     slider.value = String(Number(slider.max));
     slider.dispatchEvent(new Event('input'));
     const newT = window.__MLIP_TARGET_TEMPERATURE;
