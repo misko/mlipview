@@ -91,7 +91,9 @@ def relax(inp: RelaxIn) -> RelaxResult:
     trace: List[float] = []
     steps_completed = 0
 
-    for step_idx in range(min(10, int(inp.steps))):
+    # Execute the full requested number of BFGS steps.
+    # (Previously capped at 10 to limit runtime; parity tests need full count.)
+    for step_idx in range(int(inp.steps)):
         try:
             opt.step()
             steps_completed += 1
@@ -196,7 +198,10 @@ def md_step(inp: MDIn) -> MDResult:
         try:
             initial_energy = float(atoms.get_potential_energy())
         except Exception as ee:
-            raise HTTPException(status_code=500, detail=f"Initial energy failed: {ee}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Initial energy failed: {ee}",
+            )
 
     dyn = Langevin(
         atoms,
@@ -222,7 +227,9 @@ def md_step(inp: MDIn) -> MDResult:
         if not np.isfinite(max_disp) or max_disp > 5.0:
             raise HTTPException(
                 status_code=500,
-                detail=(f"MD instability detected (max step disp {max_disp:.2f} Å)"),
+                detail=(
+                    f"MD instability detected (max step disp {max_disp:.2f} Å)"
+                ),
             )
         prev[:] = new_pos
 

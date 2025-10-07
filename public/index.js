@@ -83,8 +83,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   let inFlight = false;
   // --- API debug instrumentation ---
   if (window.__MLIPVIEW_DEBUG_API == null) {
-    // default ON until user disables explicitly
-    window.__MLIPVIEW_DEBUG_API = true;
+    // Default OFF; enable with ?debug=1 or ?debug=true
+    try {
+      const q = new URLSearchParams(window.location.search);
+      const dbg = q.get('debug');
+      window.__MLIPVIEW_DEBUG_API = (dbg === '1' || dbg === 'true');
+    } catch { window.__MLIPVIEW_DEBUG_API = false; }
   }
   let __apiSeq = window.__MLIPVIEW_API_SEQ || 0;
   function debugApi(kind, phase, meta){
@@ -280,7 +284,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     if (reason !== 'markPositionsChanged') {
       recordInteraction('rebonds');
     }
-    console.log(`[bonds] recomputed after ${reason} (count=${bonds?bonds.length:0})`);
+  if(window.__MLIPVIEW_DEBUG_API) console.log(`[bonds] recomputed after ${reason} (count=${bonds?bonds.length:0})`);
     return bonds;
   }
   // Wrap markPositionsChanged now that bondService/view exist
@@ -367,7 +371,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][md] supersededSimulation', { uivAtSend, userInteractionVersion, tivAtSend, totalInteractionVersion });
         return { stale:true, staleReason:'supersededSimulation', userInteractionVersionAtSend:uivAtSend, totalInteractionVersionAtSend:tivAtSend, currentUserInteractionVersion:userInteractionVersion, currentTotalInteractionVersion: totalInteractionVersion };
       }
-  const { positions, forces, final_energy, velocities } = data;
+  const { positions, forces, final_energy, velocities, temperature: instT } = data;
       if(Array.isArray(positions) && positions.length === state.positions.length){
         for(let i=0;i<positions.length;i++){
           const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; }
@@ -377,6 +381,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       }
       window.__RELAX_FORCES = forces;
       state.dynamics = state.dynamics || {}; state.dynamics.energy = final_energy;
+      if(typeof instT === 'number' && isFinite(instT)){
+        state.dynamics.temperature = instT;
+        try { const el=document.getElementById('instTemp'); if(el) el.textContent = 'T: '+instT.toFixed(1)+' K'; } catch {}
+      }
       if(Array.isArray(velocities) && velocities.length === state.elements.length){
         // Shallow validate
         let ok = true; for(let i=0;i<velocities.length && ok;i++){ const r=velocities[i]; if(!r || r.length!==3) ok=false; }
@@ -614,7 +622,18 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       if(backoffMs>0){ await new Promise(r=>setTimeout(r, backoffMs)); }
       else if(since<minInterval){ await new Promise(r=>setTimeout(r, minInterval - since)); }
       if(running.kind!=='md') break;
-      const res = await mdStep({ calculator, temperature, timestep_fs, friction });
+      // Re-read target temperature dynamically to allow live slider adjustments mid-run.
+      let dynT = temperature; // fallback to initial argument
+      try {
+        if (typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) {
+          dynT = window.__MLIP_TARGET_TEMPERATURE;
+        }
+      } catch {}
+      // Clamp to configured slider bounds (0-2000 K)
+      if(!(Number.isFinite(dynT))) dynT = temperature;
+      if(dynT < 0) dynT = 0; else if(dynT > 2000) dynT = 2000;
+  const res = await mdStep({ calculator, temperature: dynT, timestep_fs, friction });
+  try { const el=document.getElementById('instTemp'); if(el && state.dynamics && typeof state.dynamics.temperature==='number') el.textContent='T: '+state.dynamics.temperature.toFixed(1)+' K'; } catch {}
       lastTime=performance.now();
       if(res && res.error){
         errorStreak++; if(errorStreak>=maxErrorStreak){ console.warn('[mdRun] aborting due to error streak'); break; }

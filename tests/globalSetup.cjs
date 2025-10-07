@@ -45,6 +45,12 @@ async function cudaPreflight(pyEnv){
 }
 
 module.exports = async () => {
+  if (process.env.MLIPVIEW_FAST_JSDOM === '1') {
+    // Ultra-light setup path for pure jsdom unit tests that fully mock fetch.
+    global.__MLIP_BASE_URL = 'http://localhost:4000';
+    global.__MLIP_API_URL = 'http://localhost:8000';
+    return;
+  }
   if (process.env.MLIPVIEW_SKIP_SERVERS === '1') {
     // Lightweight path for unit tests that don't need backend / CUDA.
     global.__MLIP_BASE_URL = 'http://localhost:4000';

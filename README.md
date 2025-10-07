@@ -189,6 +189,21 @@ viewerApi.mdStep();
 The backend returns instantaneous kinetic temperature; exposed as `viewerApi.state.dynamics.temperature`.
 Safety: MD aborts server-side if any per-step displacement > 5 Å or coordinates become non-finite.
 
+#### Temperature Slider (Desktop HUD)
+The desktop HUD provides a temperature slider controlling the target thermostat temperature for MD steps and runs:
+
+* Range: 0–2000 K
+* Resolution: 30 discrete steps (internally mapped; includes an exact 298 K step)
+* Visible tick labels: 0 K, 298 K, 400 K
+* Selected target stored at `window.__MLIP_TARGET_TEMPERATURE` (default 298) and mirrored to `viewerApi.state.dynamics.targetTemperature`.
+* UI buttons (MD step / MD run) pass this target value; programmatic calls can still supply an explicit `temperature` parameter overriding the slider.
+
+The instantaneous kinetic temperature reported by the backend remains available at `viewerApi.state.dynamics.temperature` and may differ from the target during early thermostat equilibration.
+
+Live adjustment: During a continuous MD run started with `MD: (run)`, moving the slider now changes the target temperature of subsequent `/serve/md` step requests immediately. The loop re-samples `window.__MLIP_TARGET_TEMPERATURE` each iteration instead of closing over the initial value. Single-step MD (`MD: (step)`) still uses the temperature at the moment the button is pressed. Values are clamped to the slider domain [0, 2000] K as a safety measure.
+
+Instantaneous Temperature Display: A HUD element labeled `T:` shows the instantaneous kinetic temperature returned by the backend after each MD step (single or continuous). This value may fluctuate around (and deviate temporarily from) the target slider temperature—especially early in a run or following abrupt geometry edits—because it is derived from current atomic velocities. The target (thermostat) temperature is the slider value; the instantaneous value is what the system actually exhibits at that timestep.
+
 ### Integration Test (Water Relax Parity)
 
 Jest global setup now launches BOTH servers automatically:

@@ -41,6 +41,7 @@
   <button id="btnGhosts">Ghosts</button>
   <button id="btnToggleForces" title="Toggle force vectors (normalized)">Forces</button>
       <span id="status">Ready</span>
+    <span id="instTemp" style="margin-left:6px;">T: --.- K</span>
       <select id="xrModeSelect" style="margin-left:6px" title="Switch XR mode">
         <option value="none">SelectVR</option>
         <option value="vr">VR</option>
@@ -60,6 +61,7 @@
   <script type="module">
     import { initNewViewer } from './index.js';
     import { loadDefault, loadXYZIntoViewer } from './util/moleculeLoader.js';
+    import { initTemperatureSlider } from './ui/temperatureSlider.js';
     const urlParams = new URLSearchParams(location.search);
     const DEBUG = urlParams.get('debug') === '1';
     const canvas=document.getElementById('viewer');
@@ -137,13 +139,14 @@
   const mdRunBtn = document.getElementById('btnMDRun');
   // Derive MD running state from viewerApi.getMetrics() so auto-start logic stays in sync.
   function isMdRunning(){ try { return !!(viewerApi && viewerApi.getMetrics().running === 'md'); } catch { return false; } }
-  mdStepBtn.onclick = ()=>{ if(!viewerApi || isMdRunning() || isRelaxRunning()) return; viewerApi.mdStep(); document.getElementById('status').textContent=`MD step T=${viewerApi.state.dynamics.temperature.toFixed(1)}`; };
+  mdStepBtn.onclick = ()=>{ if(!viewerApi || isMdRunning() || isRelaxRunning()) return; const T = window.__MLIP_TARGET_TEMPERATURE ?? 298; viewerApi.mdStep({ temperature:T }); document.getElementById('status').textContent=`MD step tgt=${T}K inst=${viewerApi.state.dynamics.temperature.toFixed(1)}`; };
   mdRunBtn.onclick = ()=>{
     if(!viewerApi) return;
     if(!isMdRunning()){
-      mdRunBtn.textContent='stop'; document.getElementById('status').textContent='MD running';
+      const T = window.__MLIP_TARGET_TEMPERATURE ?? 298;
+      mdRunBtn.textContent='stop'; document.getElementById('status').textContent='MD running @'+T+'K';
       applyRunningDisable();
-      viewerApi.startMDContinuous({ steps:500 }).then(()=>{ if(!isMdRunning()) { mdRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='MD stopped'; } });
+      viewerApi.startMDContinuous({ steps:500, temperature:T }).then(()=>{ if(!isMdRunning()) { mdRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='MD stopped'; } });
     } else {
       viewerApi.stopSimulation(); mdRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='MD stopped';
     }
@@ -176,7 +179,10 @@
         document.getElementById('status').textContent = `Failed ${file}`;
       }
     };
-    document.querySelector('.hud').appendChild(switcher);
+  const hudEl = document.querySelector('.hud');
+  hudEl.appendChild(switcher);
+  // Initialize temperature slider (after HUD present; viewerApi may not yet be ready so pass getter)
+  initTemperatureSlider({ hudEl, getViewer: ()=> viewerApi });
 
     // XR dropdown wiring (now static in markup for reliability)
     const xrSel = document.getElementById('xrModeSelect');
