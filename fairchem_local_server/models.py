@@ -70,6 +70,19 @@ class MDIn(BaseModel):
     spin_multiplicity: Optional[int] = 1
     return_trajectory: bool = False
     precomputed: Optional["PrecomputedValues"] = None
+    # Optional initial velocities (N x 3)
+    velocities: Optional[List[List[float]]] = None
+
+    @validator("velocities")
+    def _validate_velocities(cls, v, values):  # type: ignore
+        if v is None:
+            return v
+        if not all(len(row) == 3 for row in v):
+            raise ValueError("velocities must be a list of [vx,vy,vz] vectors")
+        atomic_numbers = values.get("atomic_numbers")
+        if atomic_numbers is not None and len(v) != len(atomic_numbers):
+            raise ValueError("velocities length must match number of atoms")
+        return v
 
 
 class MDResult(BaseModel):

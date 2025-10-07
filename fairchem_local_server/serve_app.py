@@ -8,6 +8,7 @@ from .model_runtime import (
     TASK_NAME,
     UMA_DEPLOYMENT_NAME,
     _PredictDeploy,
+    health_snapshot,
     install_predict_handle,
 )
 from .models import MDIn, RelaxIn, SimpleIn
@@ -25,7 +26,9 @@ class Ingress:
 
     @app.get("/serve/health")
     def health(self):
-        return {"status": "ok"}
+        snap = health_snapshot()
+        snap["status"] = "ok"
+        return snap
 
     # SYNC endpoints so Starlette runs them in a threadpool,
     # which makes the blocking FAIRChem/ASE code safe.

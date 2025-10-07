@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import List
 
 from ase.calculators.lj import LennardJones
@@ -70,18 +69,21 @@ def relax(inp: RelaxIn) -> RelaxResult:
     pre_applied: list[str] = _maybe_apply_precomputed(
         atoms, inp.precomputed, len(inp.atomic_numbers)
     )
-    atoms.get_potential_energy()
-    atoms.get_potential_energy()
 
-    # If energy was precomputed we already placed it in calc.results; avoid
-    # triggering a fresh calculation just to read it again.
     if "energy" in pre_applied:
+        # Honor client-provided energy without triggering a recalculation
+        # that would overwrite calc.results. Forces may also be injected and
+        # should persist until first calculator call by optimizer.
         initial_energy = float(atoms.calc.results["energy"])  # type: ignore
     else:
+        # Warm first energy evaluation (some calculators may have lazy init)
         try:
             initial_energy = float(atoms.get_potential_energy())
         except Exception as ee:
-            raise HTTPException(status_code=500, detail=f"Initial energy failed: {ee}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Initial energy failed: {ee}",
+            )
 
     opt = _BFGS(atoms, logfile=None, maxstep=float(inp.max_step or 0.2))
 
@@ -156,7 +158,33 @@ def md_step(inp: MDIn) -> MDResult:
     from ase.md.langevin import Langevin
     from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 
-    MaxwellBoltzmannDistribution(atoms, temperature_K=inp.temperature)
+    # If client supplied velocities, use them directly; else initialize from
+    # temperature.
+    if inp.velocities is not None:
+        import numpy as _np  # type: ignore
+
+        try:
+            v = _np.array(inp.velocities, dtype=float)
+        except Exception as ve:  # pragma: no cover - defensive
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid velocities: {ve}",
+            )
+        if v.shape != (len(inp.atomic_numbers), 3):
+            raise HTTPException(
+                status_code=400,
+                detail="velocities shape mismatch",
+            )
+        if not _np.all(_np.isfinite(v)):
+            raise HTTPException(
+                status_code=400,
+                detail="velocities contain non-finite",
+            )
+        atoms.set_velocities(v)
+        reused_velocities = True
+    else:
+        MaxwellBoltzmannDistribution(atoms, temperature_K=inp.temperature)
+        reused_velocities = False
 
     pre_applied: list[str] = _maybe_apply_precomputed(
         atoms, inp.precomputed, len(inp.atomic_numbers)
@@ -214,6 +242,7 @@ def md_step(inp: MDIn) -> MDResult:
         calc=inp.calculator,
         precomputed=bool(pre_applied),
         precomputed_keys=pre_applied,
+        reused_velocities=reused_velocities,
     )
 
     return MDResult(
@@ -251,7 +280,10 @@ def _maybe_apply_precomputed(
     if pre.energy is not None:
         e = float(pre.energy)
         if not np.isfinite(e):
-            raise HTTPException(status_code=400, detail="precomputed.energy not finite")
+            raise HTTPException(
+                status_code=400,
+                detail="precomputed.energy not finite",
+            )
         calc.results["energy"] = e
         calc.results["free_energy"] = e
         applied.append("energy")

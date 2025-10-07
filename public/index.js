@@ -213,6 +213,16 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     return pre;
   }
 
+  function getVelocitiesIfFresh(){
+    const dyn = state.dynamics || {};
+    const v = dyn.velocities;
+    if(!v) return null;
+    if(!Array.isArray(v) || v.length !== state.elements.length) return null;
+    // Basic finiteness check without allocating large arrays
+    for(let i=0;i<v.length;i++){ const row=v[i]; if(!row || row.length!==3) return null; for(let k=0;k<3;k++){ if(!Number.isFinite(row[k])) return null; } }
+    return v;
+  }
+
   const dynamics = { stepMD: ()=>{}, stepRelax: ({ forceFn })=>{ forceFn(); } };
   // Remote relaxation: call backend /relax
   async function callRelaxEndpoint(steps=1){
@@ -329,6 +339,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const body = { atomic_numbers, coordinates: pos, steps, temperature, timestep_fs, friction, calculator };
   const maybePre = buildPrecomputedIfFresh();
   if(maybePre){ body.precomputed = maybePre; debugApi('md','precomputed-attach',{ seq: __apiSeq+1, keys:Object.keys(maybePre) }); }
+  const maybeV = getVelocitiesIfFresh();
+  if(maybeV){ body.velocities = maybeV; }
   const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion;
     const base = __resolveApiBase();
     const ep = getEndpointSync('md');
@@ -355,7 +367,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][md] supersededSimulation', { uivAtSend, userInteractionVersion, tivAtSend, totalInteractionVersion });
         return { stale:true, staleReason:'supersededSimulation', userInteractionVersionAtSend:uivAtSend, totalInteractionVersionAtSend:tivAtSend, currentUserInteractionVersion:userInteractionVersion, currentTotalInteractionVersion: totalInteractionVersion };
       }
-      const { positions, forces, final_energy } = data;
+  const { positions, forces, final_energy, velocities } = data;
       if(Array.isArray(positions) && positions.length === state.positions.length){
         for(let i=0;i<positions.length;i++){
           const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; }
@@ -365,6 +377,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       }
       window.__RELAX_FORCES = forces;
       state.dynamics = state.dynamics || {}; state.dynamics.energy = final_energy;
+      if(Array.isArray(velocities) && velocities.length === state.elements.length){
+        // Shallow validate
+        let ok = true; for(let i=0;i<velocities.length && ok;i++){ const r=velocities[i]; if(!r || r.length!==3) ok=false; }
+        if(ok){ state.dynamics.velocities = velocities; }
+      }
       if(forces && forces.length){
         lastForceResult = { energy: final_energy, forces };
         state.forceCache = { version: structureVersion, energy: final_energy, forces, stress: null, stale:false };
