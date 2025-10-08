@@ -583,6 +583,7 @@ export function createVRSupport(scene, { picking } = {}) {
       console.log('[VR][AR] entered immersive-ar session', { blend: environmentBlend() });
       // Auto-normalization for AR: if molecule too close / large, re-scale & offset forward.
       try {
+        const { computeMoleculeWorldBounds, getMoleculeMasters } = await import('./vr-utils.js');
         const AUTO_TAG='[XRAC]';
         const targetDiag=0.35; // meters desired diag
         const idealForward=0.8; // meters in front of camera
@@ -593,9 +594,10 @@ export function createVRSupport(scene, { picking } = {}) {
           attempts++;
           const masters=getMoleculeMasters(scene)||[];
           if(!masters.length){ if(attempts<120) return; else { console.log(AUTO_TAG,'no masters after retries'); return; } }
-          // Compute combined bb
-          let bbMin=null, bbMax=null; for(const m of masters){ try { m.refreshBoundingInfo?.(); const bi=m.getBoundingInfo(); if(!bi) continue; const mn=bi.boundingBox.minimumWorld, mx=bi.boundingBox.maximumWorld; if(!mn||!mx) continue; if(!bbMin){ bbMin={x:mn.x,y:mn.y,z:mn.z}; bbMax={x:mx.x,y:mx.y,z:mx.z}; } else { bbMin.x=Math.min(bbMin.x,mn.x); bbMin.y=Math.min(bbMin.y,mn.y); bbMin.z=Math.min(bbMin.z,mn.z); bbMax.x=Math.max(bbMax.x,mx.x); bbMax.y=Math.max(bbMax.y,mx.y); bbMax.z=Math.max(bbMax.z,mx.z);} } catch{} }
-          if(!bbMin||!bbMax){ if(attempts<120) return; else { console.log(AUTO_TAG,'empty bb after retries'); return; } }
+          // Compute combined bb (robust to root-only)
+          let bounds = computeMoleculeWorldBounds(scene, masters);
+          if(!bounds){ if(attempts<120) return; else { console.log(AUTO_TAG,'empty bb after retries'); return; } }
+          const bbMin = bounds.min, bbMax = bounds.max;
           const center={ x:(bbMin.x+bbMax.x)/2, y:(bbMin.y+bbMax.y)/2, z:(bbMin.z+bbMax.z)/2 };
           const dx=bbMax.x-bbMin.x, dy=bbMax.y-bbMin.y, dz=bbMax.z-bbMin.z; const diag=Math.sqrt(dx*dx+dy*dy+dz*dz)||1;
           const xrCam = xrHelper?.baseExperience?.camera || scene.activeCamera; if(!xrCam){ console.log(AUTO_TAG,'no camera yet'); if(attempts<120) return; else return; }
@@ -611,13 +613,24 @@ export function createVRSupport(scene, { picking } = {}) {
           const targetDist = Math.min(maxForward, Math.max(idealForward, dist, minForward));
           const desiredCenter = camPos.add(fwd.scale(targetDist));
           const appliedScale = needScale?scaleFactor:1.0;
-          for(const m of masters){
-            if(m.position){
-              m.position.x = desiredCenter.x + (m.position.x - center.x)*appliedScale;
-              m.position.y = desiredCenter.y + (m.position.y - center.y)*appliedScale;
-              m.position.z = desiredCenter.z + (m.position.z - center.z)*appliedScale;
+          // If root is present, apply to root only; else fallback to masters
+          const root = masters.length===1 && masters[0]?.name==='molecule_root' ? masters[0] : null;
+          if(root){
+            if(root.position){
+              root.position.x = desiredCenter.x + (root.position.x - center.x)*appliedScale;
+              root.position.y = desiredCenter.y + (root.position.y - center.y)*appliedScale;
+              root.position.z = desiredCenter.z + (root.position.z - center.z)*appliedScale;
             }
-            if(needScale && m.scaling){ m.scaling.x*=appliedScale; m.scaling.y*=appliedScale; m.scaling.z*=appliedScale; }
+            if(needScale && root.scaling){ root.scaling.x*=appliedScale; root.scaling.y*=appliedScale; root.scaling.z*=appliedScale; }
+          } else {
+            for(const m of masters){
+              if(m.position){
+                m.position.x = desiredCenter.x + (m.position.x - center.x)*appliedScale;
+                m.position.y = desiredCenter.y + (m.position.y - center.y)*appliedScale;
+                m.position.z = desiredCenter.z + (m.position.z - center.z)*appliedScale;
+              }
+              if(needScale && m.scaling){ m.scaling.x*=appliedScale; m.scaling.y*=appliedScale; m.scaling.z*=appliedScale; }
+            }
           }
           console.log(AUTO_TAG,'applied', { attempts, originalDiag:diag, scaleApplied:needScale?appliedScale:1.0, originalDist:dist, targetDist, desiredCenter });
           try { window.__XR_AUTO_NORM = { enabled:true, scale: needScale?appliedScale:1.0, desiredCenter, bbCenter:center }; } catch {}

@@ -1,3 +1,39 @@
+// Computes world bounding box for molecule, robust to root-only master list.
+// If masters is just root, aggregates bounds from root's child meshes.
+// Returns { min, max } or null if no geometry.
+export function computeMoleculeWorldBounds(scene, rootOrMasters) {
+  let meshes = [];
+  if (Array.isArray(rootOrMasters)) {
+    // If masters is just root, fallback to children
+    if (rootOrMasters.length === 1 && rootOrMasters[0]?.name === 'molecule_root' && rootOrMasters[0].getChildMeshes) {
+      meshes = rootOrMasters[0].getChildMeshes();
+    } else {
+      meshes = rootOrMasters;
+    }
+  } else if (rootOrMasters && rootOrMasters.name === 'molecule_root' && rootOrMasters.getChildMeshes) {
+    meshes = rootOrMasters.getChildMeshes();
+  } else if (rootOrMasters) {
+    meshes = [rootOrMasters];
+  }
+  if (!meshes.length) return null;
+  let min = null, max = null;
+  for (const m of meshes) {
+    try {
+      m.refreshBoundingInfo?.();
+      const bi = m.getBoundingInfo?.();
+      if (!bi) continue;
+      const mn = bi.boundingBox?.minimumWorld, mx = bi.boundingBox?.maximumWorld;
+      if (!mn || !mx) continue;
+      if (!min) { min = { x: mn.x, y: mn.y, z: mn.z }; max = { x: mx.x, y: mx.y, z: mx.z }; }
+      else {
+        min.x = Math.min(min.x, mn.x); min.y = Math.min(min.y, mn.y); min.z = Math.min(min.z, mn.z);
+        max.x = Math.max(max.x, mx.x); max.y = Math.max(max.y, mx.y); max.z = Math.max(max.z, mx.z);
+      }
+    } catch {}
+  }
+  if (!min || !max) return null;
+  return { min, max };
+}
 // Utility helpers for VR molecule transforms.
 // ---------------------------------------------------------------------------
 // DESIGN (post-refactor):
