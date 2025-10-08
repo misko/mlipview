@@ -18,6 +18,14 @@
 let _mastersCache = null;
 let _mastersCacheSceneId = null;
 let _mastersCacheVersion = 0;
+/*
+ * REGRESSION GUARD (late master rotation issue):
+ * We intentionally collapse the master list to just 'molecule_root' when it exists so that all
+ * incremental user rotations are applied once at the root. Previously rotations were pushed per
+ * master mesh and any bond/atom master created later missed historical rotations, appearing static.
+ * Do NOT reintroduce per-master accumulation without a backfill strategy that reapplies the entire
+ * rotation history to newly created masters. Root parenting is the canonical approach.
+ */
 
 
 function _isMasterCandidate(m){
@@ -35,8 +43,16 @@ export function refreshMoleculeMasters(scene, { force, molState } = {}){
   if(!scene) return [];
   // Fast path: if a molecule_root exists, treat it as the single authoritative master
   try {
-    const explicitRoot = (scene.meshes||[]).find(m=> m && m.name === 'molecule_root');
+    // Root may be a TransformNode (not in scene.meshes) or a Mesh
+    let explicitRoot = null;
+    if(scene.transformNodes){
+      explicitRoot = scene.transformNodes.find(t=> t && t.name === 'molecule_root');
+    }
+    if(!explicitRoot){
+      explicitRoot = (scene.meshes||[]).find(m=> m && m.name === 'molecule_root');
+    }
     if(explicitRoot){
+      try { if(typeof window!=='undefined' && window.__XR_ROT_DEBUG) console.log('[XRDBG][vr-utils] explicit molecule_root detected', explicitRoot.name, 'type', explicitRoot.getClassName&&explicitRoot.getClassName()); } catch {}
       _mastersCache = [ explicitRoot ];
       _mastersCacheSceneId = scene.uid;
       _mastersCacheVersion++;

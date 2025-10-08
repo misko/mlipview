@@ -11,6 +11,8 @@ function vrDebug(){ try { if (typeof window !== 'undefined' && window.vrLog) (co
 
 // Legacy accumulators replaced by quaternion-based approach for stable orientation.
 let _accRotQ = null; // {x,y,z,w}
+let _rotMigratedToRoot = false; // one-time hoist of any pre-root master rotation
+// Regression guard: rotations must apply only to 'molecule_root' so late-created masters inherit orientation.
 // Spherical drag defaults (override via window.*):
 //  vrSphericalDrag=true
 //  vrSphericalRadialMode='adaptive'
@@ -430,6 +432,11 @@ export function setupVRFeatures(xrHelper, scene, picking){
         }
     } catch(e){ /* silent */ }
   } else { scene._vrTwoHandLastDist=null; scene._vrTwoHandBaseScales=null; }
+    // Determine authoritative rotation target: prefer single molecule_root if present in masters
+    let moleculeRoot = null;
+    try { moleculeRoot = masters.find(m=> m && m.name === 'molecule_root'); } catch {}
+    // One-time migration: if we have already rotated individual masters before root existed, consolidate
+    if(moleculeRoot && !_rotMigratedToRoot){ try { const donor=masters.find(m=>m.rotationQuaternion); if(donor){ moleculeRoot.rotationQuaternion = donor.rotationQuaternion.clone(); _accRotQ = { x:moleculeRoot.rotationQuaternion.x,y:moleculeRoot.rotationQuaternion.y,z:moleculeRoot.rotationQuaternion.z,w:moleculeRoot.rotationQuaternion.w }; } else if(!moleculeRoot.rotationQuaternion) { moleculeRoot.rotationQuaternion = BABYLON.Quaternion.Identity(); } for(const m of masters){ if(m!==moleculeRoot && m.rotationQuaternion){ m.rotationQuaternion=null; } } _rotMigratedToRoot=true; } catch{} }
     for(const c of inputs){
       let st=controllerState.get(c);
       if(!st){
@@ -483,8 +490,9 @@ export function setupVRFeatures(xrHelper, scene, picking){
   if(cam?.getDirection){ try { const r=cam.getDirection(BABYLON.Axis.X); rightAxis=[r.x,r.y,r.z]; } catch{} }
   // Apply incremental update in a quaternion accumulator (math in rotation-core.js)
   _accRotQ = vrApplyRotIncrement(_accRotQ, -dYaw, -dPitch, rightAxis, { sens, maxStep:max });
-  const q = new BABYLON.Quaternion(_accRotQ.x, _accRotQ.y, _accRotQ.z, _accRotQ.w);
-  for(const m of masters) m.rotationQuaternion = q.clone();
+        const q = new BABYLON.Quaternion(_accRotQ.x, _accRotQ.y, _accRotQ.z, _accRotQ.w);
+        if(moleculeRoot){ if(!moleculeRoot.rotationQuaternion) moleculeRoot.rotationQuaternion = BABYLON.Quaternion.Identity(); moleculeRoot.rotationQuaternion.copyFrom(q); }
+        else { for(const m of masters) m.rotationQuaternion = q.clone(); }
         st.lastYaw=yaw; st.lastPitch=pitch;
         }
       }

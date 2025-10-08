@@ -92,7 +92,10 @@ export function createMoleculeView(scene, molState) {
       registerMaster('bondMaster', master);
     }
     if (master && mat) master.material = mat;
-    const g = { master, mats:[], indices:[] }; store.set(key,g); return g;
+    const g = { master, mats:[], indices:[] };
+    store.set(key,g);
+    // (debug/backfill removed)
+    return g;
   }
   const ensureAtomGroup = (el)=>{ __count('moleculeView#ensureAtomGroup'); return ensureGroup(atomGroups, el, 'atom'); };
   const ensureGhostAtomGroup = (el)=>{ __count('moleculeView#ensureGhostAtomGroup'); return ensureGroup(ghostAtomGroups, el, 'ghostAtom'); };
@@ -145,11 +148,63 @@ export function createMoleculeView(scene, molState) {
     for (const g of bondGroups.values()) { g.mats=[]; g.indices=[]; }
     const source = bondData || molState.bonds;
     // Debug logging removed (previously controlled by debug=1 query param) to reduce console noise.
+  const ODBG_ENABLED = (typeof window === 'undefined') ? false : (window.O_BOND_DEBUG === true); // default OFF
+    let oBondCount = 0;
     for (const b of source) {
       const g = ensureBondGroup(keyOf(b.i,b.j));
       const pA = molState.positions[b.i]; const pB = molState.positions[b.j];
       const mat = bondMatrix(pA,pB,0.1);
       g.mats.push(mat); g.indices.push(b);
+      if (ODBG_ENABLED) {
+        try {
+          const elI = molState.elements[b.i]; const elJ = molState.elements[b.j];
+          const involvesO = (elI === 'O' || elJ === 'O');
+          if (involvesO) {
+            oBondCount++;
+            // Extract rotation & mid info from matrix for quick diagnostics
+            const midX = (pA.x + pB.x)/2, midY = (pA.y + pB.y)/2, midZ = (pA.z + pB.z)/2;
+            console.log(`[O-BOND-DBG][rebuildBonds] bond ${elI}-${elJ} i=${b.i} j=${b.j} key=${keyOf(b.i,b.j)} mid=(${midX.toFixed(3)},${midY.toFixed(3)},${midZ.toFixed(3)}) len=${Math.hypot(pB.x-pA.x,pB.y-pA.y,pB.z-pA.z).toFixed(3)} opacity=${b.opacity!=null?b.opacity:1}`);
+            // Additional request: for O-C bonds specifically, log local & world positions of both atoms.
+            if ((elI === 'O' && elJ === 'C') || (elI === 'C' && elJ === 'O')) {
+              try {
+                // Local positions are just pA / pB (molecule space)
+                const lpA = pA, lpB = pB;
+                let wpA = lpA, wpB = lpB;
+                // If atom masters exist & have world matrices (after scene graph build), transform local to world.
+                // We find the atom master for each element; thin instance positions are encoded in the matrix buffer;
+                // world position of a given thin instance = Transform(localPosition, masterWorldMatrix), but because we
+                // parent masters to moleculeRoot (and don't apply per-instance extra transforms beyond translation), we can approximate
+                // by applying moleculeRoot's world matrix if available.
+                const root = molState.moleculeRoot;
+                if (root && root.getWorldMatrix) {
+                  const wm = root.getWorldMatrix();
+                  const vA = BABYLON.Vector3.TransformCoordinates(new BABYLON.Vector3(lpA.x,lpA.y,lpA.z), wm);
+                  const vB = BABYLON.Vector3.TransformCoordinates(new BABYLON.Vector3(lpB.x,lpB.y,lpB.z), wm);
+                  wpA = { x: vA.x, y: vA.y, z: vA.z };
+                  wpB = { x: vB.x, y: vB.y, z: vB.z };
+                } else if (root && root._worldMatrix) { // fallback if using stub storing _worldMatrix
+                  try {
+                    const wm = root._worldMatrix;
+                    const vA = BABYLON.Vector3.TransformCoordinates(new BABYLON.Vector3(lpA.x,lpA.y,lpA.z), wm);
+                    const vB = BABYLON.Vector3.TransformCoordinates(new BABYLON.Vector3(lpB.x,lpB.y,lpB.z), wm);
+                    wpA = { x: vA.x, y: vA.y, z: vA.z };
+                    wpB = { x: vB.x, y: vB.y, z: vB.z };
+                  } catch {}
+                }
+                console.log(
+                  `[O-BOND-DBG][OC-pos] ${elI}-${elJ} i=${b.i} j=${b.j} ` +
+                  `localA=(${lpA.x.toFixed(3)},${lpA.y.toFixed(3)},${lpA.z.toFixed(3)}) ` +
+                  `localB=(${lpB.x.toFixed(3)},${lpB.y.toFixed(3)},${lpB.z.toFixed(3)}) ` +
+                  `worldA=(${wpA.x.toFixed(3)},${wpA.y.toFixed(3)},${wpA.z.toFixed(3)}) ` +
+                  `worldB=(${wpB.x.toFixed(3)},${wpB.y.toFixed(3)},${wpB.z.toFixed(3)})`
+                );
+              } catch (e) {
+                console.log('[O-BOND-DBG][OC-pos][error]', e);
+              }
+            }
+          }
+        } catch {}
+      }
     }
     for (const [key,g] of bondGroups) {
       g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
@@ -183,6 +238,33 @@ export function createMoleculeView(scene, molState) {
         if (typeof g.master.setEnabled === 'function') g.master.setEnabled(true); else g.master.isVisible=true;
       }
       // (debug log suppressed)
+    }
+    if (ODBG_ENABLED && oBondCount>0) {
+      try {
+        // After rebuild, verify parenting & log rotationQuaternion of moleculeRoot & each O-* bond master
+        const rootQ = molState.moleculeRoot && molState.moleculeRoot.rotationQuaternion;
+        const rootRotStr = rootQ ? `rootQ=(${rootQ.x.toFixed(4)},${rootQ.y.toFixed(4)},${rootQ.z.toFixed(4)},${rootQ.w.toFixed(4)})` : 'rootQ=none';
+        for (const [key,g] of bondGroups) {
+          if (/O-/.test(key) || /-O/.test(key)) {
+            const parentOk = g.master.parent === molState.moleculeRoot;
+            const q = g.master.rotationQuaternion;
+            const qStr = q ? `q=(${q.x.toFixed(4)},${q.y.toFixed(4)},${q.z.toFixed(4)},${q.w.toFixed(4)})` : 'q=none';
+            // Also log Euler rotation if quaternion absent, and world matrix first row as a quick change signature
+            let eulerStr = '';
+            try {
+              if (!q && g.master.rotation) {
+                const r = g.master.rotation; eulerStr = ` rotEuler=(${(r.x||0).toFixed(3)},${(r.y||0).toFixed(3)},${(r.z||0).toFixed(3)})`;
+              }
+            } catch {}
+            let wmSig='';
+            try {
+              const wm = g.master.getWorldMatrix && g.master.getWorldMatrix();
+              if (wm && wm.m) wmSig = ` wm0=(${wm.m[0].toFixed(3)},${wm.m[1].toFixed(3)},${wm.m[2].toFixed(3)})`;
+            } catch {}
+            console.log(`[O-BOND-DBG][postRebuild] key=${key} instances=${g.mats.length} parentOk=${parentOk} ${qStr} ${rootRotStr}${eulerStr}${wmSig}`);
+          }
+        }
+      } catch {}
     }
     // After bonds are rebuilt, rebuild forces to stay in sync with transforms (shared masters for VR)
     try { rebuildForces(); } catch {}
@@ -308,6 +390,7 @@ export function createMoleculeView(scene, molState) {
       g.mats.push(mat); g.indices.push({ i:baseI, j:baseJ, shiftA:[A.shift.x,A.shift.y,A.shift.z], shiftB:[B.shift.x,B.shift.y,B.shift.z] });
     }
     for (const g of ghostBondGroups.values()) g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
+    // (ghost bond debug removed)
   }
   function rebuildCellLines() {
     __count('moleculeView#rebuildCellLines');
@@ -517,6 +600,17 @@ export function createMoleculeView(scene, molState) {
       const radius = 0.16; // local radius shell; master scaling will modify in world space
       highlight.bond.scaling = new BABYLON.Vector3(radius*2, lenLocal, radius*2);
       highlight.bond.isVisible = true;
+      // O-* bond highlight debug
+      try {
+  const ODBG = (typeof window === 'undefined') ? false : (window.O_BOND_DEBUG === true);
+        if (ODBG) {
+          const elI = molState.elements[i]; const elJ = molState.elements[j];
+            if (elI==='O' || elJ==='O') {
+              const bm = bondMaster && bondMaster.name;
+              console.log(`[O-BOND-DBG][highlight] sel ${elI}-${elJ} i=${i} j=${j} master=${bm} localLen=${lenLocal.toFixed(3)}`);
+            }
+        }
+      } catch {}
     }
   }
   molState.bus.on('selectionChanged', updateSelectionHighlight);
@@ -562,6 +656,7 @@ export function createMoleculeView(scene, molState) {
             highlight.bond.rotationQuaternion = rotQ;
             // Keep scaling local; world scaling inherited
             highlight.bond.scaling.y = lenLocal; // preserve radius components
+            // (per-frame O-bond debug removed)
           }
         }
       } catch {}
@@ -583,6 +678,8 @@ export function createMoleculeView(scene, molState) {
         molState.selection = { kind:null, data:null };
       }
     }
+
+    // (advanced rotation logging removed)
   });
   buildInitial();
   // Initialize highlight once after initial build
