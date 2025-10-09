@@ -212,7 +212,10 @@ def _md_run(
 
     # If client supplied velocities, use them directly; else initialize from
     # temperature.
-    if velocities_in is not None:
+    if (atoms.get_velocities() > 0.0).any():
+        # print(atoms.get_velocities())
+        reused_velocities = True
+    elif velocities_in is not None:
         import numpy as _np  # type: ignore
 
         try:
