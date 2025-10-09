@@ -8,16 +8,20 @@ from ase.calculators.lj import LennardJones
 from ase.optimize import BFGS as _BFGS
 from fastapi import HTTPException
 
+from .atoms_cache import cache_get, cache_put
 from .atoms_utils import build_atoms, compute_properties
 from .log import log_event
 from .model_runtime import get_calculator
 from .models import (
+    MDFromCacheIn,
     MDIn,
     MDResult,
     PrecomputedValues,
     RelaxCalculatorName,
+    RelaxFromCacheIn,
     RelaxIn,
     RelaxResult,
+    SimpleFromCacheIn,
     SimpleIn,
 )
 
@@ -31,6 +35,20 @@ def _attach_calc(atoms, which: RelaxCalculatorName):
         raise HTTPException(status_code=400, detail="Unknown calculator")
 
 
+def _simple_run(atoms, properties: List[str], calculator: RelaxCalculatorName):
+    _attach_calc(atoms, calculator)
+    props = tuple(properties or ("energy", "forces"))
+    results = compute_properties(atoms, props)
+    cache_key = cache_put(atoms)
+    log_event(
+        "simple_calc",
+        natoms=len(atoms),
+        props=list(props),
+        stress=bool(results.get("stress") is not None),
+    )
+    return {"results": results, "cache_key": cache_key}
+
+
 def simple_calculate(inp: SimpleIn):
     atoms = build_atoms(
         inp.atomic_numbers,
@@ -39,36 +57,32 @@ def simple_calculate(inp: SimpleIn):
         charge=inp.charge or 0,
         spin=inp.spin_multiplicity or 1,
     )
-    _attach_calc(atoms, inp.calculator)
-    props = tuple(inp.properties or ("energy", "forces"))
-    results = compute_properties(atoms, props)
-    log_event(
-        "simple_calc",
-        natoms=len(inp.atomic_numbers),
-        props=list(props),
-        stress=bool(results.get("stress") is not None),
+    return _simple_run(
+        atoms,
+        list(inp.properties or ("energy", "forces")),
+        inp.calculator,
     )
-    return {"results": results}
 
 
-def relax(inp: RelaxIn) -> RelaxResult:
-    if inp.steps <= 0:
+def simple_calculate_from_cache(inp: SimpleFromCacheIn):
+    atoms = cache_get(inp.cache_key)
+    return _simple_run(atoms, ["energy", "forces"], inp.calculator)
+
+
+def _relax_run(
+    atoms,
+    steps: int,
+    calculator: RelaxCalculatorName,
+    max_step: float,
+    return_trace: bool,
+    precomputed: PrecomputedValues | None,
+) -> RelaxResult:
+    if steps <= 0:
         raise HTTPException(status_code=400, detail="steps must be >0")
-
-    atoms = build_atoms(
-        inp.atomic_numbers,
-        inp.coordinates,
-        cell=inp.cell,
-        pbc=inp.pbc,
-        charge=inp.charge or 0,
-        spin=inp.spin_multiplicity or 1,
-    )
-    _attach_calc(atoms, inp.calculator)
+    _attach_calc(atoms, calculator)
 
     # Apply precomputed results (if any) before first energy access
-    pre_applied: list[str] = _maybe_apply_precomputed(
-        atoms, inp.precomputed, len(inp.atomic_numbers)
-    )
+    pre_applied: list[str] = _maybe_apply_precomputed(atoms, precomputed, len(atoms))
 
     if "energy" in pre_applied:
         # Honor client-provided energy without triggering a recalculation
@@ -85,15 +99,15 @@ def relax(inp: RelaxIn) -> RelaxResult:
                 detail=f"Initial energy failed: {ee}",
             )
 
-    opt = _BFGS(atoms, logfile=None, maxstep=float(inp.max_step or 0.2))
+    opt = _BFGS(atoms, logfile=None, maxstep=float(max_step or 0.2))
 
-    trace_enabled = bool(inp.return_trace)
+    trace_enabled = bool(return_trace)
     trace: List[float] = []
     steps_completed = 0
 
     # Execute the full requested number of BFGS steps.
     # (Previously capped at 10 to limit runtime; parity tests need full count.)
-    for step_idx in range(int(inp.steps)):
+    for step_idx in range(int(steps)):
         try:
             opt.step()
             steps_completed += 1
@@ -116,14 +130,16 @@ def relax(inp: RelaxIn) -> RelaxResult:
     except Exception:
         stress = None
 
+    cache_key = cache_put(atoms)
+
     log_event(
         "relax_done",
-        natoms=len(inp.atomic_numbers),
+        natoms=len(atoms),
         steps=steps_completed,
         initial=initial_energy,
         final=final_energy,
         trace_len=(len(trace) if trace_enabled else 0),
-        calc=inp.calculator,
+        calc=calculator,
         precomputed=bool(pre_applied),
         precomputed_keys=pre_applied,
     )
@@ -135,16 +151,14 @@ def relax(inp: RelaxIn) -> RelaxResult:
         forces=forces,
         stress=stress,
         steps_completed=steps_completed,
-        calculator=inp.calculator,
+        calculator=calculator,
         trace_energies=(trace if trace_enabled else None),
         precomputed_applied=(pre_applied if pre_applied else None),
+        cache_key=cache_key,
     )
 
 
-def md_step(inp: MDIn) -> MDResult:
-    if inp.steps <= 0:
-        raise HTTPException(status_code=400, detail="steps must be >0")
-
+def relax(inp: RelaxIn) -> RelaxResult:
     atoms = build_atoms(
         inp.atomic_numbers,
         inp.coordinates,
@@ -153,7 +167,43 @@ def md_step(inp: MDIn) -> MDResult:
         charge=inp.charge or 0,
         spin=inp.spin_multiplicity or 1,
     )
-    _attach_calc(atoms, inp.calculator)
+    return _relax_run(
+        atoms,
+        int(inp.steps),
+        inp.calculator,
+        float(inp.max_step or 0.2),
+        bool(inp.return_trace),
+        inp.precomputed,
+    )
+
+
+def relax_from_cache(inp: RelaxFromCacheIn) -> RelaxResult:
+    atoms = cache_get(inp.cache_key)
+    return _relax_run(
+        atoms,
+        int(inp.steps),
+        inp.calculator,
+        float(inp.max_step or 0.2),
+        bool(inp.return_trace),
+        inp.precomputed,
+    )
+
+
+def _md_run(
+    atoms,
+    *,
+    steps: int,
+    temperature: float,
+    timestep_fs: float,
+    friction: float,
+    calculator: RelaxCalculatorName,
+    return_trajectory: bool,
+    precomputed: PrecomputedValues | None,
+    velocities_in,
+) -> MDResult:
+    if steps <= 0:
+        raise HTTPException(status_code=400, detail="steps must be >0")
+    _attach_calc(atoms, calculator)
 
     import numpy as np
     from ase import units as _units
@@ -162,17 +212,17 @@ def md_step(inp: MDIn) -> MDResult:
 
     # If client supplied velocities, use them directly; else initialize from
     # temperature.
-    if inp.velocities is not None:
+    if velocities_in is not None:
         import numpy as _np  # type: ignore
 
         try:
-            v = _np.array(inp.velocities, dtype=float)
+            v = _np.array(velocities_in, dtype=float)
         except Exception as ve:  # pragma: no cover - defensive
             raise HTTPException(
                 status_code=400,
                 detail=f"invalid velocities: {ve}",
             )
-        if v.shape != (len(inp.atomic_numbers), 3):
+        if v.shape != (len(atoms), 3):
             raise HTTPException(
                 status_code=400,
                 detail="velocities shape mismatch",
@@ -185,12 +235,10 @@ def md_step(inp: MDIn) -> MDResult:
         atoms.set_velocities(v)
         reused_velocities = True
     else:
-        MaxwellBoltzmannDistribution(atoms, temperature_K=inp.temperature)
+        MaxwellBoltzmannDistribution(atoms, temperature_K=temperature)
         reused_velocities = False
 
-    pre_applied: list[str] = _maybe_apply_precomputed(
-        atoms, inp.precomputed, len(inp.atomic_numbers)
-    )
+    pre_applied: list[str] = _maybe_apply_precomputed(atoms, precomputed, len(atoms))
 
     if "energy" in pre_applied:
         initial_energy = float(atoms.calc.results["energy"])  # type: ignore
@@ -205,16 +253,16 @@ def md_step(inp: MDIn) -> MDResult:
 
     dyn = Langevin(
         atoms,
-        float(inp.timestep_fs) * _units.fs,
-        temperature_K=inp.temperature,
-        friction=inp.friction,
+        float(timestep_fs) * _units.fs,
+        temperature_K=temperature,
+        friction=friction,
         logfile=None,
     )
 
-    energies = [] if inp.return_trajectory else None
+    energies = [] if return_trajectory else None
     prev = atoms.get_positions().copy()
 
-    for _ in range(int(inp.steps)):
+    for _ in range(int(steps)):
         dyn.run(1)
         if energies is not None:
             try:
@@ -235,16 +283,18 @@ def md_step(inp: MDIn) -> MDResult:
     forces = atoms.get_forces().tolist()
     velocities = atoms.get_velocities().tolist()
     KE = float(atoms.get_kinetic_energy())
-    Tfinal = (2.0 * KE) / (3.0 * len(inp.atomic_numbers) * _units.kB)
+    Tfinal = (2.0 * KE) / (3.0 * len(atoms) * _units.kB)
+
+    cache_key = cache_put(atoms)
 
     log_event(
         "md_done",
-        natoms=len(inp.atomic_numbers),
-        steps=inp.steps,
+        natoms=len(atoms),
+        steps=steps,
         initial=initial_energy,
         final=final_energy,
         T=Tfinal,
-        calc=inp.calculator,
+        calc=calculator,
         precomputed=bool(pre_applied),
         precomputed_keys=pre_applied,
         reused_velocities=reused_velocities,
@@ -256,11 +306,49 @@ def md_step(inp: MDIn) -> MDResult:
         positions=atoms.get_positions().tolist(),
         velocities=velocities,
         forces=forces,
-        steps_completed=int(inp.steps),
+        steps_completed=int(steps),
         temperature=Tfinal,
         energies=energies,
-        calculator=inp.calculator,
+        calculator=calculator,
         precomputed_applied=(pre_applied if pre_applied else None),
+        cache_key=cache_key,
+    )
+
+
+def md_step(inp: MDIn) -> MDResult:
+    atoms = build_atoms(
+        inp.atomic_numbers,
+        inp.coordinates,
+        cell=inp.cell,
+        pbc=inp.pbc,
+        charge=inp.charge or 0,
+        spin=inp.spin_multiplicity or 1,
+    )
+    return _md_run(
+        atoms,
+        steps=int(inp.steps),
+        temperature=float(inp.temperature),
+        timestep_fs=float(inp.timestep_fs),
+        friction=float(inp.friction),
+        calculator=inp.calculator,
+        return_trajectory=bool(inp.return_trajectory),
+        precomputed=inp.precomputed,
+        velocities_in=inp.velocities,
+    )
+
+
+def md_step_from_cache(inp: MDFromCacheIn) -> MDResult:
+    atoms = cache_get(inp.cache_key)
+    return _md_run(
+        atoms,
+        steps=int(inp.steps),
+        temperature=float(inp.temperature),
+        timestep_fs=float(inp.timestep_fs),
+        friction=float(inp.friction),
+        calculator=inp.calculator,
+        return_trajectory=bool(inp.return_trajectory),
+        precomputed=inp.precomputed,
+        velocities_in=None,  # do not accept velocities when from_cache
     )
 
 
@@ -333,4 +421,11 @@ def _maybe_apply_precomputed(
     return applied
 
 
-__all__ = ["simple_calculate", "relax", "md_step"]
+__all__ = [
+    "simple_calculate",
+    "simple_calculate_from_cache",
+    "relax",
+    "relax_from_cache",
+    "md_step",
+    "md_step_from_cache",
+]

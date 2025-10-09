@@ -11,8 +11,22 @@ from .model_runtime import (
     health_snapshot,
     install_predict_handle,
 )
-from .models import MDIn, RelaxIn, SimpleIn
-from .services import md_step, relax, simple_calculate
+from .models import (
+    MDFromCacheIn,
+    MDIn,
+    RelaxFromCacheIn,
+    RelaxIn,
+    SimpleFromCacheIn,
+    SimpleIn,
+)
+from .services import (
+    md_step,
+    md_step_from_cache,
+    relax,
+    relax_from_cache,
+    simple_calculate,
+    simple_calculate_from_cache,
+)
 
 app = FastAPI(title="UMA Serve API", debug=True)
 
@@ -36,13 +50,25 @@ class Ingress:
     def simple_ep(self, inp: SimpleIn):
         return simple_calculate(inp)
 
+    @app.post("/serve/simple_from_cache")
+    def simple_from_cache_ep(self, inp: SimpleFromCacheIn):
+        return simple_calculate_from_cache(inp)
+
     @app.post("/serve/relax")
     def relax_ep(self, inp: RelaxIn):
         return relax(inp).dict()
 
+    @app.post("/serve/relax_from_cache")
+    def relax_from_cache_ep(self, inp: RelaxFromCacheIn):
+        return relax_from_cache(inp).dict()
+
     @app.post("/serve/md")
     def md_ep(self, inp: MDIn):
         return md_step(inp).dict()
+
+    @app.post("/serve/md_from_cache")
+    def md_from_cache_ep(self, inp: MDFromCacheIn):
+        return md_step_from_cache(inp).dict()
 
 
 def deploy():
