@@ -13,9 +13,11 @@ import { __count } from './util/funcCount.js';
 
 // --- Runtime Config (pacing, etc.) ---
 if (typeof window !== 'undefined') {
-  window.__MLIP_CONFIG = window.__MLIP_CONFIG || { minStepIntervalMs: 30 };
+  // Add mdFriction default if not present
+  window.__MLIP_CONFIG = window.__MLIP_CONFIG || { minStepIntervalMs: 30, mdFriction: 0.5 };
+  if (window.__MLIP_CONFIG.mdFriction == null) window.__MLIP_CONFIG.mdFriction = 0.5;
 }
-function getConfig(){ if (typeof window === 'undefined') return { minStepIntervalMs:30 }; return window.__MLIP_CONFIG; }
+function getConfig(){ if (typeof window === 'undefined') return { minStepIntervalMs:30, mdFriction:0.5 }; return window.__MLIP_CONFIG; }
 export function setMinStepInterval(ms){
   const v = Number(ms);
   if(!Number.isFinite(v) || v < 0) throw new Error('minStepIntervalMs must be non-negative number');
@@ -25,6 +27,17 @@ export function setMinStepInterval(ms){
     return window.__MLIP_CONFIG.minStepIntervalMs;
   }
   return Math.max(1, Math.round(v));
+}
+export function setMdFriction(f){
+  const v = Number(f);
+  if(!Number.isFinite(v) || v < 0) throw new Error('mdFriction must be a non-negative number');
+  const clamped = Math.max(0, Math.min(5, v)); // safety clamp: [0,5]
+  if (typeof window !== 'undefined') {
+    window.__MLIP_CONFIG.mdFriction = clamped;
+    console.log('[config] set mdFriction =', window.__MLIP_CONFIG.mdFriction);
+    return window.__MLIP_CONFIG.mdFriction;
+  }
+  return clamped;
 }
 
 // Debug: allow forcing non-cache endpoints via URL flag (?noCache=1) or window.__MLIP_NO_CACHE=true
@@ -387,11 +400,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   }
 
   // --- MD step (backend-only logic, but callable from UI) ---
-  async function callMDEndpoint({ steps=1, calculator='uma', temperature=298, timestep_fs=1.0, friction=0.02 }={}){
+  async function callMDEndpoint({ steps=1, calculator='uma', temperature=298, timestep_fs=1.0, friction }={}){
     __count('index#callMDEndpoint');
     const pos = state.positions.map(p=>[p.x,p.y,p.z]);
     const atomic_numbers = state.elements.map(e=> elementToZ(e));
-  const body = { atomic_numbers, coordinates: pos, steps, temperature, timestep_fs, friction, calculator };
+  const frictionFinal = (typeof friction === 'number' && Number.isFinite(friction)) ? friction : (getConfig().mdFriction ?? 0.5);
+  const body = { atomic_numbers, coordinates: pos, steps, temperature, timestep_fs, friction: frictionFinal, calculator };
   const maybePre = buildPrecomputedIfFresh();
   if(maybePre){ body.precomputed = maybePre; debugApi('md','precomputed-attach',{ seq: __apiSeq+1, keys:Object.keys(maybePre) }); }
   const maybeV = getVelocitiesIfFresh();
@@ -402,7 +416,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     let ep = 'md'; let payload = body;
     if (!__noCacheMode() && lastServerCache.key && lastServerCache.userVersionAtSend === userInteractionVersion) {
       ep = 'md_from_cache';
-      payload = { cache_key: lastServerCache.key, steps, temperature, timestep_fs, friction, calculator, return_trajectory: body.return_trajectory||false };
+      payload = { cache_key: lastServerCache.key, steps, temperature, timestep_fs, friction: frictionFinal, calculator, return_trajectory: body.return_trajectory||false };
       if (maybePre) payload.precomputed = maybePre;
       // Note: from_cache variant intentionally does not accept velocities; server enforces this.
     }
@@ -671,7 +685,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     __resetRPS();
     return { converged, steps: stepsDone };
   }
-  async function startMDContinuous({ steps=200, calculator='uma', temperature=298, timestep_fs=1.0, friction=0.02 }={}){
+  async function startMDContinuous({ steps=200, calculator='uma', temperature=298, timestep_fs=1.0, friction }={}){
   if(!featureFlags().MD_LOOP){ console.warn('[feature] MD_LOOP disabled'); return { disabled:true }; }
     if(running.kind) return { ignored:true };
     running.kind='md';

@@ -97,6 +97,7 @@
     import { initNewViewer } from './index.js';
     import { loadDefault, loadXYZIntoViewer } from './util/moleculeLoader.js';
   import { initTemperatureSlider } from './ui/temperatureSlider.js';
+  import { initFrictionSlider } from './ui/frictionSlider.js';
   import { initForcesToggle } from './ui/forcesToggle.js';
     const urlParams = new URLSearchParams(location.search);
     const DEBUG = urlParams.get('debug') === '1';
@@ -216,6 +217,7 @@
   hudEl.appendChild(switcher);
   // Initialize temperature slider (after HUD present; viewerApi may not yet be ready so pass getter)
   initTemperatureSlider({ hudEl, getViewer: ()=> viewerApi });
+  initFrictionSlider({ hudEl });
 
     // XR dropdown wiring (now static in markup for reliability)
     const xrSel = document.getElementById('xrModeSelect');
