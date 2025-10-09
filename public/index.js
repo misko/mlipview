@@ -27,6 +27,18 @@ export function setMinStepInterval(ms){
   return Math.max(1, Math.round(v));
 }
 
+// Debug: allow forcing non-cache endpoints via URL flag (?noCache=1) or window.__MLIP_NO_CACHE=true
+function __noCacheMode(){
+  try {
+    if (typeof window !== 'undefined') {
+      if (window.__MLIP_NO_CACHE === true) return true;
+      const q = new URLSearchParams(window.location?.search || '');
+      if (q.get('noCache') === '1' || q.get('noCache') === 'true') return true;
+    }
+  } catch {}
+  return false;
+}
+
 // Minimal periodic table map for elements we currently load; extend as needed.
 const SYMBOL_TO_Z = {
   H:1, He:2, C:6, N:7, O:8, F:9, Ne:10, S:16, Cl:17, Fe:26, Co:27, Ni:28, Cu:29, Zn:30,
@@ -118,6 +130,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // Versioned force cache: state.forceCache = { version, energy, forces, stress, stale }
   state.forceCache = { version:0, energy:NaN, forces:[], stress:null, stale:true };
   let structureVersion = 0; // increments when positions (or elements) change
+  // Server-side Atoms cache coordination
+  // lastServerCache tracks the last cache key we received from any backend call (simple/relax/md)
+  // along with the userInteractionVersion snapshot at send-time so we know when it's safe
+  // to reuse via *_from_cache endpoints (only if no new user edits happened since).
+  let lastServerCache = { key: null, userVersionAtSend: null };
   // Version counters:
   // userInteractionVersion: increments ONLY on user geometry edits (drag, bond rotate, debounced posChange)
   // totalInteractionVersion: increments on user edits AND accepted simulation (relax/md) steps.
@@ -164,14 +181,20 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       const coordinates = state.positions.map(p=>[p.x,p.y,p.z]);
       const body = { atomic_numbers, coordinates, properties:['energy','forces'], calculator:'uma' };
     const base = __resolveApiBase();
-    const ep = getEndpointSync('simple');
-    const url = base + ep;
+    // If no debug no-cache flag: prefer from_cache when eligible (no user edits since last send)
+    let ep = 'simple'; let fromCacheBody = null;
+    if (!__noCacheMode() && lastServerCache.key && lastServerCache.userVersionAtSend === userInteractionVersion) {
+      ep = 'simple_from_cache';
+      fromCacheBody = { cache_key: lastServerCache.key, calculator:'uma' };
+    }
+    const url = base + getEndpointSync(ep);
       const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
       const t0 = performance.now();
       debugApi('simple_calculate','request',{ seq, url, body });
       let resp, json;
       try {
-        resp = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        const payload = fromCacheBody || body;
+        resp = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
       } catch(netErr){
         debugApi('simple_calculate','network-error',{ seq, url, error: netErr?.message||String(netErr) });
         throw netErr;
@@ -192,6 +215,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
           state.dynamics = state.dynamics || {}; state.dynamics.energy = res.energy;
           window.__RELAX_FORCES = res.forces||[];
           state.forceCache = { version: structureVersion, energy: res.energy, forces: res.forces||[], stress: res.stress||null, stale:false };
+          // Track/refresh server cache key (present on both calculate and from_cache responses)
+          try { if (json && typeof json.cache_key === 'string') { lastServerCache = { key: json.cache_key, userVersionAtSend: userInteractionVersion }; } } catch {}
           // Commit forces to state & notify renderer each successful fetch so visualization updates.
           if (Array.isArray(res.forces) && res.forces.length) {
             __updateForces(res.forces, { reason:'fetchRemoteForces' });
@@ -238,14 +263,20 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   if(maybePre){ body.precomputed = maybePre; debugApi('relax','precomputed-attach',{ seq: __apiSeq+1, keys:Object.keys(maybePre) }); }
   const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion;
     const base = __resolveApiBase();
-    const ep = getEndpointSync('relax');
-    const url = base + ep;
+    // Prefer from_cache if allowed and no new user interaction since last server state
+    let ep = 'relax'; let payload = body;
+    if (!__noCacheMode() && lastServerCache.key && lastServerCache.userVersionAtSend === userInteractionVersion) {
+      ep = 'relax_from_cache';
+      payload = { cache_key: lastServerCache.key, steps, calculator:'uma' };
+      if (maybePre) payload.precomputed = maybePre;
+    }
+    const url = base + getEndpointSync(ep);
     const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
     const t0 = performance.now();
-    debugApi('relax','request',{ seq, url, body });
+  debugApi('relax','request',{ seq, url, body: payload });
     let resp, json;
     try {
-      resp = await fetch(url || '/relax', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+  resp = await fetch(url || '/relax', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(payload) });
     } catch(netErr){
       debugApi('relax','network-error',{ seq, url, error: netErr?.message||String(netErr) });
       throw netErr;
@@ -259,6 +290,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     }
     try { json = await resp.json(); } catch(parseErr){ debugApi('relax','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
     debugApi('relax','response',{ seq, url, timingMs, status: resp.status, response: json });
+    try { if (json && typeof json.cache_key === 'string') { lastServerCache = { key: json.cache_key, userVersionAtSend: uivAtSend }; } } catch {}
     return { data: json, uivAtSend, tivAtSend };
   }
   const { engine, scene, camera } = await createScene(canvas);
@@ -347,16 +379,24 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   if(maybeV){ body.velocities = maybeV; }
   const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion;
     const base = __resolveApiBase();
-    const ep = getEndpointSync('md');
-    const url = base + ep;
+    // Prefer MD from_cache if allowed and stable
+    let ep = 'md'; let payload = body;
+    if (!__noCacheMode() && lastServerCache.key && lastServerCache.userVersionAtSend === userInteractionVersion) {
+      ep = 'md_from_cache';
+      payload = { cache_key: lastServerCache.key, steps, temperature, timestep_fs, friction, calculator, return_trajectory: body.return_trajectory||false };
+      if (maybePre) payload.precomputed = maybePre;
+      // Note: from_cache variant intentionally does not accept velocities; server enforces this.
+    }
+    const url = base + getEndpointSync(ep);
     const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
     const t0 = performance.now();
-    debugApi('md','request',{ seq, url, body });
-    let resp, json; try { resp = await fetch(url,{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }); } catch(netErr){ debugApi('md','network-error',{ seq, url, error: netErr?.message||String(netErr) }); throw netErr; }
+  debugApi('md','request',{ seq, url, body: payload });
+  let resp, json; try { resp = await fetch(url,{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) }); } catch(netErr){ debugApi('md','network-error',{ seq, url, error: netErr?.message||String(netErr) }); throw netErr; }
     const t1 = performance.now(); const timingMs = Math.round((t1 - t0)*100)/100;
     if(!resp.ok){ const txt = await resp.text(); debugApi('md','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt }); throw new Error('MD request failed '+resp.status+': '+txt); }
     try { json = await resp.json(); } catch(parseErr){ debugApi('md','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
     debugApi('md','response',{ seq, url, timingMs, status: resp.status, response: json });
+    try { if (json && typeof json.cache_key === 'string') { lastServerCache = { key: json.cache_key, userVersionAtSend: uivAtSend }; } } catch {}
     return { data: json, uivAtSend, tivAtSend };
   }
   async function mdStep(opts={}){
@@ -629,9 +669,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
           dynT = window.__MLIP_TARGET_TEMPERATURE;
         }
       } catch {}
-      // Clamp to configured slider bounds (0-2000 K)
+  // Clamp to configured slider bounds (0-3000 K)
       if(!(Number.isFinite(dynT))) dynT = temperature;
-      if(dynT < 0) dynT = 0; else if(dynT > 2000) dynT = 2000;
+  if(dynT < 0) dynT = 0; else if(dynT > 3000) dynT = 3000;
   const res = await mdStep({ calculator, temperature: dynT, timestep_fs, friction });
   try { const el=document.getElementById('instTemp'); if(el && state.dynamics && typeof state.dynamics.temperature==='number') el.textContent='T: '+state.dynamics.temperature.toFixed(1)+' K'; } catch {}
       lastTime=performance.now();
