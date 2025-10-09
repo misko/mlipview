@@ -4,6 +4,7 @@ import { computeRadialDelta } from './spherical-drag-core.js';
 import { applyIncrement as vrApplyRotIncrement, identityQ as vrIdentityQ } from './rotation-core.js';
 import { createVRPicker } from './vr-picker.js';
 import { createEmptySelection, applyBondClick, bondOrientationColor, selectAtom as modelSelectAtom } from '../selection-model.js';
+import { createVRLaserManager } from './vr-laser.js';
 
 // Minimal guarded logger (kept lightweight for potential future enablement via window.vrLog)
 function vrLog(){ try { if (typeof window !== 'undefined' && window.vrLog) console.log.apply(console, arguments); } catch(_){} }
@@ -191,13 +192,21 @@ export function setupVRFeatures(xrHelper, scene, picking){
   const getControllerNode=c=>c.pointer||c.grip||c.pointer?.parent||null;
   const getYawPitch=(c)=>{ if(typeof BABYLON==='undefined') return {yaw:0,pitch:0}; const n=getControllerNode(c); if(n?.getDirection){ const f=n.getDirection(BABYLON.Vector3.Forward()).normalize(); return { yaw:Math.atan2(f.x,f.z), pitch:Math.asin(-Math.max(-1,Math.min(1,f.y))) }; } return { yaw:0,pitch:0 }; };
   const isTrigger=c=>{ try { const mc=c.motionController; if(mc?.getComponent){ const t=mc.getComponent('xr-standard-trigger'); if(typeof t?.pressed==='boolean') return t.pressed; } const gp=c.inputSource?.gamepad; if(gp?.buttons?.length) return !!gp.buttons[0]?.pressed; } catch{} return false; };
-  xrHelper?.input?.onControllerAddedObservable.add(c=>{ controllerState.set(c,{ pressed:false,lastYaw:0,lastPitch:0,downTime:0,tapHandled:false }); });
+  xrHelper?.input?.onControllerAddedObservable.add(c=>{ controllerState.set(c,{ pressed:false,lastYaw:0,lastPitch:0,downTime:0,tapHandled:false }); laserMgr?.ensureForController(c); });
+  try { xrHelper?.input?.onControllerRemovedObservable?.add(c=>{ const st=controllerState.get(c); if(st?.laserMesh?.dispose) try{ st.laserMesh.dispose(); }catch{}; controllerState.delete(c); }); } catch{}
   function pickAtomOrBondWithRay(ray){
     if(!ray) return null;
     // Try existing picker first
     if(picker){
-  try{ const bond=picker.pickBondWithRay(ray); if(bond){ return { kind:'bond', bond }; } }catch{}
-  try{ const atom=picker.pickAtomWithRay(ray); if(atom){ return { kind:'atom', atom }; } }catch{}
+  try{ const bond=picker.pickBondWithRay(ray); if(bond){
+    // Attempt to get distance via a raw scene pick (best effort)
+    let dist=null; try{ if(scene.pickWithRay){ const pr=scene.pickWithRay(ray); if(pr?.hit) dist=pr.distance; } }catch{}
+    return { kind:'bond', bond, dist };
+  } }catch{}
+  try{ const atom=picker.pickAtomWithRay(ray); if(atom){
+    let dist=null; try{ if(scene.pickWithRay){ const pr=scene.pickWithRay(ray); if(pr?.hit) dist=pr.distance; } }catch{}
+    return { kind:'atom', atom, dist };
+  } }catch{}
     }
     // Fallback: raw scene pick + external resolver
     try {
@@ -206,8 +215,8 @@ export function setupVRFeatures(xrHelper, scene, picking){
         if(pr && pr.hit){
           const resolver = picking?.view || picking;
             if(resolver){
-              const bond = resolver.resolveBondPick?.(pr); if(bond){ return { kind:'bond', bond }; }
-              const atom = resolver.resolveAtomPick?.(pr); if(atom){ return { kind:'atom', atom }; }
+              const bond = resolver.resolveBondPick?.(pr); if(bond){ return { kind:'bond', bond, dist:pr.distance }; }
+              const atom = resolver.resolveAtomPick?.(pr); if(atom){ return { kind:'atom', atom, dist:pr.distance }; }
             }
         }
       }
@@ -403,6 +412,7 @@ export function setupVRFeatures(xrHelper, scene, picking){
     }
   }
 
+  const laserMgr = createVRLaserManager({ scene, xrHelper, controllerState, getControllerNode, pickAtomOrBondWithRay });
   scene?.onBeforeRenderObservable?.add(()=>{
     // Bond highlight frame updates delegated to moleculeView.js
     // Refresh masters if we only have highlight meshes cached
@@ -410,9 +420,22 @@ export function setupVRFeatures(xrHelper, scene, picking){
     if(masters.length && masters.every(m=>/^highlight_/.test(m.name))){
       masters = refreshMoleculeMasters(scene,{ force:true });
     }
-    if(!masters?.length) return;
+    const noMasters = !masters?.length;
+    // Even if no masters (e.g., early init or test harness), still perform laser updates below.
   // Frame counter no longer needed after debug removal
-    const inputs=xrHelper?.input?.controllers||[]; const pressedWithPos=[]; for(const c of inputs) if(isTrigger(c)){ const node=getControllerNode(c); if(node?.getAbsolutePosition) pressedWithPos.push({ c, p: node.getAbsolutePosition().clone() }); }
+  const inputs=xrHelper?.input?.controllers||[]; const pressedWithPos=[]; for(const c of inputs) if(isTrigger(c)){ const node=getControllerNode(c); if(node?.getAbsolutePosition) pressedWithPos.push({ c, p: node.getAbsolutePosition().clone() }); }
+  // Update lasers every frame regardless of masters
+  try { laserMgr.updateFrame(inputs); } catch {}
+    if(noMasters){
+      // Minimal laser diameter relaxation when nothing loaded
+      for(const c of inputs){
+        let st=controllerState.get(c);
+        if(!st){ st={ pressed:false,lastYaw:0,lastPitch:0,downTime:0,tapHandled:false, dragging:false }; controllerState.set(c,st); }
+        if(typeof st.laserDiameterCurrent!=='number') st.laserDiameterCurrent=LASER_BASE_DIAM;
+        st.laserDiameterCurrent = st.laserDiameterCurrent + (LASER_BASE_DIAM - st.laserDiameterCurrent)*LASER_LERP;
+      }
+    }
+  // If no masters we still proceed for laser hover & controller state but skip molecule transform logic below via guards.
     const twoHandMode=pressedWithPos.length>=2;
     // Two-hand stretch (pinch zoom) based on distance change between controllers
   if(twoHandMode){
@@ -437,13 +460,33 @@ export function setupVRFeatures(xrHelper, scene, picking){
     try { moleculeRoot = masters.find(m=> m && m.name === 'molecule_root'); } catch {}
     // One-time migration: if we have already rotated individual masters before root existed, consolidate
     if(moleculeRoot && !_rotMigratedToRoot){ try { const donor=masters.find(m=>m.rotationQuaternion); if(donor){ moleculeRoot.rotationQuaternion = donor.rotationQuaternion.clone(); _accRotQ = { x:moleculeRoot.rotationQuaternion.x,y:moleculeRoot.rotationQuaternion.y,z:moleculeRoot.rotationQuaternion.z,w:moleculeRoot.rotationQuaternion.w }; } else if(!moleculeRoot.rotationQuaternion) { moleculeRoot.rotationQuaternion = BABYLON.Quaternion.Identity(); } for(const m of masters){ if(m!==moleculeRoot && m.rotationQuaternion){ m.rotationQuaternion=null; } } _rotMigratedToRoot=true; } catch{} }
-    for(const c of inputs){
+  for(const c of inputs){
       let st=controllerState.get(c);
       if(!st){
         st={ pressed:false,lastYaw:0,lastPitch:0,downTime:0,tapHandled:false, dragging:false };
         controllerState.set(c,st);
+        // If controller added outside of onControllerAddedObservable (test shim), initialize laser state
+        if(typeof st.laserDiameterCurrent==='undefined'){
+          st.laserDiameterCurrent=LASER_BASE_DIAM;
+          st.hoverKind=null;
+        }
+      }
+      // Lazy-create laser mesh if missing (e.g., controller injected after observable)
+      if(typeof BABYLON!=='undefined' && !st.laserMesh){
+        try {
+          const node=getControllerNode(c);
+          if(node){
+            const laser = BABYLON.MeshBuilder.CreateCylinder('xrLaser_'+(c.uniqueId||'u'), { height:LASER_LENGTH, diameter:LASER_BASE_DIAM, tessellation:6, subdivisions:1 }, scene);
+            laser.isPickable=false; laser.parent=node; laser.position=new BABYLON.Vector3(0,0,LASER_LENGTH/2);
+            const mat = new BABYLON.StandardMaterial('xrLaserMat_'+(c.uniqueId||'u'), scene); mat.disableLighting=true; mat.emissiveColor=new BABYLON.Color3(LASER_BASE_COLOR.r, LASER_BASE_COLOR.g, LASER_BASE_COLOR.b); mat.alpha=0.95; laser.material=mat;
+            st.laserMesh=laser; if(typeof st.laserDiameterCurrent!=='number') st.laserDiameterCurrent=LASER_BASE_DIAM;
+          }
+        } catch{}
       }
       const pressed=isTrigger(c);
+      if(noMasters){
+        // Skip selection/drag logic entirely without masters; still perform hover ray & diameter update
+      }
   if(pressed && !st.pressed){
         const {yaw,pitch}=getYawPitch(c);
         st.lastYaw=yaw; st.lastPitch=pitch; st.pressed=true;
@@ -497,7 +540,7 @@ export function setupVRFeatures(xrHelper, scene, picking){
         }
       }
       // Suppress drag updates entirely in two-hand mode (scaling takes precedence)
-      if(st.dragging && !twoHandMode) updateDrag(st);
+  if(!noMasters && st.dragging && !twoHandMode) updateDrag(st);
     }
     // If we entered two-hand mode this frame and any controller was dragging, end drags
     if(twoHandMode){
@@ -522,7 +565,12 @@ export function createVRSupport(scene, { picking } = {}) {
   const controllerStates = new Map(); // compatibility for legacy tests
   let _shimControllers = [];
   function isSupported(){ return supported; }
-  function controllers(){ return xrHelper?.input?.controllers || _shimControllers; }
+  function controllers(){
+    const real = xrHelper?.input?.controllers;
+    if(real && real.length) return real;
+    if(real && !real.length && _shimControllers.length) return _shimControllers;
+    return real || _shimControllers;
+  }
   async function supportsSession(mode){
     try { if(!navigator?.xr?.isSessionSupported) return false; return await navigator.xr.isSessionSupported(mode); } catch { return false; }
   }
@@ -855,18 +903,6 @@ export function createVRSupport(scene, { picking } = {}) {
       // Fabricate shim environment for unit tests (no real XR / render loop)
       supported=true;
       xrHelper = xrHelper || { input:{ controllers:[] }, baseExperience:{ sessionManager:{} } };
-      // Provide a fake controller with __press that simulates an atom tap selection
-      const fakeCtrl = { uniqueId:'shimController', __press:()=>{
-        // Simulate tap selecting atom index 5 (matches tests/vrTrigger expectation)
-        try {
-          if(picking?.selectionService?.clickAtom) picking.selectionService.clickAtom(5);
-          else if(picking?.selection?.clickAtom) picking.selection.clickAtom(5);
-        } catch {}
-      }};
-      _shimControllers = [fakeCtrl];
-      xrHelper.input.controllers = _shimControllers;
-      // Seed controller state map so vrDragStability can set pressed flags
-      controllerStates.set(fakeCtrl.uniqueId, { pressed:false, pressTime:0 });
       return { supported:true, shim:true };
     }
     try {
@@ -875,6 +911,8 @@ export function createVRSupport(scene, { picking } = {}) {
       xrHelper=await setupVR(engineRef, scene, picking);
       supported=!!xrHelper;
       console.log('[VR][init] setupVR result', { supported, hasHelper: !!xrHelper, hasBase: !!xrHelper?.baseExperience, hasSM: !!xrHelper?.baseExperience?.sessionManager });
+      // If helper missing or unsupported features, fall back to shim controllers for tests to still drive laser logic
+      // If unsupported we do not fabricate controllers here (legacy behavior retained)
     } catch(e){
       // Fall back to shim on failure
       console.warn('[VR][init] setupVR failed; falling back to shim', e?.message||e);
@@ -900,7 +938,8 @@ export function createVRSupport(scene, { picking } = {}) {
   }
   try { if(typeof window!=='undefined') window.vrDebugInfo = debugInfo; } catch {}
   function forceWorldHUD(){ if(window.__XR_HUD_FALLBACK){ console.log('[XR][HUD] fallback already exists'); return window.__XR_HUD_FALLBACK; } spawnWorldPanelFallback(); return window.__XR_HUD_FALLBACK; }
-  return { init, isSupported, enterVR:legacyEnterVR, exitVR:legacyExitVR, enterAR, exitXR, switchXR, controllers, controllerStates, setTransparent, debugInfo, ensureXRHUD, forceWorldHUD, _debugHUD:()=>({ created:_xrHudCreated, pollAttempts:_hudPollAttempts, session:sessionMode(), hasADT: !!window.__XR_HUD_ADT, hasFallback: !!window.__XR_HUD_FALLBACK }) }; 
+  function getLaserInfo(){ try { return (typeof laserMgr!=='undefined' && laserMgr?.getInfo) ? laserMgr.getInfo() : []; } catch { return []; } }
+  return { init, isSupported, enterVR:legacyEnterVR, exitVR:legacyExitVR, enterAR, exitXR, switchXR, controllers, controllerStates, setTransparent, debugInfo, ensureXRHUD, forceWorldHUD, getLaserInfo, _debugHUD:()=>({ created:_xrHudCreated, pollAttempts:_hudPollAttempts, session:sessionMode(), hasADT: !!window.__XR_HUD_ADT, hasFallback: !!window.__XR_HUD_FALLBACK }) }; 
 }
 
 export default { setupVR, setupVRFeatures, createVRSupport };
