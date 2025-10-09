@@ -253,6 +253,25 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   }
 
   const dynamics = { stepMD: ()=>{}, stepRelax: ({ forceFn })=>{ forceFn(); } };
+  // --- Requests-per-second (RPS) counter for MD/Relax runs ---
+  const __rps = { samples: [], windowMs: 2000, value: 0 };
+  function __resetRPS(){
+    __rps.samples.length = 0; __rps.value = 0;
+    try { const el = document.getElementById('rpsLabel'); if (el) el.textContent = 'RPS: --'; } catch {}
+  }
+  function __noteRequestCompleted(){
+    const now = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+    __rps.samples.push(now);
+    // Drop samples outside the window
+    while(__rps.samples.length && (now - __rps.samples[0]) > __rps.windowMs){ __rps.samples.shift(); }
+    if(__rps.samples.length >= 2){
+      const dt = (__rps.samples[__rps.samples.length-1] - __rps.samples[0]);
+      __rps.value = dt > 0 ? (__rps.samples.length - 1) * 1000 / dt : 0;
+    } else {
+      __rps.value = 0;
+    }
+    try { const el = document.getElementById('rpsLabel'); if (el) el.textContent = 'RPS: ' + __rps.value.toFixed(1); } catch {}
+  }
   // Remote relaxation: call backend /relax
   async function callRelaxEndpoint(steps=1){
     __count('index#callRelaxEndpoint');
@@ -620,6 +639,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     __count('index#startRelaxContinuous');
     if (running.kind) return { ignored:true };
     running.kind='relax';
+    __resetRPS();
   const minInterval = getConfig().minStepIntervalMs; // ms pacing between successful requests (configurable)
     let lastTime=0;
     let backoffMs=0; // 0 means no backoff active
@@ -636,7 +656,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       }
       if(running.kind!=='relax') break;
   const res = await relaxStep();
-  if(res && res.applied){ stepsDone++; } // count only applied (non-stale) steps
+  if(res && res.applied){ stepsDone++; __noteRequestCompleted(); } // count only applied (non-stale) steps
       lastTime = performance.now();
       if(res && res.error){
         errorStreak++;
@@ -648,12 +668,14 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     }
     const converged = errorStreak===0 && stepsDone>=maxSteps; // simplistic criterion
     running.kind=null;
+    __resetRPS();
     return { converged, steps: stepsDone };
   }
   async function startMDContinuous({ steps=200, calculator='uma', temperature=298, timestep_fs=1.0, friction=0.02 }={}){
   if(!featureFlags().MD_LOOP){ console.warn('[feature] MD_LOOP disabled'); return { disabled:true }; }
     if(running.kind) return { ignored:true };
     running.kind='md';
+    __resetRPS();
   const minInterval = getConfig().minStepIntervalMs; let lastTime=0;
     let backoffMs=0; const baseBackoff=200; const maxBackoff=5000; let errorStreak=0; const maxErrorStreak=10;
     let i=0;
@@ -680,15 +702,16 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         backoffMs = backoffMs? Math.min(backoffMs*2, maxBackoff) : baseBackoff;
       } else {
         // Only advance step counter for applied (non-stale) MD results
-        if(res && res.applied){ i++; }
+        if(res && res.applied){ i++; __noteRequestCompleted(); }
         errorStreak=0; backoffMs=0;
       }
     }
     const completed = (i>=steps && errorStreak===0);
     running.kind=null;
+    __resetRPS();
     return { completed, steps: i };
   }
-  function stopSimulation(){ running.kind=null; }
+  function stopSimulation(){ running.kind=null; __resetRPS(); }
 
   const lastMetrics = { energy:null, maxForce:null, maxStress:null };
   function getMetrics(){ __count('index#getMetrics'); return { energy: state.dynamics?.energy, running: running.kind }; }
