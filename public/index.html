@@ -25,6 +25,40 @@
     // Predeclare global so console commands entered early don't throw ReferenceError
     (function(){ try { if(typeof window!=='undefined' && !('viewerApi' in window)) window.viewerApi = null; } catch{} })();
   </script>
+  <script>
+    // Optional latency debug: enable with ?debugLatency=1 to log round-trip times of all fetch() calls
+    (function(){
+      try {
+        const params = new URLSearchParams(location.search||'');
+        if (params.get('debugLatency') === '1') {
+          const origFetch = (typeof window!=='undefined' && window.fetch) ? window.fetch.bind(window) : null;
+          if (origFetch && !window.__MLIP_FETCH_LATENCY_WRAPPED__) {
+            window.__MLIP_FETCH_LATENCY_WRAPPED__ = true;
+            window.fetch = async function(input, init){
+              const method = (init && init.method) || (input && input.method) || 'GET';
+              const url = (typeof input === 'string') ? input : (input && (input.url || input.toString())) || 'unknown';
+              const t0 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+              try {
+                const resp = await origFetch(input, init);
+                const t1 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+                const ms = Math.round((t1 - t0)*100)/100;
+                const status = (resp && typeof resp.status==='number') ? resp.status : 'n/a';
+                console.log(`[latency] ${method} ${url} -> ${status} in ${ms} ms`);
+                return resp;
+              } catch (err) {
+                const t1 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+                const ms = Math.round((t1 - t0)*100)/100;
+                const msg = (err && (err.message||String(err))) || 'error';
+                console.warn(`[latency] ${method} ${url} -> network error in ${ms} ms: ${msg}`);
+                throw err;
+              }
+            };
+            try { console.log('[latency] fetch timing enabled'); } catch{}
+          }
+        }
+      } catch {}
+    })();
+  </script>
 </head>
 <body>
   <div id="app">
