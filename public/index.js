@@ -786,7 +786,13 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   }
 
   // Force vectors now rendered via moleculeView thin instances (see moleculeView.rebuildForces).
-  function setForceVectorsEnabled(on){ /* kept for backward compatibility; no-op */ }
+  // Keep a small compatibility layer: setting true will ensure showForces=true, false hides; undefined toggles.
+  function setForceVectorsEnabled(on){
+    try {
+      if (typeof on === 'boolean') { if (!!state.showForces !== on) state.toggleForceVectorsVisibility(); }
+      else { state.toggleForceVectorsVisibility(); }
+    } catch {}
+  }
 
   // VR support is lazy; user can call vr.init() explicitly later.
   const vr = createVRSupport(scene, { picking: { ...picking, view, vrPicker, selectionService: selection, manipulation, molState: state } });

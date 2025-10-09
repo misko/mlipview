@@ -21,6 +21,8 @@ export function createMoleculeState({ elements = [], positions = [], bonds = [],
     ghostImages: [],
   showCell: false,
   showGhostCells: false,
+  // Forces visualization toggle (default OFF by request)
+  showForces: false,
     selection: { kind:null, data:null },
     dynamics: { velocities: [], forces: [], mass: [], temperature: 0 },
     versions: { positions:0, bonds:0, cell:0, selection:0, topology:0, dynamics:0 },
@@ -29,6 +31,7 @@ export function createMoleculeState({ elements = [], positions = [], bonds = [],
   markCellChanged() { __count('moleculeState#markCellChanged'); this.versions.cell++; bus.emit('cellChanged', state); },
   toggleCellVisibility() { __count('moleculeState#toggleCellVisibility'); this.showCell = !this.showCell; this.markCellChanged(); },
   toggleGhostCells() { __count('moleculeState#toggleGhostCells'); this.showGhostCells = !this.showGhostCells; this.markCellChanged(); },
+  toggleForceVectorsVisibility() { __count('moleculeState#toggleForceVectorsVisibility'); this.showForces = !this.showForces; bus.emit('forcesChanged', state); },
   // Enhanced toggle: if user turns cell on but underlying cell is disabled (no lattice metadata loaded),
   // we synthesize a bounding box cell from current atom positions so something visible appears.
   // This avoids the confusing "Cell ON" label with no visual change.

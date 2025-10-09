@@ -290,6 +290,14 @@ export function createMoleculeView(scene, molState) {
     if (DBG) console.log('[Forces][rebuild] start');
     const g = ensureForceGroup();
     g.mats.length = 0; g.indices.length = 0;
+    // If forces are globally hidden, disable the master and clear buffers
+    if (!molState.showForces) {
+      if (DBG) console.log('[Forces][rebuild] hidden by state.showForces=false');
+      try { g.master.thinInstanceSetBuffer('matrix', new Float32Array()); } catch {}
+      try { g.master.thinInstanceSetBuffer('color', new Float32Array(), 4); } catch {}
+      if (typeof g.master.setEnabled === 'function') g.master.setEnabled(false); else g.master.isVisible=false;
+      return;
+    }
     // Accept forces from molState.forces OR molState.dynamics?.forces OR global window.__RELAX_FORCES for backward compat
     let forces = molState.forces || (molState.dynamics && molState.dynamics.forces && molState.dynamics.forces.map(f=>[f.x,f.y,f.z])) || (typeof window!=='undefined' && window.__RELAX_FORCES) || [];
     if (!Array.isArray(forces)) forces = [];
