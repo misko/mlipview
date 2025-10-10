@@ -247,20 +247,24 @@ export function buildDesktopPanel({ attachTo } = {}) {
     function getApi(){ try { return window.viewerApi || window._viewer; } catch { return null; } }
     function setBtnState(btn, on){ btn.setAttribute('data-on', String(!!on)); btn.setAttribute('aria-checked', String(!!on)); btn.textContent = on ? (btn.id==='toggleMD'?'Molecular Dynamics: On':'Relaxation: On') : (btn.id==='toggleMD'?'Molecular Dynamics: Off':'Relaxation: Off'); }
     // Relaxation toggle wiring
-    relaxToggle.addEventListener('click', async (e)=>{
+    relaxToggle.addEventListener('click', (e)=>{
       const api = getApi(); if(!api) return;
       const on = relaxToggle.getAttribute('data-on')==='true';
       // If turning on, stop MD and start relax run (single step semantics via run loop)
-      if(on){ try { api.stopSimulation(); } catch{} try { await api.startRelaxContinuous({}); } catch{}
+      if(on){
+        try { api.stopSimulation(); } catch{}
+        try { api.startRelaxContinuous({}); } catch{}
       } else { try { api.stopSimulation(); } catch{} }
       // Mirror legacy button text convention for compatibility
       try { const legacy = document.getElementById('btnRelaxRun'); if(legacy) legacy.textContent = on? 'stop':'run'; } catch{}
     });
     // MD toggle wiring
-    mdToggle.addEventListener('click', async (e)=>{
+    mdToggle.addEventListener('click', (e)=>{
       const api = getApi(); if(!api) return;
       const on = mdToggle.getAttribute('data-on')==='true';
-      if(on){ try { api.stopSimulation(); } catch{} try { await api.startMDContinuous({}); } catch{}
+      if(on){
+        try { api.stopSimulation(); } catch{}
+        try { api.startMDContinuous({}); } catch{}
       } else { try { api.stopSimulation(); } catch{} }
       try {
         const legacy = document.getElementById('btnMDRun'); if(legacy) legacy.textContent = on? 'stop':'run';
@@ -298,11 +302,12 @@ export function buildDesktopPanel({ attachTo } = {}) {
         }
       } catch {}
     }
-    // Initial sync now, then poll briefly to catch auto-start transitions without requiring events
+    // Initial sync now, then keep a lightweight periodic sync so programmatic runs update UI
     try { syncFromApiOnce(); } catch {}
-    try { 
-      let syncPolls = 0; const maxPolls = 60; // ~12s at 200ms
-      const t = setInterval(()=>{ syncFromApiOnce(); if(++syncPolls>=maxPolls) clearInterval(t); }, 200);
+    try {
+      if (!window.__MLIPVIEW_PANEL_SYNC_INTERVAL) {
+        window.__MLIPVIEW_PANEL_SYNC_INTERVAL = setInterval(syncFromApiOnce, 250);
+      }
     } catch {}
 
     sim.content.append(relaxTitle, relaxRow, mdTitle, mdRow);
