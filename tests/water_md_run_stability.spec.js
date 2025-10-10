@@ -39,6 +39,8 @@ beforeAll(()=>{
 jest.mock('../public/render/scene.js', () => ({ createScene: async () => ({ engine:{ runRenderLoop:(fn)=>{} }, scene:{ meshes:[], render:()=>{}, onPointerObservable:{ _l:[], add(fn){this._l.push(fn);} } }, camera:{ attachControl:()=>{} } }) }));
 
 async function setupViewer(){
+  // Enable test mode so focus gating does not pause continuous runs under jsdom
+  window.__MLIPVIEW_TEST_MODE = true;
   window.__MLIPVIEW_SERVER = 'http://127.0.0.1:8000';
   window.__MLIP_FEATURES = { RELAX_LOOP:false, MD_LOOP:true, ENERGY_TRACE:true, FORCE_VECTORS:false };
   const canvas=document.createElement('canvas'); canvas.id='viewer'; document.body.appendChild(canvas);
