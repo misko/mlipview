@@ -462,7 +462,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // Track MD request ordering so concurrent responses can be resolved as latest-wins for application
   let __mdReqCounter = 0;
   let __mdLastApplied = 0;
-  async function callMDEndpoint({ steps=1, calculator='uma', temperature=298, timestep_fs=1.0, friction }={}){
+  async function callMDEndpoint({ steps=1, calculator='uma', temperature=1500, timestep_fs=1.0, friction }={}){
     __count('index#callMDEndpoint');
     const pos = state.positions.map(p=>[p.x,p.y,p.z]);
     const atomic_numbers = state.elements.map(e=> elementToZ(e));
@@ -643,7 +643,19 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const wrappedManipulation = {
     beginDrag: (...a)=> { const ok = manipulation.beginDrag(...a); if(ok){ const idx = __selectedAtomIndex(); if(idx!=null){ __currentDraggedAtomIndex = idx; __draggingAtoms.add(idx); } } return ok; },
     updateDrag: (...a)=> { const r = manipulation.updateDrag(...a); if (r) { bumpUserInteractionVersion('dragMove'); const idx = __selectedAtomIndex(); if(idx!=null){ __addModifiedAtoms([idx]); __currentDraggedAtomIndex = idx; __draggingAtoms.add(idx); } if(!running.kind) ff.computeForces(); recordInteraction('dragMove'); } return r; },
-    endDrag: (...a)=> { const r = manipulation.endDrag(...a); if(r){ bumpUserInteractionVersion('dragEnd'); const idx = __currentDraggedAtomIndex!=null? __currentDraggedAtomIndex : __selectedAtomIndex(); if(idx!=null){ __addModifiedAtoms([idx]); __draggingAtoms.delete(idx); if(__currentDraggedAtomIndex===idx) __currentDraggedAtomIndex=null; } } if(!running.kind) ff.computeForces(); recordInteraction('dragEnd'); return r; },
+    endDrag: (...a)=> {
+      const hadDrag = (__currentDraggedAtomIndex!=null) || (__draggingAtoms.size>0);
+      const r = manipulation.endDrag(...a);
+      if(hadDrag){
+        bumpUserInteractionVersion('dragEnd');
+        const idx = (__currentDraggedAtomIndex!=null)? __currentDraggedAtomIndex : __selectedAtomIndex();
+        if(idx!=null){ __addModifiedAtoms([idx]); __draggingAtoms.delete(idx); }
+        __currentDraggedAtomIndex = null;
+      }
+      if(!running.kind) ff.computeForces();
+      recordInteraction('dragEnd');
+      return r;
+    },
     setDragPlane: (...a)=> manipulation.setDragPlane(...a),
     rotateBond: (...a)=> { const r = manipulation.rotateBond(...a); if (r) { // capture rotated side atoms via manipulation debug hook
         let sideAtoms = null; try { sideAtoms = manipulation._debug?.getLastRotation?.()?.sideAtoms || null; } catch{}
@@ -744,7 +756,27 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   //  - Abort if another simulation is already running or stopSimulation() called.
   //  - For relax: attempt up to maxSteps (default 200) or until an error streak exceeds threshold.
   //  - For md: run fixed number of steps unless aborted.
-  async function startRelaxContinuous({ maxSteps=200 }={}) {
+  // Desktop focus helpers: only send relax/MD requests when window is focused (desktop mode)
+  function isAppFocused(){
+    try {
+      if (typeof window === 'undefined' || typeof document === 'undefined') return true; // non-browser/test
+      if (window.__MLIPVIEW_TEST_MODE) return true; // do not gate tests
+      if (document.hidden) return false;
+      if (typeof document.hasFocus === 'function') return !!document.hasFocus();
+      return true;
+    } catch { return true; }
+  }
+  function waitForFocus(){
+    return new Promise(resolve => {
+      if (isAppFocused()) return resolve();
+      function cleanup(){ try { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVis); } catch {} }
+      function onFocus(){ cleanup(); resolve(); }
+      function onVis(){ try { if (!document.hidden && isAppFocused()) { cleanup(); resolve(); } } catch { /* ignore */ } }
+      try { window.addEventListener('focus', onFocus); document.addEventListener('visibilitychange', onVis); } catch { resolve(); }
+    });
+  }
+
+  async function startRelaxContinuous({ maxSteps=1000 }={}) {
   if(!featureFlags().RELAX_LOOP) { console.warn('[feature] RELAX_LOOP disabled'); return { disabled:true }; }
     __count('index#startRelaxContinuous');
     if (running.kind) return { ignored:true };
@@ -757,6 +789,14 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     let errorStreak=0; const maxErrorStreak=10;
     let stepsDone=0;
   while(running.kind==='relax' && stepsDone<maxSteps){
+      // Pause if app not focused (desktop). Resume on focus.
+      if (!isAppFocused()) {
+        await waitForFocus();
+        if (running.kind!=='relax') break;
+        // reset pacing reference to avoid burst immediately after focus
+        lastTime = performance.now();
+        continue;
+      }
       const now=performance.now();
       const since= now - lastTime;
       if(backoffMs>0){
@@ -781,7 +821,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     __resetRPS();
     return { converged, steps: stepsDone };
   }
-  async function startMDContinuous({ steps=200, calculator='uma', temperature=298, timestep_fs=1.0, friction }={}){
+  async function startMDContinuous({ steps=1000, calculator='uma', temperature=1500, timestep_fs=1.0, friction }={}){
   if(!featureFlags().MD_LOOP){ console.warn('[feature] MD_LOOP disabled'); return { disabled:true }; }
     if(running.kind) return { ignored:true };
     running.kind='md';
@@ -789,7 +829,13 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const minInterval = getConfig().minStepIntervalMs; let lastTime=0;
     let backoffMs=0; const baseBackoff=200; const maxBackoff=5000; let errorStreak=0; const maxErrorStreak=10;
     let i=0;
-  while(i<steps && running.kind==='md'){
+    while(i<steps && running.kind==='md'){
+      if (!isAppFocused()) {
+        await waitForFocus();
+        if (running.kind!=='md') break;
+        lastTime = performance.now();
+        continue;
+      }
       const now=performance.now(); const since=now-lastTime;
       if(backoffMs>0){ await new Promise(r=>setTimeout(r, backoffMs)); }
       else if(since<minInterval){ await new Promise(r=>setTimeout(r, minInterval - since)); }

@@ -13,15 +13,25 @@ export function initTemperatureSlider({ hudEl, getViewer }) {
   const MAX_K = 3000;
   let temps = Array.from({ length: steps }, (_, i) => Math.round(i * MAX_K / (steps - 1)));
   // Force include 298 by finding closest index and setting it; adjust neighbor if collision.
-  let closestIdx = 0; let closestDiff = Infinity;
+  let idx298 = 0; let closestDiff = Infinity;
   for (let i = 0; i < temps.length; i++) {
     const d = Math.abs(temps[i] - 298);
-    if (d < closestDiff) { closestDiff = d; closestIdx = i; }
+    if (d < closestDiff) { closestDiff = d; idx298 = i; }
   }
-  temps[closestIdx] = 298;
+  temps[idx298] = 298;
   // De-duplicate sequence if forcing 298 created a duplicate with neighbor.
   for (let i = 1; i < temps.length; i++) {
     if (temps[i] === temps[i - 1]) temps[i] += 1; // small nudge; within 0-2000 still safe (rare occurrence)
+  }
+  // Force include 1500K as an exact step and pick that as the initial selection.
+  let idx1500 = 0; let diff1500 = Infinity;
+  for (let i = 0; i < temps.length; i++) {
+    const d = Math.abs(temps[i] - 1500);
+    if (d < diff1500) { diff1500 = d; idx1500 = i; }
+  }
+  temps[idx1500] = 1500;
+  for (let i = 1; i < temps.length; i++) {
+    if (temps[i] === temps[i - 1]) temps[i] += 1;
   }
 
   // Wrapper UI
@@ -37,14 +47,14 @@ export function initTemperatureSlider({ hudEl, getViewer }) {
   label.id = 'tempLabel';
   label.style.fontSize = '11px';
   label.style.opacity = '0.85';
-  label.textContent = 'T=298K';
+  label.textContent = 'T=1500K';
 
   const slider = document.createElement('input');
   slider.type = 'range';
   slider.min = '0';
   slider.max = String(steps - 1);
   slider.step = '1';
-  slider.value = String(closestIdx);
+  slider.value = String(idx1500);
   slider.id = 'mdTempSlider';
   slider.style.width = '120px';
 
@@ -69,7 +79,7 @@ export function initTemperatureSlider({ hudEl, getViewer }) {
   //addTick(400, '400K');
   addTick(MAX_K, MAX_K + 'K');
 
-  function getTempForIndex(idx) { return temps[idx] ?? 298; }
+  function getTempForIndex(idx) { return temps[idx] ?? 1500; }
   function updateTarget(idx) {
     const T = getTempForIndex(idx);
     window.__MLIP_TARGET_TEMPERATURE = T;
@@ -82,7 +92,7 @@ export function initTemperatureSlider({ hudEl, getViewer }) {
 
   // Initialize global target
   if (typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE == null) {
-    window.__MLIP_TARGET_TEMPERATURE = 298;
+    window.__MLIP_TARGET_TEMPERATURE = 1500;
   }
   updateTarget(Number(slider.value));
 

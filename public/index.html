@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-  <title>MLIP Viewer 2</title>
+  <title>FAIRChem UMA viewer</title>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <style>
   html,body { margin:0; padding:0; height:100%; background:#ffffff; font-family: system-ui, sans-serif; color:#222; }
@@ -69,7 +69,7 @@
         <button id="bond-rot-minus" style="margin:2px;">-</button>
         <button id="bond-rot-plus" style="margin:2px;">+</button>
       </div>
-    <div class="footer">MLIP Viewer 2 – separate project</div>
+    <div class="footer">FAIRChem UMA viewer</div>
   </div>
   <script type="module">
     import { initNewViewer } from './index.js';
@@ -158,11 +158,11 @@
   const mdRunBtn = document.getElementById('btnMDRun');
   // Derive MD running state from viewerApi.getMetrics() so auto-start logic stays in sync.
   function isMdRunning(){ try { return !!(viewerApi && viewerApi.getMetrics().running === 'md'); } catch { return false; } }
-  mdStepBtn.onclick = ()=>{ if(!viewerApi || isMdRunning() || isRelaxRunning()) return; const T = window.__MLIP_TARGET_TEMPERATURE ?? 298; viewerApi.mdStep({ temperature:T }); document.getElementById('status').textContent=`MD step tgt=${T}K inst=${viewerApi.state.dynamics.temperature.toFixed(1)}`; };
+  mdStepBtn.onclick = ()=>{ if(!viewerApi || isMdRunning() || isRelaxRunning()) return; const T = window.__MLIP_TARGET_TEMPERATURE ?? 1500; viewerApi.mdStep({ temperature:T }); document.getElementById('status').textContent=`MD step tgt=${T}K inst=${viewerApi.state.dynamics.temperature.toFixed(1)}`; };
   mdRunBtn.onclick = ()=>{
     if(!viewerApi) return;
     if(!isMdRunning()){
-      const T = window.__MLIP_TARGET_TEMPERATURE ?? 298;
+  const T = window.__MLIP_TARGET_TEMPERATURE ?? 1500;
       mdRunBtn.textContent='stop'; document.getElementById('status').textContent='MD running @'+T+'K';
       applyRunningDisable();
       viewerApi.startMDContinuous({ steps:500, temperature:T }).then(()=>{ if(!isMdRunning()) { mdRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='MD stopped'; } });

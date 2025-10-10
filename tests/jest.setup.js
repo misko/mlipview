@@ -9,6 +9,17 @@ try {
   console.warn('[jest.setup] fetch polyfill not installed', e?.message||e);
 }
 
+// Polyfill TextEncoder/TextDecoder for environments where jsdom/whatwg-url expects them
+try {
+  const util = require('util');
+  if (typeof global.TextEncoder === 'undefined' && util.TextEncoder) {
+    global.TextEncoder = util.TextEncoder;
+  }
+  if (typeof global.TextDecoder === 'undefined' && util.TextDecoder) {
+    global.TextDecoder = util.TextDecoder;
+  }
+} catch (_) {}
+
 // Global BABYLON mock for tests needing molecule/cell logic
 if (!global.BABYLON) {
   const BABYLON = {
