@@ -25,7 +25,8 @@ export async function createScene(canvas) {
   }
   // Set background to white (desktop + baseline for XR background override)
   scene.clearColor = new BABYLON.Color4(1,1,1,1);
-  const camera = new BABYLON.ArcRotateCamera('cam', Math.PI/4, Math.PI/3, 25, new BABYLON.Vector3(0,0,0), scene);
+  // Move camera closer so objects appear ~50% larger (radius scaled by 1/1.5)
+  const camera = new BABYLON.ArcRotateCamera('cam', Math.PI/4, Math.PI/3, 25/1.5, new BABYLON.Vector3(0,0,0), scene);
   camera.attachControl(canvas, true);
   attachConsistentLighting(scene, camera, { ambientIntensity:0.2, directionalIntensity:0.9 });
   return { engine, scene, camera };
