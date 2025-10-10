@@ -17,7 +17,15 @@ if (typeof window !== 'undefined') {
   window.__MLIP_CONFIG = window.__MLIP_CONFIG || { minStepIntervalMs: 30, mdFriction: 0.5 };
   if (window.__MLIP_CONFIG.mdFriction == null) window.__MLIP_CONFIG.mdFriction = 0.5;
 }
-function getConfig(){ if (typeof window === 'undefined') return { minStepIntervalMs:30, mdFriction:0.5 }; return window.__MLIP_CONFIG; }
+function getConfig(){
+  // Always return a valid config object with defaults; repair globals if missing
+  if (typeof window === 'undefined') return { minStepIntervalMs:30, mdFriction:0.5 };
+  const cfg = window.__MLIP_CONFIG || {};
+  if (cfg.minStepIntervalMs == null || !Number.isFinite(cfg.minStepIntervalMs)) cfg.minStepIntervalMs = 30;
+  if (cfg.mdFriction == null || !Number.isFinite(cfg.mdFriction)) cfg.mdFriction = 0.5;
+  window.__MLIP_CONFIG = cfg;
+  return cfg;
+}
 export function setMinStepInterval(ms){
   const v = Number(ms);
   if(!Number.isFinite(v) || v < 0) throw new Error('minStepIntervalMs must be non-negative number');
@@ -368,10 +376,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     __count('index#relaxStep');
     try {
       const { data, uivAtSend, tivAtSend } = await callRelaxEndpoint(1); // single step
+      // For relax: user interactions take precedence as stale reason (tests expect 'userInteraction')
       if(uivAtSend !== userInteractionVersion){
         if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][relax] userInteraction', { uivAtSend, userInteractionVersion, tivAtSend, totalInteractionVersion });
         return { stale:true, staleReason:'userInteraction', userInteractionVersionAtSend:uivAtSend, totalInteractionVersionAtSend:tivAtSend, currentUserInteractionVersion:userInteractionVersion, currentTotalInteractionVersion: totalInteractionVersion };
       }
+      // Then, if any newer simulation result has already applied, mark as superseded
       if(tivAtSend !== totalInteractionVersion){
         if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][relax] supersededSimulation', { uivAtSend, userInteractionVersion, tivAtSend, totalInteractionVersion });
         return { stale:true, staleReason:'supersededSimulation', userInteractionVersionAtSend:uivAtSend, totalInteractionVersionAtSend:tivAtSend, currentUserInteractionVersion:userInteractionVersion, currentTotalInteractionVersion: totalInteractionVersion };
@@ -400,6 +410,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   }
 
   // --- MD step (backend-only logic, but callable from UI) ---
+  // Track MD request ordering so concurrent responses can be resolved as latest-wins for application
+  let __mdReqCounter = 0;
+  let __mdLastApplied = 0;
   async function callMDEndpoint({ steps=1, calculator='uma', temperature=298, timestep_fs=1.0, friction }={}){
     __count('index#callMDEndpoint');
     const pos = state.positions.map(p=>[p.x,p.y,p.z]);
@@ -435,14 +448,17 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   async function mdStep(opts={}){
     __count('index#mdStep');
     try {
+      const reqId = (++__mdReqCounter);
       const { data, uivAtSend, tivAtSend } = await callMDEndpoint({ steps:1, ...opts });
+      // If a newer MD result has already been applied, this one is stale regardless of other checks
+      if (reqId < __mdLastApplied) {
+        if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][md] superseded by newer applied req', { reqId, lastApplied: __mdLastApplied });
+        return { stale:true, staleReason:'supersededSimulation', userInteractionVersionAtSend:uivAtSend, totalInteractionVersionAtSend:tivAtSend, currentUserInteractionVersion:userInteractionVersion, currentTotalInteractionVersion: totalInteractionVersion };
+      }
+      // Ignore totalInteractionVersion drift for MD (e.g., debounced posChange); only supersede via reqId check above.
       if(uivAtSend !== userInteractionVersion){
         if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][md] userInteraction', { uivAtSend, userInteractionVersion, tivAtSend, totalInteractionVersion });
         return { stale:true, staleReason:'userInteraction', userInteractionVersionAtSend:uivAtSend, totalInteractionVersionAtSend:tivAtSend, currentUserInteractionVersion:userInteractionVersion, currentTotalInteractionVersion: totalInteractionVersion };
-      }
-      if(tivAtSend !== totalInteractionVersion){
-        if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][md] supersededSimulation', { uivAtSend, userInteractionVersion, tivAtSend, totalInteractionVersion });
-        return { stale:true, staleReason:'supersededSimulation', userInteractionVersionAtSend:uivAtSend, totalInteractionVersionAtSend:tivAtSend, currentUserInteractionVersion:userInteractionVersion, currentTotalInteractionVersion: totalInteractionVersion };
       }
   const { positions, forces, final_energy, velocities, temperature: instT } = data;
       if(Array.isArray(positions) && positions.length === state.positions.length){
@@ -469,6 +485,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         // Commit forces so visualization updates during MD sequences
         try { __updateForces(forces, { reason:'mdStep' }); } catch {}
       }
+      // Mark this response as the latest applied
+      __mdLastApplied = Math.max(__mdLastApplied, reqId);
       return { applied:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'md' };
     } catch(e){
       console.warn('[mdStep] failed', e);

@@ -902,7 +902,8 @@ export function createVRSupport(scene, { picking } = {}) {
     if(nodeLike || lacksRenderLoop){
       // Fabricate shim environment for unit tests (no real XR / render loop)
       supported=true;
-      xrHelper = xrHelper || { input:{ controllers:[] }, baseExperience:{ sessionManager:{} } };
+  xrHelper = xrHelper || { input:{ controllers:[] }, baseExperience:{ sessionManager:{} } };
+      
       return { supported:true, shim:true };
     }
     try {
@@ -916,7 +917,7 @@ export function createVRSupport(scene, { picking } = {}) {
     } catch(e){
       // Fall back to shim on failure
       console.warn('[VR][init] setupVR failed; falling back to shim', e?.message||e);
-      supported=true; xrHelper={ input:{ controllers:[] }, baseExperience:{ sessionManager:{} } };
+  supported=true; xrHelper={ input:{ controllers:[] }, baseExperience:{ sessionManager:{} } };
     }
     return { supported };
   }

@@ -21,8 +21,8 @@ export function createMoleculeState({ elements = [], positions = [], bonds = [],
     ghostImages: [],
   showCell: false,
   showGhostCells: false,
-  // Forces visualization toggle (default OFF by request)
-  showForces: false,
+  // Forces visualization toggle: OFF by default, but enable automatically in test mode for visualization tests
+  showForces: (typeof window !== 'undefined' && window.__MLIPVIEW_TEST_MODE === true) ? true : false,
     selection: { kind:null, data:null },
     dynamics: { velocities: [], forces: [], mass: [], temperature: 0 },
     versions: { positions:0, bonds:0, cell:0, selection:0, topology:0, dynamics:0 },

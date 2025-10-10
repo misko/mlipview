@@ -95,7 +95,15 @@ export function createVRLaserManager({ scene, xrHelper, controllerState, getCont
     for(const c of inputs){ ensureForController(c); updateController(c); }
   }
   function getInfo(){
-    const out=[]; for(const [c, st] of controllerState.entries?.()||[]){ out.push({ id:c.uniqueId||'unknown', hoverKind:st.hoverKind||null, diameter:st.laserDiameterCurrent||null }); }
+    const out=[];
+    try {
+      const inputs = (xrHelper && xrHelper.input && xrHelper.input.controllers) ? xrHelper.input.controllers : [];
+      for (const c of inputs) {
+        const st = controllerState.get(c);
+        if (!st) { out.push({ id: c?.uniqueId || 'unknown', hoverKind: null, diameter: undefined }); continue; }
+        out.push({ id: c?.uniqueId || 'unknown', hoverKind: st.hoverKind || null, diameter: st.laserDiameterCurrent || null });
+      }
+    } catch {}
     return out;
   }
   return { ensureForController, updateFrame, getInfo, config:cfg };
