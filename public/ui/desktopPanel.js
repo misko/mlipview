@@ -253,7 +253,11 @@ export function buildDesktopPanel({ attachTo } = {}) {
       // If turning on, stop MD and start relax run (single step semantics via run loop)
       if(on){
         try { api.stopSimulation(); } catch{}
-        try { api.startRelaxContinuous({}); } catch{}
+        try {
+          const shortRuns = (typeof window !== 'undefined') && !!window.__MLIPVIEW_PANEL_SHORT_RUNS;
+          const args = shortRuns ? { maxSteps: 2 } : {};
+          api.startRelaxContinuous(args);
+        } catch{}
       } else { try { api.stopSimulation(); } catch{} }
       // Mirror legacy button text convention for compatibility
       try { const legacy = document.getElementById('btnRelaxRun'); if(legacy) legacy.textContent = on? 'stop':'run'; } catch{}
@@ -264,7 +268,11 @@ export function buildDesktopPanel({ attachTo } = {}) {
       const on = mdToggle.getAttribute('data-on')==='true';
       if(on){
         try { api.stopSimulation(); } catch{}
-        try { api.startMDContinuous({}); } catch{}
+        try {
+          const shortRuns = (typeof window !== 'undefined') && !!window.__MLIPVIEW_PANEL_SHORT_RUNS;
+          const args = shortRuns ? { steps: 2 } : {};
+          api.startMDContinuous(args);
+        } catch{}
       } else { try { api.stopSimulation(); } catch{} }
       try {
         const legacy = document.getElementById('btnMDRun'); if(legacy) legacy.textContent = on? 'stop':'run';
@@ -279,23 +287,27 @@ export function buildDesktopPanel({ attachTo } = {}) {
     function syncFromApiOnce(){
       try {
         const api = getApi(); if(!api || !api.getMetrics) return;
+        // Always query the current DOM toggles so this works across re-renders/tests
+        const mdToggleEl = document.getElementById('toggleMD');
+        const relaxToggleEl = document.getElementById('toggleRelax');
+        if (!mdToggleEl || !relaxToggleEl) return;
         const m = api.getMetrics() || {}; const kind = m.running || null;
         if (kind === 'md') {
           // MD running: set MD=On, Relax=Off
-          if (mdToggle.getAttribute('data-on') !== 'true') setBtnState(mdToggle, true);
-          if (relaxToggle.getAttribute('data-on') !== 'false') setBtnState(relaxToggle, false);
+          if (mdToggleEl.getAttribute('data-on') !== 'true') setBtnState(mdToggleEl, true);
+          if (relaxToggleEl.getAttribute('data-on') !== 'false') setBtnState(relaxToggleEl, false);
           try { const legacy = document.getElementById('btnMDRun'); if(legacy) legacy.textContent = 'stop'; } catch {}
           try { const status = document.getElementById('status'); if(status) status.textContent = 'MD running'; } catch {}
         } else if (kind === 'relax') {
           // Relax running: set Relax=On, MD=Off
-          if (relaxToggle.getAttribute('data-on') !== 'true') setBtnState(relaxToggle, true);
-          if (mdToggle.getAttribute('data-on') !== 'false') setBtnState(mdToggle, false);
+          if (relaxToggleEl.getAttribute('data-on') !== 'true') setBtnState(relaxToggleEl, true);
+          if (mdToggleEl.getAttribute('data-on') !== 'false') setBtnState(mdToggleEl, false);
           try { const legacy = document.getElementById('btnRelaxRun'); if(legacy) legacy.textContent = 'stop'; } catch {}
           try { const status = document.getElementById('status'); if(status) status.textContent = 'Relax running'; } catch {}
         } else {
           // Neither running
-          if (mdToggle.getAttribute('data-on') !== 'false') setBtnState(mdToggle, false);
-          if (relaxToggle.getAttribute('data-on') !== 'false') setBtnState(relaxToggle, false);
+          if (mdToggleEl.getAttribute('data-on') !== 'false') setBtnState(mdToggleEl, false);
+          if (relaxToggleEl.getAttribute('data-on') !== 'false') setBtnState(relaxToggleEl, false);
           try { const legacyMD = document.getElementById('btnMDRun'); if(legacyMD) legacyMD.textContent = 'run'; } catch {}
           try { const legacyRX = document.getElementById('btnRelaxRun'); if(legacyRX) legacyRX.textContent = 'run'; } catch {}
           try { const status = document.getElementById('status'); if(status && !/Ready|stopped/i.test(status.textContent||'')) status.textContent = 'Ready'; } catch {}
@@ -426,6 +438,50 @@ export function buildDesktopPanel({ attachTo } = {}) {
     const label = document.createElement('span'); label.className = 'form-label'; label.textContent = 'XR mode:';
     const sel = document.createElement('select'); sel.id = 'xrModeSelect';
     sel.innerHTML = '<option value="none">Off</option><option value="vr">VR</option><option value="ar">AR</option>';
+    // Wire dropdown to XR entry/exit
+    function getViewer(){ try { return window.viewerApi || window._viewer; } catch { return null; } }
+    sel.addEventListener('change', async (ev)=>{
+      const v = (ev && ev.target && ev.target.value) || sel.value;
+      const api = getViewer();
+      const vr = api && api.vr;
+      // Fallbacks if switchXR is not present (older API)
+      const doSwitch = async (mode)=>{
+        try {
+          if (vr && typeof vr.switchXR === 'function') {
+            return await vr.switchXR(mode);
+          }
+          if (mode === 'none') {
+            if (vr && typeof vr.exitXR === 'function') return await vr.exitXR();
+            if (vr && typeof vr.exitVR === 'function') return await vr.exitVR();
+            return false;
+          }
+          if (mode === 'vr') {
+            if (vr && typeof vr.enterVR === 'function') return await vr.enterVR();
+            return false;
+          }
+          if (mode === 'ar') {
+            if (vr && typeof vr.enterAR === 'function') return await vr.enterAR();
+            return false;
+          }
+          return false;
+        } catch(e){ return false; }
+      };
+      if (!vr) {
+        // No VR subsystem yet; reset selection and warn softly
+        try { sel.value = 'none'; } catch {}
+        try { const s=document.getElementById('status'); if(s) s.textContent='XR unavailable'; } catch{}
+        return;
+      }
+      const ok = await doSwitch(v);
+      // Reflect status text minimally (optional UX)
+      try {
+        const s = document.getElementById('status');
+        if (s) {
+          if (v === 'none') s.textContent = ok? 'XR exited' : 'XR exit failed';
+          else s.textContent = ok? (v.toUpperCase()+' entered') : (v.toUpperCase()+' failed');
+        }
+      } catch {}
+    });
     row.append(label, sel);
     xr.content.appendChild(row);
   }

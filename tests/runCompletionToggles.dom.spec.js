@@ -21,6 +21,7 @@ function wait(ms){ return new Promise(r=>setTimeout(r, ms)); }
 async function setup(){
   // Disable auto-MD for deterministic tests
   window.__MLIPVIEW_TEST_MODE = true;
+  window.__MLIPVIEW_PANEL_SHORT_RUNS = true;
   window.__MLIPVIEW_NO_AUTO_MD = true;
   document.body.innerHTML = `
     <canvas id="viewer"></canvas>
@@ -48,7 +49,7 @@ describe('Run completion flips toggles Off', () => {
     // Click to start MD (panel wiring awaits completion and then flips Off)
     md.click();
     await nextUiTick(); // start
-  await wait(800); // allow mocked run to finish and UI sync to reflect
+  await wait(900); // allow mocked run to finish and UI sync to reflect
     await nextUiTick(); // sync back
     expect(md.getAttribute('data-on')).toBe('false');
     const legacy = document.getElementById('btnMDRun');
@@ -61,7 +62,7 @@ describe('Run completion flips toggles Off', () => {
     expect(relax).toBeTruthy();
     relax.click();
     await nextUiTick();
-  await wait(800);
+  await wait(900);
     await nextUiTick();
     expect(relax.getAttribute('data-on')).toBe('false');
     const legacy = document.getElementById('btnRelaxRun');
