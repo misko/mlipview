@@ -82,13 +82,15 @@ if (typeof Response === 'undefined') {
 describe('interaction invalidation', () => {
   jest.setTimeout(20000);
 
-  test('relax response discarded after user bond rotation', async () => {
+  test('relax response partially applied after user bond rotation', async () => {
     const api = await initViewer();
     // Ensure a dummy bond selection if not present
     api.state.selection = { kind:'bond', data:{ i:0, j:1, orientation:'ij' } };
     const preUIV = api.getVersionInfo ? api.getVersionInfo().userInteractionVersion : 0;
+    // Snapshot current positions for comparison
+    const before = api.state.positions.map(p=>[p.x,p.y,p.z]);
     // Patch fetch for relax to delay and return shifted positions we can recognize
-    const cleanup = patchFetchOnce({ match:'/relax', delayMs:80, respond:()=>({ positions: api.state.positions.map(p=>[p.x+5,p.y+5,p.z+5]), forces:[], final_energy: -1 }) });
+    const cleanup = patchFetchOnce({ match:'/relax', delayMs:80, respond:()=>({ positions: before.map(p=>[p[0]+5,p[1]+5,p[2]+5]), forces:[], final_energy: -1 }) });
     // Fire relax step (will start fetch)
     const relaxPromise = api.relaxStep();
     // While in flight, perform bond rotation (increments versions)
@@ -97,13 +99,23 @@ describe('interaction invalidation', () => {
     const result = await relaxPromise;
     cleanup();
     expect(result).toBeTruthy();
-    expect(result.stale).toBe(true);
-    expect(result.staleReason).toBe('userInteraction');
+    expect(result.applied).toBe(true);
+    expect(result.partial).toBe(true);
     const postInfo = api.getVersionInfo();
     expect(postInfo.userInteractionVersion).toBeGreaterThan(preUIV);
-    // Ensure positions NOT replaced by +5 shift
-    const shifted = api.state.positions.some(p=> Math.abs(p.x) > 4.9 ); // heuristically detect injected shift
-    expect(shifted).toBe(false);
+    // Determine which atom(s) were rotated: for water selection set above, expect atom 1 affected.
+    // Verify that rotated atom did NOT receive +5 shift, but other atoms did.
+    const pos = api.state.positions.map(p=>[p.x,p.y,p.z]);
+    // atom 0 and 2 should be shifted ~+5
+    expect(Math.abs(pos[0][0] - (before[0][0]+5)) < 1e-6).toBe(true);
+    expect(Math.abs(pos[0][1] - (before[0][1]+5)) < 1e-6).toBe(true);
+    expect(Math.abs(pos[2][0] - (before[2][0]+5)) < 1e-6).toBe(true);
+    // atom 1 should NOT be exactly +5 (it was rotated instead), allow some tolerance away from +5 shift
+    const dx1 = Math.abs(pos[1][0] - (before[1][0]+5));
+    const dy1 = Math.abs(pos[1][1] - (before[1][1]+5));
+    const dz1 = Math.abs(pos[1][2] - (before[1][2]+5));
+    const nearPlus5 = (dx1<1e-6 && dy1<1e-6 && dz1<1e-6);
+    expect(nearPlus5).toBe(false);
   });
 
   test('older md response discarded due to newer simulation application', async () => {
