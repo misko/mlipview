@@ -9,10 +9,11 @@ from fastapi import HTTPException
 
 
 def center_and_return_shift(atoms, buffer=10.0):
-    old_pos = atoms.get_positions().copy()[0][:]
     if atoms.cell is None or np.abs(atoms.cell.array).sum() < 1e-6:
+        old_pos = atoms.get_positions().copy()[0][:]
         atoms.center(vacuum=buffer)
-    return atoms.get_positions()[0] - old_pos
+        return atoms.get_positions()[0] - old_pos
+    return None
 
 
 def build_atoms(

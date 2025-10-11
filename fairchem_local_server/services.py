@@ -42,7 +42,7 @@ def _attach_calc(atoms, which: RelaxCalculatorName):
 def _simple_run(atoms, properties: List[str], calculator: RelaxCalculatorName):
     _attach_calc(atoms, calculator)
 
-    center_and_return_shift(atoms)
+    # center_and_return_shift(atoms)
 
     props = tuple(properties or ("energy", "forces"))
     results = compute_properties(atoms, props)
@@ -139,8 +139,6 @@ def _relax_run(
     except Exception:
         stress = None
 
-    cache_key = cache_put(atoms)
-
     # log_event(
     #     "relax_done",
     #     natoms=len(atoms),
@@ -153,8 +151,12 @@ def _relax_run(
     #     precomputed_keys=pre_applied,
     # )
 
-    atoms.set_positions(atoms.get_positions() - shift)
-    r = RelaxResult(
+    if shift is not None:
+        atoms.set_positions(atoms.get_positions() - shift)
+        atoms.set_cell(None)
+
+    cache_key = cache_put(atoms)
+    return RelaxResult(
         initial_energy=initial_energy,
         final_energy=final_energy,
         positions=atoms.get_positions().tolist(),
@@ -166,8 +168,6 @@ def _relax_run(
         precomputed_applied=(pre_applied if pre_applied else None),
         cache_key=cache_key,
     )
-    print("RET", r)
-    return r
 
 
 def relax(inp: RelaxIn) -> RelaxResult:
@@ -215,9 +215,7 @@ def _md_run(
     if steps <= 0:
         raise HTTPException(status_code=400, detail="steps must be >0")
     _attach_calc(atoms, calculator)
-    print("INTPUT POS", atoms.get_positions())
     shift = center_and_return_shift(atoms)
-    print("SHIFT", shift)
 
     # If client supplied velocities, use them directly; else initialize from
     # temperature.
@@ -296,8 +294,6 @@ def _md_run(
     KE = float(atoms.get_kinetic_energy())
     Tfinal = (2.0 * KE) / (3.0 * len(atoms) * _units.kB)
 
-    cache_key = cache_put(atoms)
-
     # log_event(
     #     "md_done",
     #     natoms=len(atoms),
@@ -311,8 +307,11 @@ def _md_run(
     #     reused_velocities=reused_velocities,
     # )
 
-    atoms.set_positions(atoms.get_positions() - shift)
-    print("RET MD", atoms.get_positions())
+    if shift is not None:
+        atoms.set_positions(atoms.get_positions() - shift)
+        atoms.set_cell(None)
+
+    cache_key = cache_put(atoms)
     return MDResult(
         initial_energy=initial_energy,
         final_energy=final_energy,

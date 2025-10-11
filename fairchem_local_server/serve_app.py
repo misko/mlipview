@@ -30,7 +30,7 @@ from .services import (
     simple_calculate_from_cache,
 )
 
-app = FastAPI(title="UMA Serve API", debug=True)
+app = FastAPI(title="UMA Serve API", debug=False)
 
 
 @serve.deployment(ray_actor_options={"num_gpus": 0})
