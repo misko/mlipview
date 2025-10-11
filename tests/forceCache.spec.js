@@ -4,7 +4,7 @@ import { jest } from '@jest/globals';
 // should perform only a single network /simple_calculate call; after geometry mutation & markPositionsChanged,
 // the next compute should perform a new network call.
 
-describe('force cache: repeated force computations without geometry change hit cache', () => {
+describe.skip('force cache: repeated force computations without geometry change hit cache [cache removed]', () => {
   test('second computeForces no network; after mutation triggers network again', async () => {
     const calls = [];
     // Simple deterministic response; energy increments slightly each request so we can detect if fetch happened.

@@ -15,33 +15,20 @@ from .model_runtime import (
     health_snapshot,
     install_predict_handle,
 )
-from .models import (
-    MDFromCacheIn,
-    MDIn,
-    RelaxFromCacheIn,
-    RelaxIn,
-    SimpleFromCacheIn,
-    SimpleIn,
-)
-from .services import (
-    md_step,
-    md_step_from_cache,
-    relax,
-    relax_from_cache,
-    simple_calculate,
-    simple_calculate_from_cache,
-)
+from .models import MDIn, RelaxIn, SimpleIn
+from .services import md_step, relax, simple_calculate
 
 app = FastAPI(title="UMA Serve API", debug=False)
 
 
 @serve.deployment(
-    ray_actor_options={"num_gpus": 0}, logging_config={"enable_access_log": False}
+    ray_actor_options={"num_gpus": 0},
+    logging_config={"enable_access_log": False},
 )
 @serve.ingress(app)
 class Ingress:
     def __init__(self, predict_handle):
-        # Inject the UMA handle; builds and caches FAIRChemCalculator.
+        # Inject the UMA handle; builds FAIRChemCalculator.
         logging.getLogger("ray.serve").setLevel(logging.ERROR)
         install_predict_handle(predict_handle)
 
@@ -57,25 +44,13 @@ class Ingress:
     def simple_ep(self, inp: SimpleIn):
         return simple_calculate(inp)
 
-    @app.post("/serve/simple_from_cache")
-    def simple_from_cache_ep(self, inp: SimpleFromCacheIn):
-        return simple_calculate_from_cache(inp)
-
     @app.post("/serve/relax")
     def relax_ep(self, inp: RelaxIn):
         return relax(inp).dict()
 
-    @app.post("/serve/relax_from_cache")
-    def relax_from_cache_ep(self, inp: RelaxFromCacheIn):
-        return relax_from_cache(inp).dict()
-
     @app.post("/serve/md")
     def md_ep(self, inp: MDIn):
         return md_step(inp).dict()
-
-    @app.post("/serve/md_from_cache")
-    def md_from_cache_ep(self, inp: MDFromCacheIn):
-        return md_step_from_cache(inp).dict()
 
 
 def _detect_default_ngpus() -> int:
@@ -125,8 +100,8 @@ def deploy(ngpus: Optional[int] = None):
         name="http_app",
         route_prefix="/",
         logging_config=LoggingConfig(
-            enable_access_log=False,  # <- hides the "CALL /serve/... OK 72ms" lines
-            log_level="ERROR",  # optional: raise the bar for Serve internals
+            enable_access_log=False,  # hide frequent access logs
+            log_level="ERROR",  # optional: raise log level for Serve internals
         ),
     )
     return dag

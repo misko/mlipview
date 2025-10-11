@@ -12,20 +12,16 @@ from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.optimize import BFGS as _BFGS
 from fastapi import HTTPException
 
-from .atoms_cache import cache_get, cache_put
 from .atoms_utils import build_atoms, center_and_return_shift, compute_properties
 from .log import log_event
 from .model_runtime import get_calculator
 from .models import (
-    MDFromCacheIn,
     MDIn,
     MDResult,
     PrecomputedValues,
     RelaxCalculatorName,
-    RelaxFromCacheIn,
     RelaxIn,
     RelaxResult,
-    SimpleFromCacheIn,
     SimpleIn,
 )
 
@@ -51,14 +47,13 @@ def _simple_run(atoms, properties: List[str], calculator: RelaxCalculatorName):
     if shift is not None:
         atoms.set_positions(atoms.get_positions() - shift)
         atoms.set_cell(None)
-    cache_key = cache_put(atoms)
     # log_event(
     #     "simple_calc",
     #     natoms=len(atoms),
     #     props=list(props),
     #     stress=bool(results.get("stress") is not None),
     # )
-    return {"results": results, "cache_key": cache_key}
+    return {"results": results}
 
 
 def simple_calculate(inp: SimpleIn):
@@ -76,9 +71,7 @@ def simple_calculate(inp: SimpleIn):
     )
 
 
-def simple_calculate_from_cache(inp: SimpleFromCacheIn):
-    atoms = cache_get(inp.cache_key)
-    return _simple_run(atoms, ["energy", "forces"], inp.calculator)
+# Cache-removed: simple_from_cache endpoint/function deleted
 
 
 def _relax_run(
@@ -162,7 +155,6 @@ def _relax_run(
         atoms.set_positions(atoms.get_positions() - shift)
         atoms.set_cell(None)
 
-    cache_key = cache_put(atoms)
     return RelaxResult(
         initial_energy=initial_energy,
         final_energy=final_energy,
@@ -173,7 +165,6 @@ def _relax_run(
         calculator=calculator,
         trace_energies=(trace if trace_enabled else None),
         precomputed_applied=(pre_applied if pre_applied else None),
-        cache_key=cache_key,
     )
 
 
@@ -195,16 +186,7 @@ def relax(inp: RelaxIn) -> RelaxResult:
     )
 
 
-def relax_from_cache(inp: RelaxFromCacheIn) -> RelaxResult:
-    atoms = cache_get(inp.cache_key)
-    return _relax_run(
-        atoms,
-        int(inp.steps),
-        inp.calculator,
-        float(inp.max_step or 0.2),
-        bool(inp.return_trace),
-        inp.precomputed,
-    )
+# Cache-removed: relax_from_cache deleted
 
 
 def _md_run(
@@ -229,7 +211,7 @@ def _md_run(
     # If client supplied velocities, use them directly; else initialize from
     # temperature.
     if (atoms.get_velocities() > 0.0).any():
-        reused_velocities = True
+        pass  # already has velocities on atoms
     elif velocities_in is not None:
         import numpy as _np  # type: ignore
 
@@ -251,10 +233,9 @@ def _md_run(
                 detail="velocities contain non-finite",
             )
         atoms.set_velocities(v)
-        reused_velocities = True
     else:
         MaxwellBoltzmannDistribution(atoms, temperature_K=temperature)
-        reused_velocities = False
+    # velocities newly initialized from temperature
 
     pre_applied: list[str] = _maybe_apply_precomputed(atoms, precomputed, len(atoms))
 
@@ -320,7 +301,6 @@ def _md_run(
         atoms.set_positions(atoms.get_positions() - shift)
         atoms.set_cell(None)
 
-    cache_key = cache_put(atoms)
     return MDResult(
         initial_energy=initial_energy,
         final_energy=final_energy,
@@ -332,7 +312,6 @@ def _md_run(
         energies=energies,
         calculator=calculator,
         precomputed_applied=(pre_applied if pre_applied else None),
-        cache_key=cache_key,
     )
 
 
@@ -357,19 +336,7 @@ def md_step(inp: MDIn) -> MDResult:
     )
 
 
-def md_step_from_cache(inp: MDFromCacheIn) -> MDResult:
-    atoms = cache_get(inp.cache_key)
-    return _md_run(
-        atoms,
-        steps=int(inp.steps),
-        temperature=float(inp.temperature),
-        timestep_fs=float(inp.timestep_fs),
-        friction=float(inp.friction),
-        calculator=inp.calculator,
-        return_trajectory=bool(inp.return_trajectory),
-        precomputed=inp.precomputed,
-        velocities_in=None,  # do not accept velocities when from_cache
-    )
+# Cache-removed: md_step_from_cache deleted
 
 
 def _maybe_apply_precomputed(
@@ -443,9 +410,6 @@ def _maybe_apply_precomputed(
 
 __all__ = [
     "simple_calculate",
-    "simple_calculate_from_cache",
     "relax",
-    "relax_from_cache",
     "md_step",
-    "md_step_from_cache",
 ]

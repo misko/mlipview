@@ -48,17 +48,8 @@ export function setMdFriction(f){
   return clamped;
 }
 
-// Debug: allow forcing non-cache endpoints via URL flag (?noCache=1) or window.__MLIP_NO_CACHE=true
-function __noCacheMode(){
-  try {
-    if (typeof window !== 'undefined') {
-      if (window.__MLIP_NO_CACHE === true) return true;
-      const q = new URLSearchParams(window.location?.search || '');
-      if (q.get('noCache') === '1' || q.get('noCache') === 'true') return true;
-    }
-  } catch {}
-  return false;
-}
+// Debug no-cache mode deprecated; server-side cache removed.
+function __noCacheMode(){ return true; }
 
 // Minimal periodic table map for elements we currently load; extend as needed.
 const SYMBOL_TO_Z = {
@@ -151,11 +142,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // Versioned force cache: state.forceCache = { version, energy, forces, stress, stale }
   state.forceCache = { version:0, energy:NaN, forces:[], stress:null, stale:true };
   let structureVersion = 0; // increments when positions (or elements) change
-  // Server-side Atoms cache coordination
-  // lastServerCache tracks the last cache key we received from any backend call (simple/relax/md)
-  // along with the userInteractionVersion snapshot at send-time so we know when it's safe
-  // to reuse via *_from_cache endpoints (only if no new user edits happened since).
-  let lastServerCache = { key: null, userVersionAtSend: null };
+  // Server-side atoms cache removed: no cache key tracking
   // Version counters:
   // userInteractionVersion: increments ONLY on user geometry edits (drag, bond rotate, debounced posChange)
   // totalInteractionVersion: increments on user edits AND accepted simulation (relax/md) steps.
@@ -210,11 +197,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     while(inFlight && awaitResult) { await new Promise(r=>setTimeout(r,10)); }
     inFlight = true;
     try {
-  // If cache is fresh (not stale and matches current structureVersion) return it.
-  if(!state.forceCache.stale && state.forceCache.version === structureVersion){
-        lastForceResult = { energy: state.forceCache.energy, forces: state.forceCache.forces };
-        return lastForceResult;
-      }
+  // Server-side cache removed; do not short-circuit on local cache here.
   // Skip remote call until we actually have atoms; prevents 500 errors on empty initial state
   if(!state.elements || state.elements.length === 0){
         return lastForceResult;
@@ -223,20 +206,13 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       const coordinates = state.positions.map(p=>[p.x,p.y,p.z]);
       const body = { atomic_numbers, coordinates, properties:['energy','forces'], calculator:'uma' };
     const base = __resolveApiBase();
-    // If no debug no-cache flag: prefer from_cache when eligible (no user edits since last send)
-    let ep = 'simple'; let fromCacheBody = null;
-    if (!__noCacheMode() && lastServerCache.key && lastServerCache.userVersionAtSend === userInteractionVersion) {
-      ep = 'simple_from_cache';
-      fromCacheBody = { cache_key: lastServerCache.key, calculator:'uma' };
-    }
-    const url = base + getEndpointSync(ep);
+    const url = base + getEndpointSync('simple');
       const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
       const t0 = performance.now();
       debugApi('simple_calculate','request',{ seq, url, body });
       let resp, json;
       try {
-        const payload = fromCacheBody || body;
-        resp = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  resp = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
       } catch(netErr){
         debugApi('simple_calculate','network-error',{ seq, url, error: netErr?.message||String(netErr) });
         throw netErr;
@@ -257,8 +233,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
           state.dynamics = state.dynamics || {}; state.dynamics.energy = res.energy;
           window.__RELAX_FORCES = res.forces||[];
           state.forceCache = { version: structureVersion, energy: res.energy, forces: res.forces||[], stress: res.stress||null, stale:false };
-          // Track/refresh server cache key (present on both calculate and from_cache responses)
-          try { if (json && typeof json.cache_key === 'string') { lastServerCache = { key: json.cache_key, userVersionAtSend: userInteractionVersion }; } } catch {}
+          // Server cache key removed
           // Commit forces to state & notify renderer each successful fetch so visualization updates.
           if (Array.isArray(res.forces) && res.forces.length) {
             __updateForces(res.forces, { reason:'fetchRemoteForces' });
@@ -269,7 +244,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     } catch(_e) { /* silent for now */ } finally { inFlight=false; }
     return lastForceResult;
   }
-  const ff = { computeForces: ({ sync }={})=>{ if(sync) return fetchRemoteForces({ awaitResult:true }); if(!inFlight) fetchRemoteForces(); return lastForceResult; } };
+  const ff = { computeForces: ({ sync }={})=>{ if(sync) return fetchRemoteForces({ awaitResult:true }); fetchRemoteForces(); return lastForceResult; } };
 
   // Helper: construct precomputed object if force cache is fresh and matches structure
   function buildPrecomputedIfFresh(){
@@ -324,14 +299,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   if(maybePre){ body.precomputed = maybePre; debugApi('relax','precomputed-attach',{ seq: __apiSeq+1, keys:Object.keys(maybePre) }); }
   const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion;
     const base = __resolveApiBase();
-    // Prefer from_cache if allowed and no new user interaction since last server state
-    let ep = 'relax'; let payload = body;
-    if (!__noCacheMode() && lastServerCache.key && lastServerCache.userVersionAtSend === userInteractionVersion) {
-      ep = 'relax_from_cache';
-      payload = { cache_key: lastServerCache.key, steps, calculator:'uma' };
-      if (maybePre) payload.precomputed = maybePre;
-    }
-    const url = base + getEndpointSync(ep);
+    const url = base + getEndpointSync('relax');
+    const payload = body;
     const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
     const t0 = performance.now();
   debugApi('relax','request',{ seq, url, body: payload });
@@ -351,7 +320,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     }
     try { json = await resp.json(); } catch(parseErr){ debugApi('relax','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
     debugApi('relax','response',{ seq, url, timingMs, status: resp.status, response: json });
-    try { if (json && typeof json.cache_key === 'string') { lastServerCache = { key: json.cache_key, userVersionAtSend: uivAtSend }; } } catch {}
+  // no server cache key
     return { data: json, uivAtSend, tivAtSend };
   }
   const { engine, scene, camera } = await createScene(canvas);
@@ -359,7 +328,18 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const manipulation = createManipulationService(state, { bondService });
   // We'll define wrappedManipulation below; temporarily pass placeholder then rebind after definition
   let wrappedManipulationRef = null;
-  const picking = createPickingService(scene, view, selection, { manipulation: new Proxy({}, { get:(_,k)=> wrappedManipulationRef?.[k] }), camera, energyHook: ({ kind }) => { try { ff.computeForces(); } catch{} recordInteraction(kind||'drag'); } });
+  const picking = createPickingService(scene, view, selection, {
+    manipulation: new Proxy({}, { get: (_, k) => wrappedManipulationRef?.[k] }),
+    camera,
+    // Do not trigger a standalone simple_calculate while a simulation is running;
+    // wait for the next MD/relax response to update forces and energy.
+    energyHook: ({ kind }) => {
+      try {
+        if (!running.kind) ff.computeForces();
+      } catch {}
+      recordInteraction(kind || 'drag');
+    },
+  });
   // Attach VR semantic picker (bond-first) so VR layer can use it without legacy imports
   let vrPicker = null;
   try { vrPicker = createVRPicker({ scene, view }); } catch (e) { console.warn('[VR] vrPicker init failed', e?.message||e); }
@@ -474,15 +454,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   if(maybeV){ body.velocities = maybeV; }
   const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion;
     const base = __resolveApiBase();
-    // Prefer MD from_cache if allowed and stable
-    let ep = 'md'; let payload = body;
-    if (!__noCacheMode() && lastServerCache.key && lastServerCache.userVersionAtSend === userInteractionVersion) {
-      ep = 'md_from_cache';
-      payload = { cache_key: lastServerCache.key, steps, temperature, timestep_fs, friction: frictionFinal, calculator, return_trajectory: body.return_trajectory||false };
-      if (maybePre) payload.precomputed = maybePre;
-      // Note: from_cache variant intentionally does not accept velocities; server enforces this.
-    }
-    const url = base + getEndpointSync(ep);
+    const url = base + getEndpointSync('md');
+    const payload = body;
     const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
     const t0 = performance.now();
   debugApi('md','request',{ seq, url, body: payload });
@@ -491,7 +464,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     if(!resp.ok){ const txt = await resp.text(); debugApi('md','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt }); throw new Error('MD request failed '+resp.status+': '+txt); }
     try { json = await resp.json(); } catch(parseErr){ debugApi('md','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
     debugApi('md','response',{ seq, url, timingMs, status: resp.status, response: json });
-    try { if (json && typeof json.cache_key === 'string') { lastServerCache = { key: json.cache_key, userVersionAtSend: uivAtSend }; } } catch {}
+  // no server cache key
     return { data: json, uivAtSend, tivAtSend };
   }
   async function mdStep(opts={}){
@@ -720,13 +693,16 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       posEnergyTimer=null;
       if (!pendingPosEnergy) return;
       pendingPosEnergy=false;
-      try { if(!running.kind) ff.computeForces(); } catch{}
+      // If this positionsChanged was triggered by applying a simulation step (relax/md),
+      // skip the immediate force recompute so we don't overwrite the step's returned forces.
       if (__suppressNextPosChange) {
-        __suppressNextPosChange = false; // skip this generic interaction
-      } else {
-        bumpUserInteractionVersion('posChange');
-        recordInteraction('posChange');
+        __suppressNextPosChange = false; // consume the suppression flag
+        // Intentionally do NOT call ff.computeForces or record an interaction here.
+        return;
       }
+      try { if(!running.kind) ff.computeForces(); } catch{}
+      bumpUserInteractionVersion('posChange');
+      recordInteraction('posChange');
     }, 50); // slight debounce to batch rapid pointer move events
   });
 

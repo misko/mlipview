@@ -19,18 +19,18 @@ function mkResp(positions){ return { positions, forces: positions.map(()=>[0,0,0
 const queue = [];
 
 global.fetch = async (url, opts={})=>{
-  if(typeof url === 'string' && /\/serve\/md(_from_cache)?$/.test(url)){
+  if(typeof url === 'string' && /\/serve\/md$/.test(url)){
     const resp = queue.length ? queue.shift() : mkResp([[0,0,0],[1,0,0],[0,1,0]]);
     return { ok:true, status:200, json: async ()=> resp, text: async ()=> JSON.stringify(resp) };
   }
-  if(typeof url === 'string' && /\/serve\/simple(_from_cache)?$/.test(url)){
-    return { ok:true, status:200, json: async ()=> ({ results:{ energy:-1.2, forces:[[0,0,0],[0,0,0],[0,0,0]] }, cache_key:'abc' }) };
+  if(typeof url === 'string' && /\/serve\/simple$/.test(url)){
+    return { ok:true, status:200, json: async ()=> ({ results:{ energy:-1.2, forces:[[0,0,0],[0,0,0],[0,0,0]] } }) };
   }
   if(typeof url === 'string' && /\/serve\/health$/.test(url)){
     return { ok:true, status:200, json: async ()=> ({ ok:true }) };
   }
-  if(typeof url === 'string' && /\/serve\/relax(_from_cache)?$/.test(url)){
-    return { ok:true, status:200, json: async ()=> ({ positions:[[0,0,0],[1,0,0],[0,1,0]], forces:[[0,0,0],[0,0,0],[0,0,0]], final_energy:-1.1, cache_key:'def' }) };
+  if(typeof url === 'string' && /\/serve\/relax$/.test(url)){
+    return { ok:true, status:200, json: async ()=> ({ positions:[[0,0,0],[1,0,0],[0,1,0]], forces:[[0,0,0],[0,0,0],[0,0,0]], final_energy:-1.1 }) };
   }
   throw new Error('Unexpected fetch '+url);
 };

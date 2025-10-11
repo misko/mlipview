@@ -9,7 +9,7 @@ jest.mock('../public/render/scene.js', () => ({ createScene: async () => ({ engi
 
 const mdBodies=[];
 global.fetch = async (url, opts={}) => {
-  if(typeof url === 'string' && (/\/serve\/md$/.test(url) || /\/serve\/md_from_cache$/.test(url))){
+  if(typeof url === 'string' && (/\/serve\/md$/.test(url))){
     try { mdBodies.push(JSON.parse(opts.body||'{}')); } catch { mdBodies.push({ parseError:true }); }
     const lastT = mdBodies[mdBodies.length-1].temperature;
     const body = JSON.stringify({ positions:[[0,0,0],[0.9,0,0],[-0.2,0.9,0]], velocities:[[0,0,0],[0,0,0],[0,0,0]], forces:[[0,0,0],[0,0,0],[0,0,0]], final_energy:-1, steps_completed:1, temperature:lastT });

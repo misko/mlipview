@@ -3,9 +3,13 @@
 Serve-owns-HTTP model:
 - This module defines the UMA batched predictor deployment (no HTTP)
 - The Serve ingress app constructs the DAG and injects a handle via
-  install_predict_handle(...)
-- We cache a FAIRChemCalculator backed by the remote predictor
+    install_predict_handle(...)
 - No serve.start / serve.run in this file
+
+Notes:
+- Server-side Atoms cache has been removed across the stack.
+- We do not keep a global FAIRChemCalculator instance; a lightweight
+    calculator is constructed on demand using the installed UMA handle.
 """
 
 from __future__ import annotations
@@ -13,7 +17,8 @@ from __future__ import annotations
 import os
 from typing import Any, List, Tuple
 
-import ray
+# 'ray' module reference is via ray.serve imported above; avoid unused
+# direct import
 import torch
 from fairchem.core import pretrained_mlip
 from fairchem.core.calculate.ase_calculator import FAIRChemCalculator
@@ -37,7 +42,6 @@ UMA_DEPLOYMENT_NAME = "uma_predict"
 # --- State ------------------------------------------------------------------
 
 _PU: BatchedPredictUnit | None = None
-_CALC: FAIRChemCalculator | None = None
 
 
 # --- Ray Serve UMA deployment (no HTTP route) --------------------------------
@@ -67,20 +71,19 @@ class _PredictDeploy:  # runs on GPU replica
         try:
             out: List[Any] = []
             if len(payloads) == 1:
-                return [
-                    {
-                        k: v.detach().cpu()
-                        for k, v in self._unit.predict(payloads[0][0][0]).items()
-                    }
-                ]
+                single = payloads[0][0][0]
+                pred = self._unit.predict(single)
+                return [{k: v.detach().cpu() for k, v in pred.items()}]
             else:
-                batch = atomicdata_list_to_batch([x[0][0] for x in payloads])  # warmup
+                # warmup
+                batch = atomicdata_list_to_batch([x[0][0] for x in payloads])
                 batch.dataset = [x[0] for x in batch.dataset]
-                all_outputs = {
-                    k: v.detach().cpu() for k, v in self._unit.predict(batch).items()
-                }
+                pred = self._unit.predict(batch)
+                all_outputs = {k: v.detach().cpu() for k, v in pred.items()}
                 forces_by_mol = all_outputs["forces"].split(batch["natoms"].tolist())
-                # stress_by_mol = all_outputs["stress"].split(batch["num_atoms"])
+                # stress_by_mol = all_outputs["stress"].split(
+                #     batch["num_atoms"]
+                # )
                 out = [
                     {"energy": energy, "forces": forces, "stress": stress[0]}
                     for energy, forces, stress in zip(
@@ -114,9 +117,9 @@ class BatchedPredictUnit:
 
     def predict(self, *args, **kwargs):
         # print("RUNNING INFERENCE", flush=True)
-        # NOTE: This is called from sync code (e.g., FastAPI sync handler running
-        # in a thread pool). DeploymentResponse.result() is safe in that context.
-        resp = self._handle.predict.remote((args, kwargs))  # type: ignore[attr-defined]
+        # NOTE: Called from sync code (e.g., FastAPI handler in a thread pool).
+        # DeploymentResponse.result() is safe in that context.
+        resp = self._handle.predict.remote((args, kwargs))  # type: ignore
         r = resp.result()
         assert r.keys() == {"energy", "forces", "stress"}
         return r
@@ -136,13 +139,16 @@ def install_predict_handle(handle) -> None:
     Call this ONCE from your Serve ingress deployment __init__, passing the
     bound handle for `_PredictDeploy`. Example (in your serve_app.py):
 
-        uma = _PredictDeploy.options(name=UMA_DEPLOYMENT_NAME).bind(MODEL_NAME, TASK_NAME)
+        uma = _PredictDeploy.options(name=UMA_DEPLOYMENT_NAME).bind(
+            MODEL_NAME, TASK_NAME
+        )
         ing = Ingress.bind(uma)
         serve.run(ing, name="http_app", route_prefix="/")
 
-    And inside Ingress.__init__(predict_handle): install_predict_handle(predict_handle)
+    And inside Ingress.__init__(predict_handle):
+        install_predict_handle(predict_handle)
     """
-    global _PU, _CALC
+    global _PU
 
     dtt = pretrained_mlip.get_predict_unit(
         MODEL_NAME,
@@ -150,24 +156,27 @@ def install_predict_handle(handle) -> None:
     ).dataset_to_tasks
 
     _PU = BatchedPredictUnit(handle, dataset_to_tasks=dtt)
-    _CALC = FAIRChemCalculator(_PU, task_name=TASK_NAME)
 
 
 def get_batched_predict_unit() -> BatchedPredictUnit:
     if _PU is None:
         raise RuntimeError(
-            "UMA handle not installed. Ensure your Serve ingress called install_predict_handle(...)"
+            "UMA handle not installed. Ensure your Serve ingress called "
+            "install_predict_handle(...)"
         )
     return _PU
 
 
 def get_calculator() -> FAIRChemCalculator:
-    return FAIRChemCalculator(_PU, task_name=TASK_NAME)
-    if _CALC is None:
+    if _PU is None:
         raise RuntimeError(
-            "Calculator not initialized. Ensure your Serve ingress called install_predict_handle(...)"
+            "UMA handle not installed. Ensure your Serve ingress called "
+            "install_predict_handle(...)"
         )
-    return _CALC
+    # Construct a lightweight calculator bound to the UMA predictor handle.
+    # FAIRChemCalculator is inexpensive to instantiate and holds no heavy
+    # state.
+    return FAIRChemCalculator(_PU, task_name=TASK_NAME)
 
 
 def health_snapshot():

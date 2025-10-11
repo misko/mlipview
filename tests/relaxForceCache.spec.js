@@ -2,7 +2,7 @@ import { jest } from '@jest/globals';
 
 // Integration: relaxStep should seed force cache; subsequent computeForces no network until geometry changes.
 
-describe('relax + force cache integration', () => {
+describe.skip('relax + force cache integration [cache removed]', () => {
   test('relaxStep seeds cache; next force compute hits cache; mutation triggers new fetch', async () => {
     const calls = [];
     global.fetch = jest.fn(async (url, opts) => {

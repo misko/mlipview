@@ -27,13 +27,6 @@ class SimpleIn(BaseModel):
     calculator: RelaxCalculatorName = RelaxCalculatorName.uma
 
 
-class SimpleFromCacheIn(BaseModel):
-    """Input for simple calculation reusing a cached Atoms object."""
-
-    cache_key: str
-    calculator: RelaxCalculatorName = RelaxCalculatorName.uma
-
-
 class RelaxIn(BaseModel):
     atomic_numbers: List[int]
     coordinates: List[List[float]]
@@ -43,20 +36,6 @@ class RelaxIn(BaseModel):
     pbc: Optional[List[bool]] = None
     charge: Optional[int] = 0
     spin_multiplicity: Optional[int] = 1
-    fmax: float = 0.05
-    max_step: float = 0.2
-    optimizer: Optional[str] = "bfgs"
-    optimizer_params: Optional[Dict[str, Any]] = None
-    return_trace: bool = False
-    precomputed: Optional["PrecomputedValues"] = None
-
-
-class RelaxFromCacheIn(BaseModel):
-    """Relaxation using an Atoms fetched from cache by key."""
-
-    cache_key: str
-    steps: int = 20
-    calculator: RelaxCalculatorName = RelaxCalculatorName.uma
     fmax: float = 0.05
     max_step: float = 0.2
     optimizer: Optional[str] = "bfgs"
@@ -75,7 +54,6 @@ class RelaxResult(BaseModel):
     calculator: RelaxCalculatorName
     trace_energies: Optional[List[float]] = None
     precomputed_applied: Optional[List[str]] = None
-    cache_key: str
 
 
 class MDIn(BaseModel):
@@ -107,19 +85,6 @@ class MDIn(BaseModel):
         return v
 
 
-class MDFromCacheIn(BaseModel):
-    """MD step using a cached Atoms object by key."""
-
-    cache_key: str
-    steps: int = 1
-    temperature: float = 298.0
-    timestep_fs: float = 1.0
-    friction: float = 0.02
-    calculator: RelaxCalculatorName = RelaxCalculatorName.uma
-    return_trajectory: bool = False
-    precomputed: Optional["PrecomputedValues"] = None
-
-
 class MDResult(BaseModel):
     initial_energy: float
     final_energy: float
@@ -131,7 +96,6 @@ class MDResult(BaseModel):
     energies: Optional[List[float]] = None
     calculator: RelaxCalculatorName
     precomputed_applied: Optional[List[str]] = None
-    cache_key: str
 
 
 class PrecomputedValues(BaseModel):
@@ -170,10 +134,7 @@ __all__ = [
     "SimpleIn",
     "RelaxIn",
     "RelaxResult",
-    "SimpleFromCacheIn",
     "MDIn",
-    "RelaxFromCacheIn",
     "MDResult",
     "PrecomputedValues",
-    "MDFromCacheIn",
 ]

@@ -11,14 +11,14 @@ global.fetch = async function(url, opts){
   const u = String(url);
   if (/md/.test(u)) {
     mdStepCount++;
-    return { ok:true, status:200, json: async ()=> ({ positions:[[0,0,0]], final_energy: -1.0 - mdStepCount, velocities:[[0,0,0]], temperature: 300, cache_key:"k" }) };
+    return { ok:true, status:200, json: async ()=> ({ positions:[[0,0,0]], final_energy: -1.0 - mdStepCount, velocities:[[0,0,0]], temperature: 300 }) };
   }
   if (/relax/.test(u)) {
     relaxStepCount++;
-    return { ok:true, status:200, json: async ()=> ({ positions:[[0,0,0]], results:{ energy: -2.0 - relaxStepCount, forces:[[0,0,0]] }, cache_key:"k" }) };
+    return { ok:true, status:200, json: async ()=> ({ positions:[[0,0,0]], results:{ energy: -2.0 - relaxStepCount, forces:[[0,0,0]] } }) };
   }
   if (/simple/.test(u)) {
-    return { ok:true, status:200, json: async ()=> ({ results:{ energy: -3.0, forces:[[0,0,0]] }, cache_key:"k" }) };
+    return { ok:true, status:200, json: async ()=> ({ results:{ energy: -3.0, forces:[[0,0,0]] } }) };
   }
   return { ok:true, status:200, json: async ()=> ({}) };
 };

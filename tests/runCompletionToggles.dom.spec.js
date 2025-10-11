@@ -8,10 +8,10 @@ jest.mock('../public/render/scene.js', () => ({ createScene: async () => ({ engi
 global.fetch = async function(url, opts){
   // Return minimal payloads to drive MD/Relax steps
   if (/relax/.test(String(url))) {
-    return { ok:true, status:200, json: async ()=> ({ positions:[[0,0,0]], results:{}, cache_key:"k" }) };
+  return { ok:true, status:200, json: async ()=> ({ positions:[[0,0,0]], results:{} }) };
   }
   if (/md/.test(String(url))) {
-    return { ok:true, status:200, json: async ()=> ({ positions:[[0,0,0]], final_energy: -1.0, velocities:[[0,0,0]], temperature: 300, cache_key:"k" }) };
+  return { ok:true, status:200, json: async ()=> ({ positions:[[0,0,0]], final_energy: -1.0, velocities:[[0,0,0]], temperature: 300 }) };
   }
   return { ok:true, status:200, json: async ()=> ({ results:{} }) };
 };

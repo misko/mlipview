@@ -4,7 +4,7 @@ import { initNewViewer } from '../public/index.js';
 // This test runs in fast-jsdom mode (no real servers). We stub global.fetch to observe URLs & payloads
 // and return minimal shape responses with cache_key so the client stores and reuses it.
 
-describe('cache reuse flow chooses *_from_cache endpoints', () => {
+describe.skip('cache reuse flow chooses *_from_cache endpoints [cache removed]', () => {
   const calls = [];
   const makeJsonResponse = (obj, { status=200 }={}) => ({ ok: status>=200 && status<300, status, json: async()=>obj, text: async()=>JSON.stringify(obj) });
   beforeAll(() => {

@@ -12,17 +12,17 @@ jest.mock('../public/render/scene.js', () => ({ createScene: async () => ({ engi
 
 // Capture /serve/md payloads
 global.fetch = async (url, opts={})=>{
-  if(typeof url === 'string' && /\/serve\/md(_from_cache)?$/.test(url)){
+  if(typeof url === 'string' && /\/serve\/md$/.test(url)){
     const body = JSON.parse(opts.body||'{}');
     mdBodies.push(body);
     const resp = { positions:[[0,0,0],[1,0,0],[0,1,0]], velocities:[[0,0,0],[0,0,0],[0,0,0]], forces:[[0,0,0],[0,0,0],[0,0,0]], final_energy:-1.0, temperature: body.temperature||0 };
     return { ok:true, status:200, json: async ()=> resp, text: async ()=> JSON.stringify(resp) };
   }
   if(typeof url === 'string' && /\/serve\/simple$/.test(url)){
-    return { ok:true, status:200, json: async ()=> ({ results:{ energy:-1.2, forces:[[0,0,0]] }, cache_key:'x'}) };
+  return { ok:true, status:200, json: async ()=> ({ results:{ energy:-1.2, forces:[[0,0,0]] }}) };
   }
   if(typeof url === 'string' && /\/serve\/relax$/.test(url)){
-    return { ok:true, status:200, json: async ()=> ({ positions:[[0,0,0]], forces:[[0,0,0]], final_energy:-1.1, cache_key:'y' }) };
+  return { ok:true, status:200, json: async ()=> ({ positions:[[0,0,0]], forces:[[0,0,0]], final_energy:-1.1 }) };
   }
   if(typeof url === 'string' && /\/serve\/health$/.test(url)){
     return { ok:true, status:200, json: async ()=> ({ ok:true }) };
