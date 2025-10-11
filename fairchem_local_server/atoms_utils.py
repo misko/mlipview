@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, Sequence
 
+import numpy as np
 from fastapi import HTTPException
+
+
+def center_and_return_shift(atoms, buffer=10.0):
+    old_pos = atoms.get_positions().copy()[0][:]
+    if atoms.cell is None or np.abs(atoms.cell.array).sum() < 1e-6:
+        atoms.center(vacuum=buffer)
+    return atoms.get_positions()[0] - old_pos
 
 
 def build_atoms(
@@ -12,7 +20,6 @@ def build_atoms(
     coords: Sequence[Sequence[float]],
     *,
     cell=None,
-    pbc=None,
     charge=0,
     spin=1,
 ):
@@ -24,14 +31,13 @@ def build_atoms(
             status_code=400,
             detail="Length mismatch atomic_numbers vs coordinates",
         )
-    if pbc is None:
-        pbc = [True, True, True] if cell is not None else [False, False, False]
     atoms = Atoms(
         numbers=numbers,
         positions=np.array(coords, dtype=float),
         cell=cell,
-        pbc=pbc,
+        pbc=[True, True, True],
     )
+
     atoms.info.update({"charge": charge or 0, "spin": spin or 1})
     return atoms
 

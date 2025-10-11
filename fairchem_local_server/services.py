@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from typing import List
 
+import numpy as np
+from ase import units as _units
 from ase.calculators.lj import LennardJones
+from ase.md.langevin import Langevin
+from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.optimize import BFGS as _BFGS
 from fastapi import HTTPException
 
 from .atoms_cache import cache_get, cache_put
-from .atoms_utils import build_atoms, compute_properties
+from .atoms_utils import build_atoms, center_and_return_shift, compute_properties
 from .log import log_event
 from .model_runtime import get_calculator
 from .models import (
@@ -37,15 +41,18 @@ def _attach_calc(atoms, which: RelaxCalculatorName):
 
 def _simple_run(atoms, properties: List[str], calculator: RelaxCalculatorName):
     _attach_calc(atoms, calculator)
+
+    center_and_return_shift(atoms)
+
     props = tuple(properties or ("energy", "forces"))
     results = compute_properties(atoms, props)
     cache_key = cache_put(atoms)
-    log_event(
-        "simple_calc",
-        natoms=len(atoms),
-        props=list(props),
-        stress=bool(results.get("stress") is not None),
-    )
+    # log_event(
+    #     "simple_calc",
+    #     natoms=len(atoms),
+    #     props=list(props),
+    #     stress=bool(results.get("stress") is not None),
+    # )
     return {"results": results, "cache_key": cache_key}
 
 
@@ -80,6 +87,8 @@ def _relax_run(
     if steps <= 0:
         raise HTTPException(status_code=400, detail="steps must be >0")
     _attach_calc(atoms, calculator)
+
+    shift = center_and_return_shift(atoms)
 
     # Apply precomputed results (if any) before first energy access
     pre_applied: list[str] = _maybe_apply_precomputed(atoms, precomputed, len(atoms))
@@ -132,19 +141,20 @@ def _relax_run(
 
     cache_key = cache_put(atoms)
 
-    log_event(
-        "relax_done",
-        natoms=len(atoms),
-        steps=steps_completed,
-        initial=initial_energy,
-        final=final_energy,
-        trace_len=(len(trace) if trace_enabled else 0),
-        calc=calculator,
-        precomputed=bool(pre_applied),
-        precomputed_keys=pre_applied,
-    )
+    # log_event(
+    #     "relax_done",
+    #     natoms=len(atoms),
+    #     steps=steps_completed,
+    #     initial=initial_energy,
+    #     final=final_energy,
+    #     trace_len=(len(trace) if trace_enabled else 0),
+    #     calc=calculator,
+    #     precomputed=bool(pre_applied),
+    #     precomputed_keys=pre_applied,
+    # )
 
-    return RelaxResult(
+    atoms.set_positions(atoms.get_positions() - shift)
+    r = RelaxResult(
         initial_energy=initial_energy,
         final_energy=final_energy,
         positions=atoms.get_positions().tolist(),
@@ -156,6 +166,8 @@ def _relax_run(
         precomputed_applied=(pre_applied if pre_applied else None),
         cache_key=cache_key,
     )
+    print("RET", r)
+    return r
 
 
 def relax(inp: RelaxIn) -> RelaxResult:
@@ -163,7 +175,6 @@ def relax(inp: RelaxIn) -> RelaxResult:
         inp.atomic_numbers,
         inp.coordinates,
         cell=inp.cell,
-        pbc=inp.pbc,
         charge=inp.charge or 0,
         spin=inp.spin_multiplicity or 1,
     )
@@ -204,16 +215,13 @@ def _md_run(
     if steps <= 0:
         raise HTTPException(status_code=400, detail="steps must be >0")
     _attach_calc(atoms, calculator)
-
-    import numpy as np
-    from ase import units as _units
-    from ase.md.langevin import Langevin
-    from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+    print("INTPUT POS", atoms.get_positions())
+    shift = center_and_return_shift(atoms)
+    print("SHIFT", shift)
 
     # If client supplied velocities, use them directly; else initialize from
     # temperature.
     if (atoms.get_velocities() > 0.0).any():
-        # print(atoms.get_velocities())
         reused_velocities = True
     elif velocities_in is not None:
         import numpy as _np  # type: ignore
@@ -290,19 +298,21 @@ def _md_run(
 
     cache_key = cache_put(atoms)
 
-    log_event(
-        "md_done",
-        natoms=len(atoms),
-        steps=steps,
-        initial=initial_energy,
-        final=final_energy,
-        T=Tfinal,
-        calc=calculator,
-        precomputed=bool(pre_applied),
-        precomputed_keys=pre_applied,
-        reused_velocities=reused_velocities,
-    )
+    # log_event(
+    #     "md_done",
+    #     natoms=len(atoms),
+    #     steps=steps,
+    #     initial=initial_energy,
+    #     final=final_energy,
+    #     T=Tfinal,
+    #     calc=calculator,
+    #     precomputed=bool(pre_applied),
+    #     precomputed_keys=pre_applied,
+    #     reused_velocities=reused_velocities,
+    # )
 
+    atoms.set_positions(atoms.get_positions() - shift)
+    print("RET MD", atoms.get_positions())
     return MDResult(
         initial_energy=initial_energy,
         final_energy=final_energy,
@@ -323,7 +333,6 @@ def md_step(inp: MDIn) -> MDResult:
         inp.atomic_numbers,
         inp.coordinates,
         cell=inp.cell,
-        pbc=inp.pbc,
         charge=inp.charge or 0,
         spin=inp.spin_multiplicity or 1,
     )
