@@ -64,31 +64,35 @@ class _PredictDeploy:  # runs on GPU replica
     @serve.batch(max_batch_size=MAX_BATCH, batch_wait_timeout_s=WAIT_S)
     async def predict(self, payloads: List[Tuple[tuple, dict]]):
         # Preserve order; return one result per payload.
-        out: List[Any] = []
-        if len(payloads) == 1:
-            return [
-                {
-                    k: v.detach().cpu()
-                    for k, v in self._unit.predict(payloads[0][0][0]).items()
+        try:
+            out: List[Any] = []
+            if len(payloads) == 1:
+                return [
+                    {
+                        k: v.detach().cpu()
+                        for k, v in self._unit.predict(payloads[0][0][0]).items()
+                    }
+                ]
+            else:
+                batch = atomicdata_list_to_batch([x[0][0] for x in payloads])  # warmup
+                batch.dataset = [x[0] for x in batch.dataset]
+                all_outputs = {
+                    k: v.detach().cpu() for k, v in self._unit.predict(batch).items()
                 }
-            ]
-        else:
-            batch = atomicdata_list_to_batch([x[0][0] for x in payloads])  # warmup
-            batch.dataset = [x[0] for x in batch.dataset]
-            all_outputs = {
-                k: v.detach().cpu() for k, v in self._unit.predict(batch).items()
-            }
-            forces_by_mol = all_outputs["forces"].split(batch["natoms"].tolist())
-            # stress_by_mol = all_outputs["stress"].split(batch["num_atoms"])
-            out = [
-                {"energy": energy, "forces": forces, "stress": stress[0]}
-                for energy, forces, stress in zip(
-                    all_outputs["energy"].split(1),
-                    forces_by_mol,
-                    all_outputs["stress"].split(1),
-                )
-            ]
-        return out
+                forces_by_mol = all_outputs["forces"].split(batch["natoms"].tolist())
+                # stress_by_mol = all_outputs["stress"].split(batch["num_atoms"])
+                out = [
+                    {"energy": energy, "forces": forces, "stress": stress[0]}
+                    for energy, forces, stress in zip(
+                        all_outputs["energy"].split(1),
+                        forces_by_mol,
+                        all_outputs["stress"].split(1),
+                    )
+                ]
+            return out
+        except Exception as e:
+            print("Unexpected error in UMA predictor: %s" % e)
+            raise
 
 
 class BatchedPredictUnit:
