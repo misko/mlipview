@@ -1,9 +1,11 @@
+import logging
 import os
 import time
 from typing import Optional
 
 from fastapi import FastAPI
 from ray import serve
+from ray.serve.schema import LoggingConfig
 
 from .model_runtime import (
     MODEL_NAME,
@@ -33,11 +35,14 @@ from .services import (
 app = FastAPI(title="UMA Serve API", debug=False)
 
 
-@serve.deployment(ray_actor_options={"num_gpus": 0})
+@serve.deployment(
+    ray_actor_options={"num_gpus": 0}, logging_config={"enable_access_log": False}
+)
 @serve.ingress(app)
 class Ingress:
     def __init__(self, predict_handle):
         # Inject the UMA handle; builds and caches FAIRChemCalculator.
+        logging.getLogger("ray.serve").setLevel(logging.ERROR)
         install_predict_handle(predict_handle)
 
     @app.get("/serve/health")
@@ -115,7 +120,15 @@ def deploy(ngpus: Optional[int] = None):
         ray_actor_options={"num_gpus": 1},
     ).bind(MODEL_NAME, TASK_NAME)
     dag = Ingress.bind(uma)
-    serve.run(dag, name="http_app", route_prefix="/")
+    serve.run(
+        dag,
+        name="http_app",
+        route_prefix="/",
+        logging_config=LoggingConfig(
+            enable_access_log=False,  # <- hides the "CALL /serve/... OK 72ms" lines
+            log_level="ERROR",  # optional: raise the bar for Serve internals
+        ),
+    )
     return dag
 
 

@@ -40,12 +40,17 @@ def _attach_calc(atoms, which: RelaxCalculatorName):
 
 
 def _simple_run(atoms, properties: List[str], calculator: RelaxCalculatorName):
+    if len(atoms) == 0:
+        raise HTTPException(status_code=400, detail="No atoms provided")
     _attach_calc(atoms, calculator)
 
-    # center_and_return_shift(atoms)
+    shift = center_and_return_shift(atoms)
 
     props = tuple(properties or ("energy", "forces"))
     results = compute_properties(atoms, props)
+    if shift is not None:
+        atoms.set_positions(atoms.get_positions() - shift)
+        atoms.set_cell(None)
     cache_key = cache_put(atoms)
     # log_event(
     #     "simple_calc",
@@ -84,6 +89,8 @@ def _relax_run(
     return_trace: bool,
     precomputed: PrecomputedValues | None,
 ) -> RelaxResult:
+    if len(atoms) == 0:
+        raise HTTPException(status_code=400, detail="No atoms provided")
     if steps <= 0:
         raise HTTPException(status_code=400, detail="steps must be >0")
     _attach_calc(atoms, calculator)
@@ -212,6 +219,8 @@ def _md_run(
     precomputed: PrecomputedValues | None,
     velocities_in,
 ) -> MDResult:
+    if len(atoms) == 0:
+        raise HTTPException(status_code=400, detail="No atoms provided")
     if steps <= 0:
         raise HTTPException(status_code=400, detail="steps must be >0")
     _attach_calc(atoms, calculator)
