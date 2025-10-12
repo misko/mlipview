@@ -115,6 +115,15 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       window.__MLIPVIEW_DEBUG_API = (dbg === '1' || dbg === 'true');
     } catch { window.__MLIPVIEW_DEBUG_API = false; }
   }
+  // Latency debugging gate comes from index.html ?debugLatency=1 wrapper
+  const __latencyOn = (typeof window!=='undefined') && !!window.__MLIP_DEBUG_LATENCY;
+  function noteLatency(kind, phase, meta){
+    if(!__latencyOn) return;
+    try {
+      const s = new Date().toISOString();
+      console.log(`[latency:${kind}] ${phase} ${s}`, meta||{});
+    } catch {}
+  }
   let __apiSeq = window.__MLIPVIEW_API_SEQ || 0;
   function debugApi(kind, phase, meta){
     __count('index#debugApi');
@@ -209,6 +218,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const base = __resolveApiBase();
     const url = base + getEndpointSync('simple');
       const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
+      const build0 = performance.now();
+      // payload already prepared above
       const t0 = performance.now();
       debugApi('simple_calculate','request',{ seq, url, body });
       let resp, json;
@@ -220,8 +231,13 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       }
       const t1 = performance.now();
       const timingMs = Math.round((t1 - t0)*100)/100;
+      noteLatency('simple', 'network', { seq, ms: timingMs });
       if(resp.ok){
-        try { json = await resp.json(); } catch(parseErr){ debugApi('simple_calculate','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); }
+        try {
+          const p0=performance.now();
+          json = await resp.json();
+          const p1=performance.now(); noteLatency('simple','parse',{ seq, ms: Math.round((p1-p0)*100)/100 });
+        } catch(parseErr){ debugApi('simple_calculate','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); }
         debugApi('simple_calculate','response',{ seq, url, timingMs, status: resp.status, response: json });
       } else {
         const txt = await resp.text();
@@ -303,6 +319,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const url = base + getEndpointSync('relax');
     const payload = body;
     const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
+    const build0 = performance.now();
     const t0 = performance.now();
   debugApi('relax','request',{ seq, url, body: payload });
     let resp, json;
@@ -313,16 +330,19 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       throw netErr;
     }
     const t1 = performance.now();
-    const timingMs = Math.round((t1 - t0)*100)/100;
+    const timingMs = Math.round((t1 - t0)*100)/100; // network time only
+    noteLatency('relax','network',{ seq, ms: timingMs });
     if(!resp.ok){
       const txt = await resp.text();
       debugApi('relax','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt });
       throw new Error('Relax request failed '+resp.status+': '+txt);
     }
-    try { json = await resp.json(); } catch(parseErr){ debugApi('relax','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
+    let parseMs = 0;
+    try { const p0=performance.now(); json = await resp.json(); const p1=performance.now(); parseMs = Math.round((p1-p0)*100)/100; noteLatency('relax','parse',{ seq, ms: parseMs }); }
+    catch(parseErr){ debugApi('relax','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
     debugApi('relax','response',{ seq, url, timingMs, status: resp.status, response: json });
   // no server cache key
-    return { data: json, uivAtSend, tivAtSend };
+    return { data: json, uivAtSend, tivAtSend, netMs: timingMs, parseMs };
   }
   const { engine, scene, camera } = await createScene(canvas);
   // Enable verbose touch debug if requested
@@ -390,7 +410,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   async function relaxStep() {
     __count('index#relaxStep');
     try {
-      const { data, uivAtSend, tivAtSend } = await callRelaxEndpoint(1); // single step
+  const step0 = performance.now();
+  const { data, uivAtSend, tivAtSend, netMs, parseMs } = await callRelaxEndpoint(1); // single step
+  const netDone = performance.now();
       // If user interactions occurred during in-flight relax, apply partial update:
       // update only atoms NOT edited by user between send and receive.
       let partialApplied = false;
@@ -413,6 +435,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       if(Array.isArray(positions) && positions.length === state.positions.length){
         // If modifiedDuring is set, apply only for indices not in the set
         const N = positions.length;
+        const apply0 = performance.now();
         if(exclude && exclude.size>0){
           for(let i=0;i<N;i++){
             if(exclude.has(i)) continue; // keep user's current edit or drag
@@ -428,6 +451,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         // Suppress the debounced generic posChange tick from counting as a user interaction
         __suppressNextPosChange = true;
         bumpSimulationVersion(partialApplied ? 'relaxStepApplyPartial' : 'relaxStepApply');
+        const apply1 = performance.now();
+        noteLatency('relax','apply',{ ms: Math.round((apply1-apply0)*100)/100 });
       }
       window.__RELAX_FORCES = forces;
       state.dynamics = state.dynamics || {}; state.dynamics.energy = final_energy;
@@ -443,9 +468,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         try { __updateForces(mergedForces, { reason: partialApplied ? 'relaxStepPartial' : 'relaxStep' }); } catch {}
       }
       if (partialApplied) {
-        return { applied:true, partial:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'relax' };
+        const step1 = performance.now();
+        noteLatency('relax','step-total',{ ms: Math.round((step1-step0)*100)/100 });
+        return { applied:true, partial:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'relax', netMs, parseMs };
       }
-      return { applied:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'relax' };
+      { const step1 = performance.now(); noteLatency('relax','step-total',{ ms: Math.round((step1-step0)*100)/100 }); }
+      return { applied:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'relax', netMs, parseMs };
     } catch(e){
       console.warn('[relaxStep] failed', e);
       return { error: e?.message||String(e) };
@@ -471,21 +499,24 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const url = base + getEndpointSync('md');
     const payload = body;
     const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
+    const build0 = performance.now();
     const t0 = performance.now();
   debugApi('md','request',{ seq, url, body: payload });
   let resp, json; try { resp = await fetch(url,{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) }); } catch(netErr){ debugApi('md','network-error',{ seq, url, error: netErr?.message||String(netErr) }); throw netErr; }
-    const t1 = performance.now(); const timingMs = Math.round((t1 - t0)*100)/100;
+    const t1 = performance.now(); const timingMs = Math.round((t1 - t0)*100)/100; // network time only
+    noteLatency('md','network',{ seq, ms: timingMs });
     if(!resp.ok){ const txt = await resp.text(); debugApi('md','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt }); throw new Error('MD request failed '+resp.status+': '+txt); }
-    try { json = await resp.json(); } catch(parseErr){ debugApi('md','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
+    let parseMs = 0; try { const p0=performance.now(); json = await resp.json(); const p1=performance.now(); parseMs = Math.round((p1-p0)*100)/100; noteLatency('md','parse',{ seq, ms: parseMs }); } catch(parseErr){ debugApi('md','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
     debugApi('md','response',{ seq, url, timingMs, status: resp.status, response: json });
   // no server cache key
-    return { data: json, uivAtSend, tivAtSend };
+    return { data: json, uivAtSend, tivAtSend, netMs: timingMs, parseMs };
   }
   async function mdStep(opts={}){
     __count('index#mdStep');
     try {
+      const t0_step = performance.now();
       const reqId = (++__mdReqCounter);
-      const { data, uivAtSend, tivAtSend } = await callMDEndpoint({ steps:1, ...opts });
+  const { data, uivAtSend, tivAtSend, netMs, parseMs } = await callMDEndpoint({ steps:1, ...opts });
       // If a newer MD result has already been applied, this one is stale regardless of other checks
       if (reqId < __mdLastApplied) {
         if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][md] superseded by newer applied req', { reqId, lastApplied: __mdLastApplied });
@@ -500,6 +531,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const { positions, forces, final_energy, velocities, temperature: instT } = data;
       if(Array.isArray(positions) && positions.length === state.positions.length){
         const N = positions.length;
+        const apply0 = performance.now();
         if(exclude && exclude.size>0){
           for(let i=0;i<N;i++){
             if(exclude.has(i)) continue;
@@ -514,6 +546,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         state.markPositionsChanged();
         __suppressNextPosChange = true;
         bumpSimulationVersion(partialApplied ? 'mdStepApplyPartial' : 'mdStepApply');
+        const apply1 = performance.now();
+        noteLatency('md','apply',{ ms: Math.round((apply1-apply0)*100)/100 });
       }
       window.__RELAX_FORCES = forces;
       state.dynamics = state.dynamics || {}; state.dynamics.energy = final_energy;
@@ -547,8 +581,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       }
       // Mark this response as the latest applied
       __mdLastApplied = Math.max(__mdLastApplied, reqId);
-      if(partialApplied) return { applied:true, partial:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'md' };
-      return { applied:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'md' };
+      if(partialApplied) { noteLatency('md','step-total',{ ms: Math.round((performance.now()-t0_step)*100)/100 }); return { applied:true, partial:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'md', netMs, parseMs }; }
+      noteLatency('md','step-total',{ ms: Math.round((performance.now()-t0_step)*100)/100 });
+      return { applied:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'md', netMs, parseMs };
     } catch(e){
       console.warn('[mdStep] failed', e);
       return { error: e?.message||String(e) };
@@ -772,8 +807,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     if (running.kind) return { ignored:true };
     running.kind='relax';
     __resetRPS();
-  const minInterval = getConfig().minStepIntervalMs; // ms pacing between successful requests (configurable)
-    let lastTime=0;
+  const minInterval = getConfig().minStepIntervalMs; // ms pacing per API request (configurable)
+    let lastTime=0; // retained for focus-wait reset only
     let backoffMs=0; // 0 means no backoff active
     const baseBackoff=200; const maxBackoff=5000;
     let errorStreak=0; const maxErrorStreak=10;
@@ -781,23 +816,29 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   while(running.kind==='relax' && stepsDone<maxSteps){
       // Pause if app not focused (desktop). Resume on focus.
       if (!isAppFocused()) {
+        const f0 = performance.now();
         await waitForFocus();
         if (running.kind!=='relax') break;
         // reset pacing reference to avoid burst immediately after focus
         lastTime = performance.now();
+        noteLatency('relax','focus-wait',{ ms: Math.round((lastTime - f0)*100)/100 });
         continue;
       }
-      const now=performance.now();
-      const since= now - lastTime;
       if(backoffMs>0){
+        const w0 = performance.now();
         await new Promise(r=>setTimeout(r, backoffMs));
-      } else if (since < minInterval){
-        await new Promise(r=>setTimeout(r, minInterval - since));
+        noteLatency('relax','wait-backoff',{ ms: Math.round((performance.now()-w0)*100)/100, backoffMs });
       }
       if(running.kind!=='relax') break;
   const res = await relaxStep();
   if(res && res.applied){ stepsDone++; __noteRequestCompleted(); } // count only applied (non-stale) steps
       lastTime = performance.now();
+      // Post-request pacing: only wait if API network time was less than minInterval
+      if(!res?.error && backoffMs===0){
+        const net = Number(res?.netMs)||0;
+        const need = Math.max(0, minInterval - net);
+        if(need>0){ const w0=performance.now(); await new Promise(r=>setTimeout(r, need)); noteLatency('relax','wait-pacing',{ ms: Math.round((performance.now()-w0)*100)/100, needed: Math.round(need), netMs: net }); }
+      }
       if(res && res.error){
         errorStreak++;
         if(errorStreak>=maxErrorStreak){ console.warn('[relaxRun] aborting due to error streak'); break; }
@@ -816,20 +857,20 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     if(running.kind) return { ignored:true };
     running.kind='md';
     __resetRPS();
-  const minInterval = getConfig().minStepIntervalMs; let lastTime=0;
+  const minInterval = getConfig().minStepIntervalMs; let lastTime=0; // retained for focus-wait reset only
     let backoffMs=0; const baseBackoff=200; const maxBackoff=5000; let errorStreak=0; const maxErrorStreak=10;
     let i=0;
     while(i<steps && running.kind==='md'){
       if (!isAppFocused()) {
+        const f0 = performance.now();
         await waitForFocus();
         if (running.kind!=='md') break;
         lastTime = performance.now();
+        noteLatency('md','focus-wait',{ ms: Math.round((lastTime - f0)*100)/100 });
         continue;
       }
-      const now=performance.now(); const since=now-lastTime;
-      if(backoffMs>0){ await new Promise(r=>setTimeout(r, backoffMs)); }
-      else if(since<minInterval){ await new Promise(r=>setTimeout(r, minInterval - since)); }
-      if(running.kind!=='md') break;
+  if(backoffMs>0){ const w0=performance.now(); await new Promise(r=>setTimeout(r, backoffMs)); noteLatency('md','wait-backoff',{ ms: Math.round((performance.now()-w0)*100)/100, backoffMs }); }
+  if(running.kind!=='md') break;
       // Re-read target temperature dynamically to allow live slider adjustments mid-run.
       let dynT = temperature; // fallback to initial argument
       try {
@@ -843,6 +884,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const res = await mdStep({ calculator, temperature: dynT, timestep_fs, friction });
   try { const el=document.getElementById('instTemp'); if(el && state.dynamics && typeof state.dynamics.temperature==='number') el.textContent='T: '+state.dynamics.temperature.toFixed(1)+' K'; } catch {}
       lastTime=performance.now();
+      // Post-request pacing: only wait if API network time was less than minInterval
+      if(!res?.error && backoffMs===0){
+        const net = Number(res?.netMs)||0;
+        const need = Math.max(0, minInterval - net);
+        if(need>0){ const w0=performance.now(); await new Promise(r=>setTimeout(r, need)); noteLatency('md','wait-pacing',{ ms: Math.round((performance.now()-w0)*100)/100, needed: Math.round(need), netMs: net }); }
+      }
       if(res && res.error){
         errorStreak++; if(errorStreak>=maxErrorStreak){ console.warn('[mdRun] aborting due to error streak'); break; }
         backoffMs = backoffMs? Math.min(backoffMs*2, maxBackoff) : baseBackoff;

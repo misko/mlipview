@@ -27,10 +27,12 @@
   </script>
   <script>
     // Optional latency debug: enable with ?debugLatency=1 to log round-trip times of all fetch() calls
+    // and JSON/text parse times. This helps separate pure network IO from client-side overhead.
     (function(){
       try {
         const params = new URLSearchParams(location.search||'');
         if (params.get('debugLatency') === '1') {
+          try { window.__MLIP_DEBUG_LATENCY = true; } catch {}
           const origFetch = (typeof window!=='undefined' && window.fetch) ? window.fetch.bind(window) : null;
           if (origFetch && !window.__MLIP_FETCH_LATENCY_WRAPPED__) {
             window.__MLIP_FETCH_LATENCY_WRAPPED__ = true;
@@ -44,6 +46,38 @@
                 const ms = Math.round((t1 - t0)*100)/100;
                 const status = (resp && typeof resp.status==='number') ? resp.status : 'n/a';
                 console.log(`[latency] ${method} ${url} -> ${status} in ${ms} ms`);
+
+                // Wrap resp.json/text to measure client-side parse time
+                try {
+                  const proto = Object.getPrototypeOf(resp);
+                  if (proto && !resp.__MLIP_PARSE_WRAPPED__) {
+                    Object.defineProperty(resp, '__MLIP_PARSE_WRAPPED__', { value: true, configurable: true });
+                    if (typeof resp.json === 'function') {
+                      const origJson = resp.json.bind(resp);
+                      resp.json = async function(){
+                        const p0 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+                        try { return await origJson(); }
+                        finally {
+                          const p1 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+                          const pms = Math.round((p1 - p0)*100)/100;
+                          console.log(`[latency] parse json ${method} ${url} in ${pms} ms`);
+                        }
+                      };
+                    }
+                    if (typeof resp.text === 'function') {
+                      const origText = resp.text.bind(resp);
+                      resp.text = async function(){
+                        const p0 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+                        try { return await origText(); }
+                        finally {
+                          const p1 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+                          const pms = Math.round((p1 - p0)*100)/100;
+                          console.log(`[latency] parse text ${method} ${url} in ${pms} ms`);
+                        }
+                      };
+                    }
+                  }
+                } catch {}
                 return resp;
               } catch (err) {
                 const t1 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
@@ -70,7 +104,8 @@
   <script type="module">
     import { initNewViewer } from './index.js';
     import { loadDefault } from './util/moleculeLoader.js';
-    import { buildDesktopPanel } from './ui/desktopPanel.js';
+  import { buildDesktopPanel } from './ui/desktopPanel.js';
+  import { installTouchControls } from './ui/touchControls.js';
     import { initForcesToggle } from './ui/forcesToggle.js';
     import { initCellToggle } from './ui/cellToggle.js';
     const urlParams = new URLSearchParams(location.search);
@@ -89,6 +124,8 @@
       } catch {}
       window.vrScene = viewerApi.scene; // redundancy for VR module
       window.vrEngine = viewerApi.engine;
+      // Install touch controls for mobile (pinch zoom, single-finger orbit, touch drag)
+      try { installTouchControls({ canvas, scene: viewerApi.scene, camera: viewerApi.camera, picking: viewerApi.picking }); } catch {}
       if (DEBUG) console.log('[debug] viewer initialized');
   // Build left-side control panel (collapsible sections)
   buildDesktopPanel({ attachTo: document.getElementById('app') });
