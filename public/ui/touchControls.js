@@ -145,9 +145,18 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 	canvas.addEventListener('touchend', onEnd, { passive: false });
 	canvas.addEventListener('touchcancel', onEnd, { passive: false });
 
-	// Detach default camera pointer inputs immediately (extra safety, some environments keep inputs active)
+	// IMPORTANT: Do NOT strip Babylon pointer inputs on desktop; it breaks mouse rotation.
+	// Only consider disabling pointer inputs for touch-capable environments, and even there
+	// we prefer to temporarily detach/attach the camera during touch gestures instead.
+	// Keeping this block gated avoids desktop regressions.
 	try {
-			if (camera && camera.inputs) {
+		const isBrowser = (typeof window !== 'undefined');
+		const touchCapable = isBrowser && (('ontouchstart' in window) || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0));
+		if (touchCapable && camera && camera.inputs) {
+			// Historically we attempted to remove pointer inputs here, but detaching the camera
+			// during touch is sufficient. We keep this as a no-op to avoid side-effects.
+			// If a future device misbehaves, enable targeted removals behind a debug flag.
+			if (isBrowser && window.__MLIPVIEW_FORCE_REMOVE_POINTER_INPUTS === true) {
 				if (typeof camera.inputs.removeByType === 'function') {
 					try { camera.inputs.removeByType('ArcRotateCameraPointersInput'); } catch {}
 					try { camera.inputs.removeByType('FreeCameraPointersInput'); } catch {}
@@ -157,6 +166,7 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 					try { camera.inputs.remove(camera.inputs.attached && camera.inputs.attached.pointers); } catch {}
 				}
 			}
+		}
 	} catch {}
 
 	return {
