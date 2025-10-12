@@ -14,6 +14,26 @@ export function buildReloadUrl(currentHref, file){
   return url.toString();
 }
 
+export function buildReloadUrlWithParam(currentHref, key, value){
+  const url = new URL(currentHref, typeof window!== 'undefined' ? window.location.origin : 'http://localhost');
+  url.searchParams.set(key, value);
+  return url.toString();
+}
+
+// UTF-8 safe base64 helpers (browser + Node)
+export function base64EncodeUtf8(str){
+  if (typeof Buffer !== 'undefined') return Buffer.from(str, 'utf8').toString('base64');
+  // Browser path: encodeURIComponent to UTF-8 bytes, then map percent bytes to chars for btoa
+  const utf8Bytes = encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (_, p1) => String.fromCharCode(parseInt(p1, 16)));
+  return btoa(utf8Bytes);
+}
+export function base64DecodeUtf8(b64){
+  if (typeof Buffer !== 'undefined') return Buffer.from(b64, 'base64').toString('utf8');
+  const binary = atob(b64);
+  const esc = Array.prototype.map.call(binary, c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join('');
+  return decodeURIComponent(esc);
+}
+
 /**
  * Install a <select id="moleculeSelect"> into hudEl that reloads the page on change.
  * Returns the created select element for testing.

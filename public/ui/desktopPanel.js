@@ -4,7 +4,10 @@
 
 import { initTemperatureSlider } from './temperatureSlider.js';
 import { initFrictionSlider } from './frictionSlider.js';
-import { installMoleculeSelector } from './moleculeSelect.js';
+import { installMoleculeSelector, buildReloadUrlWithParam, base64EncodeUtf8 } from './moleculeSelect.js';
+import { parseXYZ } from '../util/xyzLoader.js';
+import { validateParsedXYZ } from '../util/constraints.js';
+import { isLikelySmiles } from '../util/smilesLoader.js';
 import { elInfo } from '../elements.js';
 import { defaultMassForZ } from '../physics/sim-model.js';
 
@@ -705,7 +708,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
     const smilesLabel = document.createElement('div'); smilesLabel.className = 'form-label'; smilesLabel.textContent = 'SMILES';
     const inputRow = document.createElement('div'); inputRow.className = 'input-row';
     const smilesInput = document.createElement('input'); smilesInput.type = 'text'; smilesInput.id = 'smilesInput'; smilesInput.placeholder = 'Paste or type SMILES here';
-    const smilesBtn = document.createElement('button'); smilesBtn.id = 'smilesGoBtn'; smilesBtn.className = 'btn'; smilesBtn.textContent = 'Generate';
+  const smilesBtn = document.createElement('button'); smilesBtn.id = 'smilesGoBtn'; smilesBtn.className = 'btn'; smilesBtn.textContent = 'Generate';
     smilesBtn.disabled = true;
 
     smilesInput.addEventListener('input', () => {
@@ -717,9 +720,55 @@ export function buildDesktopPanel({ attachTo } = {}) {
       }
     });
 
+    // Wire SMILES Generate: validate basic string and reload page with ?smiles=
+    smilesBtn.addEventListener('click', () => {
+      const s = (smilesInput.value||'').trim();
+      const statusEl = document.getElementById('status');
+      if (!s) return;
+      if (!isLikelySmiles(s)) {
+        if (statusEl) statusEl.textContent = 'Invalid SMILES format';
+        return;
+      }
+      try {
+        const href = buildReloadUrlWithParam(window.location.href, 'smiles', s);
+        window.location.assign ? window.location.assign(href) : (window.location.href = href);
+      } catch (e) {
+        if (statusEl) statusEl.textContent = 'SMILES navigation failed';
+      }
+    });
+
     inputRow.append(smilesInput, smilesBtn);
     smilesBlock.append(smilesLabel, inputRow);
     sys.content.appendChild(smilesBlock);
+
+    // Upload XYZ button + hidden input
+    const uploadRow = document.createElement('div'); uploadRow.className = 'row';
+    const uploadBtn = document.createElement('button'); uploadBtn.id = 'uploadXyzBtn'; uploadBtn.className = 'btn'; uploadBtn.textContent = 'Upload XYZ';
+    const fileInput = document.createElement('input'); fileInput.type = 'file'; fileInput.accept = '.xyz,text/plain'; fileInput.style.display = 'none'; fileInput.id = 'xyzFileInput';
+    uploadBtn.addEventListener('click', ()=> fileInput.click());
+    fileInput.addEventListener('change', async (ev)=>{
+      const statusEl = document.getElementById('status');
+      try {
+        const f = ev.target.files && ev.target.files[0];
+        if (!f) return;
+        const text = await f.text();
+        let parsed;
+        try { parsed = parseXYZ(text); } catch (e) { if (statusEl) statusEl.textContent = 'XYZ parse failed'; console.warn?.('[uploadXYZ] parse failed', e); return; }
+        const v = validateParsedXYZ(parsed);
+        if (!v.ok) { if (statusEl) statusEl.textContent = `XYZ invalid: ${v.error}`; console.warn?.('[uploadXYZ] validation failed', v.error); return; }
+  // Encode to base64 (UTF-8 safe) and reload with ?molxyz
+  const b64 = base64EncodeUtf8(text);
+        const href = buildReloadUrlWithParam(window.location.href, 'molxyz', b64);
+        window.location.assign ? window.location.assign(href) : (window.location.href = href);
+      } catch (e) {
+        if (statusEl) statusEl.textContent = 'XYZ upload failed';
+        console.warn?.('[uploadXYZ] unexpected error', e);
+      } finally {
+        try { ev.target.value = ''; } catch {}
+      }
+    });
+    uploadRow.append(uploadBtn, fileInput);
+    sys.content.appendChild(uploadRow);
 
     // Backend select only (PBC moved)
     const backendRow = document.createElement('div'); backendRow.className = 'row';

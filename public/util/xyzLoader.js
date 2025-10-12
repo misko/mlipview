@@ -8,16 +8,18 @@
 // Returns { elements, positions, comment, tags, cell }
 
 export function parseXYZ(text) {
-  const lines = text.split(/\r?\n/).filter(l=>l.trim().length>0);
-  if (lines.length < 2) throw new Error('XYZ: not enough lines');
-  const n = parseInt(lines[0].trim(),10);
+  // Preserve blank lines because XYZ allows an empty comment line (line 2)
+  const rawLines = text.split(/\r?\n/);
+  if (rawLines.length < 2) throw new Error('XYZ: not enough lines');
+  const n = parseInt((rawLines[0] || '').trim(), 10);
   if (!Number.isInteger(n) || n <= 0) throw new Error('XYZ: invalid atom count');
-  if (lines.length < 2 + n) throw new Error('XYZ: file shorter than declared atom count');
-  const comment = lines[1];
+  // We require at least N atom lines after the comment line
+  if (rawLines.length < 2 + n) throw new Error('XYZ: file shorter than declared atom count');
+  const comment = (rawLines[1] ?? '');
   const tags = {};
   let cell = null;
   // Extract key=value pairs (split by whitespace) but keep free text. Lattice handled specially.
-  comment.split(/\s+/).forEach(tok => {
+  (comment || '').split(/\s+/).forEach(tok => {
     const eq = tok.indexOf('=');
     if (eq>0) {
       const k = tok.slice(0,eq);
@@ -39,7 +41,10 @@ export function parseXYZ(text) {
   const elements = [];
   const positions = [];
   for (let i=0;i<n;i++) {
-    const parts = lines[2+i].trim().split(/\s+/);
+    const line = rawLines[2 + i];
+    if (typeof line !== 'string') throw new Error('XYZ: file shorter than declared atom count');
+    const trimmed = line.trim();
+    const parts = trimmed.split(/\s+/);
     if (parts.length < 4) throw new Error(`XYZ: malformed atom line ${i}`);
     const [sym, xs, ys, zs] = parts;
     const x = parseFloat(xs), y=parseFloat(ys), z=parseFloat(zs);

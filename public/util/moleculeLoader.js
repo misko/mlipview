@@ -1,5 +1,8 @@
 import { parseXYZ, applyXYZToState } from './xyzLoader.js';
 import { __count } from './funcCount.js';
+import { validateParsedXYZ } from './constraints.js';
+import { smilesToXYZ, isLikelySmiles } from './smilesLoader.js';
+import { base64DecodeUtf8 } from '../ui/moleculeSelect.js';
 
 export function getRequestedMoleculeFromUrl(win){
   try {
@@ -10,6 +13,30 @@ export function getRequestedMoleculeFromUrl(win){
     if(!mol) return null;
     // crude allowlist: only allow paths under molecules/
     if(/^molecules\/[\w.-]+\.xyz$/i.test(mol)) return mol;
+  } catch {}
+  return null;
+}
+
+export function getRequestedMolXYZFromUrl(win){
+  try {
+    const w = win || (typeof globalThis!=='undefined' && globalThis.window) || (typeof window!=='undefined' ? window : undefined);
+    if(!w || !w.location) return null;
+    const q = new URLSearchParams(w.location.search||'');
+    const b64 = q.get('molxyz');
+    if(!b64) return null;
+    return b64;
+  } catch {}
+  return null;
+}
+
+export function getRequestedSmilesFromUrl(win){
+  try {
+    const w = win || (typeof globalThis!=='undefined' && globalThis.window) || (typeof window!=='undefined' ? window : undefined);
+    if(!w || !w.location) return null;
+    const q = new URLSearchParams(w.location.search||'');
+    const s = q.get('smiles');
+    if(!s) return null;
+    if(isLikelySmiles(s)) return s;
   } catch {}
   return null;
 }
@@ -37,15 +64,44 @@ export async function loadXYZIntoViewer(viewerApi, url) {
   __count('moleculeLoader#loadXYZIntoViewer');
   const txt = await fetchXYZ(url);
   const parsed = parseXYZ(txt);
+  const valid = validateParsedXYZ(parsed);
+  if (!valid.ok) throw new Error(valid.error || 'Validation failed');
   applyXYZToState(viewerApi.state, parsed);
   // Recompute bonds for new structure
   viewerApi.recomputeBonds();
   return parsed;
 }
 
+export function applyParsedToViewer(viewerApi, parsed){
+  const valid = validateParsedXYZ(parsed);
+  if (!valid.ok) throw new Error(valid.error || 'Validation failed');
+  applyXYZToState(viewerApi.state, parsed);
+  viewerApi.recomputeBonds();
+  return parsed;
+}
+
 export async function loadDefault(viewerApi) {
   __count('moleculeLoader#loadDefault');
-  // If URL requested a specific molecule, honor it first
+  // Priority: inline ?molxyz, then ?smiles, then static ?mol
+  try {
+    const b64 = getRequestedMolXYZFromUrl();
+    if (b64) {
+      const txt = base64DecodeUtf8(b64);
+      const parsed = parseXYZ(txt);
+      applyParsedToViewer(viewerApi, parsed);
+      return { file: 'inline.xyz', parsed };
+    }
+  } catch (e) { console.warn('[moleculeLoader] inline molxyz failed', e); }
+  try {
+    const smi = getRequestedSmilesFromUrl();
+    if (smi) {
+      const xyzText = await smilesToXYZ(smi);
+      const parsed = parseXYZ(xyzText);
+      applyParsedToViewer(viewerApi, parsed);
+      return { file: `smiles:${smi}`, parsed };
+    }
+  } catch (e) { console.warn('[moleculeLoader] smiles load failed', e); }
+  // If URL requested a specific molecule file, honor it
   const requested = getRequestedMoleculeFromUrl();
   if (requested) {
     try {
