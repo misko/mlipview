@@ -255,6 +255,22 @@ export function buildDesktopPanel({ attachTo } = {}) {
       Co:'Cobalt', Ni:'Nickel', Cu:'Copper', Zn:'Zinc', Ag:'Silver', Au:'Gold',
       Na:'Sodium', K:'Potassium', Ca:'Calcium', Li:'Lithium', He:'Helium', Ne:'Neon'
     };
+    // Approximate van der Waals radii (Å), primarily Bondi radii with common extensions where applicable.
+    // Used for UI display only. If a symbol is missing here, we fall back to elements.js (elInfo).
+    const VDW_BY_SYMBOL = {
+      // Period 1
+      H:1.20, He:1.40,
+      // Period 2
+      Li:1.82, Be:1.53, B:1.92, C:1.70, N:1.55, O:1.52, F:1.47, Ne:1.54,
+      // Period 3
+      Na:2.27, Mg:1.73, Al:1.84, Si:2.10, P:1.80, S:1.80, Cl:1.75, Ar:1.88,
+      // Period 4
+      K:2.75, Ca:2.31, Sc:2.30, Ti:2.15, V:2.05, Cr:2.05, Mn:2.05, Fe:2.00, Co:2.00, Ni:2.00, Cu:2.00, Zn:2.10, Ga:1.87, Ge:2.11, As:1.85, Se:1.90, Br:1.85, Kr:2.02,
+      // Period 5
+      Rb:3.03, Sr:2.49, Y:2.40, Zr:2.30, Nb:2.15, Mo:2.10, Tc:2.05, Ru:2.05, Rh:2.00, Pd:2.05, Ag:2.10, Cd:2.20, In:2.20, Sn:2.25, Sb:2.20, Te:2.10, I:1.98, Xe:2.16,
+      // Period 6 (main group highlights)
+      Cs:3.43, Ba:2.68, La:2.50, Hf:2.25, Ta:2.20, W:2.10, Re:2.05, Os:2.00, Ir:2.00, Pt:2.05, Au:2.10, Hg:2.05, Tl:2.23, Pb:2.29, Bi:2.30, Po:2.00, At:2.00, Rn:2.20
+    };
     const SYMBOL_TO_Z = { H:1, He:2, Li:3, Be:4, B:5, C:6, N:7, O:8, F:9, Ne:10, Na:11, Mg:12, Al:13, Si:14, P:15, S:16, Cl:17, Ar:18, K:19, Ca:20 };
     const Z_TO_SYMBOL = Object.fromEntries(Object.entries(SYMBOL_TO_Z).map(([k,v])=>[v,k]));
     function getSymbol(el){
@@ -421,6 +437,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
         return (typeof m === 'number' && isFinite(m)) ? m : null;
       }
       function vdwForSym(sym){
+        if (sym && VDW_BY_SYMBOL[sym] != null) return VDW_BY_SYMBOL[sym];
         const info = elInfo(sym);
         return (info && typeof info.vdw === 'number') ? info.vdw : null;
       }
