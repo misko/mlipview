@@ -31,25 +31,31 @@
       try {
         const params = new URLSearchParams(location.search||'');
         if (params.get('debugLatency') === '1') {
+          try { window.__MLIP_DEBUG_LATENCY = true; } catch {}
           const origFetch = (typeof window!=='undefined' && window.fetch) ? window.fetch.bind(window) : null;
           if (origFetch && !window.__MLIP_FETCH_LATENCY_WRAPPED__) {
             window.__MLIP_FETCH_LATENCY_WRAPPED__ = true;
             window.fetch = async function(input, init){
               const method = (init && init.method) || (input && input.method) || 'GET';
               const url = (typeof input === 'string') ? input : (input && (input.url || input.toString())) || 'unknown';
-              const t0 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+              const nowNow = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+              const prevStart = window.__MLIP_LAST_FETCH_START || nowNow;
+              window.__MLIP_LAST_FETCH_START = nowNow;
+              const t0 = nowNow;
               try {
                 const resp = await origFetch(input, init);
                 const t1 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
                 const ms = Math.round((t1 - t0)*100)/100;
                 const status = (resp && typeof resp.status==='number') ? resp.status : 'n/a';
-                console.log(`[latency] ${method} ${url} -> ${status} in ${ms} ms`);
+                const sincePrev = Math.round((t0 - prevStart)*100)/100;
+                console.log(`[latency] ${method} ${url} -> ${status} in ${ms} ms (sincePrev=${sincePrev} ms)`);
                 return resp;
               } catch (err) {
                 const t1 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
                 const ms = Math.round((t1 - t0)*100)/100;
                 const msg = (err && (err.message||String(err))) || 'error';
-                console.warn(`[latency] ${method} ${url} -> network error in ${ms} ms: ${msg}`);
+                const sincePrev = Math.round((t0 - prevStart)*100)/100;
+                console.warn(`[latency] ${method} ${url} -> network error in ${ms} ms (sincePrev=${sincePrev} ms): ${msg}`);
                 throw err;
               }
             };

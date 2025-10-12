@@ -9,7 +9,6 @@ describe('desktop left panel UI', () => {
     // Import builders and build panel
     const { buildDesktopPanel } = await import('../public/ui/desktopPanel.js');
     const { initTemperatureSlider } = await import('../public/ui/temperatureSlider.js');
-    const { initFrictionSlider } = await import('../public/ui/frictionSlider.js');
 
     const res = buildDesktopPanel({ attachTo: document.getElementById('app') });
     expect(res).toBeTruthy();
@@ -19,17 +18,15 @@ describe('desktop left panel UI', () => {
     // Sections exist
     const live = document.getElementById('section-live-stats');
     const sim = document.getElementById('section-simulation');
-    const sys = document.getElementById('section-system');
-    const ren = document.getElementById('section-rendering');
-    const xr = document.getElementById('section-xr');
-    expect(live && sim && sys && ren && xr).toBeTruthy();
+  const sys = document.getElementById('section-system');
+  const xr = document.getElementById('section-xr');
+  expect(live && sim && sys && xr).toBeTruthy();
 
     const isCollapsed = (sec)=> sec.querySelector('.panel-content').getAttribute('data-collapsed') === 'true';
     // Defaults: live + simulation open, others collapsed
     expect(isCollapsed(live)).toBe(false);
     expect(isCollapsed(sim)).toBe(false);
     expect(isCollapsed(sys)).toBe(true);
-    expect(isCollapsed(ren)).toBe(true);
     expect(isCollapsed(xr)).toBe(true);
 
     // Live stats controls exist
@@ -45,9 +42,8 @@ describe('desktop left panel UI', () => {
     expect(document.getElementById('btnMD')).toBeTruthy();
     expect(document.getElementById('btnMDRun')).toBeTruthy();
 
-    // Temperature and friction sliders (initialized during build)
+  // Temperature slider (initialized during build)
     expect(document.getElementById('mdTempSlider')).toBeTruthy();
-    expect(document.getElementById('mdFrictionSlider')).toBeTruthy();
 
     // System controls
     expect(document.getElementById('moleculeSelect')).toBeTruthy();
@@ -55,8 +51,8 @@ describe('desktop left panel UI', () => {
     expect(document.getElementById('smilesGoBtn')).toBeTruthy();
     expect(document.getElementById('btnCell')).toBeTruthy();
 
-    // Rendering controls
-    expect(document.getElementById('btnToggleForces')).toBeTruthy();
+  // Forces toggle remains (moved under Simulation section)
+  expect(document.getElementById('toggleForces')).toBeTruthy();
 
     // XR controls
     const xrSel = document.getElementById('xrModeSelect');

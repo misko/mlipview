@@ -42,7 +42,7 @@ function mountDOM(){
   document.body.innerHTML = `<div id="app"></div><canvas id="viewer" width="100" height="100"></canvas>`;
 }
 
-test('connect toggles: forces and energy plot', async () => {
+test('connect toggles: forces toggle works', async () => {
   mountDOM();
   const { buildDesktopPanel } = await import('../public/ui/desktopPanel.js');
   const mod = await import('../public/index.js');
@@ -53,15 +53,8 @@ test('connect toggles: forces and energy plot', async () => {
   expect(forces.textContent.toLowerCase()).toContain('off');
   forces.click();
   expect(forces.textContent.toLowerCase()).toContain('on');
-  // Energy plot toggle hides/shows container
-  const plot = document.getElementById('energyPlot');
-  const energy = document.getElementById('toggleEnergyPlot');
-  // Default turned on by builder
-  expect(plot.style.display === '' || plot.style.display === 'block').toBe(true);
-  energy.click();
-  expect(plot.style.display).toBe('none');
-  energy.click();
-  expect(plot.style.display).toBe('block');
+  // Energy plot exists; toggle button was removed from visible UI (legacy hidden control may exist)
+  expect(document.getElementById('energyPlot')).toBeTruthy();
 });
 
 test('connect toggles: MD and Relaxation', async () => {

@@ -272,6 +272,22 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const dynamics = { stepMD: ()=>{}, stepRelax: ({ forceFn })=>{ forceFn(); } };
   // --- Requests-per-second (RPS) counter for MD/Relax runs ---
   const __rps = { samples: [], windowMs: 2000, value: 0 };
+  // Latency/debug helpers
+  const __lat = { enabled: false };
+  try { __lat.enabled = !!(typeof window!=='undefined' && (window.__MLIP_DEBUG_LATENCY || /[?&]debugLatency=1/.test(window.location?.search||''))); } catch {}
+  function logLatency(kind, phase, o){
+    if(!__lat.enabled) return;
+    try {
+      let extras = '';
+      if (o && typeof o === 'object') {
+        const keys = ['waitedMs','waitedFor','gapSincePrevSend','iterMs','netMs','parseMs'];
+        const parts = [];
+        for (const k of keys) { if (o[k] != null) parts.push(`${k}=${o[k]}`); }
+        if (parts.length) extras = ' ' + parts.join(' ');
+      }
+      console.log(`[latency:${kind}] ${phase}${extras}`, o);
+    } catch{}
+  }
   function __resetRPS(){
     __rps.samples.length = 0; __rps.value = 0;
     try { const el = document.getElementById('rpsLabel'); if (el) el.textContent = 'RPS: --'; } catch {}
@@ -302,7 +318,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const url = base + getEndpointSync('relax');
     const payload = body;
     const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
-    const t0 = performance.now();
+  const t0 = performance.now();
   debugApi('relax','request',{ seq, url, body: payload });
     let resp, json;
     try {
@@ -312,14 +328,18 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       throw netErr;
     }
     const t1 = performance.now();
-    const timingMs = Math.round((t1 - t0)*100)/100;
+    const netMs = Math.round((t1 - t0)*100)/100;
     if(!resp.ok){
       const txt = await resp.text();
-      debugApi('relax','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt });
+      debugApi('relax','http-error',{ seq, url, timingMs: netMs, status: resp.status, statusText: resp.statusText, bodyText: txt });
       throw new Error('Relax request failed '+resp.status+': '+txt);
     }
-    try { json = await resp.json(); } catch(parseErr){ debugApi('relax','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
-    debugApi('relax','response',{ seq, url, timingMs, status: resp.status, response: json });
+    const t2s = performance.now();
+    try { json = await resp.json(); } catch(parseErr){ debugApi('relax','parse-error',{ seq, url, timingMs: netMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
+    const t2 = performance.now();
+    const parseMs = Math.round((t2 - t2s)*100)/100;
+    debugApi('relax','response',{ seq, url, timingMs: netMs, status: resp.status, response: json });
+    logLatency('relax', 'net+parse', { seq, url, netMs, parseMs });
   // no server cache key
     return { data: json, uivAtSend, tivAtSend };
   }
@@ -460,10 +480,13 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const t0 = performance.now();
   debugApi('md','request',{ seq, url, body: payload });
   let resp, json; try { resp = await fetch(url,{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) }); } catch(netErr){ debugApi('md','network-error',{ seq, url, error: netErr?.message||String(netErr) }); throw netErr; }
-    const t1 = performance.now(); const timingMs = Math.round((t1 - t0)*100)/100;
-    if(!resp.ok){ const txt = await resp.text(); debugApi('md','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt }); throw new Error('MD request failed '+resp.status+': '+txt); }
-    try { json = await resp.json(); } catch(parseErr){ debugApi('md','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
-    debugApi('md','response',{ seq, url, timingMs, status: resp.status, response: json });
+  const t1 = performance.now(); const netMs = Math.round((t1 - t0)*100)/100;
+  if(!resp.ok){ const txt = await resp.text(); debugApi('md','http-error',{ seq, url, timingMs: netMs, status: resp.status, statusText: resp.statusText, bodyText: txt }); throw new Error('MD request failed '+resp.status+': '+txt); }
+  const t2s = performance.now();
+  try { json = await resp.json(); } catch(parseErr){ debugApi('md','parse-error',{ seq, url, timingMs: netMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
+  const t2 = performance.now(); const parseMs = Math.round((t2 - t2s)*100)/100;
+  debugApi('md','response',{ seq, url, timingMs: netMs, status: resp.status, response: json });
+  logLatency('md','net+parse', { seq, url, netMs, parseMs });
   // no server cache key
     return { data: json, uivAtSend, tivAtSend };
   }
@@ -758,8 +781,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     if (running.kind) return { ignored:true };
     running.kind='relax';
     __resetRPS();
-  const minInterval = getConfig().minStepIntervalMs; // ms pacing between successful requests (configurable)
-    let lastTime=0;
+  const minInterval = getConfig().minStepIntervalMs; // enforce minimum iteration duration (ms)
+  let prevSend=0; // previous request start time
     let backoffMs=0; // 0 means no backoff active
     const baseBackoff=200; const maxBackoff=5000;
     let errorStreak=0; const maxErrorStreak=10;
@@ -769,21 +792,33 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       if (!isAppFocused()) {
         await waitForFocus();
         if (running.kind!=='relax') break;
-        // reset pacing reference to avoid burst immediately after focus
-        lastTime = performance.now();
         continue;
       }
-      const now=performance.now();
-      const since= now - lastTime;
+      // Apply backoff (if any) before sending the next request
+      let waitedFor = '';
+      let waitedMs = 0;
       if(backoffMs>0){
+        waitedMs = backoffMs; waitedFor='backoff';
         await new Promise(r=>setTimeout(r, backoffMs));
-      } else if (since < minInterval){
-        await new Promise(r=>setTimeout(r, minInterval - since));
       }
       if(running.kind!=='relax') break;
-  const res = await relaxStep();
+      const sendAt = performance.now();
+      const gapSincePrevSend = prevSend ? Math.round((sendAt - prevSend)*100)/100 : 0;
+      prevSend = sendAt;
+      const res = await relaxStep();
   if(res && res.applied){ stepsDone++; __noteRequestCompleted(); } // count only applied (non-stale) steps
-      lastTime = performance.now();
+      const endAt = performance.now();
+      const iterMs = Math.round((endAt - sendAt)*100)/100;
+      // Enforce minimum iteration duration: if iteration was shorter than minInterval, wait the remainder.
+      let paceWaitMs = 0;
+      if (iterMs < minInterval) {
+        paceWaitMs = Math.round((minInterval - iterMs)*100)/100;
+        await new Promise(r=>setTimeout(r, paceWaitMs));
+        waitedFor = 'pace';
+      }
+      // Log pacing wait (post-iteration) as waitedMs; if backoff occurred and no pacing, waitedMs will be the backoff value with waitedFor='backoff'
+      const loggedWaitMs = (paceWaitMs>0) ? paceWaitMs : (waitedFor==='backoff' ? Math.round(waitedMs*100)/100 : 0);
+      logLatency('relax','iter', { seq: undefined, waitedMs: loggedWaitMs, waitedFor, gapSincePrevSend, iterMs });
       if(res && res.error){
         errorStreak++;
         if(errorStreak>=maxErrorStreak){ console.warn('[relaxRun] aborting due to error streak'); break; }
@@ -802,19 +837,18 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     if(running.kind) return { ignored:true };
     running.kind='md';
     __resetRPS();
-  const minInterval = getConfig().minStepIntervalMs; let lastTime=0;
+  const minInterval = getConfig().minStepIntervalMs; let prevSend=0;
     let backoffMs=0; const baseBackoff=200; const maxBackoff=5000; let errorStreak=0; const maxErrorStreak=10;
     let i=0;
     while(i<steps && running.kind==='md'){
       if (!isAppFocused()) {
         await waitForFocus();
         if (running.kind!=='md') break;
-        lastTime = performance.now();
         continue;
       }
-      const now=performance.now(); const since=now-lastTime;
-      if(backoffMs>0){ await new Promise(r=>setTimeout(r, backoffMs)); }
-      else if(since<minInterval){ await new Promise(r=>setTimeout(r, minInterval - since)); }
+  // Apply backoff (if any) before sending; pacing will be applied after the iteration to enforce minimum cycle time
+  let waitedMs=0; let waitedFor='';
+  if(backoffMs>0){ waitedMs = backoffMs; waitedFor='backoff'; await new Promise(r=>setTimeout(r, backoffMs)); }
       if(running.kind!=='md') break;
       // Re-read target temperature dynamically to allow live slider adjustments mid-run.
       let dynT = temperature; // fallback to initial argument
@@ -826,9 +860,22 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // Clamp to configured slider bounds (0-3000 K)
       if(!(Number.isFinite(dynT))) dynT = temperature;
   if(dynT < 0) dynT = 0; else if(dynT > 3000) dynT = 3000;
-  const res = await mdStep({ calculator, temperature: dynT, timestep_fs, friction });
+    const sendAt = performance.now();
+    const gapSincePrevSend = prevSend ? Math.round((sendAt - prevSend)*100)/100 : 0;
+    prevSend = sendAt;
+    const res = await mdStep({ calculator, temperature: dynT, timestep_fs, friction });
   try { const el=document.getElementById('instTemp'); if(el && state.dynamics && typeof state.dynamics.temperature==='number') el.textContent='T: '+state.dynamics.temperature.toFixed(1)+' K'; } catch {}
-      lastTime=performance.now();
+  const endAt = performance.now();
+  const iterMs = Math.round((endAt - sendAt)*100)/100;
+  // Enforce minimum iteration duration via post-iteration pacing
+  let paceWaitMs = 0;
+  if (iterMs < minInterval) {
+    paceWaitMs = Math.round((minInterval - iterMs)*100)/100;
+    await new Promise(r=>setTimeout(r, paceWaitMs));
+    waitedFor = 'pace';
+  }
+  const loggedWaitMs = (paceWaitMs>0) ? paceWaitMs : (waitedFor==='backoff' ? Math.round(waitedMs*100)/100 : 0);
+  logLatency('md','iter', { waitedMs: loggedWaitMs, waitedFor, gapSincePrevSend, iterMs });
       if(res && res.error){
         errorStreak++; if(errorStreak>=maxErrorStreak){ console.warn('[mdRun] aborting due to error streak'); break; }
         backoffMs = backoffMs? Math.min(backoffMs*2, maxBackoff) : baseBackoff;
