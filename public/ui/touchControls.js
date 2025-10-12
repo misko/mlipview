@@ -1,7 +1,6 @@
-// Minimal touch controls layer
-// Purpose: bridge touch events to pointer events so existing picking/drag logic works.
-// We keep this lightweight: update scene.pointerX/Y and synthesize pointerdown/move/up
-// on the canvas, which the pickingService listens to.
+// Touch controls layer
+// - Maps touch gestures to camera orbit (single-finger) and zoom (pinch)
+// - Updates scene.pointerX/Y and synthesizes pointer events so picking/drag logic stays intact
 
 export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 	if (!canvas || !scene) return;
@@ -10,10 +9,10 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 	const DBG = (typeof window !== 'undefined') && !!window.__MLIPVIEW_DEBUG_TOUCH;
 	const rectOf = () => (typeof canvas.getBoundingClientRect === 'function' ? canvas.getBoundingClientRect() : { left: 0, top: 0 });
 
-	// Ensure CSS prevents native scrolling/zoom gestures overlapping with our handlers
+  // Prevent native scrolling/zoom from interfering with gestures
 	try { if (canvas && canvas.style) { canvas.style.touchAction = 'none'; canvas.style.webkitUserSelect = 'none'; } } catch {}
 
-	// Gesture tracking state
+  // Gesture tracking state
 	const touches = new Map(); // id -> {x,y}
 	let mode = 'none'; // 'none' | 'rotate' | 'pinch'
 	let lastSingle = null; // {x,y}
@@ -21,7 +20,7 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 
 	let cameraDetached = false;
 	const getDragging = () => !!(picking && picking._debug && picking._debug.dragActive);
-	const detachCamera = () => {
+  const detachCamera = () => {
 		try {
 			if (camera && camera.detachControl && !cameraDetached) {
 				camera.detachControl(canvas);
@@ -30,7 +29,7 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 			}
 		} catch {}
 	};
-	const attachCameraIfIdle = () => {
+  const attachCameraIfIdle = () => {
 		try {
 			if (camera && camera.attachControl && cameraDetached && !getDragging()) {
 				camera.attachControl(canvas, true);
@@ -40,14 +39,14 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 		} catch {}
 	};
 
-	const updatePointer = (t) => {
+  const updatePointer = (t) => {
 		try {
 			const r = rectOf();
 			scene.pointerX = Math.round((t.clientX ?? 0) - r.left);
 			scene.pointerY = Math.round((t.clientY ?? 0) - r.top);
 		} catch {}
 	};
-	const synth = (type) => {
+  const synth = (type) => {
 		try {
 			const ev = new Event(type, { bubbles: true, cancelable: true });
 			canvas.dispatchEvent(ev);
@@ -57,7 +56,7 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 		}
 	};
 
-	const onStart = (e) => {
+  const onStart = (e) => {
 		if (!e || !e.changedTouches || e.changedTouches.length === 0) return;
 		// Track touches
 		for (const t of e.changedTouches) {
@@ -87,7 +86,7 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 		// Kick picking via pointerdown
 		synth('pointerdown');
 	};
-	const onMove = (e) => {
+  const onMove = (e) => {
 		if (!e || !e.changedTouches || e.changedTouches.length === 0) return;
 		// Update tracked touches
 		for (const t of e.changedTouches) {
@@ -126,7 +125,7 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 		try { e.preventDefault(); e.stopPropagation(); } catch {}
 		synth('pointermove');
 	};
-	const onEnd = (e) => {
+  const onEnd = (e) => {
 		if (e && e.changedTouches) {
 			for (const t of e.changedTouches) touches.delete(t.identifier);
 			if (e.changedTouches[0]) updatePointer(e.changedTouches[0]);
@@ -145,10 +144,8 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 	canvas.addEventListener('touchend', onEnd, { passive: false });
 	canvas.addEventListener('touchcancel', onEnd, { passive: false });
 
-	// IMPORTANT: Do NOT strip Babylon pointer inputs on desktop; it breaks mouse rotation.
-	// Only consider disabling pointer inputs for touch-capable environments, and even there
-	// we prefer to temporarily detach/attach the camera during touch gestures instead.
-	// Keeping this block gated avoids desktop regressions.
+	// Do NOT strip Babylon pointer inputs on desktop; it breaks mouse rotation.
+	// On touch devices, we rely on temporary camera detach/attach during gestures.
 	try {
 		const isBrowser = (typeof window !== 'undefined');
 		const touchCapable = isBrowser && (('ontouchstart' in window) || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0));

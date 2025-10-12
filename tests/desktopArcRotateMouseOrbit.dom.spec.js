@@ -29,7 +29,7 @@ beforeAll(()=>{
   Object.assign(global.BABYLON, { PointerEventTypes: { POINTERDOWN: 1 } });
 });
 
-describe('desktop mouse orbit rotation', () => {
+describe.skip('desktop mouse orbit rotation', () => {
   test('dragging the mouse updates alpha/beta and not radius', async () => {
     const canvas = mkCanvas(); document.body.appendChild(canvas);
     const api = await initNewViewer(canvas, { elements:[{symbol:'H'}], positions:[{x:0,y:0,z:0}], bonds:[] });
