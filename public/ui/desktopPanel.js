@@ -187,6 +187,14 @@ export function buildDesktopPanel({ attachTo } = {}) {
       .stat { font-size: 12px; color: var(--muted); }
       .value { font-size: 12px; }
       .divider { border-top: 1px solid var(--border); margin: 8px 0; }
+      /* Mobile top bar */
+      #mobileTopBar { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; gap: 8px; z-index: 5; }
+      #mobileTopBar .tab { flex: 1 1 0; background: #2A2A2A; color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: 8px 10px; font-size: 12px; cursor: pointer; }
+      #mobileTopBar .tab[data-active="true"] { background: var(--accent); border-color: var(--accent); }
+      /* Mobile sheet behavior */
+      #controlPanel[data-mobile-open="true"] { left: 8px; right: 8px; width: auto; top: 50px; }
+      #controlPanel[data-mobile-open="true"] .panel-section { display: none; }
+      #controlPanel[data-mobile-open="true"] .panel-section[data-mobile-active="true"] { display: block; }
     `;
     document.head.appendChild(style);
   }
@@ -254,22 +262,6 @@ export function buildDesktopPanel({ attachTo } = {}) {
       F:'Fluorine', P:'Phosphorus', Br:'Bromine', I:'Iodine', Si:'Silicon', Fe:'Iron',
       Co:'Cobalt', Ni:'Nickel', Cu:'Copper', Zn:'Zinc', Ag:'Silver', Au:'Gold',
       Na:'Sodium', K:'Potassium', Ca:'Calcium', Li:'Lithium', He:'Helium', Ne:'Neon'
-    };
-    // Approximate van der Waals radii (Å), primarily Bondi radii with common extensions where applicable.
-    // Used for UI display only. If a symbol is missing here, we fall back to elements.js (elInfo).
-    const VDW_BY_SYMBOL = {
-      // Period 1
-      H:1.20, He:1.40,
-      // Period 2
-      Li:1.82, Be:1.53, B:1.92, C:1.70, N:1.55, O:1.52, F:1.47, Ne:1.54,
-      // Period 3
-      Na:2.27, Mg:1.73, Al:1.84, Si:2.10, P:1.80, S:1.80, Cl:1.75, Ar:1.88,
-      // Period 4
-      K:2.75, Ca:2.31, Sc:2.30, Ti:2.15, V:2.05, Cr:2.05, Mn:2.05, Fe:2.00, Co:2.00, Ni:2.00, Cu:2.00, Zn:2.10, Ga:1.87, Ge:2.11, As:1.85, Se:1.90, Br:1.85, Kr:2.02,
-      // Period 5
-      Rb:3.03, Sr:2.49, Y:2.40, Zr:2.30, Nb:2.15, Mo:2.10, Tc:2.05, Ru:2.05, Rh:2.00, Pd:2.05, Ag:2.10, Cd:2.20, In:2.20, Sn:2.25, Sb:2.20, Te:2.10, I:1.98, Xe:2.16,
-      // Period 6 (main group highlights)
-      Cs:3.43, Ba:2.68, La:2.50, Hf:2.25, Ta:2.20, W:2.10, Re:2.05, Os:2.00, Ir:2.00, Pt:2.05, Au:2.10, Hg:2.05, Tl:2.23, Pb:2.29, Bi:2.30, Po:2.00, At:2.00, Rn:2.20
     };
     const SYMBOL_TO_Z = { H:1, He:2, Li:3, Be:4, B:5, C:6, N:7, O:8, F:9, Ne:10, Na:11, Mg:12, Al:13, Si:14, P:15, S:16, Cl:17, Ar:18, K:19, Ca:20 };
     const Z_TO_SYMBOL = Object.fromEntries(Object.entries(SYMBOL_TO_Z).map(([k,v])=>[v,k]));
@@ -437,7 +429,6 @@ export function buildDesktopPanel({ attachTo } = {}) {
         return (typeof m === 'number' && isFinite(m)) ? m : null;
       }
       function vdwForSym(sym){
-        if (sym && VDW_BY_SYMBOL[sym] != null) return VDW_BY_SYMBOL[sym];
         const info = elInfo(sym);
         return (info && typeof info.vdw === 'number') ? info.vdw : null;
       }
@@ -767,6 +758,60 @@ export function buildDesktopPanel({ attachTo } = {}) {
   // Append all sections (Selection under Live Metrics)
   panel.append(live.section, selSec.section, sim.section, sys.section, xr.section);
   host.appendChild(panel);
+
+  // --- Mobile top bar with three tabs (Live Metrics, Simulation, System) ---
+  const topBar = document.createElement('div');
+  topBar.id = 'mobileTopBar';
+  const tabs = [
+    { id: 'live', label: 'Live Metrics', sectionId: 'section-live-stats' },
+    { id: 'simulation', label: 'Simulation', sectionId: 'section-simulation' },
+    { id: 'system', label: 'System', sectionId: 'section-system' },
+  ];
+  const tabEls = new Map();
+  tabs.forEach(t => {
+    const b = document.createElement('button');
+    b.className = 'tab';
+    b.type = 'button';
+    b.id = `mobileTab-${t.id}`;
+    b.textContent = t.label;
+    b.setAttribute('data-active','false');
+    b.addEventListener('click', ()=> toggleMobileTab(t.sectionId, b));
+    tabEls.set(t.sectionId, b);
+    topBar.appendChild(b);
+  });
+  host.appendChild(topBar);
+
+  function setOnlySectionActive(sectionId){
+    const secs = panel.querySelectorAll('.panel-section');
+    secs.forEach(sec => {
+      if (sec.id === sectionId) {
+        sec.setAttribute('data-mobile-active','true');
+        const content = sec.querySelector('.panel-content');
+        const header = sec.querySelector('.panel-header');
+        if (content) content.removeAttribute('data-collapsed');
+        if (header) header.setAttribute('aria-expanded','true');
+      } else {
+        sec.removeAttribute('data-mobile-active');
+      }
+    });
+  }
+  function clearActiveTabs(){ tabEls.forEach(btn => btn.setAttribute('data-active','false')); }
+  function toggleMobileTab(sectionId, btn){
+    const isOpen = panel.getAttribute('data-mobile-open') === 'true';
+    const current = panel.querySelector('.panel-section[data-mobile-active="true"]');
+    const isSame = !!(current && current.id === sectionId);
+    if (isOpen && isSame) {
+      panel.removeAttribute('data-mobile-open');
+      const secs = panel.querySelectorAll('.panel-section');
+      secs.forEach(sec => sec.removeAttribute('data-mobile-active'));
+      clearActiveTabs();
+      return;
+    }
+    panel.setAttribute('data-mobile-open','true');
+    setOnlySectionActive(sectionId);
+    clearActiveTabs();
+    if (btn) btn.setAttribute('data-active','true');
+  }
 
   // Legacy hidden controls for test compatibility (text reflects on/off)
   const legacyIds = [ 'btnRelax','btnRelaxRun','btnMD','btnMDRun','btnToggleForces','toggleEnergyPlot','btnCell' ];
