@@ -39,3 +39,12 @@ export function computeRadialDelta(state, inputs, config={}){
 }
 
 export default { computeRadialDelta };
+
+// Helper: map a joystick Y axis (-1 forward, +1 back per XR gamepad convention) to an additional
+// radial delta contribution. Gain controls how many meters per full deflection. Deadzone filters noise.
+export function joystickDelta(axisY, { gain=0.25, deadzone=0.08 }={}){
+  const v = Number(axisY)||0;
+  if (Math.abs(v) < deadzone) return 0;
+  // Forward push (negative Y) should increase distance from user => positive deltaR
+  return (-v) * gain;
+}

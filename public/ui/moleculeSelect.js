@@ -47,7 +47,8 @@ export function installMoleculeSelector(opts){
   select.id = 'moleculeSelect';
   select.innerHTML = '<option value="molecules/roy.xyz">ROY</option>'+
                      '<option value="molecules/benzene.xyz">Benzene</option>'+
-                     '<option value="molecules/water.xyz">Water</option>';
+                     '<option value="molecules/water.xyz">Water</option>'+
+                     '<option value="molecules/water10.xyz">Water x10</option>';
   select.onchange = () => {
     const file = select.value;
     const href = buildReloadUrl(windowRef.location.href, file);

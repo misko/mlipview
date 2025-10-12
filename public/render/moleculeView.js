@@ -109,15 +109,24 @@ export function createMoleculeView(scene, molState) {
     mat.emissiveColor = mat.diffuseColor.scale(0.55);
     mat.specularColor = new BABYLON.Color3(0.1,0.1,0.1);
     mat.disableLighting = true; // keep vivid in dim VR/AR lighting
-    // Use unit diameter & scale per-instance so radius logic matches bonds; previous tiny base made arrows microscopic
-    const master = BABYLON.MeshBuilder.CreateCylinder('force_vector_master',{height:1,diameter:1,tessellation:14},scene);
-    master.isPickable = false; master.thinInstanceEnablePicking = false;
-    master.material = mat;
-    // Hide until we have instances
-    if (typeof master.setEnabled === 'function') master.setEnabled(false); else master.isVisible=false;
-    const g = { master, mats:[], indices:[], colors:[] };
+    // Use unit primitives & scale per-instance:
+    //  - Shaft: unit cylinder (height=1, diameter=1)
+    //  - Head: unit cone (height=1, diameterBottom=1, diameterTop=0)
+    const shaftMaster = BABYLON.MeshBuilder.CreateCylinder('force_vector_shaft_master',{height:1,diameter:1,tessellation:14},scene);
+    shaftMaster.isPickable = false; shaftMaster.thinInstanceEnablePicking = false;
+    shaftMaster.material = mat;
+    if (typeof shaftMaster.setEnabled === 'function') shaftMaster.setEnabled(false); else shaftMaster.isVisible=false;
+
+    const headMaster = BABYLON.MeshBuilder.CreateCylinder('force_vector_head_master',{height:1,diameterTop:0,diameterBottom:1,tessellation:14},scene);
+    headMaster.isPickable = false; headMaster.thinInstanceEnablePicking = false;
+    headMaster.material = mat;
+    if (typeof headMaster.setEnabled === 'function') headMaster.setEnabled(false); else headMaster.isVisible=false;
+
+    // Back-compat alias: some tests/reference code read g.master
+    const g = { master: shaftMaster, shaftMaster, headMaster, mats:[], headMats:[], indices:[], colors:[] };
     forceGroups.set('force', g);
-    registerMaster('forceMaster', master);
+    registerMaster('forceMaster', shaftMaster);
+    registerMaster('forceMaster', headMaster);
     return g;
   }
   function buildInitial() {
@@ -269,8 +278,9 @@ export function createMoleculeView(scene, molState) {
     // After bonds are rebuilt, rebuild forces to stay in sync with transforms (shared masters for VR)
     try { rebuildForces(); } catch {}
   }
-  // Force vector thin instance matrix builder (arrow style: cylinder scaled & rotated)
-  function forceMatrix(p, f, length, radius){
+  // Force vector thin instance matrix builder (arrow style)
+  // Returns orientation quaternion and convenience midpoints for shaft/head
+  function forceArrowTransforms(p, f, length){
     // p: {x,y,z}; f: [fx,fy,fz]; length: fixed length for debug visualization
     const fx=f[0], fy=f[1], fz=f[2];
     const mag = Math.hypot(fx,fy,fz) || 1e-9;
@@ -280,16 +290,19 @@ export function createMoleculeView(scene, molState) {
     if (dot>0.9999) rot = BABYLON.Quaternion.Identity();
     else if (dot<-0.9999) rot = BABYLON.Quaternion.RotationAxis(new BABYLON.Vector3(1,0,0), Math.PI);
     else { const axis = BABYLON.Vector3.Cross(up, dir).normalize(); rot = BABYLON.Quaternion.RotationAxis(axis, Math.acos(Math.min(1,Math.max(-1,dot)))); }
-    // Position: offset so base sits at atom, cylinder centered => shift half-length along dir
-    const mid = new BABYLON.Vector3(p.x + dir.x*length/2, p.y + dir.y*length/2, p.z + dir.z*length/2);
-    return BABYLON.Matrix.Compose(new BABYLON.Vector3(radius*2, length, radius*2), rot, mid);
+    // Midpoints along arrow axis
+    const shaftLen = length * 0.78; // proportion for shaft
+    const headLen = Math.max(length - shaftLen, length*0.22); // ensure visible head
+    const shaftMid = new BABYLON.Vector3(p.x + dir.x*shaftLen/2, p.y + dir.y*shaftLen/2, p.z + dir.z*shaftLen/2);
+    const headMid = new BABYLON.Vector3(p.x + dir.x*(shaftLen + headLen/2), p.y + dir.y*(shaftLen + headLen/2), p.z + dir.z*(shaftLen + headLen/2));
+    return { rot, shaftLen, headLen, shaftMid, headMid };
   }
   function rebuildForces(){
     __count('moleculeView#rebuildForces');
     const DBG = (typeof window !== 'undefined') && (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search||''));
     if (DBG) console.log('[Forces][rebuild] start');
-    const g = ensureForceGroup();
-    g.mats.length = 0; g.indices.length = 0;
+  const g = ensureForceGroup();
+  g.mats.length = 0; g.headMats.length = 0; g.indices.length = 0;
     // If forces are globally hidden, disable the master and clear buffers
     // Default visibility: in Jest/jsdom or explicit test mode, enable by default to satisfy visualization tests
     if (molState.showForces == null) {
@@ -303,9 +316,12 @@ export function createMoleculeView(scene, molState) {
     }
   if (!molState.showForces) {
       if (DBG) console.log('[Forces][rebuild] hidden by state.showForces=false');
-      try { g.master.thinInstanceSetBuffer('matrix', new Float32Array()); } catch {}
-      try { g.master.thinInstanceSetBuffer('color', new Float32Array(), 4); } catch {}
-      if (typeof g.master.setEnabled === 'function') g.master.setEnabled(false); else g.master.isVisible=false;
+      try { g.shaftMaster.thinInstanceSetBuffer('matrix', new Float32Array()); } catch {}
+      try { g.headMaster.thinInstanceSetBuffer('matrix', new Float32Array()); } catch {}
+      try { g.shaftMaster.thinInstanceSetBuffer('color', new Float32Array(), 4); } catch {}
+      try { g.headMaster.thinInstanceSetBuffer('color', new Float32Array(), 4); } catch {}
+      if (typeof g.shaftMaster.setEnabled === 'function') g.shaftMaster.setEnabled(false); else g.shaftMaster.isVisible=false;
+      if (typeof g.headMaster.setEnabled === 'function') g.headMaster.setEnabled(false); else g.headMaster.isVisible=false;
       return;
     }
     // Accept forces from molState.forces OR molState.dynamics?.forces OR global window.__RELAX_FORCES for backward compat
@@ -314,8 +330,10 @@ export function createMoleculeView(scene, molState) {
     const n = Math.min(forces.length, molState.positions.length);
     if (!n) {
       if (DBG) console.log('[Forces][rebuild] no forces or positions (n=0)');
-      g.master.thinInstanceSetBuffer('matrix', new Float32Array());
-      if (typeof g.master.setEnabled === 'function') g.master.setEnabled(false); else g.master.isVisible=false;
+      g.shaftMaster.thinInstanceSetBuffer('matrix', new Float32Array());
+      g.headMaster.thinInstanceSetBuffer('matrix', new Float32Array());
+      if (typeof g.shaftMaster.setEnabled === 'function') g.shaftMaster.setEnabled(false); else g.shaftMaster.isVisible=false;
+      if (typeof g.headMaster.setEnabled === 'function') g.headMaster.setEnabled(false); else g.headMaster.isVisible=false;
       return;
     }
     // Scaling controls
@@ -337,25 +355,40 @@ export function createMoleculeView(scene, molState) {
       if(mag < 1e-10) continue;
       let drawLen;
       if (fixedLen != null) drawLen = fixedLen; else drawLen = Math.min(maxLen, Math.max(minLen, mag * forceScale));
-      const mat = forceMatrix(p, f, drawLen, radius);
-      g.mats.push(mat); g.indices.push({ atom:i, mag });
+      const t = forceArrowTransforms(p, f, drawLen);
+      // Shaft
+      const shaftMat = BABYLON.Matrix.Compose(new BABYLON.Vector3(radius*2, t.shaftLen, radius*2), t.rot, t.shaftMid);
+      g.mats.push(shaftMat);
+      // Head (use slightly larger radius for visual prominence)
+      const headRadius = radius * 2.4; // bottom diameter of cone = 2*headRadius
+      const headMat = BABYLON.Matrix.Compose(new BABYLON.Vector3(headRadius*2, t.headLen, headRadius*2), t.rot, t.headMid);
+      g.headMats.push(headMat);
+      g.indices.push({ atom:i, mag });
       if (DBG && i < 8) console.log('[Forces][rebuild] atom', i, 'f=', f, 'mag=', mag.toFixed(4));
     }
-    g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
-    try { g.master.thinInstanceRefreshBoundingInfo && g.master.thinInstanceRefreshBoundingInfo(); } catch {}
+    g.shaftMaster.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
+    g.headMaster.thinInstanceSetBuffer('matrix', flattenMatrices(g.headMats));
+    try { g.shaftMaster.thinInstanceRefreshBoundingInfo && g.shaftMaster.thinInstanceRefreshBoundingInfo(); } catch {}
+    try { g.headMaster.thinInstanceRefreshBoundingInfo && g.headMaster.thinInstanceRefreshBoundingInfo(); } catch {}
     // Per-instance color (solid red, alpha 1)
-    if (g.mats.length) {
-      const cols = new Float32Array(g.mats.length * 4);
-      for (let i=0;i<g.mats.length;i++) { cols[i*4+0]=0.95; cols[i*4+1]=0.05; cols[i*4+2]=0.05; cols[i*4+3]=1.0; }
-      try { g.master.thinInstanceSetBuffer('color', cols, 4); } catch {}
-    } else {
-      try { g.master.thinInstanceSetBuffer('color', new Float32Array(), 4); } catch {}
-    }
+    const setColor = (mesh, count)=>{
+      if (count) {
+        const cols = new Float32Array(count * 4);
+        for (let i=0;i<count;i++) { cols[i*4+0]=0.95; cols[i*4+1]=0.05; cols[i*4+2]=0.05; cols[i*4+3]=1.0; }
+        try { mesh.thinInstanceSetBuffer('color', cols, 4); } catch {}
+      } else {
+        try { mesh.thinInstanceSetBuffer('color', new Float32Array(), 4); } catch {}
+      }
+    };
+    setColor(g.shaftMaster, g.mats.length);
+    setColor(g.headMaster, g.headMats.length);
     if (DBG) console.log('[Forces][rebuild] instances=', g.mats.length);
     if (g.mats.length) {
-      if (typeof g.master.setEnabled === 'function') g.master.setEnabled(true); else g.master.isVisible=true;
+      if (typeof g.shaftMaster.setEnabled === 'function') g.shaftMaster.setEnabled(true); else g.shaftMaster.isVisible=true;
+      if (typeof g.headMaster.setEnabled === 'function') g.headMaster.setEnabled(true); else g.headMaster.isVisible=true;
     } else {
-      if (typeof g.master.setEnabled === 'function') g.master.setEnabled(false); else g.master.isVisible=false;
+      if (typeof g.shaftMaster.setEnabled === 'function') g.shaftMaster.setEnabled(false); else g.shaftMaster.isVisible=false;
+      if (typeof g.headMaster.setEnabled === 'function') g.headMaster.setEnabled(false); else g.headMaster.isVisible=false;
     }
     if (DBG) console.log('[Forces][rebuild] complete visible=', g.mats.length>0);
   }

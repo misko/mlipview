@@ -304,7 +304,7 @@ export function setupVRFeatures(xrHelper, scene, picking){
           { controllerPos: [ctrlPos.x,ctrlPos.y,ctrlPos.z], controllerForward:[forward.x,forward.y,forward.z], cameraPos:[sphericalData.center.x,sphericalData.center.y,sphericalData.center.z] },
           { mode, forwardGain:(typeof window!=='undefined' && window.vrSphericalForwardGain!=null)?window.vrSphericalForwardGain:6.0, adaptiveGain:(typeof window!=='undefined' && window.vrSphericalAdaptiveGain!=null)?window.vrSphericalAdaptiveGain:7.0, adaptiveMaxFrac:(typeof window!=='undefined' && window.vrSphericalAdaptiveMaxDeltaFraction!=null)?window.vrSphericalAdaptiveMaxDeltaFraction:1.2, expK:(typeof window!=='undefined' && window.vrSphericalExpK!=null)?window.vrSphericalExpK:1.4, expGain:(typeof window!=='undefined' && window.vrSphericalExpGain!=null)?window.vrSphericalExpGain:0.9 }
         );
-        let deltaR = core.deltaR;
+  let deltaR = core.deltaR;
   // Working radius cap: treat enormous initial radii as a smaller effective workspace for responsiveness.
   const workingCap = (typeof window!=='undefined' && window.vrSphericalWorkingRadiusCap!=null) ? window.vrSphericalWorkingRadiusCap : 20.0; // meters (new default)
   const effectiveInitialRadius = Math.min(sphericalData.initialRadius, workingCap);
@@ -312,11 +312,32 @@ export function setupVRFeatures(xrHelper, scene, picking){
   const amplifyCfg = (typeof window!=='undefined' && window.vrSphericalRadialAmplify!=null) ? window.vrSphericalRadialAmplify : 0.0;
   const amplificationMultiplier = (mode==='adaptive'||mode==='forward'||mode==='exp') ? 1 : (1 + (amplifyCfg * (effectiveInitialRadius / 1.0)));
   let newRadiusTarget = sphericalData.initialRadius + (deltaR * radialGain * amplificationMultiplier * (effectiveInitialRadius / sphericalData.initialRadius));
+  // Joystick forward/backward: treat as continuous per-frame speed so holding the stick keeps moving
+  let __joyActive = false;
+  try {
+    const gp = controller?.inputSource?.gamepad;
+    if (gp && Array.isArray(gp.axes) && gp.axes.length) {
+      // Prefer right stick Y if present, else left stick Y
+      const y = gp.axes[3]!=null ? gp.axes[3] : (gp.axes[1]!=null ? gp.axes[1] : 0);
+      const dead = (typeof window!=='undefined' && window.vrJoystickDeadzone!=null)? window.vrJoystickDeadzone : 0.08;
+      if (Math.abs(y) > dead) {
+        __joyActive = true;
+  const speed = (-y) * ((typeof window!=='undefined' && window.vrJoystickSpeed!=null)? window.vrJoystickSpeed : 0.12); // meters per frame approx (doubled)
+        // Base on current radius so the target advances each frame (continuous motion)
+        newRadiusTarget = sphericalData.currentRadius + speed;
+      }
+    }
+  } catch {}
   // Smoothing (exponential): currentRadius = lerp(currentRadius, newRadiusTarget, alpha)
   const smoothing = (typeof window!=='undefined' && window.vrSphericalRadialSmoothing!=null) ? window.vrSphericalRadialSmoothing : 0.25; // 0..1
   let newRadius = sphericalData.currentRadius + (newRadiusTarget - sphericalData.currentRadius) * Math.max(0, Math.min(1, smoothing));
         const minR = (typeof window!=='undefined' && window.vrSphericalMinRadius!=null) ? window.vrSphericalMinRadius : 0.05;
-        const maxFactor = (typeof window!=='undefined' && window.vrSphericalMaxScaleFactor!=null) ? window.vrSphericalMaxScaleFactor : 4.0;
+        let maxFactor = (typeof window!=='undefined' && window.vrSphericalMaxScaleFactor!=null) ? window.vrSphericalMaxScaleFactor : 4.0;
+        // While joystick is actively pushed, allow much larger travel (or configurable)
+        if (__joyActive) {
+          const joyMax = (typeof window!=='undefined' && window.vrJoystickMaxScaleFactor!=null) ? window.vrJoystickMaxScaleFactor : Infinity;
+          if (Number.isFinite(joyMax)) maxFactor = joyMax; else maxFactor = 1e9;
+        }
         const maxR = sphericalData.initialRadius * maxFactor;
         if(newRadius < minR) newRadius = minR; else if(newRadius > maxR) newRadius = maxR;
   sphericalData.currentRadius = newRadius; // persist

@@ -176,6 +176,15 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const __modifiedAtomsByVersion = new Map();
   // Track atoms currently being dragged (by index). Only atom-drags are considered here.
   const __draggingAtoms = new Set();
+  // Recently interacted atoms latch (atomIndex -> expiresAt ms). Prevents in-flight MD/relax from overriding
+  // the just-dragged atom if a response lands immediately after stick release.
+  const __latchedAtomsUntil = new Map();
+  function __latchAtom(i, ms=600){
+    try {
+      const now = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+      __latchedAtomsUntil.set(i, now + ms);
+    } catch {}
+  }
   let __currentDraggedAtomIndex = null;
   function __addModifiedAtoms(indices){
     if(!indices || !indices.length) return;
@@ -452,6 +461,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       const exclude = new Set();
       if(modifiedDuring) for(const i of modifiedDuring) exclude.add(i);
       if(__draggingAtoms.size) for(const i of __draggingAtoms) exclude.add(i);
+      // Also exclude any latched atoms whose latch window has not expired
+      try {
+        const now = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+        for(const [i, t] of __latchedAtomsUntil){ if(t > now) exclude.add(i); else __latchedAtomsUntil.delete(i); }
+      } catch {}
       // If a newer simulation result has already applied AND there were no user edits during flight,
       // mark this response as superseded. If user edits happened, we'll attempt a partial apply below.
       if((tivAtSend !== totalInteractionVersion) && !userChangedDuringFlight){
@@ -555,6 +569,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       const exclude = new Set();
       if(modifiedDuring) for(const i of modifiedDuring) exclude.add(i);
       if(__draggingAtoms.size) for(const i of __draggingAtoms) exclude.add(i);
+      try {
+        const now = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+        for(const [i, t] of __latchedAtomsUntil){ if(t > now) exclude.add(i); else __latchedAtomsUntil.delete(i); }
+      } catch {}
   const { positions, forces, final_energy, velocities, temperature: instT } = data;
       if(Array.isArray(positions) && positions.length === state.positions.length){
         const N = positions.length;
@@ -698,7 +716,13 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       if(hadDrag){
         bumpUserInteractionVersion('dragEnd');
         const idx = (__currentDraggedAtomIndex!=null)? __currentDraggedAtomIndex : __selectedAtomIndex();
-        if(idx!=null){ __addModifiedAtoms([idx]); __draggingAtoms.delete(idx); }
+        if(idx!=null){
+          __addModifiedAtoms([idx]);
+          __draggingAtoms.delete(idx);
+          // Latch this atom briefly so any in-flight MD/relax response doesn’t snap it
+          __latchAtom(idx, 800);
+        }
+        // Clear current pointer
         __currentDraggedAtomIndex = null;
       }
       if(!running.kind) ff.computeForces();
