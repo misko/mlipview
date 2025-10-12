@@ -546,6 +546,7 @@ export function createMoleculeView(scene, molState) {
   }
   function updateSelectionHighlight() {
     __count('moleculeView#updateSelectionHighlight');
+    const SELDBG = (typeof window !== 'undefined') && !!window.__MLIPVIEW_DEBUG_SELECT;
     ensureHighlightMeshes();
     const sel = molState.selection;
     // Hide both first
@@ -553,7 +554,7 @@ export function createMoleculeView(scene, molState) {
     highlight.bond.isVisible = false;
     // Also disable bond mesh so it cannot render with default scale at origin
   // Avoid relying on setEnabled (in some stubs it may be missing); visibility alone controls rendering here.
-    if (!sel || !sel.kind) return;
+    if (!sel || !sel.kind) { if (SELDBG) try { console.log('[view][highlight] none'); } catch {} ; return; }
     if (sel.kind === 'atom') {
       const idx = sel.data.index;
       const p = molState.positions[idx];
@@ -583,6 +584,7 @@ export function createMoleculeView(scene, molState) {
       }
       highlight.atom.scaling = new BABYLON.Vector3(scale, scale, scale);
       highlight.atom.isVisible = true;
+      if (SELDBG) try { console.log('[view][highlight] atom', idx, el, p); } catch {}
     } else if (sel.kind === 'bond') {
       const { i, j } = sel.data;
       const pA = molState.positions[i];
@@ -617,7 +619,8 @@ export function createMoleculeView(scene, molState) {
       highlight.bond.rotationQuaternion = rotQ;
       const radius = 0.16; // local radius shell; master scaling will modify in world space
       highlight.bond.scaling = new BABYLON.Vector3(radius*2, lenLocal, radius*2);
-      highlight.bond.isVisible = true;
+  highlight.bond.isVisible = true;
+  if (SELDBG) try { console.log('[view][highlight] bond', i, j, 'mid=', midLocal, 'len=', lenLocal); } catch {}
       // O-* bond highlight debug
       try {
   const ODBG = (typeof window === 'undefined') ? false : (window.O_BOND_DEBUG === true);
@@ -631,7 +634,7 @@ export function createMoleculeView(scene, molState) {
       } catch {}
     }
   }
-  molState.bus.on('selectionChanged', updateSelectionHighlight);
+  molState.bus.on('selectionChanged', (s)=>{ const SELDBG=(typeof window!=='undefined')&&!!window.__MLIPVIEW_DEBUG_SELECT; if(SELDBG) try{ console.log('[view] selectionChanged', s); }catch{}; updateSelectionHighlight(); });
   // In some minimal test environments, event loop timing can differ; proactively call once if a selection already exists.
   if (molState.selection && molState.selection.kind) { try { updateSelectionHighlight(); } catch(e){} }
   // If positions of a selected item change, update highlight transform.

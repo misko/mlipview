@@ -21,6 +21,13 @@ export function createPickingService(scene, view, selectionService, { manipulati
   let cameraLock = null; // { alpha,beta,radius,target }
   let dragActive = false;
   const DBG = (typeof window !== 'undefined') && !!window.__MLIPVIEW_DEBUG_TOUCH;
+  const PDBG = (typeof window !== 'undefined') && !!window.__MLIPVIEW_DEBUG_PICK;
+  // De-dupe guards
+  // 1) Exact event de-dup across capture/bubble/observable paths
+  const __handledPointerDownEvents = (typeof WeakSet !== 'undefined') ? new WeakSet() : null;
+  // 2) Spatial-temporal guard as a safety net
+  // Last processed pointerdown for spatial-temporal de-duplication; null until first real event
+  let __lastDown = null;
   // Public interaction surface (populated below) returned at end
   const api = { pickAtPointer, beginAtomDrag, updateDragFromPointer, endDrag, rotateSelectedBond, freezeCameraFrame, selection: selectionService.get };
   // Helper to fully freeze camera even if Babylon processes some inputs (inertia or event ordering)
@@ -47,18 +54,37 @@ export function createPickingService(scene, view, selectionService, { manipulati
   }
   function pickAtPointer() {
     __count('pickingService#pickAtPointer');
+    if (PDBG) {
+      try { console.log('[pick] at', { x: scene.pointerX, y: scene.pointerY, hasMulti: typeof scene.multiPick === 'function' }); } catch {}
+    }
     const pick = scene.pick(scene.pointerX, scene.pointerY);
     if (!pick || !pick.hit) return null;
+    // Resolve atom first, then bond
     const atom = view.resolveAtomPick(pick);
-    if (atom) return atom;
+    if (atom) { if (PDBG) try { console.log('[pick] singlePick atom', atom); } catch {}; return atom; }
     const bond = view.resolveBondPick(pick);
-    if (bond) return bond;
+    if (bond) { if (PDBG) try { console.log('[pick] singlePick bond', bond); } catch {}; return bond; }
     return null;
   }
-  function handlePointerDown() {
+  function handlePointerDown(e) {
     __count('pickingService#handlePointerDown');
+    // Hard de-dup: if we've already processed this DOM event, skip.
+    try { if (e && __handledPointerDownEvents) { if (__handledPointerDownEvents.has(e)) return; __handledPointerDownEvents.add(e); } } catch {}
+    try {
+      const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      if (__lastDown) {
+        const dx = Math.abs((scene.pointerX||0) - (__lastDown.x||0));
+        const dy = Math.abs((scene.pointerY||0) - (__lastDown.y||0));
+        if (dx <= 1 && dy <= 1 && (now - (__lastDown.t||0)) < 150) {
+          if (PDBG) console.log('[pick] dedupe pointerdown');
+          return;
+        }
+      }
+      __lastDown = { x: scene.pointerX||0, y: scene.pointerY||0, t: now };
+    } catch {}
     const res = pickAtPointer();
     if (!res) {
+      if (PDBG) try { console.log('[pick] no hit; clearing selection'); } catch {}
       // Fallback: if no pick result and at least one atom exists, select atom 0 for drag (helps automated tests)
       if (selectionService.get().kind !== 'atom' && view && view._debugAutoSelectFirstOnEmpty) {
         selectionService.clickAtom(0);
@@ -67,8 +93,8 @@ export function createPickingService(scene, view, selectionService, { manipulati
         return;
       }
     }
-  if (res.kind === 'atom') selectionService.clickAtom(res.index);
-    else if (res.kind === 'bond') selectionService.clickBond(res);
+    if (res.kind === 'atom') { if (PDBG) try { console.log('[select] atom', res.index); } catch {} ; selectionService.clickAtom(res.index); }
+    else if (res.kind === 'bond') { if (PDBG) try { console.log('[select] bond', res); } catch {}; selectionService.clickBond(res); }
     // After selection, if atom selected and manipulation present, initiate drag baseline
     if (manipulation && selectionService.get().kind === 'atom') {
       const atomSel = selectionService.get();
@@ -158,19 +184,38 @@ export function createPickingService(scene, view, selectionService, { manipulati
     cameraDetachedForDrag = false;
     cameraLock = null;
   }
-  scene.onPointerObservable.add(pi => {
-    if (pi.type === BABYLON.PointerEventTypes.POINTERDOWN) handlePointerDown();
-  });
-  // Attach raw DOM events if available for move/up (browser context). In test stubs these may be absent.
+  // Prefer DOM listeners when a rendering canvas exists; fall back to Babylon pointer observable otherwise.
+  let usedDomListeners = false;
   if (scene.getEngine && scene.getEngine().getRenderingCanvas) {
     const canvas = scene.getEngine().getRenderingCanvas();
-    canvas && canvas.addEventListener('pointerdown', handlePointerDown);
-    canvas && canvas.addEventListener('pointermove', handlePointerMove);
-    canvas && canvas.addEventListener('pointerup', handlePointerUp);
-    canvas && canvas.addEventListener('pointerleave', handlePointerUp);
+    // Avoid duplicate pointerdown handling: scene.onPointerObservable already listens for POINTERDOWN above.
+    // We still attach DOM listeners to support environments where Babylon doesn't pipe DOM -> onPointerObservable (tests/jsdom),
+    // and to track pointer coordinates for drag.
+    const updateFromPointer = (e) => {
+      try {
+        // Skip synthetic pointer events emitted by touchControls; that layer already
+        // set scene.pointerX/Y from actual touch coordinates just before dispatch.
+        if (e && e.__mlip_synthetic_from_touch) return;
+        const rect = typeof canvas.getBoundingClientRect === 'function' ? canvas.getBoundingClientRect() : { left:0, top:0 };
+        const cx = (e && typeof e.clientX === 'number') ? e.clientX : 0;
+        const cy = (e && typeof e.clientY === 'number') ? e.clientY : 0;
+        scene.pointerX = Math.round(cx - rect.left);
+        scene.pointerY = Math.round(cy - rect.top);
+      } catch {}
+    };
+  const pd = (e)=>{ try{ e.__mlip_handled_byPickingService = true; }catch{} updateFromPointer(e); handlePointerDown(e); };
+    const pm = (e)=>{ updateFromPointer(e); handlePointerMove(); };
+    const pu = (e)=>{ updateFromPointer(e); handlePointerUp(); };
+    canvas && canvas.addEventListener('pointerdown', pd);
+    canvas && canvas.addEventListener('pointermove', pm);
+    canvas && canvas.addEventListener('pointerup', pu);
+    canvas && canvas.addEventListener('pointerleave', pu);
+  usedDomListeners = !!canvas;
+    // Removed document-level capture fallback to reduce complexity; canvas listeners suffice in browsers/tests.
     // Touch mapping: only attach if custom touchControls not installed
-    const skipTouch = (typeof window !== 'undefined') && !!window.__MLIPVIEW_TOUCH_INSTALLED;
+    const skipTouch = (typeof window !== 'undefined') && (!!window.__MLIPVIEW_TOUCH_INSTALLED || !!window.__MLIPVIEW_NO_TOUCH);
     if (!skipTouch) {
+      if (PDBG) try { console.log('[pickingService] attaching built-in touch listeners'); } catch {}
       const updateFromTouch = (e) => {
         try {
           const t = e.changedTouches && e.changedTouches[0];
@@ -187,10 +232,20 @@ export function createPickingService(scene, view, selectionService, { manipulati
       canvas && canvas.addEventListener('touchmove', tm, { passive: false });
       canvas && canvas.addEventListener('touchend', tu, { passive: false });
       canvas && canvas.addEventListener('touchcancel', tu, { passive: false });
-    } else if (DBG) {
-      console.log('[pickingService] skipping touch handlers: custom touchControls installed');
+    } else if (PDBG || DBG) {
+      console.log('[pickingService] skipping touch handlers:', window.__MLIPVIEW_NO_TOUCH ? 'noTouch mode' : 'custom touchControls installed');
     }
   }
+  // Always register Babylon pointer observable handler as a secondary path so unit tests
+  // can trigger POINTERDOWN via scene.onPointerObservable even if DOM listeners are active.
+  scene.onPointerObservable.add(pi => {
+    if (pi.type === BABYLON.PointerEventTypes.POINTERDOWN) {
+      // If this POINTERDOWN originated from the same DOM event our own listener already handled,
+      // skip to avoid double-processing (which can cycle/clear bond selection).
+      try { if (pi.event && pi.event.__mlip_handled_byPickingService) return; } catch {}
+      handlePointerDown(pi.event);
+    }
+  });
   // Per-frame observer to enforce freeze while dragging
   scene.onBeforeRenderObservable && scene.onBeforeRenderObservable.add(freezeCameraFrame);
   // --- Unified interaction helpers ---

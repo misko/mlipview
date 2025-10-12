@@ -4,6 +4,7 @@
 
 export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 	if (!canvas || !scene) return;
+	try { if (typeof window !== 'undefined' && window.__MLIPVIEW_NO_TOUCH) { console.warn('[touchControls] install aborted by __MLIPVIEW_NO_TOUCH'); return; } } catch {}
 	// Mark globally so other systems (like pickingService) can avoid double-attaching touch listeners
 	try { if (typeof window !== 'undefined') window.__MLIPVIEW_TOUCH_INSTALLED = true; } catch {}
 	const DBG = (typeof window !== 'undefined') && !!window.__MLIPVIEW_DEBUG_TOUCH;
@@ -49,10 +50,11 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
   const synth = (type) => {
 		try {
 			const ev = new Event(type, { bubbles: true, cancelable: true });
+			try { ev.__mlip_synthetic_from_touch = true; } catch {}
 			canvas.dispatchEvent(ev);
 		} catch {
 			// Fallback without options for older environments
-			try { canvas.dispatchEvent(new Event(type)); } catch {}
+			try { const ev = new Event(type); try { ev.__mlip_synthetic_from_touch = true; } catch {}; canvas.dispatchEvent(ev); } catch {}
 		}
 	};
 
@@ -83,7 +85,7 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 		detachCamera();
 		// Prevent default scrolling/zoom
 		try { e.preventDefault(); e.stopPropagation(); } catch {}
-		// Kick picking via pointerdown
+		// Kick picking via pointerdown after pointer coords are updated so picking reads correct scene.pointerX/Y
 		synth('pointerdown');
 	};
   const onMove = (e) => {

@@ -437,6 +437,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
       const api = getViewer(); if(!api) return;
       const st = api.state;
       const sel = st && st.selection || { kind:null };
+      try { if (typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_UI) console.log('[panel] updateFromSelection sel=', sel); } catch {}
       const elNameNode = selSec.content.querySelector('#selElementName');
       const posNode = selSec.content.querySelector('#selPosition');
       const weightNode = selSec.content.querySelector('#selAtomicWeight');
@@ -510,6 +511,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
         bondRow.style.display = 'block';
         bondLenNode.textContent = `${L.toFixed(3)} Å`;
         rotNA.style.display = 'none'; rotBtns.style.display = 'inline-flex';
+        try { if (typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_UI) console.log('[panel] showing rotate buttons for bond', i, j, 'L=', L.toFixed(3)); } catch {}
         highlight([symA, symB]);
       } else {
         setSphere(sphereA, null); setSphere(sphereB, null);

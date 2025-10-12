@@ -115,6 +115,19 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       window.__MLIPVIEW_DEBUG_API = (dbg === '1' || dbg === 'true');
     } catch { window.__MLIPVIEW_DEBUG_API = false; }
   }
+  // Picking debug via ?debugPick=1
+  try {
+    const q = new URLSearchParams(window.location.search||'');
+    const dp = q.get('debugPick');
+    window.__MLIPVIEW_DEBUG_PICK = (dp === '1' || dp === 'true');
+    if (window.__MLIPVIEW_DEBUG_PICK) console.log('[debug] pick logging enabled');
+    const ds = q.get('debugSelect');
+    window.__MLIPVIEW_DEBUG_SELECT = (ds === '1' || ds === 'true');
+    if (window.__MLIPVIEW_DEBUG_SELECT) console.log('[debug] selection logging enabled');
+    const du = q.get('debugUI');
+    window.__MLIPVIEW_DEBUG_UI = (du === '1' || du === 'true');
+    if (window.__MLIPVIEW_DEBUG_UI) console.log('[debug] UI logging enabled');
+  } catch {}
   // Latency debugging gate comes from index.html ?debugLatency=1 wrapper
   const __latencyOn = (typeof window!=='undefined') && !!window.__MLIP_DEBUG_LATENCY;
   function noteLatency(kind, phase, meta){
@@ -357,10 +370,24 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // We'll define wrappedManipulation below; temporarily pass placeholder then rebind after definition
   let wrappedManipulationRef = null;
   // Install custom touch controls BEFORE picking service so it can skip binding its own touch handlers.
+  // Support ?noTouch=1 flag to disable touch installation for debugging bond selection issues.
   // Pass a proxy that will read dragActive from the picking service once created.
   let __pickingRef = null;
   const __pickingProxy = { _debug: { get dragActive(){ try { return !!(__pickingRef && __pickingRef._debug && __pickingRef._debug.dragActive); } catch { return false; } } } };
-  try { installTouchControls({ canvas, scene, camera, picking: __pickingProxy }); } catch(e) { console.warn('[touchControls] install failed', e?.message||e); }
+  let __noTouch = false;
+  try {
+    const q = new URLSearchParams(window.location.search||'');
+    __noTouch = (q.get('noTouch') === '1' || q.get('noTouch') === 'true');
+  } catch {}
+  try {
+    if (__noTouch) {
+      window.__MLIPVIEW_NO_TOUCH = true;
+      console.warn('[touchControls] skipped by ?noTouch=1');
+    } else {
+      installTouchControls({ canvas, scene, camera, picking: __pickingProxy });
+      console.log('[touchControls] installed');
+    }
+  } catch(e) { console.warn('[touchControls] install failed', e?.message||e); }
 
   const picking = (__pickingRef = createPickingService(scene, view, selection, {
     manipulation: new Proxy({}, { get: (_, k) => wrappedManipulationRef?.[k] }),
