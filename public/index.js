@@ -6,6 +6,7 @@ import { createFairChemForcefield } from './fairchem_provider.js';
 import { createScene } from './render/scene.js';
 import { createMoleculeView } from './render/moleculeView.js';
 import { createPickingService } from './core/pickingService.js';
+import installTouchControls from './ui/touchControls.js';
 import { createManipulationService } from './domain/manipulationService.js';
 import { createVRSupport } from './vr/setup.js';
 import { createVRPicker } from './vr/vr-picker.js';
@@ -324,11 +325,24 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     return { data: json, uivAtSend, tivAtSend };
   }
   const { engine, scene, camera } = await createScene(canvas);
+  // Enable verbose touch debug if requested
+  try {
+    if (typeof window !== 'undefined') {
+      window.__MLIPVIEW_DEBUG_TOUCH = !!(window.__MLIPVIEW_DEBUG_TOUCH);
+      window.enableTouchDebug = (on)=>{ window.__MLIPVIEW_DEBUG_TOUCH = !!on; console.log('[touchDebug] set to', window.__MLIPVIEW_DEBUG_TOUCH); };
+    }
+  } catch {}
   const view = createMoleculeView(scene, state);
   const manipulation = createManipulationService(state, { bondService });
   // We'll define wrappedManipulation below; temporarily pass placeholder then rebind after definition
   let wrappedManipulationRef = null;
-  const picking = createPickingService(scene, view, selection, {
+  // Install custom touch controls BEFORE picking service so it can skip binding its own touch handlers.
+  // Pass a proxy that will read dragActive from the picking service once created.
+  let __pickingRef = null;
+  const __pickingProxy = { _debug: { get dragActive(){ try { return !!(__pickingRef && __pickingRef._debug && __pickingRef._debug.dragActive); } catch { return false; } } } };
+  try { installTouchControls({ canvas, scene, camera, picking: __pickingProxy }); } catch(e) { console.warn('[touchControls] install failed', e?.message||e); }
+
+  const picking = (__pickingRef = createPickingService(scene, view, selection, {
     manipulation: new Proxy({}, { get: (_, k) => wrappedManipulationRef?.[k] }),
     camera,
     // Do not trigger a standalone simple_calculate while a simulation is running;
@@ -339,7 +353,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       } catch {}
       recordInteraction(kind || 'drag');
     },
-  });
+  }));
   // Attach VR semantic picker (bond-first) so VR layer can use it without legacy imports
   let vrPicker = null;
   try { vrPicker = createVRPicker({ scene, view }); } catch (e) { console.warn('[VR] vrPicker init failed', e?.message||e); }

@@ -5,13 +5,40 @@
 
 export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 	if (!canvas || !scene) return;
+	// Mark globally so other systems (like pickingService) can avoid double-attaching touch listeners
+	try { if (typeof window !== 'undefined') window.__MLIPVIEW_TOUCH_INSTALLED = true; } catch {}
+	const DBG = (typeof window !== 'undefined') && !!window.__MLIPVIEW_DEBUG_TOUCH;
 	const rectOf = () => (typeof canvas.getBoundingClientRect === 'function' ? canvas.getBoundingClientRect() : { left: 0, top: 0 });
+
+	// Ensure CSS prevents native scrolling/zoom gestures overlapping with our handlers
+	try { if (canvas && canvas.style) { canvas.style.touchAction = 'none'; canvas.style.webkitUserSelect = 'none'; } } catch {}
 
 	// Gesture tracking state
 	const touches = new Map(); // id -> {x,y}
 	let mode = 'none'; // 'none' | 'rotate' | 'pinch'
 	let lastSingle = null; // {x,y}
 	let pinchRef = null; // {d0, r0}
+
+	let cameraDetached = false;
+	const getDragging = () => !!(picking && picking._debug && picking._debug.dragActive);
+	const detachCamera = () => {
+		try {
+			if (camera && camera.detachControl && !cameraDetached) {
+				camera.detachControl(canvas);
+				cameraDetached = true;
+				if (DBG) console.log('[touchControls] detachCamera on touchstart');
+			}
+		} catch {}
+	};
+	const attachCameraIfIdle = () => {
+		try {
+			if (camera && camera.attachControl && cameraDetached && !getDragging()) {
+				camera.attachControl(canvas, true);
+				cameraDetached = false;
+				if (DBG) console.log('[touchControls] attachCamera after touchend');
+			}
+		} catch {}
+	};
 
 	const updatePointer = (t) => {
 		try {
@@ -46,11 +73,15 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 			const d0 = Math.hypot(dx, dy) || 1;
 			pinchRef = { d0, r0: camera && typeof camera.radius === 'number' ? camera.radius : 10 };
 			mode = 'pinch';
+			if (DBG) console.log('[touchControls] mode=pinch start', { d0, r0: pinchRef.r0 });
 		} else if (touches.size === 1) {
 			// Rotate start
 			lastSingle = { x: t.clientX, y: t.clientY };
 			mode = 'rotate';
+			if (DBG) console.log('[touchControls] mode=rotate start at', lastSingle);
 		}
+		// While touch is active, detach camera controls to avoid native zoom/pan from pointers input
+		detachCamera();
 		// Prevent default scrolling/zoom
 		try { e.preventDefault(); e.stopPropagation(); } catch {}
 		// Kick picking via pointerdown
@@ -75,6 +106,7 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 				const next = pinchRef.r0 * ratio;
 				if (typeof camera.inertialRadiusOffset === 'number') camera.inertialRadiusOffset = 0;
 				camera.radius = next;
+				if (DBG) console.log('[touchControls] pinch move', { ratio, radius: camera.radius });
 			}
 		} else if (mode === 'rotate' && touches.size === 1) {
 			// Only rotate if not actively dragging an atom
@@ -87,6 +119,7 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 				if (typeof camera.inertialRadiusOffset === 'number') camera.inertialRadiusOffset = 0; // suppress zoom
 				if (typeof camera.alpha === 'number') camera.alpha += dx * sensitivity;
 				if (typeof camera.beta === 'number') camera.beta += dy * sensitivity * 0.5;
+				if (DBG) console.log('[touchControls] rotate move', { dx, dy, alpha: camera.alpha, beta: camera.beta });
 				lastSingle = { x: t.clientX, y: t.clientY };
 			}
 		}
@@ -100,9 +133,11 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 		}
 		// Reset modes when touches drop below thresholds
 		if (touches.size < 2) pinchRef = null;
-		if (touches.size === 0) { mode = 'none'; lastSingle = null; }
+		if (touches.size === 0) { if (DBG) console.log('[touchControls] gesture end'); mode = 'none'; lastSingle = null; }
 		try { e.preventDefault(); e.stopPropagation(); } catch {}
 		synth('pointerup');
+		// Reattach camera controls when gesture fully ends and no drag is active
+		if (touches.size === 0) attachCameraIfIdle();
 	};
 
 	canvas.addEventListener('touchstart', onStart, { passive: false });
@@ -110,17 +145,15 @@ export function installTouchControls({ canvas, scene, camera, picking } = {}) {
 	canvas.addEventListener('touchend', onEnd, { passive: false });
 	canvas.addEventListener('touchcancel', onEnd, { passive: false });
 
-	// Detach default camera pointer inputs during touch drags if available (optional safe guard)
+	// Detach default camera pointer inputs immediately (extra safety, some environments keep inputs active)
 	try {
 			if (camera && camera.inputs) {
-				// Prefer removeByType if available so tests can assert it
 				if (typeof camera.inputs.removeByType === 'function') {
 					try { camera.inputs.removeByType('ArcRotateCameraPointersInput'); } catch {}
 					try { camera.inputs.removeByType('FreeCameraPointersInput'); } catch {}
 					try { camera.inputs.removeByType('pointers'); } catch {}
 				}
 				if (typeof camera.inputs.remove === 'function') {
-					// Also attempt direct removal of attached pointer input
 					try { camera.inputs.remove(camera.inputs.attached && camera.inputs.attached.pointers); } catch {}
 				}
 			}

@@ -20,6 +20,7 @@ export function createPickingService(scene, view, selectionService, { manipulati
   let cameraDetachedForDrag = false;
   let cameraLock = null; // { alpha,beta,radius,target }
   let dragActive = false;
+  const DBG = (typeof window !== 'undefined') && !!window.__MLIPVIEW_DEBUG_TOUCH;
   // Public interaction surface (populated below) returned at end
   const api = { pickAtPointer, beginAtomDrag, updateDragFromPointer, endDrag, rotateSelectedBond, freezeCameraFrame, selection: selectionService.get };
   // Helper to fully freeze camera even if Babylon processes some inputs (inertia or event ordering)
@@ -115,7 +116,7 @@ export function createPickingService(scene, view, selectionService, { manipulati
       started = beginAtomDrag(intersector, { planePoint, planeNormal });
       if (started && camera && camera.detachControl && !cameraDetachedForDrag) {
         const canvas = scene.getEngine && scene.getEngine().getRenderingCanvas ? scene.getEngine().getRenderingCanvas() : undefined;
-        try { camera.detachControl(canvas); cameraDetachedForDrag = true; } catch (e) { /* ignore */ }
+        try { camera.detachControl(canvas); cameraDetachedForDrag = true; if (DBG) console.log('[pickingService] detach camera for drag'); } catch (e) { /* ignore */ }
         cameraLock = { alpha: camera.alpha, beta: camera.beta, radius: camera.radius, target: camera.target && { x: camera.target.x, y: camera.target.y, z: camera.target.z } };
         dragActive = true;
       }
@@ -152,7 +153,7 @@ export function createPickingService(scene, view, selectionService, { manipulati
     }
     if (camera && camera.attachControl) {
       const canvas = scene.getEngine && scene.getEngine().getRenderingCanvas ? scene.getEngine().getRenderingCanvas() : undefined;
-      try { camera.attachControl(canvas, true); } catch (e) { /* ignore */ }
+      try { camera.attachControl(canvas, true); if (DBG) console.log('[pickingService] reattach camera after drag'); } catch (e) { /* ignore */ }
     }
     cameraDetachedForDrag = false;
     cameraLock = null;
@@ -163,9 +164,32 @@ export function createPickingService(scene, view, selectionService, { manipulati
   // Attach raw DOM events if available for move/up (browser context). In test stubs these may be absent.
   if (scene.getEngine && scene.getEngine().getRenderingCanvas) {
     const canvas = scene.getEngine().getRenderingCanvas();
+    canvas && canvas.addEventListener('pointerdown', handlePointerDown);
     canvas && canvas.addEventListener('pointermove', handlePointerMove);
     canvas && canvas.addEventListener('pointerup', handlePointerUp);
     canvas && canvas.addEventListener('pointerleave', handlePointerUp);
+    // Touch mapping: only attach if custom touchControls not installed
+    const skipTouch = (typeof window !== 'undefined') && !!window.__MLIPVIEW_TOUCH_INSTALLED;
+    if (!skipTouch) {
+      const updateFromTouch = (e) => {
+        try {
+          const t = e.changedTouches && e.changedTouches[0];
+          if (!t) return;
+          const rect = typeof canvas.getBoundingClientRect === 'function' ? canvas.getBoundingClientRect() : { left:0, top:0 };
+          scene.pointerX = Math.round((t.clientX ?? 0) - rect.left);
+          scene.pointerY = Math.round((t.clientY ?? 0) - rect.top);
+        } catch {}
+      };
+      const td = (e)=>{ updateFromTouch(e); try{ e.preventDefault(); e.stopPropagation(); }catch{} handlePointerDown(); };
+      const tm = (e)=>{ updateFromTouch(e); try{ e.preventDefault(); e.stopPropagation(); }catch{} handlePointerMove(); };
+      const tu = (e)=>{ updateFromTouch(e); try{ e.preventDefault(); e.stopPropagation(); }catch{} handlePointerUp(); };
+      canvas && canvas.addEventListener('touchstart', td, { passive: false });
+      canvas && canvas.addEventListener('touchmove', tm, { passive: false });
+      canvas && canvas.addEventListener('touchend', tu, { passive: false });
+      canvas && canvas.addEventListener('touchcancel', tu, { passive: false });
+    } else if (DBG) {
+      console.log('[pickingService] skipping touch handlers: custom touchControls installed');
+    }
   }
   // Per-frame observer to enforce freeze while dragging
   scene.onBeforeRenderObservable && scene.onBeforeRenderObservable.add(freezeCameraFrame);
