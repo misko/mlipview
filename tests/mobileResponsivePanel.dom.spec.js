@@ -40,15 +40,20 @@ describe('responsive: desktop panel vs mobile top bar', () => {
     const simBtn = document.getElementById('mobileTab-simulation');
     simBtn.click();
     expect(panelEl.getAttribute('data-mobile-open')).toBe('true');
-    expect(panelEl.style.display).toBe('block');
-    // Only simulation section should be active
-    const active = panelEl.querySelectorAll('.panel-section[data-mobile-active="true"]');
-    expect(active.length).toBe(1);
-    expect(active[0].id).toBe('section-simulation');
+    // Panel stays hidden on mobile; content renders inside the top bar
+    expect(panelEl.style.display).toBe('none');
+    expect(topBar.getAttribute('data-open')).toBe('true');
+    const sheet = topBar.querySelector('.mobile-sheet');
+    expect(sheet && sheet.style.display).toBe('block');
+    // Verify that Simulation content is mounted into the sheet (has MD toggle)
+    expect(sheet.querySelector('#toggleMD')).toBeTruthy();
 
     // Tap again to close
     simBtn.click();
     expect(panelEl.getAttribute('data-mobile-open')).toBeNull();
     expect(panelEl.style.display).toBe('none');
+    expect(topBar.getAttribute('data-open')).toBeNull();
+    const sheet2 = topBar.querySelector('.mobile-sheet');
+    expect(sheet2 && sheet2.style.display).toBe('none');
   });
 });

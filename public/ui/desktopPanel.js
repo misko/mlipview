@@ -188,12 +188,40 @@ export function buildDesktopPanel({ attachTo } = {}) {
       .stat { font-size: 12px; color: var(--muted); }
       .value { font-size: 12px; }
       .divider { border-top: 1px solid var(--border); margin: 8px 0; }
-      /* Mobile top bar */
-      #mobileTopBar { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; gap: 8px; z-index: 5; }
-      #mobileTopBar .tab { flex: 1 1 0; background: #2A2A2A; color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: 8px 10px; font-size: 12px; cursor: pointer; }
+      /* Mobile top bar – single rounded rectangle; tabs always visible */
+      #mobileTopBar {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        right: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+        z-index: 5;
+        background: rgba(15,18,24,0.9);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 10px;
+        padding: 6px;
+      }
+      #mobileTopBar .tabs-row { display: flex; gap: 8px; }
+      #mobileTopBar .tab {
+        flex: 1 1 0;
+        background: #2A2A2A;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
       #mobileTopBar .tab[data-active="true"] { background: var(--accent); border-color: var(--accent); }
+      /* In-bar content area that expands the same box vertically */
+      #mobileTopBar .mobile-sheet { display: none; padding: 8px; margin-top: 6px; background: var(--bg-panel); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; }
+      #mobileTopBar[data-open="true"] .mobile-sheet { display: block; }
+      /* When open previously blended with panel; now content lives inside the bar */
+      /* #mobileTopBar[data-open="true"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom: none; } */
       /* Mobile sheet behavior */
-      #controlPanel[data-mobile-open="true"] { left: 8px; right: 8px; width: auto; top: 50px; }
+  #controlPanel[data-mobile-open="true"] { left: 8px; right: 8px; width: auto; top: 50px; border-top-left-radius: 0; border-top-right-radius: 0; border-top: none; }
       #controlPanel[data-mobile-open="true"] .panel-section { display: none; }
       #controlPanel[data-mobile-open="true"] .panel-section[data-mobile-active="true"] { display: block; }
     `;
@@ -772,6 +800,8 @@ export function buildDesktopPanel({ attachTo } = {}) {
   // --- Mobile top bar with three tabs (Live Metrics, Simulation, System) ---
   const topBar = document.createElement('div');
   topBar.id = 'mobileTopBar';
+  const tabsRow = document.createElement('div');
+  tabsRow.className = 'tabs-row';
   const tabs = [
     { id: 'live', label: 'Live Metrics', sectionId: 'section-live-stats' },
     { id: 'simulation', label: 'Simulation', sectionId: 'section-simulation' },
@@ -787,9 +817,116 @@ export function buildDesktopPanel({ attachTo } = {}) {
     b.setAttribute('data-active','false');
     b.addEventListener('click', ()=> toggleMobileTab(t.sectionId, b));
     tabEls.set(t.sectionId, b);
-    topBar.appendChild(b);
+    tabsRow.appendChild(b);
   });
+  const mobileSheet = document.createElement('div');
+  mobileSheet.className = 'mobile-sheet';
+  topBar.appendChild(tabsRow);
+  topBar.appendChild(mobileSheet);
   host.appendChild(topBar);
+
+  // Map section id -> content node (stable reference even if reparented)
+  const sectionContentMap = new Map([
+    ['section-live-stats', live.content],
+    ['section-selection', selSec.content],
+    ['section-simulation', sim.content],
+    ['section-system', sys.content],
+    ['section-rendering', rendering.content],
+    ['section-xr', xr.content],
+  ]);
+
+  // Track original parent/nextSibling to restore reparented content
+  const restoreInfo = new Map(); // node -> { parent, nextSibling, collapsed, headerExpanded }
+
+  function restoreNode(node){
+    try {
+      const info = restoreInfo.get(node);
+      if (!info) return;
+      if (node.parentElement === mobileSheet) {
+        if (info.nextSibling && info.parent === info.nextSibling.parentNode) {
+          info.parent.insertBefore(node, info.nextSibling);
+        } else if (info.parent) {
+          info.parent.appendChild(node);
+        }
+      }
+      if (info.collapsed) node.setAttribute('data-collapsed','true'); else node.removeAttribute('data-collapsed');
+      const secEl = node.parentElement;
+      const hdr = secEl && secEl.querySelector && secEl.querySelector('.panel-header');
+      if (hdr) hdr.setAttribute('aria-expanded', info.collapsed ? 'false' : 'true');
+      restoreInfo.delete(node);
+    } catch {}
+  }
+
+  function mountToBar(sectionId){
+    try {
+      const node = sectionContentMap.get(sectionId);
+      if (!node) return;
+      // Save original placement once
+      if (!restoreInfo.has(node)) {
+        restoreInfo.set(node, {
+          parent: node.parentElement,
+          nextSibling: node.nextSibling,
+          collapsed: node.getAttribute('data-collapsed') === 'true',
+          headerExpanded: (node.previousElementSibling && node.previousElementSibling.getAttribute('aria-expanded')) || 'false',
+        });
+      }
+      // Ensure expanded state for visibility in the bar
+      try { node.removeAttribute('data-collapsed'); } catch {}
+      const hdr = document.querySelector(`#${sectionId} .panel-header`);
+      if (hdr) hdr.setAttribute('aria-expanded','true');
+      // Move node into the mobile sheet
+      if (node.parentElement !== mobileSheet) mobileSheet.appendChild(node);
+    } catch {}
+  }
+
+  function restoreAllToPanel(){
+    try {
+      restoreInfo.forEach((info, node) => {
+        if (!info || !node) return;
+        if (node.parentElement === mobileSheet) {
+          if (info.nextSibling && info.parent === info.nextSibling.parentNode) {
+            info.parent.insertBefore(node, info.nextSibling);
+          } else if (info.parent) {
+            info.parent.appendChild(node);
+          }
+        }
+        // Restore collapsed + header state
+        if (info.collapsed) node.setAttribute('data-collapsed','true'); else node.removeAttribute('data-collapsed');
+        const secEl = node.parentElement; // should now be the section
+        const hdr = secEl && secEl.querySelector && secEl.querySelector('.panel-header');
+        if (hdr) hdr.setAttribute('aria-expanded', info.collapsed ? 'false' : 'true');
+      });
+      restoreInfo.clear();
+    } catch {}
+  }
+
+  function makeExclusiveInSheet(sectionId){
+    try {
+      const want = sectionContentMap.get(sectionId) || null;
+      const children = Array.from(mobileSheet.children || []);
+      for (const ch of children) {
+        if (ch !== want) restoreNode(ch);
+      }
+      mountToBar(sectionId);
+    } catch {}
+  }
+
+  function updateTopBarVisibility(open){
+    try {
+      if (open) {
+        topBar.setAttribute('data-open','true');
+      } else {
+        topBar.removeAttribute('data-open');
+      }
+      // Tabs remain visible at all times; ensure no inline hiding remains
+      const buttons = topBar.querySelectorAll('button.tab');
+      if (buttons && buttons.length) {
+        buttons.forEach(b=>{ b.style.display = ''; });
+      }
+      // Control the in-bar sheet visibility
+      if (mobileSheet) mobileSheet.style.display = open ? 'block' : 'none';
+    } catch {}
+  }
 
   // --- Responsive behavior (desktop vs mobile) ---
   function isMobileViewport() {
@@ -803,11 +940,21 @@ export function buildDesktopPanel({ attachTo } = {}) {
   function applyLayout() {
     const mobile = isMobileViewport();
     if (mobile) {
-      // Mobile: hide left panel until a tab is selected; show the top bar
+      // Mobile: hide left panel; show the top bar and render content inside it
       try { panel.setAttribute('data-mode', 'mobile'); } catch {}
       try { topBar.style.display = 'flex'; } catch {}
       const open = panel.getAttribute('data-mobile-open') === 'true';
-      panel.style.display = open ? 'block' : 'none';
+      // Keep the left panel hidden on mobile; content lives in the bar
+      panel.style.display = 'none';
+      // If open, ensure only the active section content is mounted into the bar
+      if (open) {
+        const current = panel.querySelector('.panel-section[data-mobile-active="true"]');
+        if (current) makeExclusiveInSheet(current.id);
+      } else {
+        restoreAllToPanel();
+      }
+      // Reflect state on the top bar
+      updateTopBarVisibility(open);
     } else {
       // Desktop: always show left panel with all sections; hide the top bar
       try { panel.setAttribute('data-mode', 'desktop'); } catch {}
@@ -817,7 +964,10 @@ export function buildDesktopPanel({ attachTo } = {}) {
       panel.removeAttribute('data-mobile-open');
       const secs = panel.querySelectorAll('.panel-section');
       secs.forEach(sec => sec.removeAttribute('data-mobile-active'));
+      // Ensure any reparented content is restored to original sections
+      restoreAllToPanel();
       clearActiveTabs();
+      updateTopBarVisibility(false);
     }
   }
 
@@ -826,7 +976,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
     secs.forEach(sec => {
       if (sec.id === sectionId) {
         sec.setAttribute('data-mobile-active','true');
-        const content = sec.querySelector('.panel-content');
+        const content = sectionContentMap.get(sectionId) || sec.querySelector('.panel-content');
         const header = sec.querySelector('.panel-header');
         if (content) content.removeAttribute('data-collapsed');
         if (header) header.setAttribute('aria-expanded','true');
@@ -845,16 +995,18 @@ export function buildDesktopPanel({ attachTo } = {}) {
       const secs = panel.querySelectorAll('.panel-section');
       secs.forEach(sec => sec.removeAttribute('data-mobile-active'));
       clearActiveTabs();
-      // Hide panel when closing on mobile
-      panel.style.display = 'none';
+      // On close: restore content to panel and show only tabs
+      restoreAllToPanel();
+      updateTopBarVisibility(false);
       return;
     }
     panel.setAttribute('data-mobile-open','true');
     setOnlySectionActive(sectionId);
     clearActiveTabs();
     if (btn) btn.setAttribute('data-active','true');
-    // Ensure panel is visible when a tab is selected
-    panel.style.display = 'block';
+    // Render content inside the bar; keep the side panel hidden on mobile
+    makeExclusiveInSheet(sectionId);
+    updateTopBarVisibility(true);
   }
 
   // Legacy hidden controls for test compatibility (text reflects on/off)
