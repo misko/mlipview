@@ -711,6 +711,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         bumpUserInteractionVersion('bondRotate'); if(Array.isArray(sideAtoms) && sideAtoms.length) __addModifiedAtoms(sideAtoms); if(!running.kind) ff.computeForces(); recordInteraction('bondRotate'); __suppressNextPosChange = true; }
       return r; }
   };
+  // Mark for debug/diagnostics so other subsystems (VR) can assert they received the wrapped instance
+  try { Object.defineProperty(wrappedManipulation, '__isWrappedManipulation', { value: true, enumerable: false }); } catch { wrappedManipulation.__isWrappedManipulation = true; }
   wrappedManipulationRef = wrappedManipulation;
 
   // Provide explicit cleanup to help Jest teardown
@@ -1015,7 +1017,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   }
 
   // VR support is lazy; user can call vr.init() explicitly later.
-  const vr = createVRSupport(scene, { picking: { ...picking, view, vrPicker, selectionService: selection, manipulation, molState: state } });
+  // IMPORTANT: Route VR interactions through the wrapped manipulation so dragged atoms are tracked
+  // and excluded from MD/relax position application while held.
+  const vr = createVRSupport(scene, { picking: { ...picking, view, vrPicker, selectionService: selection, manipulation: new Proxy({}, { get: (_, k) => wrappedManipulationRef?.[k] }), molState: state } });
   // Auto-init VR support so controllers & debug logging are ready; actual immersive session still requires user gesture.
   try {
     vr.init().then(res => { if (res.supported) { console.log('[VR] support initialized (auto)'); } else { console.log('[VR] not supported'); } });
