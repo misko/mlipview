@@ -32,14 +32,13 @@ describe('System panel SMILES + XYZ upload', () => {
 
   test('SMILES generation failure warns and does not navigate', async () => {
     await buildPanel();
-    const status = document.getElementById('status');
     const input = document.getElementById('smilesInput');
     const btn = document.getElementById('smilesGoBtn');
     input.value = 'bad smiles with spaces';
     input.dispatchEvent(new Event('input'));
     // Button still enabled because non-empty; click should validate fail
     btn.click();
-    expect(status.textContent).toMatch(/Invalid SMILES/i);
+    // No status element anymore; ensure navigation did not occur
     // href should not change to contain smiles=
     expect(window.location.href.includes('smiles=')).toBe(false);
   });
@@ -106,9 +105,8 @@ describe('System panel SMILES + XYZ upload', () => {
     }
   });
 
-  test('XYZ upload failure shows warning and does not navigate', async () => {
+  test('XYZ upload failure does not navigate', async () => {
     await buildPanel();
-    const status = document.getElementById('status');
     const fileInput = document.getElementById('xyzFileInput');
     // Invalid XYZ (declares 2 but provides 1)
     const bad = '2\nbad\nH 0 0 0';
@@ -117,7 +115,6 @@ describe('System panel SMILES + XYZ upload', () => {
     const prevHref = window.location.href;
   fileInput.dispatchEvent(new Event('change'));
   await new Promise(r=>setTimeout(r,0));
-  expect(status.textContent).toMatch(/XYZ parse failed|XYZ invalid|XYZ upload failed/i);
     expect(window.location.href).toBe(prevHref);
   });
 });

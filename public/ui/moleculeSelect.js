@@ -54,7 +54,8 @@ export function installMoleculeSelector(opts){
     '<option value="molecules/azomethane.xyz">Azomethane</option>'+
     '<option value="molecules/hydronium_hydroxide.xyz">Hydronium + Hydroxide</option>'+
     '<option value="molecules/sn2.xyz">SN2: Cl- + CH3I</option>'+
-    '<option value="molecules/twomethane.xyz">Methyl radicals</option>';
+    '<option value="molecules/twomethane.xyz">Methyl radicals</option>'+
+    '<option value="molecules/rna.xyz">RNA fragment</option>';
   select.onchange = () => {
     const file = select.value;
     const href = buildReloadUrl(windowRef.location.href, file);

@@ -13,7 +13,7 @@ from pydantic import BaseModel, root_validator, validator
 
 # Hard cap for number of atoms accepted by any request.
 # Enforced at the model layer so all ingress paths share the same check.
-MAX_ATOMS_PER_REQUEST: int = 40
+MAX_ATOMS_PER_REQUEST: int = 170
 
 
 def _enforce_atom_limit(values: Dict[str, Any]) -> Dict[str, Any]:

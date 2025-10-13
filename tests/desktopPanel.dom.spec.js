@@ -20,20 +20,20 @@ describe('desktop left panel UI', () => {
     const live = document.getElementById('section-live-stats');
     const sim = document.getElementById('section-simulation');
     const sys = document.getElementById('section-system');
-    const ren = document.getElementById('section-rendering');
+  const ren = document.getElementById('section-rendering');
     const xr = document.getElementById('section-xr');
-    expect(live && sim && sys && ren && xr).toBeTruthy();
+  // Rendering section has been removed; ensure others exist
+  expect(live && sim && sys && xr).toBeTruthy();
 
     const isCollapsed = (sec)=> sec.querySelector('.panel-content').getAttribute('data-collapsed') === 'true';
-    // Defaults: live + simulation open, others collapsed
-    expect(isCollapsed(live)).toBe(false);
-    expect(isCollapsed(sim)).toBe(false);
-    expect(isCollapsed(sys)).toBe(true);
-    expect(isCollapsed(ren)).toBe(true);
-    expect(isCollapsed(xr)).toBe(true);
+  // Defaults: live open; simulation + system + xr collapsed
+  expect(isCollapsed(live)).toBe(false);
+  expect(isCollapsed(sim)).toBe(true);
+  expect(isCollapsed(sys)).toBe(true);
+  expect(isCollapsed(xr)).toBe(true);
 
     // Live stats controls exist
-    expect(document.getElementById('status')).toBeTruthy();
+  // Status element removed from Live Metrics
     expect(document.getElementById('instTemp')).toBeTruthy();
     expect(document.getElementById('rpsLabel')).toBeTruthy();
     expect(document.getElementById('energyPlot')).toBeTruthy();

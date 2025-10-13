@@ -11,7 +11,7 @@ export const ALLOWED_ELEMENTS = new Set([
   'Hf','Ta','W','Re','Os','Ir','Pt','Au','Hg','Tl','Pb','Bi'
 ]);
 
-export const MAX_ATOMS = 40;
+export const MAX_ATOMS = 170;
 
 // Validate a parsed XYZ object { elements, positions }
 export function validateParsedXYZ(parsed) {

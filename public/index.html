@@ -108,6 +108,7 @@
   import { installTouchControls } from './ui/touchControls.js';
     import { initForcesToggle } from './ui/forcesToggle.js';
     import { initCellToggle } from './ui/cellToggle.js';
+    import { showErrorBanner } from './ui/errorBanner.js';
     const urlParams = new URLSearchParams(location.search);
     const DEBUG = urlParams.get('debug') === '1';
     const canvas=document.getElementById('viewer');
@@ -141,6 +142,7 @@
         window.__MLIP_DEFAULT_LOADED = true;
       } catch (e) {
         document.getElementById('status').textContent = 'Load failed';
+        try { showErrorBanner('Load failed: '+ (e?.message||e)); } catch {}
         console.error(e);
         window.__MLIP_DEFAULT_LOADED = true; // still allow tests to proceed
       }

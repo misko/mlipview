@@ -3,6 +3,7 @@ import { __count } from './funcCount.js';
 import { validateParsedXYZ } from './constraints.js';
 import { smilesToXYZ, isLikelySmiles } from './smilesLoader.js';
 import { base64DecodeUtf8 } from '../ui/moleculeSelect.js';
+import { showErrorBanner } from '../ui/errorBanner.js';
 
 export function getRequestedMoleculeFromUrl(win){
   try {
@@ -70,7 +71,10 @@ export async function loadXYZIntoViewer(viewerApi, url) {
 
 export function applyParsedToViewer(viewerApi, parsed){
   const valid = validateParsedXYZ(parsed);
-  if (!valid.ok) throw new Error(valid.error || 'Validation failed');
+  if (!valid.ok) {
+    try { showErrorBanner(`Load blocked: ${valid.error || 'Validation failed'}`); } catch {}
+    throw new Error(valid.error || 'Validation failed');
+  }
   applyXYZToState(viewerApi.state, parsed);
   // Cache the freshly loaded positions as the reset baseline for VR/AR
   try {

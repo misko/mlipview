@@ -57,8 +57,7 @@ describe('index.html smoke load', () => {
     // Allow microtasks; in real browser engine.runRenderLoop sets callback
     await new Promise(r=>setTimeout(r,50));
 
-    // Check status element updated or at least present
-    const statusEl = dom.window.document.getElementById('status');
-    expect(statusEl).not.toBeNull();
+  // Status element is optional now; ensure page loaded and viewer canvas exists
+  expect(dom.window.document.getElementById('viewer')).not.toBeNull();
   });
 });

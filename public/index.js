@@ -666,6 +666,13 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   function maybePlotEnergy(kind){
     try {
       const E = state.dynamics?.energy;
+      // Update live metrics energy label (formatted E: %0.2f)
+      try {
+        const elE = document.getElementById('instEnergy');
+        if (elE && typeof E === 'number' && isFinite(E)) {
+          elE.textContent = 'E: ' + E.toFixed(2);
+        }
+      } catch {}
       if (typeof E !== 'number' || !isFinite(E)) return;
       if (E === lastPlottedEnergy) return; // skip duplicate energy values
       const idx = energySeries.length;
@@ -1021,9 +1028,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       // after we restore positions and call markPositionsChanged below.
       __suppressNextPosChange = true;
       // Clear interaction log and energy time series before we restore positions
-      try { interactions.length = 0; } catch {}
-      try { energySeries.length = 0; lastPlottedEnergy = undefined; } catch {}
-      try { drawEnergy(); } catch {}
+  try { interactions.length = 0; } catch {}
+  try { energySeries.length = 0; lastPlottedEnergy = undefined; } catch {}
+  try { drawEnergy(); } catch {}
+  try { const elE=document.getElementById('instEnergy'); if(elE) elE.textContent='E: —'; } catch {}
       const init = Array.isArray(state.__initialPositions) ? state.__initialPositions : null;
       if(!init || init.length !== state.positions.length) { try { console.warn('[Reset] missing or size-mismatch initial positions'); } catch{} return false; }
       for(let i=0;i<init.length;i++){ const p=init[i]; const tp=state.positions[i]; tp.x=p.x; tp.y=p.y; tp.z=p.z; }
@@ -1035,7 +1043,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       try { await ff.computeForces({ sync:true }); } catch(e){ try { console.warn('[Reset] computeForces failed', e?.message||e); } catch{} }
       const f1 = (typeof performance!=='undefined' && performance.now)? performance.now(): Date.now();
       // Ensure plot remains cleared after recompute
-      try { energySeries.length = 0; lastPlottedEnergy = undefined; drawEnergy(); } catch {}
+  try { energySeries.length = 0; lastPlottedEnergy = undefined; drawEnergy(); } catch {}
+  try { const elE=document.getElementById('instEnergy'); if(elE) elE.textContent='E: —'; } catch {}
       const t1 = (typeof performance!=='undefined' && performance.now)? performance.now(): Date.now();
       try { console.log('[Reset] done', { totalMs: Math.round((t1-t0)*100)/100, recomputeMs: Math.round((f1-f0)*100)/100 }); } catch {}
       return true;
@@ -1073,8 +1082,6 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
               try {
                 const btn = document.getElementById && document.getElementById('btnMDRun');
                 if(btn && btn.textContent === 'stop') btn.textContent='run';
-                const statusEl = document.getElementById && document.getElementById('status');
-                if(statusEl && /MD running/.test(statusEl.textContent||'')) statusEl.textContent='MD stopped';
               } catch{}
               if (window.__MLIPVIEW_DEBUG_API) console.log('[autoMD] completed initial MD run');
             });
@@ -1082,8 +1089,6 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
             try {
               const btn = document.getElementById && document.getElementById('btnMDRun');
               if(btn){ btn.textContent = 'stop'; }
-              const statusEl = document.getElementById && document.getElementById('status');
-              if(statusEl){ statusEl.textContent = 'MD running'; }
             } catch {}
         } catch(e){ console.warn('[autoMD] start failed', e?.message||e); }
       }, 0);

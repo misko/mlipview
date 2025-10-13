@@ -31,7 +31,7 @@ def build_atoms(
     try:
         from .models import MAX_ATOMS_PER_REQUEST  # type: ignore
     except Exception:
-        MAX_ATOMS_PER_REQUEST = 40  # safe fallback
+        MAX_ATOMS_PER_REQUEST = 170  # safe fallback
 
     if len(numbers) != len(coords):
         raise HTTPException(

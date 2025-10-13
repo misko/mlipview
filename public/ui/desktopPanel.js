@@ -7,6 +7,7 @@ import { initFrictionSlider } from './frictionSlider.js';
 import { installMoleculeSelector, buildReloadUrlWithParam, base64EncodeUtf8 } from './moleculeSelect.js';
 import { parseXYZ } from '../util/xyzLoader.js';
 import { validateParsedXYZ } from '../util/constraints.js';
+import { showErrorBanner } from './errorBanner.js';
 import { isLikelySmiles } from '../util/smilesLoader.js';
 import { elInfo } from '../elements.js';
 import { defaultMassForZ } from '../physics/sim-model.js';
@@ -235,10 +236,11 @@ export function buildDesktopPanel({ attachTo } = {}) {
   const live = createSection('section-live-stats', 'Live Metrics', { defaultOpen: true });
   {
     const statsRow = document.createElement('div'); statsRow.className = 'row';
-    const status = document.createElement('span'); status.id = 'status'; status.className = 'stat'; status.textContent = 'Ready';
+    // Energy first, then temperature, then RPS
+    const instEnergy = document.createElement('span'); instEnergy.id = 'instEnergy'; instEnergy.className = 'value mono'; instEnergy.textContent = 'E: —';
     const instTemp = document.createElement('span'); instTemp.id = 'instTemp'; instTemp.className = 'value mono'; instTemp.textContent = 'T: — K';
     const rps = document.createElement('span'); rps.id = 'rpsLabel'; rps.className = 'value mono'; rps.textContent = 'RPS: —';
-    statsRow.append(status, instTemp, rps);
+    statsRow.append(instEnergy, instTemp, rps);
     live.content.appendChild(statsRow);
 
     const plot = document.createElement('div');
@@ -537,7 +539,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
   }
 
   // Simulation (open) — Top utility toggles + Relax/MD toggles (side-by-side)
-  const sim = createSection('section-simulation', 'Simulation', { defaultOpen: true });
+  const sim = createSection('section-simulation', 'Simulation', { defaultOpen: false });
   {
     // Top row: Show Forces + PBC
     const utilRow = document.createElement('div'); utilRow.className = 'row';
@@ -575,7 +577,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
           st.toggleGhostCells();
         }
         const legacy = document.getElementById('btnCell'); if(legacy) legacy.textContent = (st.showCell || st.showGhostCells) ? 'on' : 'off';
-        const status = document.getElementById('status'); if(status) status.textContent = (st.showCell || st.showGhostCells) ? 'PBC ON' : 'PBC OFF';
+  // Status element removed
       } catch {}
     });
     utilRow.append(forcesT, pbcToggle);
@@ -643,7 +645,6 @@ export function buildDesktopPanel({ attachTo } = {}) {
       } else { try { api.stopSimulation(); } catch{} }
       try {
         const legacy = document.getElementById('btnMDRun'); if(legacy) legacy.textContent = on? 'stop':'run';
-        const status = document.getElementById('status'); if(status) status.textContent = on? 'MD running':'MD stopped';
       } catch{}
     });
 
@@ -663,20 +664,20 @@ export function buildDesktopPanel({ attachTo } = {}) {
           if (mdToggleEl.getAttribute('data-on') !== 'true') setBtnState(mdToggleEl, true);
           if (relaxToggleEl.getAttribute('data-on') !== 'false') setBtnState(relaxToggleEl, false);
           try { const legacy = document.getElementById('btnMDRun'); if(legacy) legacy.textContent = 'stop'; } catch {}
-          try { const status = document.getElementById('status'); if(status) status.textContent = 'MD running'; } catch {}
+          // Status element removed
         } else if (kind === 'relax') {
           // Relax running: set Relax=On, MD=Off
           if (relaxToggleEl.getAttribute('data-on') !== 'true') setBtnState(relaxToggleEl, true);
           if (mdToggleEl.getAttribute('data-on') !== 'false') setBtnState(mdToggleEl, false);
           try { const legacy = document.getElementById('btnRelaxRun'); if(legacy) legacy.textContent = 'stop'; } catch {}
-          try { const status = document.getElementById('status'); if(status) status.textContent = 'Relax running'; } catch {}
+          // Status element removed
         } else {
           // Neither running
           if (mdToggleEl.getAttribute('data-on') !== 'false') setBtnState(mdToggleEl, false);
           if (relaxToggleEl.getAttribute('data-on') !== 'false') setBtnState(relaxToggleEl, false);
           try { const legacyMD = document.getElementById('btnMDRun'); if(legacyMD) legacyMD.textContent = 'run'; } catch {}
           try { const legacyRX = document.getElementById('btnRelaxRun'); if(legacyRX) legacyRX.textContent = 'run'; } catch {}
-          try { const status = document.getElementById('status'); if(status && !/Ready|stopped/i.test(status.textContent||'')) status.textContent = 'Ready'; } catch {}
+          // Status element removed
         }
       } catch {}
     }
@@ -725,17 +726,16 @@ export function buildDesktopPanel({ attachTo } = {}) {
     // Wire SMILES Generate: validate basic string and reload page with ?smiles=
     smilesBtn.addEventListener('click', () => {
       const s = (smilesInput.value||'').trim();
-      const statusEl = document.getElementById('status');
       if (!s) return;
       if (!isLikelySmiles(s)) {
-        if (statusEl) statusEl.textContent = 'Invalid SMILES format';
+        showErrorBanner('Invalid SMILES format');
         return;
       }
       try {
         const href = buildReloadUrlWithParam(window.location.href, 'smiles', s);
         window.location.assign ? window.location.assign(href) : (window.location.href = href);
       } catch (e) {
-        if (statusEl) statusEl.textContent = 'SMILES navigation failed';
+        showErrorBanner('SMILES navigation failed');
       }
     });
 
@@ -749,21 +749,20 @@ export function buildDesktopPanel({ attachTo } = {}) {
     const fileInput = document.createElement('input'); fileInput.type = 'file'; fileInput.accept = '.xyz,text/plain'; fileInput.style.display = 'none'; fileInput.id = 'xyzFileInput';
     uploadBtn.addEventListener('click', ()=> fileInput.click());
     fileInput.addEventListener('change', async (ev)=>{
-      const statusEl = document.getElementById('status');
       try {
         const f = ev.target.files && ev.target.files[0];
         if (!f) return;
         const text = await f.text();
         let parsed;
-        try { parsed = parseXYZ(text); } catch (e) { if (statusEl) statusEl.textContent = 'XYZ parse failed'; console.warn?.('[uploadXYZ] parse failed', e); return; }
+        try { parsed = parseXYZ(text); } catch (e) { showErrorBanner('XYZ parse failed'); console.warn?.('[uploadXYZ] parse failed', e); return; }
         const v = validateParsedXYZ(parsed);
-        if (!v.ok) { if (statusEl) statusEl.textContent = `XYZ invalid: ${v.error}`; console.warn?.('[uploadXYZ] validation failed', v.error); return; }
+        if (!v.ok) { showErrorBanner(`XYZ invalid: ${v.error}`); console.warn?.('[uploadXYZ] validation failed', v.error); return; }
   // Encode to base64 (UTF-8 safe) and reload with ?molxyz
   const b64 = base64EncodeUtf8(text);
         const href = buildReloadUrlWithParam(window.location.href, 'molxyz', b64);
         window.location.assign ? window.location.assign(href) : (window.location.href = href);
       } catch (e) {
-        if (statusEl) statusEl.textContent = 'XYZ upload failed';
+        showErrorBanner('XYZ upload failed');
         console.warn?.('[uploadXYZ] unexpected error', e);
       } finally {
         try { ev.target.value = ''; } catch {}
@@ -779,15 +778,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
     backendRow.append(backendSel);
     sys.content.appendChild(backendRow);
   }
-  // Minimal Rendering (collapsed) — Added to satisfy legacy tests looking for this section
-  const rendering = createSection('section-rendering', 'Rendering', { defaultOpen: false });
-  {
-    // Keep minimal placeholder; legacy controls (btnToggleForces) are provided in hidden box below
-    const p = document.createElement('div');
-    p.className = 'panel-content';
-    p.textContent = '';
-    rendering.content.appendChild(p);
-  }
+  // Rendering section removed per request
 
   // XR (collapsed)
   const xr = createSection('section-xr', 'XR', { defaultOpen: false });
@@ -827,25 +818,17 @@ export function buildDesktopPanel({ attachTo } = {}) {
       if (!vr) {
         // No VR subsystem yet; reset selection and warn softly
         try { sel.value = 'none'; } catch {}
-        try { const s=document.getElementById('status'); if(s) s.textContent='XR unavailable'; } catch{}
+  // Status element removed
         return;
       }
       const ok = await doSwitch(v);
-      // Reflect status text minimally (optional UX)
-      try {
-        const s = document.getElementById('status');
-        if (s) {
-          if (v === 'none') s.textContent = ok? 'XR exited' : 'XR exit failed';
-          else s.textContent = ok? (v.toUpperCase()+' entered') : (v.toUpperCase()+' failed');
-        }
-      } catch {}
     });
     row.append(label, sel);
     xr.content.appendChild(row);
   }
 
   // Append all sections (Selection under Live Metrics)
-  panel.append(live.section, selSec.section, sim.section, sys.section, rendering.section, xr.section);
+  panel.append(live.section, selSec.section, sim.section, sys.section, xr.section);
   host.appendChild(panel);
 
   // Add a persistent reset button in bottom-right that resets the viewer state without reloading the page
@@ -869,11 +852,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
             resetBtn.disabled = true;
             const prevText = resetBtn.textContent;
             resetBtn.textContent = 'Resetting…';
-            Promise.resolve(api.resetToInitialPositions()).then(()=>{
-              try { const s = document.getElementById('status'); if (s) s.textContent = 'Reset complete'; } catch {}
-            }).catch(()=>{
-              try { const s = document.getElementById('status'); if (s) s.textContent = 'Reset failed'; } catch {}
-            }).finally(()=>{
+            Promise.resolve(api.resetToInitialPositions()).finally(()=>{
               resetBtn.disabled = false;
               resetBtn.textContent = prevText;
             });
@@ -923,7 +902,6 @@ export function buildDesktopPanel({ attachTo } = {}) {
     ['section-selection', selSec.content],
     ['section-simulation', sim.content],
     ['section-system', sys.content],
-    ['section-rendering', rendering.content],
     ['section-xr', xr.content],
   ]);
 
