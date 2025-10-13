@@ -145,7 +145,7 @@
         window.__MLIP_DEFAULT_LOADED = true; // still allow tests to proceed
       }
     })();
-  // Relax controls (step / run-toggle)
+  // Relax controls (step / run-toggle) — legacy hidden buttons may be created later by desktopPanel
   const relaxStepBtn = document.getElementById('btnRelax');
   const relaxRunBtn = document.getElementById('btnRelaxRun');
   function isRelaxRunning(){ try { return !!(viewerApi && viewerApi.getMetrics().running === 'relax'); } catch { return false; } }
@@ -154,25 +154,27 @@
     const disabled = !!runningKind;
     // Disable all four when anything running
     // But only keep the active run button enabled (for stopping) when running
-    relaxStepBtn.disabled = disabled;
-    mdStepBtn.disabled = disabled;
-    relaxRunBtn.disabled = false; // toggling logic inside
-    mdRunBtn.disabled = false;
+  if (relaxStepBtn) relaxStepBtn.disabled = disabled;
+  if (mdStepBtn) mdStepBtn.disabled = disabled;
+  if (relaxRunBtn) relaxRunBtn.disabled = false; // toggling logic inside
+  if (mdRunBtn) mdRunBtn.disabled = false;
     if(runningKind === 'relax'){
-      mdRunBtn.disabled = true; mdStepBtn.disabled = true;
+      if (mdRunBtn) mdRunBtn.disabled = true;
+      if (mdStepBtn) mdStepBtn.disabled = true;
     } else if(runningKind === 'md') {
-      relaxRunBtn.disabled = true; relaxStepBtn.disabled = true;
+      if (relaxRunBtn) relaxRunBtn.disabled = true;
+      if (relaxStepBtn) relaxStepBtn.disabled = true;
     }
   }
-  relaxStepBtn.onclick = async ()=>{ if(!viewerApi || isRelaxRunning() || isMdRunning()) return; await viewerApi.relaxStep(); document.getElementById('status').textContent='Relax step'; };
-  relaxRunBtn.onclick = async ()=>{
+  if (relaxStepBtn) relaxStepBtn.onclick = async ()=>{ if(!viewerApi || isRelaxRunning() || isMdRunning()) return; await viewerApi.relaxStep(); document.getElementById('status').textContent='Relax step'; };
+  if (relaxRunBtn) relaxRunBtn.onclick = async ()=>{
     if(!viewerApi) return;
     if(!isRelaxRunning()){
-      relaxRunBtn.textContent='stop'; document.getElementById('status').textContent='Relax running';
+      if (relaxRunBtn) relaxRunBtn.textContent='stop'; document.getElementById('status').textContent='Relax running';
       applyRunningDisable();
-      viewerApi.startRelaxContinuous({ maxSteps:500 }).then(r=>{ relaxRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent = r?.converged? 'Relax converged':'Relax stopped'; });
+      viewerApi.startRelaxContinuous({ maxSteps:500 }).then(r=>{ if (relaxRunBtn) relaxRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent = r?.converged? 'Relax converged':'Relax stopped'; });
     } else {
-      viewerApi.stopSimulation(); relaxRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='Relax stopped';
+      viewerApi.stopSimulation(); if (relaxRunBtn) relaxRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='Relax stopped';
     }
   };
   // MD controls (step / run-toggle)
@@ -180,19 +182,22 @@
   const mdRunBtn = document.getElementById('btnMDRun');
   // Derive MD running state from viewerApi.getMetrics() so auto-start logic stays in sync.
   function isMdRunning(){ try { return !!(viewerApi && viewerApi.getMetrics().running === 'md'); } catch { return false; } }
-  mdStepBtn.onclick = ()=>{ if(!viewerApi || isMdRunning() || isRelaxRunning()) return; const T = window.__MLIP_TARGET_TEMPERATURE ?? 1500; viewerApi.mdStep({ temperature:T }); document.getElementById('status').textContent=`MD step tgt=${T}K inst=${viewerApi.state.dynamics.temperature.toFixed(1)}`; };
-  mdRunBtn.onclick = ()=>{
+  if (mdStepBtn) mdStepBtn.onclick = ()=>{ if(!viewerApi || isMdRunning() || isRelaxRunning()) return; const T = window.__MLIP_TARGET_TEMPERATURE ?? 1500; viewerApi.mdStep({ temperature:T }); document.getElementById('status').textContent=`MD step tgt=${T}K inst=${viewerApi.state.dynamics.temperature.toFixed(1)}`; };
+  if (mdRunBtn) mdRunBtn.onclick = ()=>{
     if(!viewerApi) return;
     if(!isMdRunning()){
   const T = window.__MLIP_TARGET_TEMPERATURE ?? 1500;
-      mdRunBtn.textContent='stop'; document.getElementById('status').textContent='MD running @'+T+'K';
+      if (mdRunBtn) mdRunBtn.textContent='stop'; document.getElementById('status').textContent='MD running @'+T+'K';
       applyRunningDisable();
-      viewerApi.startMDContinuous({ steps:500, temperature:T }).then(()=>{ if(!isMdRunning()) { mdRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='MD stopped'; } });
+      viewerApi.startMDContinuous({ steps:500, temperature:T }).then(()=>{ if(!isMdRunning()) { if (mdRunBtn) mdRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='MD stopped'; } });
     } else {
-      viewerApi.stopSimulation(); mdRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='MD stopped';
+      viewerApi.stopSimulation(); if (mdRunBtn) mdRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='MD stopped';
     }
   };
-  document.getElementById('forceProviderSel').onchange = (e)=>{ if(!viewerApi) return; const kind=e.target.value; viewerApi.setForceProvider(kind); document.getElementById('status').textContent='Provider '+kind; };
+  {
+    const sel = document.getElementById('forceProviderSel');
+    if (sel) sel.onchange = (e)=>{ if(!viewerApi) return; const kind=e.target.value; viewerApi.setForceProvider(kind); document.getElementById('status').textContent='Provider '+kind; };
+  }
 
   // Periodic metrics HUD updater
   setInterval(()=>{ if(!viewerApi) return; const m=viewerApi.getMetrics(); applyRunningDisable(); if(!m.running) return; const parts=[]; if(m.energy!=null) parts.push('E='+m.energy.toFixed(3)); if(m.maxForce!=null) parts.push('Fmax='+m.maxForce.toExponential(2)); if(m.maxStress!=null) parts.push('Smax='+m.maxStress.toExponential(2)); document.getElementById('status').textContent = (m.running||'idle')+' '+parts.join(' '); }, 500);
@@ -203,7 +208,7 @@
 
     // XR dropdown wiring (now static in markup for reliability)
   const xrSel = document.getElementById('xrModeSelect');
-    xrSel.addEventListener('change', async ()=> {
+    if (xrSel) xrSel.addEventListener('change', async ()=> {
       if(!viewerApi) return;
       const v = xrSel.value;
       if(v==='none'){ await viewerApi.vr.switchXR('none'); }
@@ -212,12 +217,13 @@
     });
     setInterval(()=>{
       if(!viewerApi) return;
+      if(!xrSel) return;
       try {
         const info=viewerApi.vr.debugInfo();
         let mode='none';
         if(info.sessionMode.includes('ar')) mode='ar';
         else if(info.sessionMode.includes('vr')||info.hasXRHelper && info.sessionMode!=='unknown') mode='vr';
-        if(xrSel.value!==mode) xrSel.value=mode;
+        if(xrSel && xrSel.value!==mode) xrSel.value=mode;
       } catch{}
     }, 2000);
   </script>
