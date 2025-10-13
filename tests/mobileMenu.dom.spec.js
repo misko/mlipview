@@ -12,11 +12,11 @@ describe('mobile top bar tabs', () => {
 		return { host, panel, bar };
 	}
 
-	test('renders three tabs at top', () => {
+	test('renders four tabs at top (includes Periodic)', () => {
 		const { bar } = setup();
 		expect(bar).toBeTruthy();
 		const buttons = Array.from(bar.querySelectorAll('button.tab')).map(b=>b.textContent.trim());
-		expect(buttons).toEqual(['Live Metrics','Simulation','System']);
+		expect(buttons).toEqual(['Live Metrics','Simulation','Periodic','System']);
 	});
 
 	test('only one section expanded at a time', () => {
@@ -50,9 +50,9 @@ describe('mobile top bar tabs', () => {
 		expect(panel.getAttribute('data-mobile-open')).toBe(null);
 		active = panel.querySelector('.panel-section[data-mobile-active="true"]');
 		expect(active).toBe(null);
-			// All three tabs are always visible; still 3
-			const visibleTabs = Array.from(bar.querySelectorAll('button.tab'));
-			expect(visibleTabs.length).toBe(3);
+	    // All tabs are always visible; now 4 with Periodic
+	    const visibleTabs = Array.from(bar.querySelectorAll('button.tab'));
+	    expect(visibleTabs.length).toBe(4);
 	});
 
 		test('active tab is highlighted when open (tabs stay visible)', () => {
@@ -61,7 +61,7 @@ describe('mobile top bar tabs', () => {
 			btnLive.click();
 			expect(panel.getAttribute('data-mobile-open')).toBe('true');
 			const tabs = Array.from(bar.querySelectorAll('button.tab'));
-			expect(tabs.length).toBe(3);
+			expect(tabs.length).toBe(4);
 			const active = tabs.find(b => b.getAttribute('data-active') === 'true');
 			expect(active).toBeTruthy();
 			expect(active.id).toBe('mobileTab-live');

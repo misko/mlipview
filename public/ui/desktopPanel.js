@@ -541,7 +541,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
   // Simulation (open) — Top utility toggles + Relax/MD toggles (side-by-side)
   const sim = createSection('section-simulation', 'Simulation', { defaultOpen: false });
   {
-    // Top row: Show Forces + PBC
+    // Top row: Show Forces
     const utilRow = document.createElement('div'); utilRow.className = 'row';
     // Forces toggle
     const forcesT = makeToggle({
@@ -558,29 +558,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
         const legacy = document.getElementById('btnToggleForces'); if(legacy) legacy.textContent = on? 'on':'off';
       } catch{}
     });
-    // PBC toggle (moved from System)
-    const pbcToggle = makeToggle({
-      id: 'togglePBC',
-      labelOn: 'PBC: On',
-      labelOff: 'PBC: Off',
-      title: 'Periodic Boundary Conditions',
-    });
-    pbcToggle.addEventListener('click', ()=>{
-      try {
-        const api = (window.viewerApi||window._viewer); if(!api) return;
-        const st = api.state; if(!st) return;
-        const fn = (st.toggleCellVisibilityEnhanced||st.toggleCellVisibility);
-        if (typeof fn === 'function') fn.call(st);
-        // Keep ghost cells in sync with cell visibility
-        const wantGhosts = !!st.showCell;
-        if (!!st.showGhostCells !== wantGhosts && typeof st.toggleGhostCells === 'function') {
-          st.toggleGhostCells();
-        }
-        const legacy = document.getElementById('btnCell'); if(legacy) legacy.textContent = (st.showCell || st.showGhostCells) ? 'on' : 'off';
-  // Status element removed
-      } catch {}
-    });
-    utilRow.append(forcesT, pbcToggle);
+    utilRow.append(forcesT);
 
     // Relaxation toggle (mutually exclusive with MD)
     const togglesRow = document.createElement('div'); togglesRow.className = 'row';
@@ -696,7 +674,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
     try { initFrictionSlider({ hudEl: sim.content }); } catch {}
   }
 
-  // System (collapsed) — PBC moved to Simulation; keep presets and SMILES, keep backend select
+  // System (collapsed) — keep presets and SMILES, keep backend select
   const sys = createSection('section-system', 'System', { defaultOpen: false });
   {
     // Preset dropdown (existing helper)
@@ -780,6 +758,162 @@ export function buildDesktopPanel({ attachTo } = {}) {
   }
   // Rendering section removed per request
 
+  // Periodic (collapsed) — PBC + monoclinic parameters
+  const periodic = createSection('section-periodic', 'Periodic', { defaultOpen: false });
+  {
+    const utilRow = document.createElement('div'); utilRow.className = 'row';
+    const pbcToggle = makeToggle({ id:'togglePBC', labelOn:'PBC: On', labelOff:'PBC: Off', title:'Periodic Boundary Conditions' });
+    utilRow.appendChild(pbcToggle);
+    periodic.content.appendChild(utilRow);
+
+  // Monoclinic parameters: a, b, c (Å), beta (°) — alpha=gamma=90°
+  const monoBlock = document.createElement('div'); monoBlock.className = 'block';
+  const monoLabel = document.createElement('div'); monoLabel.className = 'form-label'; monoLabel.textContent = 'Monoclinic cell';
+    const makeValueDisplay = (id, placeholder) => {
+      const span = document.createElement('span');
+      span.id = id;
+      span.title = placeholder || '';
+      span.classList.add('mono');
+      span.style.display = 'inline-block';
+      span.style.width = '8ch';
+      span.style.textAlign = 'right';
+      span.style.background = '#171717';
+      span.style.border = '1px solid var(--border)';
+      span.style.borderRadius = '8px';
+      span.style.padding = '6px 8px';
+      return span;
+    };
+    const aIn = makeValueDisplay('cellA','a (Å)');
+    const bIn = makeValueDisplay('cellB','b (Å)');
+    const cIn = makeValueDisplay('cellC','c (Å)');
+    const betaIn = makeValueDisplay('cellBeta','β (°)');
+    // Nudge buttons (+/-) with press-and-hold auto-repeat
+    function makeNudgers(valueEl, { idPrefix, step=0.1, min=0.01, max=999, onApply }){
+      const minus = document.createElement('button'); minus.className='btn'; minus.textContent='-'; minus.title='Decrease'; minus.id = idPrefix+'Minus';
+      const plus  = document.createElement('button'); plus.className='btn';  plus.textContent='+'; plus.title='Increase'; plus.id  = idPrefix+'Plus';
+      const DECIMALS = (step < 1 ? 2 : 0);
+      const clamp = (v)=> Math.max(min, Math.min(max, v));
+      const setVal = (v)=>{ const nv = clamp(v); valueEl.textContent = nv.toFixed(DECIMALS); if (typeof onApply==='function') onApply(); };
+      const bump = (dir)=>{
+        if (plus.disabled) return; const cur = parseFloat(valueEl.textContent); const base = Number.isFinite(cur) ? cur : (dir>0? step : step);
+        setVal(base + dir*step);
+      };
+      // Click does one step
+      minus.addEventListener('click', (e)=>{ e.preventDefault(); bump(-1); });
+      plus.addEventListener('click',  (e)=>{ e.preventDefault(); bump(+1); });
+      // Press-and-hold: pointerdown starts, pointerup/cancel ends
+      function attachHold(btn, dir){
+        let tid = null; let started = false; let first = true;
+        const start = (e)=>{
+          e.preventDefault(); if (plus.disabled) return; if (started) return; started=true; bump(dir);
+          // after initial, repeat at interval
+          tid = setInterval(()=> bump(dir), 80);
+          window.addEventListener('pointerup', stop, { once:true });
+          window.addEventListener('pointercancel', stop, { once:true });
+          btn.addEventListener('pointerleave', stop, { once:true });
+        };
+        const stop = ()=>{ if (tid){ clearInterval(tid); tid=null; } started=false; };
+        btn.addEventListener('pointerdown', start);
+      }
+      attachHold(minus, -1); attachHold(plus, +1);
+      return { minus, plus };
+    }
+    // No Apply button: values are controlled only via +/- and auto-apply
+    // Arrange inputs with their nudgers as one row per parameter: Label: [value] (+) (-)
+  const aN = makeNudgers(aIn, { idPrefix:'cellA', step:0.1, min:0.01, max:999, onApply: ()=> applyMonoclinic() });
+  const bN = makeNudgers(bIn, { idPrefix:'cellB', step:0.1, min:0.01, max:999, onApply: ()=> applyMonoclinic() });
+  const cN = makeNudgers(cIn, { idPrefix:'cellC', step:0.1, min:0.01, max:999, onApply: ()=> applyMonoclinic() });
+  const betaN = makeNudgers(betaIn, { idPrefix:'cellBeta', step:1, min:1, max:179, onApply: ()=> applyMonoclinic() });
+    function makeParamRow(labelText, input, nudgers){
+      const row = document.createElement('div'); row.className = 'row';
+      const lbl = document.createElement('span'); lbl.className = 'form-label'; lbl.textContent = labelText;
+      // Fix label width for alignment
+      lbl.style.minWidth = '20px'; lbl.style.display='inline-block';
+      // Order: value then (+) then (-)
+      row.append(lbl, input, nudgers.plus, nudgers.minus);
+      return row;
+    }
+    const aRow = makeParamRow('A:', aIn, aN);
+    const bRow = makeParamRow('B:', bIn, bN);
+    const cRow = makeParamRow('C:', cIn, cN);
+    const betaRow = makeParamRow('β:', betaIn, betaN);
+    // Append rows and apply button (its own row)
+  monoBlock.append(monoLabel, aRow, bRow, cRow, betaRow);
+    periodic.content.appendChild(monoBlock);
+
+    function getApi(){ try { return window.viewerApi||window._viewer; } catch { return null; } }
+    function len(v){ return Math.hypot(v?.x||0, v?.y||0, v?.z||0); }
+    function dot(u,v){ return (u?.x||0)*(v?.x||0) + (u?.y||0)*(v?.y||0) + (u?.z||0)*(v?.z||0); }
+    function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+    function rad2deg(r){ return r*180/Math.PI; }
+    function deg2rad(d){ return d*Math.PI/180; }
+    function extractParams(cell){
+      if(!cell) return { aLen:1, bLen:1, cLen:1, beta:90 };
+      const aL = Math.max(1e-6, len(cell.a));
+      const bL = Math.max(1e-6, len(cell.b));
+      const cL = Math.max(1e-6, len(cell.c));
+      // beta = angle between a and c
+      let cosB = 0;
+      try { cosB = clamp(dot(cell.a, cell.c) / (aL*cL), -1, 1); } catch { cosB = 0; }
+      const beta = rad2deg(Math.acos(cosB));
+      return { aLen:aL, bLen:bL, cLen:cL, beta: beta };
+    }
+    function prefill(){
+      const api = getApi(); const st = api && api.state; const c = st && st.cell;
+      const p = extractParams(c);
+  aIn.textContent = p.aLen.toFixed(2);
+  bIn.textContent = p.bLen.toFixed(2);
+  cIn.textContent = p.cLen.toFixed(2);
+  betaIn.textContent = p.beta.toFixed(2);
+  const enabled = !!(st && st.showCell && c && c.enabled);
+  for (const el of [aN.minus,aN.plus,bN.minus,bN.plus,cN.minus,cN.plus,betaN.minus,betaN.plus]) el.disabled = !enabled;
+      // Also reflect toggle state
+      const on = enabled;
+      pbcToggle.setAttribute('data-on', String(on));
+      pbcToggle.setAttribute('aria-checked', String(on));
+      pbcToggle.textContent = on ? 'PBC: On' : 'PBC: Off';
+    }
+    function applyMonoclinic(){
+      const api = getApi(); const st = api && api.state; if (!st) return;
+  let aL = parseFloat(aIn.textContent), bL = parseFloat(bIn.textContent), cL = parseFloat(cIn.textContent), betaD = parseFloat(betaIn.textContent);
+      if(!Number.isFinite(aL)||aL<=0) aL = 1;
+      if(!Number.isFinite(bL)||bL<=0) bL = 1;
+      if(!Number.isFinite(cL)||cL<=0) cL = 1;
+      if(!Number.isFinite(betaD)) betaD = 90;
+      // Bound rotation angle strictly within (0,180) to avoid degenerate sin(beta)=0
+      betaD = clamp(betaD, 1, 179);
+      const betaR = deg2rad(betaD);
+      const a = { x:aL, y:0, z:0 };
+      const b = { x:0, y:bL, z:0 };
+      const c = { x: cL*Math.cos(betaR), y:0, z: cL*Math.sin(betaR) };
+      const originOffset = (st.cell && st.cell.originOffset) ? { ...st.cell.originOffset } : { x:0,y:0,z:0 };
+      st.cell = { a, b, c, originOffset, enabled: true };
+      st.markCellChanged && st.markCellChanged();
+    }
+  // No Apply or Enter binding; auto-apply occurs on each nudge
+
+    // Toggle behavior
+    pbcToggle.addEventListener('click', ()=>{
+      try {
+        const api = getApi(); if(!api) return;
+        const st = api.state; if(!st) return;
+        const fn = (st.toggleCellVisibilityEnhanced||st.toggleCellVisibility);
+        if (typeof fn === 'function') fn.call(st);
+        // Keep ghosts in sync with cell visibility
+        const wantGhosts = !!st.showCell;
+        if (!!st.showGhostCells !== wantGhosts && typeof st.toggleGhostCells === 'function') {
+          st.toggleGhostCells();
+        }
+        const legacy = document.getElementById('btnCell'); if(legacy) legacy.textContent = (st.showCell || st.showGhostCells) ? 'on' : 'off';
+        // Refresh fields enabled state + values (if synthetic cell was created)
+        prefill();
+      } catch {}
+    });
+    // Initial fill and react to cell changes (including external)
+    try { prefill(); } catch {}
+    try { const api = getApi(); api && api.state && api.state.bus && api.state.bus.on('cellChanged', prefill); } catch {}
+  }
+
   // XR (collapsed)
   const xr = createSection('section-xr', 'XR', { defaultOpen: false });
   {
@@ -828,7 +962,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
   }
 
   // Append all sections (Selection under Live Metrics)
-  panel.append(live.section, selSec.section, sim.section, sys.section, xr.section);
+  panel.append(live.section, selSec.section, sim.section, periodic.section, sys.section, xr.section);
   host.appendChild(panel);
 
   // Add a persistent reset button in bottom-right that resets the viewer state without reloading the page
@@ -876,6 +1010,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
   const tabs = [
     { id: 'live', label: 'Live Metrics', sectionId: 'section-live-stats' },
     { id: 'simulation', label: 'Simulation', sectionId: 'section-simulation' },
+    { id: 'periodic', label: 'Periodic', sectionId: 'section-periodic' },
     { id: 'system', label: 'System', sectionId: 'section-system' },
   ];
   const tabEls = new Map();
@@ -901,6 +1036,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
     ['section-live-stats', live.content],
     ['section-selection', selSec.content],
     ['section-simulation', sim.content],
+    ['section-periodic', periodic.content],
     ['section-system', sys.content],
     ['section-xr', xr.content],
   ]);
