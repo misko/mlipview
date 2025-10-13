@@ -45,10 +45,16 @@ export function installMoleculeSelector(opts){
   const documentRef = opts.documentRef || document;
   const select = documentRef.createElement('select');
   select.id = 'moleculeSelect';
-  select.innerHTML = '<option value="molecules/roy.xyz">ROY</option>'+
-                     '<option value="molecules/benzene.xyz">Benzene</option>'+
-                     '<option value="molecules/water.xyz">Water</option>'+
-                     '<option value="molecules/water10.xyz">Water x10</option>';
+  // Static list (served directly from /public) — keep labels short for UI
+  select.innerHTML = ''+
+    '<option value="molecules/roy.xyz">ROY</option>'+
+    '<option value="molecules/benzene.xyz">Benzene</option>'+
+    '<option value="molecules/water.xyz">Water</option>'+
+    '<option value="molecules/water10.xyz">Water x10</option>'+
+    '<option value="molecules/azomethane.xyz">Azomethane</option>'+
+    '<option value="molecules/hydronium_hydroxide.xyz">Hydronium + Hydroxide</option>'+
+    '<option value="molecules/sn2.xyz">SN2: Cl- + CH3I</option>'+
+    '<option value="molecules/twomethane.xyz">Methyl radicals</option>';
   select.onchange = () => {
     const file = select.value;
     const href = buildReloadUrl(windowRef.location.href, file);
@@ -63,3 +69,4 @@ export function installMoleculeSelector(opts){
   hudEl.appendChild(select);
   return { selectEl: select };
 }
+

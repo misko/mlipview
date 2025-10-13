@@ -782,7 +782,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
   // Minimal Rendering (collapsed) — Added to satisfy legacy tests looking for this section
   const rendering = createSection('section-rendering', 'Rendering', { defaultOpen: false });
   {
-    // Keep empty or include minimal note; legacy controls (btnToggleForces) are provided in hidden box below
+    // Keep minimal placeholder; legacy controls (btnToggleForces) are provided in hidden box below
     const p = document.createElement('div');
     p.className = 'panel-content';
     p.textContent = '';
