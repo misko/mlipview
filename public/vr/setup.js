@@ -786,7 +786,8 @@ export function createVRSupport(scene, { picking } = {}) {
       bar.paddingBottom = '20px';
       adt.addControl(bar);
 
-      const hudDebug = ()=> (typeof window!=='undefined') && (window.XR_HUD_DEBUG || /[?&]xrhuddebug=1/.test(window.location.search));
+  const hudDebug = ()=> (typeof window!=='undefined') && (window.XR_HUD_DEBUG || /[?&]xrhuddebug=1/.test(window.location.search));
+  const energyDebug = ()=> (typeof window!=='undefined') && (window.XR_ENERGY_DEBUG || window.XR_HUD_DEBUG || /[?&](xrenergydebug|xrhuddebug)=1/.test(window.location.search));
       function logBtn(phase, name, extra){ if(!hudDebug()) return; try { console.log('[XR][HUD][BTN]', phase, name, extra||''); } catch{} }
       function makeBtn(text, cb){
         const id = 'btn'+text.replace(/\s+/g,'');
@@ -828,6 +829,61 @@ export function createVRSupport(scene, { picking } = {}) {
         } catch {}
       }
 
+      // Energy panel (left side): sparkline + current energy value
+      if(energyDebug()) console.log('[XR][HUD][ENERGY] init energy panel ...');
+      const energyContainer = new BABYLON.GUI.Rectangle('xrEnergyContainer');
+  energyContainer.thickness = 0; energyContainer.background = 'transparent';
+  energyContainer.height = '80px'; energyContainer.width = '260px'; energyContainer.paddingRight = '12px';
+  const energyStack = new BABYLON.GUI.StackPanel('xrEnergyStack');
+  energyStack.isVertical = true; energyStack.height = '80px'; energyStack.width = '260px'; energyStack.spacing = 2; energyStack.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+      energyContainer.addControl(energyStack);
+      if(energyDebug()) console.log('[XR][HUD][ENERGY] container+stack created');
+      // Dynamic texture plot sized to fit bar height
+      const plotW = 220, plotH = 60;
+      let energyPlot = null; let energyValueText = null;
+      try {
+  const canvas = document.createElement('canvas'); canvas.width = plotW; canvas.height = plotH;
+  if(energyDebug()) console.log('[XR][HUD][ENERGY] canvas created', { w: canvas.width, h: canvas.height, has2D: !!canvas.getContext });
+  let url0 = '';
+  try { url0 = canvas.toDataURL('image/png'); if(energyDebug()) console.log('[XR][HUD][ENERGY] primed dataURL', { len: (url0&&url0.length)||0 }); } catch(e){ if(energyDebug()) console.warn('[XR][HUD][ENERGY] toDataURL failed (init)', e?.message||e); }
+  const img = new BABYLON.GUI.Image('xrEnergyPlotImg', url0||undefined); img.width = plotW+'px'; img.height = plotH+'px'; img.stretch = BABYLON.GUI.Image.STRETCH_UNIFORM;
+  energyStack.addControl(img);
+  if(energyDebug()) console.log('[XR][HUD][ENERGY] GUI.Image created from dataURL + added', { w: img.width, h: img.height });
+        energyValueText = new BABYLON.GUI.TextBlock('xrEnergyValue', 'E: —');
+  energyValueText.color = '#d8e6f3'; energyValueText.fontSize = 20; energyValueText.height = '20px'; energyValueText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+        energyStack.addControl(energyValueText);
+  if(energyDebug()) console.log('[XR][HUD][ENERGY] value text added', { height: energyValueText.height, fontSize: energyValueText.fontSize });
+        import('../plot/line-plot-core.js').then(p=>{
+          try {
+            const creator = p.createLinePlot || (p.default && p.default.createLinePlot);
+            if (!creator) { if(energyDebug()) console.warn('[XR][HUD][ENERGY] line-plot-core missing creator'); return; } else { if(energyDebug()) console.log('[XR][HUD][ENERGY] line-plot-core creator OK'); }
+            const ctxGetter = ()=> canvas.getContext('2d');
+            let updTick=0;
+            const plot = creator({ width: plotW, height: plotH, getContext: ctxGetter, updateTexture: ()=> { try { const url = canvas.toDataURL('image/png'); img.source = url; img.markAsDirty?.(); updTick++; if(energyDebug() && (updTick<=3 || updTick%60===0)) console.log('[XR][HUD][ENERGY] updateTexture tick', updTick, { urlLen: (url&&url.length)||0 }); } catch(e){ if(energyDebug()) console.warn('[XR][HUD][ENERGY] updateTexture failed', e?.message||e); } }, labels:{ x:'step', y:'E' }, maxPoints: 300 });
+            energyPlot = plot;
+            const v = getViewer();
+            if(energyDebug()) console.log('[XR][HUD][ENERGY] line-plot ready; viewer?', { hasViewer: !!v, hasBus: !!(v&&v.state&&v.state.bus), initialE: v&&v.state&&v.state.dynamics&&v.state.dynamics.energy });
+            function pushEnergy(){
+              try {
+                const E = v?.state?.dynamics?.energy;
+                if(Number.isFinite(E)){
+                  plot.addPoint(E);
+                  if (energyValueText) energyValueText.text = 'E: '+E.toFixed(3)+' eV';
+                  if(energyDebug()) console.log('[XR][HUD][ENERGY] pushEnergy plotted', { E });
+                } else {
+                  if(energyDebug()) console.log('[XR][HUD][ENERGY] pushEnergy skipped (no finite E)', { E });
+                }
+              } catch {}
+            }
+            try { v?.state?.bus?.on?.('forcesChanged', pushEnergy); if(energyDebug()) console.log('[XR][HUD][ENERGY] subscribed to forcesChanged'); } catch(e){ if(energyDebug()) console.warn('[XR][HUD][ENERGY] subscribe failed', e?.message||e); }
+            // Seed an initial value if available
+            try { pushEnergy(); } catch(e){ if(energyDebug()) console.warn('[XR][HUD][ENERGY] initial push failed', e?.message||e); }
+          } catch {}
+        }).catch((e)=>{ if(energyDebug()) console.warn('[XR][HUD][ENERGY] import line-plot-core failed', e?.message||e); });
+        // Expose debug handles
+        try { window.__XR_HUD_ENERGY = { container: energyContainer, canvas, img, plotW, plotH }; } catch{}
+      } catch(e){ console.warn('[XR][HUD] energy panel failed', e?.message||e); }
+
       // Buttons: Simulation: (Relax) (MD) (Off) — grouped segment to convey mutual exclusivity
       const segContainer = new BABYLON.GUI.Rectangle();
       segContainer.thickness = 0; segContainer.background = 'transparent';
@@ -837,7 +893,7 @@ export function createVRSupport(scene, { picking } = {}) {
       segContainer.addControl(segStack);
       function makeSegmentBtn(text, onClick, role){ // role: 'first'|'middle'|'last'
         const b = BABYLON.GUI.Button.CreateSimpleButton('btn'+text, text);
-        b.fontSize = 24; b.color = '#d8e6f3'; b.thickness = 0; b.height = '80px'; b.width = 'auto';
+        b.fontSize = 24; b.color = '#d8e6f3'; b.thickness = 0; b.height = '80px'; b.width = '140px';
         b.background = 'rgba(30,38,48,0.72)';
         b.paddingLeft = '12px'; b.paddingRight = '12px';
         b.cornerRadius = (role==='middle') ? 0 : 12;
@@ -858,10 +914,15 @@ export function createVRSupport(scene, { picking } = {}) {
       // Reset
       const btnReset = makeBtn('Reset', ()=>{ controlsModel?.reset(); });
 
-      // Layout: evenly spaced
-  bar.addControl(segContainer);
+    // Layout: energy on the left, then controls
+    bar.addControl(energyContainer);
+    bar.addControl(segContainer);
       bar.addControl(btnForces);
       bar.addControl(btnReset);
+      if(energyDebug()) try {
+        const names = (bar.children||[]).map(c=>c && (c.name||c.constructor?.name));
+        console.log('[XR][HUD][ENERGY] bar children (left-to-right):', names);
+      } catch{}
 
       function syncButtons(){
         try {
@@ -880,31 +941,12 @@ export function createVRSupport(scene, { picking } = {}) {
   try { controlsModel?.ensureDefaultActive?.(); } catch {}
   syncButtons();
 
-      // Top-left energy plot: draw on a DynamicTexture via line-plot-core
-      try {
-        const plotW = 320, plotH = 160;
-        const tex = new BABYLON.DynamicTexture('xrEnergyPlotTex', { width: plotW, height: plotH }, scene, false);
-        const img = new BABYLON.GUI.Image('xrEnergyPlotImg', tex); img.width = plotW+'px'; img.height = plotH+'px';
-        img.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT; img.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP; img.left = '20px'; img.top = '20px';
-        adt.addControl(img);
-        import('../plot/line-plot-core.js').then(p=>{
-          try {
-            const creator = p.createLinePlot || (p.default && p.default.createLinePlot);
-            if (!creator) return;
-            const ctxGetter = ()=> tex.getContext();
-            const plot = creator({ width: plotW, height: plotH, getContext: ctxGetter, updateTexture: ()=> tex.update(true), labels:{ x:'step', y:'E' } });
-            // Subscribe to energy updates from viewer
-            const v = getViewer();
-            function pushEnergy(){ try { const E = v?.state?.dynamics?.energy; if(Number.isFinite(E)) plot.addPoint(E); } catch {} }
-            try { v?.state?.bus?.on?.('forcesChanged', pushEnergy); } catch {}
-            // Seed an initial value if available
-            pushEnergy();
-          } catch {}
-        }).catch(()=>{});
-      } catch(e){ console.warn('[XR][HUD] energy plot failed', e?.message||e); }
+      // Expose minimal hooks for tests/diagnostics
       _xrHudCreated=true;
       window.__XR_HUD_ADT = adt;
-  window.__XR_HUD_STATE = { created: true, createdAt: Date.now(), sessionMode: sessionMode(), buttons: ['Relax','MD','Off','Forces','Reset'] };
+  window.__XR_HUD_BAR = bar;
+  window.__XR_HUD_ENERGY = { container: energyContainer, plotW, plotH };
+  window.__XR_HUD_STATE = { created: true, createdAt: Date.now(), sessionMode: sessionMode(), buttons: ['Relax','MD','Off','Forces','Reset'], energyPanel: true };
       console.log('[XR][HUD] created');
       // World-space fallback if fullscreen UI not rendered (e.g. some passthrough modes). Creates a floating plane with same buttons.
       setTimeout(()=>{ try {
@@ -935,6 +977,22 @@ export function createVRSupport(scene, { picking } = {}) {
   try { tex._rootContainer?.children?.forEach(c=>{ c.metadata = c.metadata||{}; c.metadata.hudRoot=true; }); } catch{}
       const bg = new BABYLON.GUI.Rectangle(); bg.thickness=0; bg.cornerRadius=20; bg.background='rgba(25,32,42,0.78)'; tex.addControl(bg);
       const stack = new BABYLON.GUI.StackPanel(); stack.isVertical=false; stack.height='300px'; stack.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER; bg.addControl(stack);
+      // Energy panel (left)
+    const wpEnergyDebug = ()=> (typeof window!=='undefined') && (window.XR_ENERGY_DEBUG || window.XR_HUD_DEBUG || /[?&](xrenergydebug|xrhuddebug)=1/.test(window.location.search));
+  const energyBox = new BABYLON.GUI.StackPanel(); energyBox.isVertical=true; energyBox.width='360px'; energyBox.height='260px'; energyBox.paddingRight='10px';
+      let wpEnergyText=null;
+      try {
+  const w=300, h=150; const canvas2 = document.createElement('canvas'); canvas2.width=w; canvas2.height=h;
+  if(wpEnergyDebug()) console.log('[XR][HUD][ENERGY][WP] canvas2 created', { w, h });
+  let url02 = '';
+  try { url02 = canvas2.toDataURL('image/png'); if(wpEnergyDebug()) console.log('[XR][HUD][ENERGY][WP] primed dataURL', { len:(url02&&url02.length)||0 }); } catch(e){ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] toDataURL failed (init)', e?.message||e); }
+  const img = new BABYLON.GUI.Image('xrWorldEnergyImg', url02||undefined); img.width=w+'px'; img.height=h+'px'; img.stretch = BABYLON.GUI.Image.STRETCH_UNIFORM;
+  energyBox.addControl(img);
+        wpEnergyText = new BABYLON.GUI.TextBlock('xrWorldEnergyValue','E: —'); wpEnergyText.color='#d8e6f3'; wpEnergyText.fontSize=28; wpEnergyText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT; energyBox.addControl(wpEnergyText);
+  import('../plot/line-plot-core.js').then(p=>{ try { const creator=p.createLinePlot||(p.default&&p.default.createLinePlot); if(!creator){ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] missing creator'); return; } let updTick=0; const plot=creator({ width:w, height:h, getContext:()=>canvas2.getContext('2d'), updateTexture:()=>{ try { const url=canvas2.toDataURL('image/png'); img.source = url; img.markAsDirty?.(); updTick++; if(wpEnergyDebug() && (updTick<=3 || updTick%60===0)) console.log('[XR][HUD][ENERGY][WP] updateTexture tick', updTick, { urlLen:(url&&url.length)||0 }); } catch(e){ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] updateTexture failed', e?.message||e); } }, labels:{ x:'step', y:'E' }, maxPoints:200 }); const v=getViewer(); if(wpEnergyDebug()) console.log('[XR][HUD][ENERGY][WP] plot ready; viewer?', { hasViewer: !!v }); function push(){ try{ const E=v?.state?.dynamics?.energy; if(Number.isFinite(E)){ plot.addPoint(E); if(wpEnergyText) wpEnergyText.text='E: '+E.toFixed(3)+' eV'; if(wpEnergyDebug()) console.log('[XR][HUD][ENERGY][WP] push', { E }); } else { if(wpEnergyDebug()) console.log('[XR][HUD][ENERGY][WP] push skipped (no finite E)', { E }); } }catch(e){ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] push failed', e?.message||e); } } try{ v?.state?.bus?.on?.('forcesChanged', push); if(wpEnergyDebug()) console.log('[XR][HUD][ENERGY][WP] subscribed to forcesChanged'); }catch(e){ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] subscribe failed', e?.message||e); } try{ push(); }catch{} } catch(e){ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] build failed', e?.message||e); } }).catch((e)=>{ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] import failed', e?.message||e); });
+  try { window.__XR_HUD_ENERGY_WP = { canvas:canvas2, img }; } catch{}
+      } catch {}
+      stack.addControl(energyBox);
   const hudDebug = ()=> (typeof window!=='undefined') && (window.XR_HUD_DEBUG || /[?&]xrhuddebug=1/.test(window.location.search));
   function logBtn(phase, name, extra){ if(!hudDebug()) return; try { console.log('[XR][HUD][PANEL][BTN]', phase, name, extra||''); } catch{} }
   function btn(label, cb){ const id='w'+label; const b = BABYLON.GUI.Button.CreateSimpleButton(id, label); b.width='240px'; b.height='260px'; b.color='#d8e6f3'; b.thickness=0; b.background='rgba(60,70,82,0.85)'; b.fontSize=72; b.onPointerDownObservable.add(()=>logBtn('down',label)); b.onPointerUpObservable.add(()=>{ logBtn('up',label); try { cb(); logBtn('invoke',label,'OK'); } catch(e){ logBtn('invokeErr',label,e?.message||e); } }); b.onPointerEnterObservable.add(()=>{ b.background='rgba(90,140,190,0.9)'; logBtn('enter',label); }); b.onPointerOutObservable.add(()=>{ b.background='rgba(60,70,82,0.85)'; logBtn('leave',label); }); stack.addControl(b); return b; }
@@ -975,7 +1033,7 @@ export function createVRSupport(scene, { picking } = {}) {
       const followObs = scene.onBeforeRenderObservable.add(()=>{ try { const c=scene.activeCamera; if(!c) return; const dist2 = dist; const fov2 = c.fov || Math.PI/2; const hh = Math.tan(fov2/2)*dist2; const fw = c.getDirection(BABYLON.Axis.Z).normalize(); const up2 = c.getDirection ? c.getDirection(BABYLON.Axis.Y).normalize() : BABYLON.Vector3.Up(); const target = c.position.add(fw.scale(dist2)).subtract(up2.scale(hh*verticalFrac)); plane.position.copyFrom(target); // yaw only
         const toCam = c.position.subtract(plane.position); toCam.y=0; toCam.normalize(); const yaw=Math.atan2(toCam.x,toCam.z); plane.rotation.y = yaw + Math.PI; } catch{} });
       console.log('[XR][HUD][fallback] world panel spawned (camera-follow bottom)');
-      window.__XR_HUD_FALLBACK = { plane, tex, followObs, buttons: ['Relax','MD','Off','Forces','Reset'] };
+      window.__XR_HUD_FALLBACK = { plane, tex, followObs, buttons: ['Relax','MD','Off','Forces','Reset'], energy:true };
     } catch(e){ console.warn('[XR][HUD][fallback] failed', e); }
   }
   // Fallback poll: attempt HUD creation shortly after entering any XR session, in case switchXR path missed.
