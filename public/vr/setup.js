@@ -777,21 +777,22 @@ export function createVRSupport(scene, { picking } = {}) {
           } catch{}
         });
       } } catch{}
-      // Container bar
+      // Container bar – replaced with new v1 controls
       const bar = new BABYLON.GUI.StackPanel();
       bar.isVertical = false;
-      bar.height = '80px';
+      bar.height = '90px';
       bar.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_BOTTOM;
       bar.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
       bar.paddingBottom = '20px';
       adt.addControl(bar);
+
       const hudDebug = ()=> (typeof window!=='undefined') && (window.XR_HUD_DEBUG || /[?&]xrhuddebug=1/.test(window.location.search));
       function logBtn(phase, name, extra){ if(!hudDebug()) return; try { console.log('[XR][HUD][BTN]', phase, name, extra||''); } catch{} }
       function makeBtn(text, cb){
         const id = 'btn'+text.replace(/\s+/g,'');
         const b = BABYLON.GUI.Button.CreateSimpleButton(id, text);
-        b.width = '140px';
-        b.height = '60px';
+        b.width = '160px';
+        b.height = '64px';
         b.thickness = 0;
         b.color = '#d8e6f3';
         b.background = 'rgba(30,38,48,0.72)';
@@ -801,30 +802,109 @@ export function createVRSupport(scene, { picking } = {}) {
         b.paddingRight = '8px';
         b.onPointerDownObservable.add(()=>logBtn('down', text));
         b.onPointerUpObservable.add(()=>{ logBtn('up', text); try { cb(); logBtn('invoke', text, 'OK'); } catch(e){ logBtn('invokeErr', text, e?.message||e); console.warn('[XR][HUD] btn err', text, e); } });
-        // Simple hover visual (controller ray over)
-        b.onPointerEnterObservable.add(()=>{ logBtn('enter', text); b.background='rgba(60,110,160,0.78)'; });
-        b.onPointerOutObservable.add(()=>{ logBtn('leave', text); b.background='rgba(30,38,48,0.72)'; });
+        b.onPointerEnterObservable.add(()=>{ b.background='rgba(60,110,160,0.78)'; });
+        b.onPointerOutObservable.add(()=>{ b.background='rgba(30,38,48,0.72)'; });
         return b;
       }
-  // Viewer accessor (resolve lazily each click so HUD can be created before viewer)
-  const getViewer = ()=>{ try { return window._viewer; } catch{} return null; };
+
+      // Viewer accessor (resolve lazily each click so HUD can be created before viewer)
+      const getViewer = ()=>{ try { return window._viewer || window.viewerApi; } catch{} return null; };
       function status(msg){ try { const el=document.getElementById('status'); if(el) el.textContent=msg; } catch{} }
-      // Buttons
-  bar.addControl(makeBtn('Relax Step', async()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','RelaxStep'); console.warn('[XR][HUD] Relax Step: viewer not ready'); return; } try { logBtn('call','relaxStep'); await v.relaxStep(); status('Relax step'); logBtn('done','relaxStep'); } catch(e){ logBtn('error','relaxStep', e?.message||e); console.warn('[XR][HUD] relaxStep failed', e); } }));
-  bar.addControl(makeBtn('Relax Run', async()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','RelaxRun'); console.warn('[XR][HUD] Relax Run: viewer not ready'); return; } status('Relax running'); try { logBtn('call','relaxRun'); v.startRelaxContinuous({}).then(r=>{ status(r?.converged?'Relax converged':'Relax stopped'); logBtn('done','relaxRun', r?.converged?'converged':'stopped'); }); } catch(e){ logBtn('error','relaxRun', e?.message||e); console.warn('[XR][HUD] relaxRun failed', e); status('Relax err'); } }));
-      // Force provider toggle cycles Local LJ <-> FairChem; show active provider
-      const providerBtn = makeBtn('Prov?', ()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','Provider'); return; } try {
-        const sel=document.getElementById('forceProviderSel');
-        if(sel){ sel.value = sel.value==='fairchem' ? 'local':'fairchem'; sel.onchange({ target: sel }); updateProviderBtn(); }
-        logBtn('toggle','Provider', sel && sel.value); } catch(e){ logBtn('error','Provider', e?.message||e); } });
-      function updateProviderBtn(){ try { const sel=document.getElementById('forceProviderSel'); if(sel){ providerBtn.textBlock.text = sel.value==='fairchem' ? 'FairChem' : 'LJ'; } } catch{} }
-      updateProviderBtn();
-      bar.addControl(providerBtn);
-  bar.addControl(makeBtn('Cell', ()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','Cell'); return; } try { (v.state.toggleCellVisibilityEnhanced||v.state.toggleCellVisibility).call(v.state); status(v.state.showCell? 'Cell ON':'Cell OFF'); logBtn('toggle','Cell', v.state.showCell); } catch(e){ logBtn('error','Cell', e?.message||e); console.warn('[XR][HUD] cell toggle failed', e); } }));
-  bar.addControl(makeBtn('Ghosts', ()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','Ghosts'); return; } try { v.state.toggleGhostCells(); status(v.state.showGhostCells? 'Ghosts ON':'Ghosts OFF'); logBtn('toggle','Ghosts', v.state.showGhostCells); } catch(e){ logBtn('error','Ghosts', e?.message||e); console.warn('[XR][HUD] ghosts toggle failed', e); } }));
+
+      // Import lightweight, side-effect-free control model
+      let controlsModel;
+      function initControlsModel(){
+        try {
+          import('./xr-controls-core.js').then(p=>{
+            try {
+              const build = p.buildXRControlsModel || (p.default && p.default.buildXRControlsModel);
+              if (build) {
+                controlsModel = build({ getViewer, onStateChange: syncButtons, reloadPage: ()=>{ try { location.reload(); } catch {} } });
+                try { controlsModel.refresh && controlsModel.refresh(); } catch {}
+                syncButtons();
+              }
+            } catch {}
+          }).catch(()=>{});
+        } catch {}
+      }
+
+      // Buttons: Simulation: (Relax) (MD) (Off) — grouped segment to convey mutual exclusivity
+      const segContainer = new BABYLON.GUI.Rectangle();
+      segContainer.thickness = 0; segContainer.background = 'transparent';
+      segContainer.height = '80px'; segContainer.width = 'auto';
+      const segStack = new BABYLON.GUI.StackPanel();
+      segStack.isVertical = false; segStack.height = '80px'; segStack.spacing = 0; // zero gap for joined look
+      segContainer.addControl(segStack);
+      function makeSegmentBtn(text, onClick, role){ // role: 'first'|'middle'|'last'
+        const b = BABYLON.GUI.Button.CreateSimpleButton('btn'+text, text);
+        b.fontSize = 24; b.color = '#d8e6f3'; b.thickness = 0; b.height = '80px'; b.width = 'auto';
+        b.background = 'rgba(30,38,48,0.72)';
+        b.paddingLeft = '12px'; b.paddingRight = '12px';
+        b.cornerRadius = (role==='middle') ? 0 : 12;
+        b.onPointerDownObservable.add(()=>logBtn('down', text));
+        b.onPointerUpObservable.add(()=>{ logBtn('up', text); try { onClick(); logBtn('invoke', text, 'OK'); } catch(e){ logBtn('invokeErr', text, e?.message||e); console.warn('[XR][HUD] btn err', text, e); } });
+        b.onPointerEnterObservable.add(()=>{ b.background='rgba(60,110,160,0.78)'; });
+        b.onPointerOutObservable.add(()=>{ // reset based on selection in syncButtons
+          syncButtons();
+        });
+        return b;
+      }
+      const btnRelax = makeSegmentBtn('Relax', ()=>{ controlsModel?.setSimulation('relax'); const sel=controlsModel?.simSelection?.(); status(sel?.relax?'Relax running':'Idle'); syncButtons(); }, 'first');
+      const btnMD    = makeSegmentBtn('MD',    ()=>{ controlsModel?.setSimulation('md');    const sel=controlsModel?.simSelection?.(); status(sel?.md?'MD running':'Idle');     syncButtons(); }, 'middle');
+      const btnOff   = makeSegmentBtn('Off',   ()=>{ controlsModel?.setSimulation('off');   status('Idle'); syncButtons(); }, 'last');
+      segStack.addControl(btnRelax); segStack.addControl(btnMD); segStack.addControl(btnOff);
+      // Forces (On)/(Off)
+      const btnForces = makeBtn('Forces', ()=>{ controlsModel?.toggleForces(); btnForces.textBlock.text = controlsModel?.forcesLabel() || 'Forces'; });
+      // Reset
+      const btnReset = makeBtn('Reset', ()=>{ controlsModel?.reset(); });
+
+      // Layout: evenly spaced
+  bar.addControl(segContainer);
+      bar.addControl(btnForces);
+      bar.addControl(btnReset);
+
+      function syncButtons(){
+        try {
+          const sel = controlsModel?.simSelection?.() || { relax:false, md:false, off:true };
+          const activeBg = 'rgba(40,140,100,0.9)';
+          const normalBg = 'rgba(30,38,48,0.72)';
+          btnRelax.background = sel.relax ? activeBg : normalBg;
+          btnMD.background = sel.md ? activeBg : normalBg;
+          btnOff.background = sel.off ? activeBg : normalBg;
+          btnForces.textBlock.text = controlsModel?.forcesLabel() || 'Forces';
+        } catch {}
+      }
+  // Initial sync (in case viewer already active)
+  initControlsModel();
+  // If nothing is running yet, default to MD
+  try { controlsModel?.ensureDefaultActive?.(); } catch {}
+  syncButtons();
+
+      // Top-left energy plot: draw on a DynamicTexture via line-plot-core
+      try {
+        const plotW = 320, plotH = 160;
+        const tex = new BABYLON.DynamicTexture('xrEnergyPlotTex', { width: plotW, height: plotH }, scene, false);
+        const img = new BABYLON.GUI.Image('xrEnergyPlotImg', tex); img.width = plotW+'px'; img.height = plotH+'px';
+        img.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT; img.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP; img.left = '20px'; img.top = '20px';
+        adt.addControl(img);
+        import('../plot/line-plot-core.js').then(p=>{
+          try {
+            const creator = p.createLinePlot || (p.default && p.default.createLinePlot);
+            if (!creator) return;
+            const ctxGetter = ()=> tex.getContext();
+            const plot = creator({ width: plotW, height: plotH, getContext: ctxGetter, updateTexture: ()=> tex.update(true), labels:{ x:'step', y:'E' } });
+            // Subscribe to energy updates from viewer
+            const v = getViewer();
+            function pushEnergy(){ try { const E = v?.state?.dynamics?.energy; if(Number.isFinite(E)) plot.addPoint(E); } catch {} }
+            try { v?.state?.bus?.on?.('forcesChanged', pushEnergy); } catch {}
+            // Seed an initial value if available
+            pushEnergy();
+          } catch {}
+        }).catch(()=>{});
+      } catch(e){ console.warn('[XR][HUD] energy plot failed', e?.message||e); }
       _xrHudCreated=true;
       window.__XR_HUD_ADT = adt;
-      window.__XR_HUD_STATE = { created: true, createdAt: Date.now(), sessionMode: sessionMode(), buttons: ['Relax Step','Relax Run','Provider','Cell','Ghosts'] };
+  window.__XR_HUD_STATE = { created: true, createdAt: Date.now(), sessionMode: sessionMode(), buttons: ['Relax','MD','Off','Forces','Reset'] };
       console.log('[XR][HUD] created');
       // World-space fallback if fullscreen UI not rendered (e.g. some passthrough modes). Creates a floating plane with same buttons.
       setTimeout(()=>{ try {
@@ -858,16 +938,44 @@ export function createVRSupport(scene, { picking } = {}) {
   const hudDebug = ()=> (typeof window!=='undefined') && (window.XR_HUD_DEBUG || /[?&]xrhuddebug=1/.test(window.location.search));
   function logBtn(phase, name, extra){ if(!hudDebug()) return; try { console.log('[XR][HUD][PANEL][BTN]', phase, name, extra||''); } catch{} }
   function btn(label, cb){ const id='w'+label; const b = BABYLON.GUI.Button.CreateSimpleButton(id, label); b.width='240px'; b.height='260px'; b.color='#d8e6f3'; b.thickness=0; b.background='rgba(60,70,82,0.85)'; b.fontSize=72; b.onPointerDownObservable.add(()=>logBtn('down',label)); b.onPointerUpObservable.add(()=>{ logBtn('up',label); try { cb(); logBtn('invoke',label,'OK'); } catch(e){ logBtn('invokeErr',label,e?.message||e); } }); b.onPointerEnterObservable.add(()=>{ b.background='rgba(90,140,190,0.9)'; logBtn('enter',label); }); b.onPointerOutObservable.add(()=>{ b.background='rgba(60,70,82,0.85)'; logBtn('leave',label); }); stack.addControl(b); return b; }
-  const getViewer = ()=>{ try { return window._viewer; } catch{} return null; };
-  btn('Relax', ()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','Relax'); return; } try{ v.relaxStep(); logBtn('done','Relax'); } catch(e){ logBtn('error','Relax',e?.message||e); console.warn('[XR][HUD][fallback] relaxStep failed', e); } });
-  btn('Run', ()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','Run'); return; } try{ v.startRelaxContinuous({}); logBtn('done','Run'); } catch(e){ logBtn('error','Run',e?.message||e); console.warn('[XR][HUD][fallback] relaxRun failed', e); } });
-  btn('Prov', ()=>{ try { const sel=document.getElementById('forceProviderSel'); if(sel){ sel.value= sel.value==='fairchem'? 'local':'fairchem'; sel.onchange({target:sel}); logBtn('toggle','Prov', sel.value); } else logBtn('noSel','Prov'); } catch(e){ logBtn('error','Prov',e?.message||e); console.warn('[XR][HUD][fallback] provider toggle failed', e); } });
-  btn('Cell', ()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','Cell'); return; } try { (v.state.toggleCellVisibilityEnhanced||v.state.toggleCellVisibility).call(v.state); logBtn('toggle','Cell', v.state.showCell); } catch(e){ logBtn('error','Cell',e?.message||e); console.warn('[XR][HUD][fallback] cell toggle failed', e); } });
-  btn('Ghosts', ()=>{ const v=getViewer(); if(!v){ logBtn('viewerMissing','Ghosts'); return; } try { v.state.toggleGhostCells(); logBtn('toggle','Ghosts', v.state.showGhostCells); } catch(e){ logBtn('error','Ghosts',e?.message||e); console.warn('[XR][HUD][fallback] ghosts toggle failed', e); } });
+  const getViewer = ()=>{ try { return window._viewer || window.viewerApi; } catch{} return null; };
+  // Build a local controls model for the world-panel fallback
+  let controlsModel;
+  try {
+    import('./xr-controls-core.js').then(p=>{
+      try {
+        const build = p.buildXRControlsModel || (p.default && p.default.buildXRControlsModel);
+        if (build) {
+          controlsModel = build({ getViewer, onStateChange: syncButtons, reloadPage: ()=>{ try { location.reload(); } catch {} } });
+          try { controlsModel.refresh && controlsModel.refresh(); } catch {}
+          syncButtons();
+        }
+      } catch {}
+    }).catch(()=>{});
+  } catch {}
+  // New control set: Relax, MD, Off, Forces, Reset
+  const btnRelax = btn('Relax', ()=>{ controlsModel?.setSimulation('relax'); logBtn('done','Relax'); syncButtons(); });
+  const btnMD    = btn('MD',    ()=>{ controlsModel?.setSimulation('md');    logBtn('done','MD');    syncButtons(); });
+  const btnOff   = btn('Off',   ()=>{ controlsModel?.setSimulation('off');   logBtn('done','Off');   syncButtons(); });
+  const btnForces= btn('Forces',()=>{ controlsModel?.toggleForces(); btnForces.textBlock.text = controlsModel?.forcesLabel() || 'Forces'; });
+  const btnReset = btn('Reset', ()=>{ controlsModel?.reset(); });
+  function syncButtons(){
+    try {
+      const sel = controlsModel?.simSelection?.() || { relax:false, md:false, off:true };
+      const activeBg = 'rgba(40,140,100,0.9)';
+      const normalBg = 'rgba(60,70,82,0.85)';
+      btnRelax.background = sel.relax ? activeBg : normalBg;
+      btnMD.background    = sel.md    ? activeBg : normalBg;
+      btnOff.background   = sel.off   ? activeBg : normalBg;
+      btnForces.textBlock.text = controlsModel?.forcesLabel() || 'Forces';
+    } catch {}
+  }
+  // Default to MD if nothing running
+  try { controlsModel?.ensureDefaultActive?.(); } catch {}
       const followObs = scene.onBeforeRenderObservable.add(()=>{ try { const c=scene.activeCamera; if(!c) return; const dist2 = dist; const fov2 = c.fov || Math.PI/2; const hh = Math.tan(fov2/2)*dist2; const fw = c.getDirection(BABYLON.Axis.Z).normalize(); const up2 = c.getDirection ? c.getDirection(BABYLON.Axis.Y).normalize() : BABYLON.Vector3.Up(); const target = c.position.add(fw.scale(dist2)).subtract(up2.scale(hh*verticalFrac)); plane.position.copyFrom(target); // yaw only
         const toCam = c.position.subtract(plane.position); toCam.y=0; toCam.normalize(); const yaw=Math.atan2(toCam.x,toCam.z); plane.rotation.y = yaw + Math.PI; } catch{} });
       console.log('[XR][HUD][fallback] world panel spawned (camera-follow bottom)');
-      window.__XR_HUD_FALLBACK = { plane, tex, followObs };
+      window.__XR_HUD_FALLBACK = { plane, tex, followObs, buttons: ['Relax','MD','Off','Forces','Reset'] };
     } catch(e){ console.warn('[XR][HUD][fallback] failed', e); }
   }
   // Fallback poll: attempt HUD creation shortly after entering any XR session, in case switchXR path missed.

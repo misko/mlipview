@@ -95,6 +95,16 @@ function __resolveApiBase(){
 export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   __count('index#initNewViewer');
   const state = createMoleculeState({ elements, positions, bonds });
+  // Cache the initial XYZ positions for VR/AR reset without page reload
+  try {
+    state.__initialPositions = (state.positions||[]).map(p=>({ x:p.x, y:p.y, z:p.z }));
+    if (state.__initialPositions.length === 0) {
+      // Will be populated by moleculeLoader.applyParsedToViewer after loadDefault.
+      try { console.log('[init] initial positions pending; will cache on load'); } catch {}
+    } else {
+      try { console.log('[init] cached initial positions', { count: state.__initialPositions.length }); } catch {}
+    }
+  } catch {}
   // We'll wrap markPositionsChanged after bondService + view exist so we can recompute bonds centrally.
   const __origMarkPositionsChanged = state.markPositionsChanged ? state.markPositionsChanged.bind(state) : null;
   const bondService = createBondService(state);
@@ -864,6 +874,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const baseBackoff=200; const maxBackoff=5000;
     let errorStreak=0; const maxErrorStreak=10;
     let stepsDone=0;
+  let __relaxLastResponseAt = 0;
   while(running.kind==='relax' && stepsDone<maxSteps){
       // Pause if app not focused (desktop). Resume on focus.
       if (!isAppFocused()) {
@@ -881,8 +892,16 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         noteLatency('relax','wait-backoff',{ ms: Math.round((performance.now()-w0)*100)/100, backoffMs });
       }
       if(running.kind!=='relax') break;
+  const __beforeReq = performance.now();
   const res = await relaxStep();
+  const __afterResp = performance.now();
   if(res && res.applied){ stepsDone++; __noteRequestCompleted(); } // count only applied (non-stale) steps
+      // Between-requests: time from last response to next request send
+      if (__relaxLastResponseAt > 0) {
+        const gap = Math.round((__beforeReq - __relaxLastResponseAt)*100)/100;
+        noteLatency('relax','between-requests',{ ms: gap });
+      }
+      __relaxLastResponseAt = __afterResp;
       lastTime = performance.now();
       // Post-request pacing: only wait if API network time was less than minInterval
       if(!res?.error && backoffMs===0){
@@ -909,6 +928,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     running.kind='md';
     __resetRPS();
   const minInterval = getConfig().minStepIntervalMs; let lastTime=0; // retained for focus-wait reset only
+    let __mdLastResponseAt = 0;
     let backoffMs=0; const baseBackoff=200; const maxBackoff=5000; let errorStreak=0; const maxErrorStreak=10;
     let i=0;
     while(i<steps && running.kind==='md'){
@@ -932,8 +952,15 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // Clamp to configured slider bounds (0-3000 K)
       if(!(Number.isFinite(dynT))) dynT = temperature;
   if(dynT < 0) dynT = 0; else if(dynT > 3000) dynT = 3000;
+  const __beforeReq = performance.now();
   const res = await mdStep({ calculator, temperature: dynT, timestep_fs, friction });
+  const __afterResp = performance.now();
   try { const el=document.getElementById('instTemp'); if(el && state.dynamics && typeof state.dynamics.temperature==='number') el.textContent='T: '+state.dynamics.temperature.toFixed(1)+' K'; } catch {}
+      if (__mdLastResponseAt > 0) {
+        const gap = Math.round((__beforeReq - __mdLastResponseAt)*100)/100;
+        noteLatency('md','between-requests',{ ms: gap });
+      }
+      __mdLastResponseAt = __afterResp;
       lastTime=performance.now();
       // Post-request pacing: only wait if API network time was less than minInterval
       if(!res?.error && backoffMs===0){
@@ -960,8 +987,41 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const lastMetrics = { energy:null, maxForce:null, maxStress:null };
   function getMetrics(){ __count('index#getMetrics'); return { energy: state.dynamics?.energy, running: running.kind }; }
 
+  // Reset to initial positions (no page reload): stops any running sim, restores XYZ, recomputes bonds/forces
+  async function resetToInitialPositions(){
+    const t0 = (typeof performance!=='undefined' && performance.now)? performance.now(): Date.now();
+    try { console.log('[Reset] begin VR/AR-safe reset', { when: new Date().toISOString() }); } catch {}
+    try {
+      // Stop any running loop (relax/md)
+      stopSimulation();
+      const init = Array.isArray(state.__initialPositions) ? state.__initialPositions : null;
+      if(!init || init.length !== state.positions.length) { try { console.warn('[Reset] missing or size-mismatch initial positions'); } catch{} return false; }
+      for(let i=0;i<init.length;i++){ const p=init[i]; const tp=state.positions[i]; tp.x=p.x; tp.y=p.y; tp.z=p.z; }
+      state.markPositionsChanged();
+      // Clear velocities to avoid unexpected motion carry-over
+      try { if(state.dynamics) state.dynamics.velocities = []; } catch {}
+      // Force recompute (sync) so forces and energy reflect reset positions promptly
+      const f0 = (typeof performance!=='undefined' && performance.now)? performance.now(): Date.now();
+      try { await ff.computeForces({ sync:true }); } catch(e){ try { console.warn('[Reset] computeForces failed', e?.message||e); } catch{} }
+      const f1 = (typeof performance!=='undefined' && performance.now)? performance.now(): Date.now();
+      // Seed energy plot point if needed
+      try { maybePlotEnergy('reset'); } catch {}
+      const t1 = (typeof performance!=='undefined' && performance.now)? performance.now(): Date.now();
+      try { console.log('[Reset] done', { totalMs: Math.round((t1-t0)*100)/100, recomputeMs: Math.round((f1-f0)*100)/100 }); } catch {}
+      return true;
+    } catch (e) { try { console.warn('[Reset] exception', e?.message||e); } catch {} return false; }
+  }
+
   // Initial energy baseline (compute once to seed plot so first interaction can draw a segment)
   try { await baselineEnergy(); } catch(e) { /* ignore */ }
+  // If baseline positions weren't cached by a loader yet, seed them now from the current state
+  try {
+    const need = !state.__initialPositions || state.__initialPositions.length !== (state.positions?.length||0) || state.__initialPositions.length === 0;
+    if (need && Array.isArray(state.positions) && state.positions.length>0) {
+      state.__initialPositions = state.positions.map(p=>({ x:p.x, y:p.y, z:p.z }));
+      try { console.log('[Reset] baseline seeded after baselineEnergy', { count: state.__initialPositions.length }); } catch {}
+    }
+  } catch {}
 
   // --- Auto-start MD (optional) ---
   // Requirement: Start continuous MD automatically after the very first successful energy/force
@@ -1051,7 +1111,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   function getForceCacheVersion(){ return state.forceCache?.version; }
   function getVersionInfo(){ return { userInteractionVersion, totalInteractionVersion }; }
   function shutdown(){ __renderActive=false; try{ engine.stopRenderLoop && engine.stopRenderLoop(); }catch{} }
-  return { state, bondService, selection, ff, dynamics, view, picking, vr, recomputeBonds, relaxStep, mdStep, startRelaxContinuous, startMDContinuous, stopSimulation, setForceProvider, getMetrics, debugEnergySeriesLength, debugRecordInteraction, manipulation: wrappedManipulation, scene, engine, camera, baselineEnergy, setForceVectorsEnabled, getForceCacheVersion, getVersionInfo, shutdown, enableFeatureFlag, setMinStepInterval };
+  return { state, bondService, selection, ff, dynamics, view, picking, vr, recomputeBonds, relaxStep, mdStep, startRelaxContinuous, startMDContinuous, stopSimulation, setForceProvider, getMetrics, resetToInitialPositions, debugEnergySeriesLength, debugRecordInteraction, manipulation: wrappedManipulation, scene, engine, camera, baselineEnergy, setForceVectorsEnabled, getForceCacheVersion, getVersionInfo, shutdown, enableFeatureFlag, setMinStepInterval };
 }
 
 // Ensure global viewerApi for tests if not already set

@@ -64,18 +64,22 @@ export async function loadXYZIntoViewer(viewerApi, url) {
   __count('moleculeLoader#loadXYZIntoViewer');
   const txt = await fetchXYZ(url);
   const parsed = parseXYZ(txt);
-  const valid = validateParsedXYZ(parsed);
-  if (!valid.ok) throw new Error(valid.error || 'Validation failed');
-  applyXYZToState(viewerApi.state, parsed);
-  // Recompute bonds for new structure
-  viewerApi.recomputeBonds();
-  return parsed;
+  // Reuse common path so initial positions get cached consistently
+  return applyParsedToViewer(viewerApi, parsed);
 }
 
 export function applyParsedToViewer(viewerApi, parsed){
   const valid = validateParsedXYZ(parsed);
   if (!valid.ok) throw new Error(valid.error || 'Validation failed');
   applyXYZToState(viewerApi.state, parsed);
+  // Cache the freshly loaded positions as the reset baseline for VR/AR
+  try {
+    const st = viewerApi.state;
+    if (Array.isArray(st?.positions)) {
+      st.__initialPositions = st.positions.map(p=>({ x:p.x, y:p.y, z:p.z }));
+      try { console.log('[loader] cached initial positions', { count: st.__initialPositions.length }); } catch {}
+    }
+  } catch {}
   viewerApi.recomputeBonds();
   return parsed;
 }
