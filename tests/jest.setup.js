@@ -31,7 +31,7 @@ if (!global.BABYLON) {
     Color3: class Color3 { constructor(r,g,b){ this.r=r; this.g=g; this.b=b; } clone(){ return new BABYLON.Color3(this.r,this.g,this.b);} scale(f){ return new BABYLON.Color3(this.r*f,this.g*f,this.b*f);} },
     Color4: class Color4 { constructor(r,g,b,a){ this.r=r; this.g=g; this.b=b; this.a=a;} },
     StandardMaterial: class StandardMaterial { constructor(){ this.alpha=1; this.diffuseColor=new BABYLON.Color3(1,1,1); this.emissiveColor=new BABYLON.Color3(0,0,0);} },
-    MeshBuilder: { CreateSphere(name,opts,scene){ return new BABYLON.Mesh(name); }, CreateCylinder(name,opts,scene){ return new BABYLON.Mesh(name);} },
+  MeshBuilder: { CreateSphere(name,opts,scene){ return new BABYLON.Mesh(name); }, CreateCylinder(name,opts,scene){ return new BABYLON.Mesh(name);}, CreateLines(name,opts,scene){ const m=new BABYLON.Mesh(name); m.dispose=function(){}; return m; } },
     Mesh: class Mesh { constructor(name){ this.name=name; this.material=null; this.isPickable=false; this.thinInstanceEnablePicking=false; this.alwaysSelectAsActiveMesh=false; this.isVisible=true; this.scaling=new BABYLON.Vector3(1,1,1); this.position=new BABYLON.Vector3(); } dispose(){} thinInstanceSetBuffer(){} thinInstanceRefreshBoundingInfo(){} setEnabled(v){ this.isVisible=v; } },
   ArcRotateCamera: class ArcRotateCamera { constructor(){ this.alpha=0; this.beta=0; this.radius=25; this.position=new BABYLON.Vector3(); this.target=new BABYLON.Vector3(); } attachControl(){ /* noop */ } detachControl(){ /* noop */ } getFrontPosition(){ return new BABYLON.Vector3(0,0,1); } },
   HemisphericLight: class HemisphericLight { constructor(){ this.intensity=1; } dispose(){} },

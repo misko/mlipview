@@ -158,12 +158,44 @@ export function createMoleculeView(scene, molState) {
     const source = bondData || molState.bonds;
     // Debug logging removed (previously controlled by debug=1 query param) to reduce console noise.
   const ODBG_ENABLED = (typeof window === 'undefined') ? false : (window.O_BOND_DEBUG === true); // default OFF
+  const BOND_DBG = (typeof window !== 'undefined') && (window.BOND_DEBUG === true || /[?&]bondDebug=1/.test(window.location?.search||''));
+  // Helper: compute diagnostic threshold for what counts as a "long" bond.
+  // If a cell is enabled, use half the box diagonal; otherwise fall back to a fixed default or user override.
+  function longThreshold(){
+    try {
+      if (molState?.cell?.enabled && molState?.showCell) {
+        const a = molState.cell.a||{x:0,y:0,z:0}, b = molState.cell.b||{x:0,y:0,z:0}, c = molState.cell.c||{x:0,y:0,z:0};
+        const vx = a.x + b.x + c.x, vy = a.y + b.y + c.y, vz = a.z + b.z + c.z;
+        const diag = Math.hypot(vx,vy,vz) || 0;
+        const mul = (typeof window !== 'undefined' && window.BOND_DEBUG_MULT) ? Number(window.BOND_DEBUG_MULT) : 0.5; // half-diagonal by default
+        return diag * (Number.isFinite(mul) ? mul : 0.5);
+      }
+    } catch {}
+    const fallback = (typeof window !== 'undefined' && window.BOND_DEBUG_MINLEN) ? Number(window.BOND_DEBUG_MINLEN) : 6.0;
+    return Number.isFinite(fallback) ? fallback : 6.0;
+  }
+  const LONG_THR = longThreshold();
     let oBondCount = 0;
     for (const b of source) {
       const g = ensureBondGroup(keyOf(b.i,b.j));
       const pA = molState.positions[b.i]; const pB = molState.positions[b.j];
       const mat = bondMatrix(pA,pB,0.1);
       g.mats.push(mat); g.indices.push(b);
+      if (BOND_DBG) {
+        try {
+          const L = Math.hypot(pB.x-pA.x, pB.y-pA.y, pB.z-pA.z);
+          if (L > LONG_THR) {
+            const elI = molState.elements[b.i]; const elJ = molState.elements[b.j];
+            const c = molState.cell || {};
+            console.log('[BOND-DBG-LONG][primary]', {
+              i:b.i, j:b.j, elements:[elI, elJ], length: Number(L.toFixed(4)), opacity: (b.opacity!=null?b.opacity:1),
+              atomA:{ x:Number(pA.x.toFixed(4)), y:Number(pA.y.toFixed(4)), z:Number(pA.z.toFixed(4)) },
+              atomB:{ x:Number(pB.x.toFixed(4)), y:Number(pB.y.toFixed(4)), z:Number(pB.z.toFixed(4)) },
+              cell: c && c.enabled ? { a:c.a, b:c.b, c:c.c, originOffset:c.originOffset } : null,
+            });
+          }
+        } catch {}
+      }
       if (ODBG_ENABLED) {
         try {
           const elI = molState.elements[b.i]; const elJ = molState.elements[b.j];
@@ -402,6 +434,21 @@ export function createMoleculeView(scene, molState) {
       for (const g of ghostBondGroups.values()) g.master.thinInstanceSetBuffer('matrix', new Float32Array());
       return;
     }
+    const BOND_DBG = (typeof window !== 'undefined') && (window.BOND_DEBUG === true || /[?&]bondDebug=1/.test(window.location?.search||''));
+    function longThreshold(){
+      try {
+        if (molState?.cell?.enabled) {
+          const a = molState.cell.a||{x:0,y:0,z:0}, b = molState.cell.b||{x:0,y:0,z:0}, c = molState.cell.c||{x:0,y:0,z:0};
+          const vx = a.x + b.x + c.x, vy = a.y + b.y + c.y, vz = a.z + b.z + c.z;
+          const diag = Math.hypot(vx,vy,vz) || 0;
+          const mul = (typeof window !== 'undefined' && window.BOND_DEBUG_MULT) ? Number(window.BOND_DEBUG_MULT) : 0.5;
+          return diag * (Number.isFinite(mul) ? mul : 0.5);
+        }
+      } catch {}
+      const fallback = (typeof window !== 'undefined' && window.BOND_DEBUG_MINLEN) ? Number(window.BOND_DEBUG_MINLEN) : 6.0;
+      return Number.isFinite(fallback) ? fallback : 6.0;
+    }
+    const LONG_THR = longThreshold();
     const { a, b, c } = molState.cell;
     const shifts = [ {x:0,y:0,z:0}, {x:1,y:0,z:0}, {x:-1,y:0,z:0}, {x:0,y:1,z:0}, {x:0,y:-1,z:0}, {x:0,y:0,z:1}, {x:0,y:0,z:-1} ];
     // Build augmented atom list (first block is original atoms at shift 0)
@@ -439,6 +486,22 @@ export function createMoleculeView(scene, molState) {
       const pA = augAtoms[eb.i].pos; const pB = augAtoms[eb.j].pos;
       const mat = bondMatrix(pA,pB,0.1);
       g.mats.push(mat); g.indices.push({ i:baseI, j:baseJ, shiftA:[A.shift.x,A.shift.y,A.shift.z], shiftB:[B.shift.x,B.shift.y,B.shift.z] });
+      if (BOND_DBG) {
+        try {
+          const L = Math.hypot(pB.x-pA.x, pB.y-pA.y, pB.z-pA.z);
+          if (L > LONG_THR) {
+            const elI = molState.elements[baseI]; const elJ = molState.elements[baseJ];
+            const c = molState.cell || {};
+            console.log('[BOND-DBG-LONG][ghost]', {
+              i:baseI, j:baseJ, elements:[elI, elJ], length: Number(L.toFixed(4)),
+              atomA:{ x:Number(pA.x.toFixed(4)), y:Number(pA.y.toFixed(4)), z:Number(pA.z.toFixed(4)) },
+              atomB:{ x:Number(pB.x.toFixed(4)), y:Number(pB.y.toFixed(4)), z:Number(pB.z.toFixed(4)) },
+              shiftA: A.shift, shiftB: B.shift,
+              cell: c && c.enabled ? { a:c.a, b:c.b, c:c.c, originOffset:c.originOffset } : null,
+            });
+          }
+        } catch {}
+      }
     }
     for (const g of ghostBondGroups.values()) g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
     // (ghost bond debug removed)

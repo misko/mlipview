@@ -9,13 +9,27 @@ export function createBondService(molState) {
   }
   function hasCell() {
     __count('bondService#hasCell');
-    const c = molState.cell; return !!(c && c.enabled && c.a && c.b && c.c) && !c.synthetic; // skip synthetic bounding box for periodic expansion
+    const c = molState.cell; return !!(c && c.enabled && c.a && c.b && c.c);
   }
   function computePeriodicBonds() {
     __count('bondService#computePeriodicBonds');
     // Non-periodic path: preserve full opacity shaping from computeBondsNoState (legacy smooth transparency)
     if (!hasCell()) return computeBondsNoState(baseAtomArray()).map(b=>({ i:b.i,j:b.j,length:b.length,opacity:b.opacity ?? 1 }));
     const { a, b, c } = molState.cell;
+    const BOND_DBG = (typeof window !== 'undefined') && (window.BOND_DEBUG === true || /[?&]bondDebug=1/.test(window.location?.search||''));
+    function longThreshold(){
+      try {
+        if (molState?.cell?.enabled) {
+          const vx = a.x + b.x + c.x, vy = a.y + b.y + c.y, vz = a.z + b.z + c.z;
+          const diag = Math.hypot(vx,vy,vz) || 0;
+          const mul = (typeof window !== 'undefined' && window.BOND_DEBUG_MULT) ? Number(window.BOND_DEBUG_MULT) : 0.5;
+          return diag * (Number.isFinite(mul) ? mul : 0.5);
+        }
+      } catch {}
+      const fallback = (typeof window !== 'undefined' && window.BOND_DEBUG_MINLEN) ? Number(window.BOND_DEBUG_MINLEN) : 6.0;
+      return Number.isFinite(fallback) ? fallback : 6.0;
+    }
+    const LONG_THR = longThreshold();
     const shifts = [
       {x:0,y:0,z:0}, a, b, c,
       {x:-a.x,y:-a.y,z:-a.z}, {x:-b.x,y:-b.y,z:-b.z}, {x:-c.x,y:-c.y,z:-c.z}
@@ -29,7 +43,8 @@ export function createBondService(molState) {
       }
     }
     const augBonds = computeBondsNoState(aug.map(a=>({ element:a.element, pos:a.pos })));
-    const av=a,bv=b,cv=c;
+  const av=a,bv=b,cv=c;
+  const O = (molState.cell && molState.cell.originOffset) ? molState.cell.originOffset : { x:0, y:0, z:0 };
     const M=[av.x,bv.x,cv.x,av.y,bv.y,cv.y,av.z,bv.z,cv.z];
     const det = (
       M[0]*(M[4]*M[8]-M[5]*M[7]) -
@@ -51,9 +66,23 @@ export function createBondService(molState) {
         (M[0]*M[4]-M[1]*M[3])*invDet
       ];
     }
-    function frac(p){ if(!inv) return {u:p.x,v:p.y,w:p.z}; return { u:inv[0]*p.x+inv[1]*p.y+inv[2]*p.z, v:inv[3]*p.x+inv[4]*p.y+inv[5]*p.z, w:inv[6]*p.x+inv[7]*p.y+inv[8]*p.z }; }
+    function frac(p){
+      // Convert Cartesian to fractional with respect to origin offset O and lattice [a b c]
+      const dx = p.x - O.x, dy = p.y - O.y, dz = p.z - O.z;
+      if (!inv) return { u: dx, v: dy, w: dz };
+      return { u: inv[0]*dx + inv[1]*dy + inv[2]*dz,
+               v: inv[3]*dx + inv[4]*dy + inv[5]*dz,
+               w: inv[6]*dx + inv[7]*dy + inv[8]*dz };
+    }
     function wrap(f){ return { u:f.u-Math.floor(f.u), v:f.v-Math.floor(f.v), w:f.w-Math.floor(f.w) }; }
-    function cart(f){ return { x: av.x*f.u + bv.x*f.v + cv.x*f.w, y: av.y*f.u + bv.y*f.v + cv.y*f.w, z: av.z*f.u + bv.z*f.v + cv.z*f.w }; }
+    function cart(f){
+      // Convert fractional back to Cartesian, add origin offset O
+      return {
+        x: O.x + av.x*f.u + bv.x*f.v + cv.x*f.w,
+        y: O.y + av.y*f.u + bv.y*f.v + cv.y*f.w,
+        z: O.z + av.z*f.u + bv.z*f.v + cv.z*f.w
+      };
+    }
     const seen=new Set();
     const out=[];
     for (const eb of augBonds) {
@@ -70,17 +99,36 @@ export function createBondService(molState) {
       const eA = molState.elements[A.baseIndex];
       const eB = molState.elements[B.baseIndex];
       if ((eA==='H' || eB==='H') && (A.shiftIndex!==0 || B.shiftIndex!==0)) continue;
-      const fA=wrap(frac(pA)); const fB=wrap(frac(pB));
-      const cA=cart(fA); const cB=cart(fB);
-      const dx=cA.x-cB.x, dy=cA.y-cB.y, dz=cA.z-cB.z; const dist=Math.sqrt(dx*dx+dy*dy+dz*dz);
+  const fA=wrap(frac(pA)); const fB=wrap(frac(pB));
+  const cA=cart(fA); const cB=cart(fB);
+  const dx=cA.x-cB.x, dy=cA.y-cB.y, dz=cA.z-cB.z; const dist=Math.sqrt(dx*dx+dy*dy+dz*dz);
+  // Conservative lower-bound filter: drop unphysical ultra-short bonds that can appear
+  // due to pathological wrapping across very tight synthetic or rotated cells.
+  if (dist < 0.65) continue;
       const i=Math.min(A.baseIndex,B.baseIndex); const j=Math.max(A.baseIndex,B.baseIndex);
       let du=fB.u-fA.u,dv=fB.v-fA.v,dw=fB.w-fA.w; du-=Math.round(du); dv-=Math.round(dv); dw-=Math.round(dw);
       const key = i+'_'+j+':'+du.toFixed(4)+','+dv.toFixed(4)+','+dw.toFixed(4);
       if (seen.has(key)) continue; seen.add(key);
-      const fAraw=frac(pA), fBraw=frac(pB);
-      const ndu=(fBraw.u-fAraw.u)-du, ndv=(fBraw.v-fAraw.v)-dv, ndw=(fBraw.w-fAraw.w)-dw;
-      const crossing = (Math.abs(ndu)>1e-6 || Math.abs(ndv)>1e-6 || Math.abs(ndw)>1e-6);
-      out.push({ i, j, length:dist, opacity: crossing?0.5:1.0, crossing });
+    const fAraw=frac(pA), fBraw=frac(pB);
+    const ndu=(fBraw.u-fAraw.u)-du, ndv=(fBraw.v-fAraw.v)-dv, ndw=(fBraw.w-fAraw.w)-dw;
+    // Mark as crossing if either endpoint comes from a non-primary image (shiftIndex != 0),
+    // OR if raw fractional delta differs from minimum-image delta (numerical crossing heuristic).
+    const crossImage = (A.shiftIndex !== 0 || B.shiftIndex !== 0);
+    const crossing = crossImage || (Math.abs(ndu)>1e-6 || Math.abs(ndv)>1e-6 || Math.abs(ndw)>1e-6);
+  // If a bond crosses the periodic boundary, hide the primary bond (opacity=0)
+  // and rely on ghost bonds for visualization. This prevents a long opaque cylinder across the box.
+  if (BOND_DBG && dist > LONG_THR) {
+    try {
+      const elI = molState.elements[i]; const elJ = molState.elements[j];
+      console.log('[BOND-DBG-LONG][compute]', {
+        i, j, elements:[elI, elJ], length: Number(dist.toFixed(4)), crossing,
+        atomA:{ x:Number(pA.x.toFixed(4)), y:Number(pA.y.toFixed(4)), z:Number(pA.z.toFixed(4)) },
+        atomB:{ x:Number(pB.x.toFixed(4)), y:Number(pB.y.toFixed(4)), z:Number(pB.z.toFixed(4)) },
+        cell: molState.cell ? { a:molState.cell.a, b:molState.cell.b, c:molState.cell.c, originOffset: molState.cell.originOffset } : null
+      });
+    } catch {}
+  }
+  out.push({ i, j, length:dist, opacity: crossing?0.0:1.0, crossing });
     }
     // Fallback: if periodic expansion produced no bonds, fall back to non-periodic with shaped opacity
     if (!out.length) {
@@ -92,7 +140,8 @@ export function createBondService(molState) {
     __count('bondService#recomputeAndStore');
     const bonds = computePeriodicBonds();
     // Store opacity for renderer so it can apply group alpha (harmless to existing logic using only i,j)
-    molState.bonds = bonds.map(b=>({ i:b.i, j:b.j, opacity:b.opacity }));
+  // Preserve all bonds with per-instance opacity; renderer will hide crossing ones visually.
+  molState.bonds = bonds.map(b=>({ i:b.i, j:b.j, opacity:b.opacity }));
     molState.markBondsChanged();
     return bonds;
   }

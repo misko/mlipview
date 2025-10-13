@@ -113,26 +113,30 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   let lastForceResult = { energy: NaN, forces: [] };
   let inFlight = false;
   // --- API debug instrumentation ---
-  if (window.__MLIPVIEW_DEBUG_API == null) {
-    // Default OFF; enable with ?debug=1 or ?debug=true
-    try {
-      const q = new URLSearchParams(window.location.search);
-      const dbg = q.get('debug');
-      window.__MLIPVIEW_DEBUG_API = (dbg === '1' || dbg === 'true');
-    } catch { window.__MLIPVIEW_DEBUG_API = false; }
+  if (typeof window !== 'undefined') {
+    if (window.__MLIPVIEW_DEBUG_API == null) {
+      // Default OFF; enable with ?debug=1 or ?debug=true
+      try {
+        const q = new URLSearchParams(window.location.search);
+        const dbg = q.get('debug');
+        window.__MLIPVIEW_DEBUG_API = (dbg === '1' || dbg === 'true');
+      } catch { window.__MLIPVIEW_DEBUG_API = false; }
+    }
   }
   // Picking debug via ?debugPick=1
   try {
-    const q = new URLSearchParams(window.location.search||'');
-    const dp = q.get('debugPick');
-    window.__MLIPVIEW_DEBUG_PICK = (dp === '1' || dp === 'true');
-    if (window.__MLIPVIEW_DEBUG_PICK) console.log('[debug] pick logging enabled');
-    const ds = q.get('debugSelect');
-    window.__MLIPVIEW_DEBUG_SELECT = (ds === '1' || ds === 'true');
-    if (window.__MLIPVIEW_DEBUG_SELECT) console.log('[debug] selection logging enabled');
-    const du = q.get('debugUI');
-    window.__MLIPVIEW_DEBUG_UI = (du === '1' || du === 'true');
-    if (window.__MLIPVIEW_DEBUG_UI) console.log('[debug] UI logging enabled');
+    if (typeof window !== 'undefined') {
+      const q = new URLSearchParams(window.location.search||'');
+      const dp = q.get('debugPick');
+      window.__MLIPVIEW_DEBUG_PICK = (dp === '1' || dp === 'true');
+      if (window.__MLIPVIEW_DEBUG_PICK) console.log('[debug] pick logging enabled');
+      const ds = q.get('debugSelect');
+      window.__MLIPVIEW_DEBUG_SELECT = (ds === '1' || ds === 'true');
+      if (window.__MLIPVIEW_DEBUG_SELECT) console.log('[debug] selection logging enabled');
+      const du = q.get('debugUI');
+      window.__MLIPVIEW_DEBUG_UI = (du === '1' || du === 'true');
+      if (window.__MLIPVIEW_DEBUG_UI) console.log('[debug] UI logging enabled');
+    }
   } catch {}
   // Latency debugging gate comes from index.html ?debugLatency=1 wrapper
   const __latencyOn = (typeof window!=='undefined') && !!window.__MLIP_DEBUG_LATENCY;
@@ -143,10 +147,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       console.log(`[latency:${kind}] ${phase} ${s}`, meta||{});
     } catch {}
   }
-  let __apiSeq = window.__MLIPVIEW_API_SEQ || 0;
+  let __apiSeq = (typeof window !== 'undefined' && window.__MLIPVIEW_API_SEQ) || 0;
   function debugApi(kind, phase, meta){
     __count('index#debugApi');
-    if(!window.__MLIPVIEW_DEBUG_API) return;
+    if(!(typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_API)) return;
     try {
       const stamp = new Date().toISOString();
       // We copy a shallow subset to avoid huge spam (positions trimmed)
@@ -165,8 +169,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       console.log(`[API][${kind}][${phase}]#${meta.seq} t=${meta.timingMs!=null?meta.timingMs+'ms':''} ${stamp}`, meta);
     } catch(e){ /* ignore logging errors */ }
   }
-  window.__MLIPVIEW_API_ENABLE = function(on){ window.__MLIPVIEW_DEBUG_API = !!on; console.log('[API] debug set to', window.__MLIPVIEW_DEBUG_API); };
-  window.__MLIPVIEW_API_SEQ = __apiSeq;
+  if (typeof window !== 'undefined') {
+    window.__MLIPVIEW_API_ENABLE = function(on){ window.__MLIPVIEW_DEBUG_API = !!on; console.log('[API] debug set to', window.__MLIPVIEW_DEBUG_API); };
+    window.__MLIPVIEW_API_SEQ = __apiSeq;
+  }
 
   // Versioned force cache: state.forceCache = { version, energy, forces, stress, stale }
   state.forceCache = { version:0, energy:NaN, forces:[], stress:null, stale:true };
@@ -245,9 +251,15 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const atomic_numbers = state.elements.map(e=> elementToZ(e));
       const coordinates = state.positions.map(p=>[p.x,p.y,p.z]);
       const body = { atomic_numbers, coordinates, properties:['energy','forces'], calculator:'uma' };
+      try {
+        if (state.showCell && state.cell && state.cell.enabled) {
+          body.cell = [ [state.cell.a.x, state.cell.a.y, state.cell.a.z], [state.cell.b.x, state.cell.b.y, state.cell.b.z], [state.cell.c.x, state.cell.c.y, state.cell.c.z] ];
+          body.pbc = [true,true,true];
+        }
+      } catch {}
     const base = __resolveApiBase();
     const url = base + getEndpointSync('simple');
-      const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
+  const seq = ++__apiSeq; if (typeof window !== 'undefined') window.__MLIPVIEW_API_SEQ = __apiSeq;
       const build0 = performance.now();
       // payload already prepared above
       const t0 = performance.now();
@@ -348,13 +360,19 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const pos = state.positions.map(p=>[p.x,p.y,p.z]);
   const atomic_numbers = state.elements.map(e=> elementToZ(e));
   const body = { atomic_numbers, coordinates: pos, steps, calculator:'uma' };
+  try {
+    if (state.showCell && state.cell && state.cell.enabled) {
+      body.cell = [ [state.cell.a.x, state.cell.a.y, state.cell.a.z], [state.cell.b.x, state.cell.b.y, state.cell.b.z], [state.cell.c.x, state.cell.c.y, state.cell.c.z] ];
+      body.pbc = [true,true,true];
+    }
+  } catch {}
   const maybePre = buildPrecomputedIfFresh();
   if(maybePre){ body.precomputed = maybePre; debugApi('relax','precomputed-attach',{ seq: __apiSeq+1, keys:Object.keys(maybePre) }); }
   const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion; const epochAtSend = resetEpoch;
     const base = __resolveApiBase();
     const url = base + getEndpointSync('relax');
     const payload = body;
-    const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
+  const seq = ++__apiSeq; if (typeof window !== 'undefined') window.__MLIPVIEW_API_SEQ = __apiSeq;
     const build0 = performance.now();
     const t0 = performance.now();
   debugApi('relax','request',{ seq, url, body: payload });
@@ -550,6 +568,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const atomic_numbers = state.elements.map(e=> elementToZ(e));
   const frictionFinal = (typeof friction === 'number' && Number.isFinite(friction)) ? friction : (getConfig().mdFriction ?? 0.5);
   const body = { atomic_numbers, coordinates: pos, steps, temperature, timestep_fs, friction: frictionFinal, calculator };
+  try {
+    if (state.showCell && state.cell && state.cell.enabled) {
+      body.cell = [ [state.cell.a.x, state.cell.a.y, state.cell.a.z], [state.cell.b.x, state.cell.b.y, state.cell.b.z], [state.cell.c.x, state.cell.c.y, state.cell.c.z] ];
+      body.pbc = [true,true,true];
+    }
+  } catch {}
   const maybePre = buildPrecomputedIfFresh();
   if(maybePre){ body.precomputed = maybePre; debugApi('md','precomputed-attach',{ seq: __apiSeq+1, keys:Object.keys(maybePre) }); }
   const maybeV = getVelocitiesIfFresh();
@@ -558,7 +582,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const base = __resolveApiBase();
     const url = base + getEndpointSync('md');
     const payload = body;
-    const seq = ++__apiSeq; window.__MLIPVIEW_API_SEQ = __apiSeq;
+  const seq = ++__apiSeq; if (typeof window !== 'undefined') window.__MLIPVIEW_API_SEQ = __apiSeq;
     const build0 = performance.now();
     const t0 = performance.now();
   debugApi('md','request',{ seq, url, body: payload });
@@ -1166,15 +1190,19 @@ if (typeof window !== 'undefined') {
 }
 
 // Debug / test helpers injected after definition (non-enumerable minimal surface impact)
-Object.defineProperty(window, '__dumpCurrentAtoms', { value: function(){
-  try {
-    if(!window.viewerApi) return null;
-    const st = window.viewerApi.state;
-    return {
-      elements: st.elements.map(e=> e.symbol||e.sym||e.S||e.Z||e.atomicNumber||'?'),
-      atomic_numbers: st.elements.map(e=> (typeof e==='string'? (SYMBOL_TO_Z[e]||0) : (e && (e.Z||e.atomicNumber||e.z|| (SYMBOL_TO_Z[e.symbol]||SYMBOL_TO_Z[e.sym]||SYMBOL_TO_Z[e.S]||0))) || 0)),
-      positions: st.positions.map(p=> [p.x,p.y,p.z]),
-      energy: st.dynamics?.energy
-    };
-  } catch(e){ return { error: e?.message||String(e) }; }
-}, writable:false });
+try {
+  if (typeof window !== 'undefined') {
+    Object.defineProperty(window, '__dumpCurrentAtoms', { value: function(){
+      try {
+        if(!window.viewerApi) return null;
+        const st = window.viewerApi.state;
+        return {
+          elements: st.elements.map(e=> e.symbol||e.sym||e.S||e.Z||e.atomicNumber||'?'),
+          atomic_numbers: st.elements.map(e=> (typeof e==='string'? (SYMBOL_TO_Z[e]||0) : (e && (e.Z||e.atomicNumber||e.z|| (SYMBOL_TO_Z[e.symbol]||SYMBOL_TO_Z[e.sym]||SYMBOL_TO_Z[e.S]||0))) || 0)),
+          positions: st.positions.map(p=> [p.x,p.y,p.z]),
+          energy: st.dynamics?.energy
+        };
+      } catch(e){ return { error: e?.message||String(e) }; }
+    }, writable:false });
+  }
+} catch(_) { /* ignore non-browser env */ }
