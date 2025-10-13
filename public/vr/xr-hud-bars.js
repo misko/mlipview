@@ -39,8 +39,11 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
       return b;
     }
 
-    function buildWorldRow({ name='xrHudPanel', verticalFrac=0.6, top=false }){
-      const plane = BABYLON.MeshBuilder.CreatePlane(name, { width:1.35, height:0.38 }, scene);
+    function buildWorldRow({ name='xrHudPanel', verticalFrac=0.6, top=false, includeEnergy=true, energyScale=1, planeWidth, planeHeight }){
+      const __rowScale = (includeEnergy ? Math.max(1, energyScale||1) : 1);
+      const pw = (typeof planeWidth === 'number' && planeWidth>0) ? planeWidth : (1.35 * __rowScale);
+      const ph = (typeof planeHeight === 'number' && planeHeight>0) ? planeHeight : (0.38 * __rowScale);
+      const plane = BABYLON.MeshBuilder.CreatePlane(name, { width: pw, height: ph }, scene);
       const forward = cam.getDirection(BABYLON.Axis.Z).normalize();
       const up = cam.getDirection ? cam.getDirection(BABYLON.Axis.Y).normalize() : BABYLON.Vector3.Up();
       const downward = halfHeight * verticalFrac;
@@ -50,46 +53,52 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
       plane.isPickable = true;
       try { plane.metadata = { hudPanel:true, row: top?'top':'bottom' }; } catch{}
 
-      const tex = BABYLON.GUI.AdvancedDynamicTexture.CreateForMesh(plane, 1300, 340, false);
+  const __scale = __rowScale;
+  const texW = Math.round(1300 * __scale);
+  const texH = Math.round(340 * __scale);
+  const tex = BABYLON.GUI.AdvancedDynamicTexture.CreateForMesh(plane, texW, texH, false);
       try { tex._rootContainer?.children?.forEach(c=>{ c.metadata = c.metadata||{}; c.metadata.hudRoot=true; }); } catch{}
 
-      const bg = new BABYLON.GUI.Rectangle();
-      bg.thickness=0; bg.cornerRadius=20; bg.background='rgba(25,32,42,0.78)';
+  const bg = new BABYLON.GUI.Rectangle();
+  bg.thickness=0; bg.cornerRadius=20; bg.background = top ? 'transparent' : 'rgba(25,32,42,0.78)';
       tex.addControl(bg);
 
-      const stack = new BABYLON.GUI.StackPanel();
-      stack.isVertical=false; stack.height='300px';
+  const stack = new BABYLON.GUI.StackPanel();
+  stack.isVertical=false; stack.height = (300 * __scale) + 'px';
       stack.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
       bg.addControl(stack);
 
       // Energy panel (line plot via offscreen canvas -> Image source)
-      const energyBox = new BABYLON.GUI.StackPanel();
-      energyBox.isVertical=true; energyBox.width='360px'; energyBox.height='260px'; energyBox.paddingRight='10px';
-      let energyText=null;
-      try {
-        const w=300, h=150; const canvas2 = document.createElement('canvas'); canvas2.width=w; canvas2.height=h;
-        if(wpEnergyDebug()) console.log('[XR][HUD][ENERGY][WP] canvas created', { w, h, row: top?'top':'bottom' });
-        let url02 = '';
-        try { url02 = canvas2.toDataURL('image/png'); if(wpEnergyDebug()) console.log('[XR][HUD][ENERGY][WP] primed dataURL', { len:(url02&&url02.length)||0 }); } catch(e){ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] toDataURL failed (init)', e?.message||e); }
-        const img = new BABYLON.GUI.Image('xrWorldEnergyImg_'+(top?'top':'bottom'), url02||undefined);
-        img.width=w+'px'; img.height=h+'px'; img.stretch = BABYLON.GUI.Image.STRETCH_UNIFORM;
-        energyBox.addControl(img);
-        energyText = new BABYLON.GUI.TextBlock('xrWorldEnergyValue_'+(top?'top':'bottom'),'E: —');
-        energyText.color='#d8e6f3'; energyText.fontSize=28; energyText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-        energyBox.addControl(energyText);
-        import('../plot/line-plot-core.js').then(p=>{
-          try {
-            const creator=p.createLinePlot||(p.default&&p.default.createLinePlot);
-            if(!creator){ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] missing creator'); return; }
-            let updTick=0; const plot=creator({ width:w, height:h, getContext:()=>canvas2.getContext('2d'), updateTexture:()=>{ try { const url=canvas2.toDataURL('image/png'); img.source = url; img.markAsDirty?.(); updTick++; if(wpEnergyDebug() && (updTick<=3 || updTick%60===0)) console.log('[XR][HUD][ENERGY][WP] updateTexture tick', updTick, { urlLen:(url&&url.length)||0, row: top?'top':'bottom' }); } catch(e){ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] updateTexture failed', e?.message||e); } }, labels:{ x:'step', y:'E' }, maxPoints:200 });
-            const v = (typeof getViewer==='function') ? getViewer() : (typeof window!=='undefined' ? (window._viewer||window.viewerApi) : null);
-            function push(){ try{ const E=v?.state?.dynamics?.energy; if(Number.isFinite(E)){ plot.addPoint(E); if(energyText) energyText.text='E: '+E.toFixed(3)+' eV'; } }catch{} }
-            try{ v?.state?.bus?.on?.('forcesChanged', push); }catch(e){}
-            try{ push(); }catch{}
-          } catch(e){ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] build failed', e?.message||e); }
-        }).catch(()=>{});
-      } catch {}
-      stack.addControl(energyBox);
+      if (includeEnergy) {
+        const energyBox = new BABYLON.GUI.StackPanel();
+        const __eScale = Math.max(1, energyScale||1);
+        energyBox.isVertical=true; energyBox.width=(360*__eScale)+'px'; energyBox.height=(260*__eScale)+'px'; energyBox.paddingRight='10px';
+        let energyText=null;
+        try {
+          const w=300*__eScale, h=150*__eScale; const canvas2 = document.createElement('canvas'); canvas2.width=w; canvas2.height=h;
+          if(wpEnergyDebug()) console.log('[XR][HUD][ENERGY][WP] canvas created', { w, h, row: top?'top':'bottom' });
+          let url02 = '';
+          try { url02 = canvas2.toDataURL('image/png'); if(wpEnergyDebug()) console.log('[XR][HUD][ENERGY][WP] primed dataURL', { len:(url02&&url02.length)||0 }); } catch(e){ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] toDataURL failed (init)', e?.message||e); }
+          const img = new BABYLON.GUI.Image('xrWorldEnergyImg_'+(top?'top':'bottom'), url02||undefined);
+          img.width=w+'px'; img.height=h+'px'; img.stretch = BABYLON.GUI.Image.STRETCH_UNIFORM;
+          energyBox.addControl(img);
+          energyText = new BABYLON.GUI.TextBlock('xrWorldEnergyValue_'+(top?'top':'bottom'),'E: —');
+          energyText.color='#d8e6f3'; energyText.fontSize = 28 * __eScale; energyText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+          energyBox.addControl(energyText);
+          import('../plot/line-plot-core.js').then(p=>{
+            try {
+              const creator=p.createLinePlot||(p.default&&p.default.createLinePlot);
+              if(!creator){ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] missing creator'); return; }
+              let updTick=0; const plot=creator({ width:w, height:h, getContext:()=>canvas2.getContext('2d'), updateTexture:()=>{ try { const url=canvas2.toDataURL('image/png'); img.source = url; img.markAsDirty?.(); updTick++; if(wpEnergyDebug() && (updTick<=3 || updTick%60===0)) console.log('[XR][HUD][ENERGY][WP] updateTexture tick', updTick, { urlLen:(url&&url.length)||0, row: top?'top':'bottom' }); } catch(e){ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] updateTexture failed', e?.message||e); } }, labels:{ x:'step', y:'E' }, maxPoints:200 });
+              const v = (typeof getViewer==='function') ? getViewer() : (typeof window!=='undefined' ? (window._viewer||window.viewerApi) : null);
+              function push(){ try{ const E=v?.state?.dynamics?.energy; if(Number.isFinite(E)){ plot.addPoint(E); if(energyText) energyText.text='E: '+E.toFixed(3)+' eV'; } }catch{} }
+              try{ v?.state?.bus?.on?.('forcesChanged', push); }catch(e){}
+              try{ push(); }catch{}
+            } catch(e){ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] build failed', e?.message||e); }
+          }).catch(()=>{});
+        } catch {}
+        stack.addControl(energyBox);
+      }
 
       return { plane, tex, stack };
     }
@@ -101,20 +110,19 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
     try { import('./xr-controls-core.js').then(p=>{ try { const build=p.buildXRControlsModel||(p.default&&p.default.buildXRControlsModel); if(build){ controlsModel = build({ getViewer: gv, onStateChange: syncButtons, reloadPage: ()=>{ try { location.reload(); } catch {} } }); try { controlsModel.refresh && controlsModel.refresh(); } catch {} syncButtons(); } } catch{} }).catch(()=>{}); } catch{}
 
     // Bottom row
-    const bottom = buildWorldRow({ name:'xrHudPanel', verticalFrac:0.6, top:false });
+  const bottom = buildWorldRow({ name:'xrHudPanel', verticalFrac:0.6, top:false, includeEnergy:false, planeWidth:1.35, planeHeight:0.38 });
     const b_relax = btn(bottom.stack, 'Relax', ()=>{ controlsModel?.setSimulation('relax'); syncButtons(); }); btnSets.relax.push(b_relax);
-    const b_md    = btn(bottom.stack, 'MD',    ()=>{ controlsModel?.setSimulation('md');    syncButtons(); }); btnSets.md.push(b_md);
-    const b_off   = btn(bottom.stack, 'Off',   ()=>{ controlsModel?.setSimulation('off');   syncButtons(); }); btnSets.off.push(b_off);
-    const b_forces= btn(bottom.stack, (controlsModel?.forcesLabel?.())||'Forces', ()=>{ controlsModel?.toggleForces?.(); syncButtons(); }); btnSets.forces.push(b_forces);
-    const b_reset = btn(bottom.stack, 'Reset', ()=>{ controlsModel?.reset?.(); syncButtons(); });
+  const b_md    = btn(bottom.stack, 'MD',    ()=>{ controlsModel?.setSimulation('md');    syncButtons(); }); btnSets.md.push(b_md);
+  const b_off   = btn(bottom.stack, 'Off',   ()=>{ controlsModel?.setSimulation('off');   syncButtons(); }); btnSets.off.push(b_off);
+  // Spacer between Off and Forces
+  try { const sp1 = new BABYLON.GUI.Rectangle(); sp1.width='30px'; sp1.height='260px'; sp1.thickness=0; sp1.background='transparent'; bottom.stack.addControl(sp1); } catch{}
+  const b_forces= btn(bottom.stack, (controlsModel?.forcesLabel?.())||'Forces', ()=>{ controlsModel?.toggleForces?.(); syncButtons(); }); btnSets.forces.push(b_forces);
+  // Spacer between Forces and Reset
+  try { const sp2 = new BABYLON.GUI.Rectangle(); sp2.width='30px'; sp2.height='260px'; sp2.thickness=0; sp2.background='transparent'; bottom.stack.addControl(sp2); } catch{}
+  const b_reset = btn(bottom.stack, 'Reset', ()=>{ controlsModel?.reset?.(); syncButtons(); });
 
     // Top row mirror
-    const topRow = buildWorldRow({ name:'xrHudPanelTop', verticalFrac:-0.6, top:true });
-    const t_relax = btn(topRow.stack, 'Relax', ()=>{ controlsModel?.setSimulation('relax'); syncButtons(); }); btnSets.relax.push(t_relax);
-    const t_md    = btn(topRow.stack, 'MD',    ()=>{ controlsModel?.setSimulation('md');    syncButtons(); }); btnSets.md.push(t_md);
-    const t_off   = btn(topRow.stack, 'Off',   ()=>{ controlsModel?.setSimulation('off');   syncButtons(); }); btnSets.off.push(t_off);
-    const t_forces= btn(topRow.stack, (controlsModel?.forcesLabel?.())||'Forces', ()=>{ controlsModel?.toggleForces?.(); syncButtons(); }); btnSets.forces.push(t_forces);
-    const t_reset = btn(topRow.stack, 'Reset', ()=>{ controlsModel?.reset?.(); syncButtons(); });
+  const topRow = buildWorldRow({ name:'xrHudPanelTop', verticalFrac:-0.6, top:true, includeEnergy:true, energyScale:2, planeWidth:1.35*2, planeHeight:0.38*2 });
 
     try { controlsModel?.ensureDefaultActive?.(); } catch {}
     syncButtons();
