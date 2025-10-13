@@ -75,6 +75,8 @@ export function createMoleculeView(scene, molState) {
       mat.alpha = 0.35;
       master = BABYLON.MeshBuilder.CreateSphere('ghost_atom_'+key,{diameter:1,segments:16},scene);
       master.isPickable=false; master.thinInstanceEnablePicking=false;
+      // Initialize disabled; will be enabled when thin instances are populated
+      if (typeof master.setEnabled === 'function') master.setEnabled(false); else master.isVisible=false;
       registerMaster('ghostAtomMaster', master);
     } else if (kind === 'ghostBond') {
       mat = new BABYLON.StandardMaterial('ghost_bond_'+key, scene);
@@ -82,6 +84,8 @@ export function createMoleculeView(scene, molState) {
       mat.emissiveColor = mat.diffuseColor.scale(0.02); mat.alpha = 0.25;
       master = BABYLON.MeshBuilder.CreateCylinder('ghost_bond_'+key,{height:1,diameter:1,tessellation:12},scene);
       master.isPickable=false; master.thinInstanceEnablePicking=false;
+      // Initialize disabled; will be enabled when thin instances are populated
+      if (typeof master.setEnabled === 'function') master.setEnabled(false); else master.isVisible=false;
       registerMaster('ghostBondMaster', master);
     } else if (kind === 'bond') {
       mat = new BABYLON.StandardMaterial('bond_'+key, scene);
@@ -430,8 +434,16 @@ export function createMoleculeView(scene, molState) {
     for (const g of ghostAtomGroups.values()) { g.mats.length = 0; g.indices.length = 0; }
     for (const g of ghostBondGroups.values()) { g.mats.length = 0; g.indices.length = 0; }
     if (!molState.showGhostCells || !molState.showCell || !molState.cell?.enabled) {
-      for (const g of ghostAtomGroups.values()) g.master.thinInstanceSetBuffer('matrix', new Float32Array());
-      for (const g of ghostBondGroups.values()) g.master.thinInstanceSetBuffer('matrix', new Float32Array());
+      for (const g of ghostAtomGroups.values()) {
+        try { g.master.thinInstanceSetBuffer('matrix', new Float32Array()); } catch {}
+        // Disable master when no instances to prevent a default sphere at origin
+        if (typeof g.master.setEnabled === 'function') g.master.setEnabled(false); else g.master.isVisible = false;
+      }
+      for (const g of ghostBondGroups.values()) {
+        try { g.master.thinInstanceSetBuffer('matrix', new Float32Array()); } catch {}
+        // Disable master when no instances to prevent a default cylinder at origin
+        if (typeof g.master.setEnabled === 'function') g.master.setEnabled(false); else g.master.isVisible = false;
+      }
       return;
     }
     const BOND_DBG = (typeof window !== 'undefined') && (window.BOND_DEBUG === true || /[?&]bondDebug=1/.test(window.location?.search||''));
@@ -467,7 +479,11 @@ export function createMoleculeView(scene, molState) {
         }
       }
     }
-    for (const g of ghostAtomGroups.values()) g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
+    for (const g of ghostAtomGroups.values()) {
+      g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
+      if (g.mats.length === 0) { if (typeof g.master.setEnabled === 'function') g.master.setEnabled(false); else g.master.isVisible=false; }
+      else { if (typeof g.master.setEnabled === 'function') g.master.setEnabled(true); else g.master.isVisible=true; }
+    }
     // Run bond calculator over augmented list (stateless) and then extract bonds that involve at least one ghost image OR cross-image pair.
     // We import lazily to avoid circular dependency; computeBondsNoState is already globally available in legacy path.
     const augSimple = augAtoms.map(a=>({ element:a.element, pos:[a.pos.x,a.pos.y,a.pos.z] }));
@@ -503,7 +519,11 @@ export function createMoleculeView(scene, molState) {
         } catch {}
       }
     }
-    for (const g of ghostBondGroups.values()) g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
+    for (const g of ghostBondGroups.values()) {
+      g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
+      if (g.mats.length === 0) { if (typeof g.master.setEnabled === 'function') g.master.setEnabled(false); else g.master.isVisible=false; }
+      else { if (typeof g.master.setEnabled === 'function') g.master.setEnabled(true); else g.master.isVisible=true; }
+    }
     // (ghost bond debug removed)
   }
   function rebuildCellLines() {
