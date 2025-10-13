@@ -9,7 +9,26 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, root_validator, validator
+
+# Hard cap for number of atoms accepted by any request.
+# Enforced at the model layer so all ingress paths share the same check.
+MAX_ATOMS_PER_REQUEST: int = 40
+
+
+def _enforce_atom_limit(values: Dict[str, Any]) -> Dict[str, Any]:
+    """Shared check for atom count across request models.
+
+    Expects mapping with keys 'atomic_numbers' and 'coordinates'.
+    """
+    zs = values.get("atomic_numbers") or []
+    coords = values.get("coordinates") or []
+    n = max(len(zs), len(coords))
+    if n > MAX_ATOMS_PER_REQUEST:
+        raise ValueError(
+            ("Too many atoms: " f"{n} > MAX_ATOMS_PER_REQUEST={MAX_ATOMS_PER_REQUEST}")
+        )
+    return values
 
 
 class RelaxCalculatorName(str, Enum):
@@ -25,6 +44,10 @@ class SimpleIn(BaseModel):
     properties: Optional[List[str]] = None
     cell: Optional[List[List[float]]] = None  # 3x3 cell matrix or None
     calculator: RelaxCalculatorName = RelaxCalculatorName.uma
+
+    @root_validator(skip_on_failure=True)
+    def _limit_natoms(cls, values):  # type: ignore
+        return _enforce_atom_limit(values)
 
 
 class RelaxIn(BaseModel):
@@ -42,6 +65,10 @@ class RelaxIn(BaseModel):
     optimizer_params: Optional[Dict[str, Any]] = None
     return_trace: bool = False
     precomputed: Optional["PrecomputedValues"] = None
+
+    @root_validator(skip_on_failure=True)
+    def _limit_natoms(cls, values):  # type: ignore
+        return _enforce_atom_limit(values)
 
 
 class RelaxResult(BaseModel):
@@ -72,6 +99,10 @@ class MDIn(BaseModel):
     precomputed: Optional["PrecomputedValues"] = None
     # Optional initial velocities (N x 3)
     velocities: Optional[List[List[float]]] = None
+
+    @root_validator(skip_on_failure=True)
+    def _limit_natoms(cls, values):  # type: ignore
+        return _enforce_atom_limit(values)
 
     @validator("velocities")
     def _validate_velocities(cls, v, values):  # type: ignore
@@ -137,4 +168,5 @@ __all__ = [
     "MDIn",
     "MDResult",
     "PrecomputedValues",
+    "MAX_ATOMS_PER_REQUEST",
 ]

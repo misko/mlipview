@@ -27,10 +27,25 @@ def build_atoms(
     import numpy as np
     from ase import Atoms
 
+    # Lazy import to avoid any module import cycles
+    try:
+        from .models import MAX_ATOMS_PER_REQUEST  # type: ignore
+    except Exception:
+        MAX_ATOMS_PER_REQUEST = 40  # safe fallback
+
     if len(numbers) != len(coords):
         raise HTTPException(
             status_code=400,
             detail="Length mismatch atomic_numbers vs coordinates",
+        )
+    if len(numbers) > int(MAX_ATOMS_PER_REQUEST):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Too many atoms: "
+                + f"{len(numbers)} > MAX_ATOMS_PER_REQUEST="
+                + f"{MAX_ATOMS_PER_REQUEST}"
+            ),
         )
     atoms = Atoms(
         numbers=numbers,
