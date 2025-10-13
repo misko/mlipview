@@ -848,13 +848,13 @@ export function buildDesktopPanel({ attachTo } = {}) {
   panel.append(live.section, selSec.section, sim.section, sys.section, rendering.section, xr.section);
   host.appendChild(panel);
 
-  // Add a persistent reset button in bottom-right that reloads the page to reset state
+  // Add a persistent reset button in bottom-right that resets the viewer state without reloading the page
   try {
     if (!document.getElementById('resetAllBtn')) {
       const resetBtn = document.createElement('button');
       resetBtn.id = 'resetAllBtn';
       resetBtn.textContent = 'Reset';
-      resetBtn.title = 'Reload page and reset state';
+      resetBtn.title = 'Reset simulation to initial state (no page reload)';
       Object.assign(resetBtn.style, {
         position: 'fixed', right: '12px', bottom: '12px', zIndex: 1000,
         background: 'rgba(30,38,48,0.85)', color: '#d8e6f3', border: '1px solid rgba(255,255,255,0.1)',
@@ -862,9 +862,27 @@ export function buildDesktopPanel({ attachTo } = {}) {
       });
       resetBtn.addEventListener('click', ()=>{
         try {
-          const href = window.location.href; // preserve current query (mol, smiles, etc.)
-          if (typeof window.location.assign === 'function') window.location.assign(href);
-          else window.location.href = href;
+          // Prefer in-app reset if available
+          const api = (typeof window !== 'undefined') ? (window.viewerApi || null) : null;
+          if (api && typeof api.resetToInitialPositions === 'function') {
+            // Prevent double clicks during reset
+            resetBtn.disabled = true;
+            const prevText = resetBtn.textContent;
+            resetBtn.textContent = 'Resetting…';
+            Promise.resolve(api.resetToInitialPositions()).then(()=>{
+              try { const s = document.getElementById('status'); if (s) s.textContent = 'Reset complete'; } catch {}
+            }).catch(()=>{
+              try { const s = document.getElementById('status'); if (s) s.textContent = 'Reset failed'; } catch {}
+            }).finally(()=>{
+              resetBtn.disabled = false;
+              resetBtn.textContent = prevText;
+            });
+          } else {
+            // Fallback to page reload if API missing
+            const href = window.location.href; // preserve current query (mol, smiles, etc.)
+            if (typeof window.location.assign === 'function') window.location.assign(href);
+            else window.location.href = href;
+          }
         } catch {}
       });
       document.body.appendChild(resetBtn);

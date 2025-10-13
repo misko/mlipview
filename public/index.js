@@ -171,6 +171,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // Versioned force cache: state.forceCache = { version, energy, forces, stress, stale }
   state.forceCache = { version:0, energy:NaN, forces:[], stress:null, stale:true };
   let structureVersion = 0; // increments when positions (or elements) change
+  // Reset epoch: increments only on explicit resets to invalidate any in-flight API responses
+  let resetEpoch = 0;
   // Server-side atoms cache removed: no cache key tracking
   // Version counters:
   // userInteractionVersion: increments ONLY on user geometry edits (drag, bond rotate, debounced posChange)
@@ -250,7 +252,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       // payload already prepared above
       const t0 = performance.now();
       debugApi('simple_calculate','request',{ seq, url, body });
-      let resp, json;
+  const epochAtSend = resetEpoch;
+  let resp, json;
       try {
   resp = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
       } catch(netErr){
@@ -272,6 +275,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         debugApi('simple_calculate','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt });
       }
       if(resp.ok){
+        // Discard stale responses from a prior reset epoch
+        if (epochAtSend !== resetEpoch) {
+          if(window.__MLIPVIEW_DEBUG_API) console.debug('[forces][staleEpoch] ignoring response from prior epoch', { epochAtSend, resetEpoch });
+          return lastForceResult;
+        }
         const res = json?.results||{};
         if(typeof res.energy === 'number'){
           lastForceResult = { energy: res.energy, forces: res.forces||[] };
@@ -342,7 +350,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const body = { atomic_numbers, coordinates: pos, steps, calculator:'uma' };
   const maybePre = buildPrecomputedIfFresh();
   if(maybePre){ body.precomputed = maybePre; debugApi('relax','precomputed-attach',{ seq: __apiSeq+1, keys:Object.keys(maybePre) }); }
-  const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion;
+  const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion; const epochAtSend = resetEpoch;
     const base = __resolveApiBase();
     const url = base + getEndpointSync('relax');
     const payload = body;
@@ -370,7 +378,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     catch(parseErr){ debugApi('relax','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
     debugApi('relax','response',{ seq, url, timingMs, status: resp.status, response: json });
   // no server cache key
-    return { data: json, uivAtSend, tivAtSend, netMs: timingMs, parseMs };
+    return { data: json, uivAtSend, tivAtSend, epochAtSend, netMs: timingMs, parseMs };
   }
   const { engine, scene, camera } = await createScene(canvas);
   // Enable verbose touch debug if requested
@@ -453,7 +461,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     __count('index#relaxStep');
     try {
   const step0 = performance.now();
-  const { data, uivAtSend, tivAtSend, netMs, parseMs } = await callRelaxEndpoint(1); // single step
+  const { data, uivAtSend, tivAtSend, epochAtSend, netMs, parseMs } = await callRelaxEndpoint(1); // single step
+      // Discard responses from prior reset epoch entirely
+      if (epochAtSend !== resetEpoch) {
+        if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][relax] staleEpoch', { epochAtSend, resetEpoch });
+        return { stale:true, staleReason:'staleEpoch', epochAtSend, resetEpoch };
+      }
   const netDone = performance.now();
       // If user interactions occurred during in-flight relax, apply partial update:
       // update only atoms NOT edited by user between send and receive.
@@ -541,7 +554,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   if(maybePre){ body.precomputed = maybePre; debugApi('md','precomputed-attach',{ seq: __apiSeq+1, keys:Object.keys(maybePre) }); }
   const maybeV = getVelocitiesIfFresh();
   if(maybeV){ body.velocities = maybeV; }
-  const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion;
+  const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion; const epochAtSend = resetEpoch;
     const base = __resolveApiBase();
     const url = base + getEndpointSync('md');
     const payload = body;
@@ -556,14 +569,19 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     let parseMs = 0; try { const p0=performance.now(); json = await resp.json(); const p1=performance.now(); parseMs = Math.round((p1-p0)*100)/100; noteLatency('md','parse',{ seq, ms: parseMs }); } catch(parseErr){ debugApi('md','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
     debugApi('md','response',{ seq, url, timingMs, status: resp.status, response: json });
   // no server cache key
-    return { data: json, uivAtSend, tivAtSend, netMs: timingMs, parseMs };
+    return { data: json, uivAtSend, tivAtSend, epochAtSend, netMs: timingMs, parseMs };
   }
   async function mdStep(opts={}){
     __count('index#mdStep');
     try {
       const t0_step = performance.now();
       const reqId = (++__mdReqCounter);
-  const { data, uivAtSend, tivAtSend, netMs, parseMs } = await callMDEndpoint({ steps:1, ...opts });
+  const { data, uivAtSend, tivAtSend, epochAtSend, netMs, parseMs } = await callMDEndpoint({ steps:1, ...opts });
+      // Discard responses from prior reset epoch entirely
+      if (epochAtSend !== resetEpoch) {
+        if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][md] staleEpoch', { epochAtSend, resetEpoch });
+        return { stale:true, staleReason:'staleEpoch', epochAtSend, resetEpoch };
+      }
       // If a newer MD result has already been applied, this one is stale regardless of other checks
       if (reqId < __mdLastApplied) {
         if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][md] superseded by newer applied req', { reqId, lastApplied: __mdLastApplied });
@@ -994,6 +1012,18 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     try {
       // Stop any running loop (relax/md)
       stopSimulation();
+      // Bump reset epoch first so any responses in flight are invalidated
+      resetEpoch++;
+      // Invalidate any in-flight simulation responses by advancing interaction versions immediately.
+      // This ensures responses captured before reset won't apply (stale by version checks).
+      try { bumpUserInteractionVersion('reset'); } catch {}
+      // Also prevent the debounced positionsChanged handler from counting this reset as a separate user edit
+      // after we restore positions and call markPositionsChanged below.
+      __suppressNextPosChange = true;
+      // Clear interaction log and energy time series before we restore positions
+      try { interactions.length = 0; } catch {}
+      try { energySeries.length = 0; lastPlottedEnergy = undefined; } catch {}
+      try { drawEnergy(); } catch {}
       const init = Array.isArray(state.__initialPositions) ? state.__initialPositions : null;
       if(!init || init.length !== state.positions.length) { try { console.warn('[Reset] missing or size-mismatch initial positions'); } catch{} return false; }
       for(let i=0;i<init.length;i++){ const p=init[i]; const tp=state.positions[i]; tp.x=p.x; tp.y=p.y; tp.z=p.z; }
@@ -1004,8 +1034,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       const f0 = (typeof performance!=='undefined' && performance.now)? performance.now(): Date.now();
       try { await ff.computeForces({ sync:true }); } catch(e){ try { console.warn('[Reset] computeForces failed', e?.message||e); } catch{} }
       const f1 = (typeof performance!=='undefined' && performance.now)? performance.now(): Date.now();
-      // Seed energy plot point if needed
-      try { maybePlotEnergy('reset'); } catch {}
+      // Ensure plot remains cleared after recompute
+      try { energySeries.length = 0; lastPlottedEnergy = undefined; drawEnergy(); } catch {}
       const t1 = (typeof performance!=='undefined' && performance.now)? performance.now(): Date.now();
       try { console.log('[Reset] done', { totalMs: Math.round((t1-t0)*100)/100, recomputeMs: Math.round((f1-f0)*100)/100 }); } catch {}
       return true;
@@ -1109,7 +1139,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   function debugEnergySeriesLength(){ return energySeries.length; }
   function debugRecordInteraction(kind){ recordInteraction(kind||'debug'); }
   function getForceCacheVersion(){ return state.forceCache?.version; }
-  function getVersionInfo(){ return { userInteractionVersion, totalInteractionVersion }; }
+  function getVersionInfo(){ return { userInteractionVersion, totalInteractionVersion, resetEpoch }; }
   function shutdown(){ __renderActive=false; try{ engine.stopRenderLoop && engine.stopRenderLoop(); }catch{} }
   return { state, bondService, selection, ff, dynamics, view, picking, vr, recomputeBonds, relaxStep, mdStep, startRelaxContinuous, startMDContinuous, stopSimulation, setForceProvider, getMetrics, resetToInitialPositions, debugEnergySeriesLength, debugRecordInteraction, manipulation: wrappedManipulation, scene, engine, camera, baselineEnergy, setForceVectorsEnabled, getForceCacheVersion, getVersionInfo, shutdown, enableFeatureFlag, setMinStepInterval };
 }

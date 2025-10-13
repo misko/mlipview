@@ -7,7 +7,7 @@ jest.mock('../public/render/scene.js', () => ({ createScene: async () => ({ engi
 global.fetch = async () => ({ ok:true, status:200, json: async ()=> ({ results:{} }) });
 
 describe('Reset button', () => {
-  test('exists and onclick reloads', async () => {
+  test('exists and onclick triggers in-app reset (no reload)', async () => {
     document.body.innerHTML = `<canvas id="viewer"></canvas><div id="app"></div>`;
     const assignSpy = jest.fn();
     delete window.location;
@@ -20,7 +20,11 @@ describe('Reset button', () => {
     buildDesktopPanel({ attachTo: document.getElementById('app') });
     const btn = document.getElementById('resetAllBtn');
     expect(btn).toBeTruthy();
-    btn.click();
-    expect(assignSpy).toHaveBeenCalled();
+    const resetSpy = jest.spyOn(viewer, 'resetToInitialPositions').mockResolvedValue(true);
+    await btn.click();
+    // Give any microtasks a tick
+    await Promise.resolve();
+    expect(resetSpy).toHaveBeenCalled();
+    expect(assignSpy).not.toHaveBeenCalled();
   });
 });
