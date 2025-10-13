@@ -39,10 +39,11 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
       return b;
     }
 
-    function buildWorldRow({ name='xrHudPanel', verticalFrac=0.6, top=false, includeEnergy=true, energyScale=1, planeWidth, planeHeight }){
-      const __rowScale = (includeEnergy ? Math.max(1, energyScale||1) : 1);
-      const pw = (typeof planeWidth === 'number' && planeWidth>0) ? planeWidth : (1.35 * __rowScale);
-      const ph = (typeof planeHeight === 'number' && planeHeight>0) ? planeHeight : (0.38 * __rowScale);
+    function buildWorldRow({ name='xrHudPanel', verticalFrac=0.6, top=false, includeEnergy=true, energyScaleX=1, energyScaleY=1, planeWidth, planeHeight }){
+      const __rowScaleX = (includeEnergy ? Math.max(1, energyScaleX||1) : 1);
+      const __rowScaleY = (includeEnergy ? Math.max(1, energyScaleY||1) : 1);
+      const pw = (typeof planeWidth === 'number' && planeWidth>0) ? planeWidth : (1.35 * __rowScaleX);
+      const ph = (typeof planeHeight === 'number' && planeHeight>0) ? planeHeight : (0.38 * __rowScaleY);
       const plane = BABYLON.MeshBuilder.CreatePlane(name, { width: pw, height: ph }, scene);
       const forward = cam.getDirection(BABYLON.Axis.Z).normalize();
       const up = cam.getDirection ? cam.getDirection(BABYLON.Axis.Y).normalize() : BABYLON.Vector3.Up();
@@ -53,9 +54,8 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
       plane.isPickable = true;
       try { plane.metadata = { hudPanel:true, row: top?'top':'bottom' }; } catch{}
 
-  const __scale = __rowScale;
-  const texW = Math.round(1300 * __scale);
-  const texH = Math.round(340 * __scale);
+  const texW = Math.round(1300 * __rowScaleX);
+  const texH = Math.round(340 * __rowScaleY);
   const tex = BABYLON.GUI.AdvancedDynamicTexture.CreateForMesh(plane, texW, texH, false);
       try { tex._rootContainer?.children?.forEach(c=>{ c.metadata = c.metadata||{}; c.metadata.hudRoot=true; }); } catch{}
 
@@ -64,18 +64,19 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
       tex.addControl(bg);
 
   const stack = new BABYLON.GUI.StackPanel();
-  stack.isVertical=false; stack.height = (300 * __scale) + 'px';
+  stack.isVertical=false; stack.height = (300 * __rowScaleY) + 'px';
       stack.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
       bg.addControl(stack);
 
       // Energy panel (line plot via offscreen canvas -> Image source)
       if (includeEnergy) {
         const energyBox = new BABYLON.GUI.StackPanel();
-        const __eScale = Math.max(1, energyScale||1);
-        energyBox.isVertical=true; energyBox.width=(360*__eScale)+'px'; energyBox.height=(260*__eScale)+'px'; energyBox.paddingRight='10px';
+        const __eScaleX = Math.max(1, energyScaleX||1);
+        const __eScaleY = Math.max(1, energyScaleY||1);
+        energyBox.isVertical=true; energyBox.width=(360*__eScaleX)+'px'; energyBox.height=(260*__eScaleY)+'px'; energyBox.paddingRight='10px';
         let energyText=null;
         try {
-          const w=300*__eScale, h=150*__eScale; const canvas2 = document.createElement('canvas'); canvas2.width=w; canvas2.height=h;
+          const w=300*__eScaleX, h=150*__eScaleY; const canvas2 = document.createElement('canvas'); canvas2.width=w; canvas2.height=h;
           if(wpEnergyDebug()) console.log('[XR][HUD][ENERGY][WP] canvas created', { w, h, row: top?'top':'bottom' });
           let url02 = '';
           try { url02 = canvas2.toDataURL('image/png'); if(wpEnergyDebug()) console.log('[XR][HUD][ENERGY][WP] primed dataURL', { len:(url02&&url02.length)||0 }); } catch(e){ if(wpEnergyDebug()) console.warn('[XR][HUD][ENERGY][WP] toDataURL failed (init)', e?.message||e); }
@@ -83,7 +84,7 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
           img.width=w+'px'; img.height=h+'px'; img.stretch = BABYLON.GUI.Image.STRETCH_UNIFORM;
           energyBox.addControl(img);
           energyText = new BABYLON.GUI.TextBlock('xrWorldEnergyValue_'+(top?'top':'bottom'),'E: —');
-          energyText.color='#d8e6f3'; energyText.fontSize = 28 * __eScale; energyText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+          energyText.color='#d8e6f3'; energyText.fontSize = 28 * __eScaleY; energyText.textHorizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
           energyBox.addControl(energyText);
           import('../plot/line-plot-core.js').then(p=>{
             try {
@@ -122,7 +123,16 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
   const b_reset = btn(bottom.stack, 'Reset', ()=>{ controlsModel?.reset?.(); syncButtons(); });
 
     // Top row mirror
-  const topRow = buildWorldRow({ name:'xrHudPanelTop', verticalFrac:-0.6, top:true, includeEnergy:true, energyScale:2, planeWidth:1.35*2, planeHeight:0.38*2 });
+    const topRow = buildWorldRow({
+      name:'xrHudPanelTop',
+      verticalFrac:-0.6,
+      top:true,
+      includeEnergy:true,
+      energyScaleX:3,
+      energyScaleY:2.5,
+      planeWidth:1.35*2*2,
+      planeHeight:0.38*1.5*1.5
+    });
 
     try { controlsModel?.ensureDefaultActive?.(); } catch {}
     syncButtons();
