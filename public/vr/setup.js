@@ -367,7 +367,7 @@ export function setupVRFeatures(xrHelper, scene, picking){
     }
 
     const intersector = SPHERICAL_ENABLED ? sphericalIntersector : legacyIntersector;
-    const started = manipulation.beginDrag(intersector);
+  const started = manipulation.beginDrag(intersector, { source:'vr' });
     if(started){
       st.dragging=true; st.dragAtomIndex=atomIdx; st.dragIntersector=intersector;
       return true;

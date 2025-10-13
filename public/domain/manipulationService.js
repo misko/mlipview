@@ -13,7 +13,7 @@ import { __count } from '../util/funcCount.js';
 // Optional deps: { bondService } to trigger bond recomputation after an atom drag.
 export function createManipulationService(molState, { bondService } = {}) {
   __count('manipulationService#createManipulationService');
-  let dragState = null; // { atomIndex, startPos:{x,y,z}, grabOffset:{x,y,z}, planeNormal:{x,y,z}, planePoint:{x,y,z} }
+  let dragState = null; // { atomIndex, startPos:{x,y,z}, grabOffset:{x,y,z}, planeNormal:{x,y,z}, planePoint:{x,y,z}, source:'vr'|'desktop'|'unknown' }
   // Constant max drag radius (absolute world units)
   const MAX_DRAG_RADIUS = 50; // configurable constant; previously 5x farthest initial atom
   // Debug instrumentation (re-added to surface desktop drag logs after migration).
@@ -36,7 +36,8 @@ export function createManipulationService(molState, { bondService } = {}) {
       let grabOffset = hit ? { x: pos.x - hit.x, y: pos.y - hit.y, z: pos.z - hit.z } : { x:0, y:0, z:0 };
       // If offset is extremely small treat as zero to keep cursor perfectly over atom.
       if (Math.hypot(grabOffset.x, grabOffset.y, grabOffset.z) < 1e-6) grabOffset = { x:0,y:0,z:0 };
-      dragState = { atomIndex, startPos: { ...pos }, grabOffset, planeNormal, planePoint };
+  const source = opts.source || 'unknown';
+  dragState = { atomIndex, startPos: { ...pos }, grabOffset, planeNormal, planePoint, source };
       if (DRAG_LOG) console.log('[drag][start]', { atomIndex, startPos: { ...pos }, planePoint: { ...planePoint }, planeNormal: { ...planeNormal } });
     return true;
   }

@@ -52,11 +52,7 @@ export function setMdFriction(f){
 // Debug no-cache mode deprecated; server-side cache removed.
 function __noCacheMode(){ return true; }
 
-// Minimal periodic table map for elements we currently load; extend as needed.
-const SYMBOL_TO_Z = {
-  H:1, He:2, C:6, N:7, O:8, F:9, Ne:10, S:16, Cl:17, Fe:26, Co:27, Ni:28, Cu:29, Zn:30,
-  Si:14, P:15, Br:35, I:53, Au:79, Ag:47, Al:13, Ca:20, K:19, Na:11, Li:3
-};
+import { SYMBOL_TO_Z } from './data/periodicTable.js';
 function elementToZ(e){
   if (e==null) return 0;
   if (typeof e === 'number') return e; // already Z
@@ -712,6 +708,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     updateDrag: (...a)=> { const r = manipulation.updateDrag(...a); if (r) { bumpUserInteractionVersion('dragMove'); const idx = __selectedAtomIndex(); if(idx!=null){ __addModifiedAtoms([idx]); __currentDraggedAtomIndex = idx; __draggingAtoms.add(idx); } if(!running.kind) ff.computeForces(); recordInteraction('dragMove'); } return r; },
     endDrag: (...a)=> {
       const hadDrag = (__currentDraggedAtomIndex!=null) || (__draggingAtoms.size>0);
+      // Capture drag source before underlying service clears its state
+      let dragSource = null; try { dragSource = manipulation._debug?.getDragState?.()?.source || null; } catch {}
       const r = manipulation.endDrag(...a);
       if(hadDrag){
         bumpUserInteractionVersion('dragEnd');
@@ -719,8 +717,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         if(idx!=null){
           __addModifiedAtoms([idx]);
           __draggingAtoms.delete(idx);
-          // Latch this atom briefly so any in-flight MD/relax response doesn’t snap it
-          __latchAtom(idx, 800);
+          // Latch only for VR-origin drags to prevent immediate snapback from in-flight MD/relax
+          if (dragSource === 'vr') { __latchAtom(idx, 800); }
         }
         // Clear current pointer
         __currentDraggedAtomIndex = null;
