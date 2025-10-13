@@ -120,6 +120,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
         letter-spacing: .02em;
         cursor: pointer;
         transition: background .15s ease;
+        position: relative;
       }
       .panel-header:hover { background: #25272b; }
       .panel-content { padding: 10px; }
@@ -147,6 +148,17 @@ export function buildDesktopPanel({ attachTo } = {}) {
       .toggle:hover { filter: brightness(1.05); }
       .toggle[data-on="true"] { background: var(--accent); border-color: var(--accent); }
       .toggle[disabled] { opacity: .5; cursor: not-allowed; }
+      /* Classic switch variant */
+      .toggle.switch { position: relative; width: 46px; height: 24px; padding: 0; color: transparent; }
+      .toggle.switch::after {
+        content: '';
+        position: absolute; top: 2px; left: 2px;
+        width: 20px; height: 20px; border-radius: 50%;
+        background: #ffffff; box-shadow: 0 1px 2px rgba(0,0,0,0.4);
+        transition: transform .18s ease;
+      }
+      .toggle.switch[data-on="true"] { background: #3B82F6; border-color: #3B82F6; }
+      .toggle.switch[data-on="true"]::after { transform: translateX(22px); }
 
       /* Small buttons */
       .btn {
@@ -192,6 +204,25 @@ export function buildDesktopPanel({ attachTo } = {}) {
       .stat { font-size: 12px; color: var(--muted); }
       .value { font-size: 12px; }
       .divider { border-top: 1px solid var(--border); margin: 8px 0; }
+  /* Inline controls inside headers */
+  .inline-controls { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); display: inline-flex; gap: 8px; align-items: center; }
+  .inline-controls label { font-size: 12px; color: var(--muted); }
+  .inline-controls .state-label { font-size: 12px; color: var(--muted); min-width: 24px; text-align: left; }
+  .radio { display: inline-flex; align-items: center; gap: 4px; }
+  .radio input[type="radio"] { accent-color: #3B82F6; cursor: pointer; }
+      /* Fixed XR widget top-right */
+      #xrModeWidget {
+        position: fixed;
+        right: 12px;
+        top: 12px;
+        z-index: 1000;
+        background: rgba(30,38,48,0.85);
+        color: #d8e6f3;
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 10px;
+        padding: 6px 10px;
+        display: inline-flex; align-items: center; gap: 8px;
+      }
       /* Mobile top bar – single rounded rectangle; tabs always visible */
       #mobileTopBar {
         position: absolute;
@@ -255,15 +286,33 @@ export function buildDesktopPanel({ attachTo } = {}) {
     live.content.appendChild(plot);
   }
 
-  // Selection (open) — shows selected atom/bond info and mini periodic table
+  // Selection (collapsed by default) — shows selected atom/bond info and mini periodic table
   // Note: Periodic table cells are intentionally non-clickable for v1; this is a purely informative view.
   // VR/AR parity plan (future): Mirror this info in XR by rendering a small Babylon GUI (AdvancedDynamicTexture)
   // panel pinned to the controller ray or wrist anchor. Subscribe to the same state bus events (selectionChanged,
   // positionsChanged) and render simple GUI controls (text blocks + colored circles) for the spheres and labels.
   // For element highlighting, draw a compact grid of TextBlocks/images; apply highlight style (border/emissive) when selected.
   // Wire via viewerApi.vr.* helpers and ensure the panel is disabled in desktop to avoid duplication.
-  const selSec = createSection('section-selection', 'Selection', { defaultOpen: true });
+  const selSec = createSection('section-selection', 'Selection', { defaultOpen: false });
   {
+    // Track auto-expand state within session
+    let hasAutoExpandedSelection = false;
+    let userCollapsedSelection = false;
+    // Detect user toggles of this section to avoid auto re-open after manual collapse
+    // Hook the section header click to toggle userCollapsedSelection when closing
+    setTimeout(()=>{
+      try {
+        const hdr = selSec.section.querySelector('.panel-header');
+        const content = selSec.content;
+        if (hdr && content) {
+          hdr.addEventListener('click', ()=>{
+            const willCollapse = content.getAttribute('data-collapsed') !== 'true' && hdr.getAttribute('aria-expanded') === 'true';
+            // If the user is collapsing after an auto-expand, mark it so we don't auto-open again
+            if (willCollapse) userCollapsedSelection = true;
+          });
+        }
+      } catch {}
+    }, 0);
     // Styles specific to selection section (only once)
     const styleId = 'selectionSectionStyles';
     if (!document.getElementById(styleId)) {
@@ -435,6 +484,19 @@ export function buildDesktopPanel({ attachTo } = {}) {
     // If a periodic table element was clicked, we set an override symbol and clear it when a real selection happens.
     let __overrideElementSym = null;
     function symbolToName(sym){ return EL_NAMES[sym] || SYMBOL_TO_NAME[sym] || sym; }
+    function ensureSelectionOpenOnce(){
+      try {
+        // Only auto-open once per session and only if the user hasn't manually collapsed it
+        if (!hasAutoExpandedSelection && !userCollapsedSelection) {
+          // Expand section
+          selSec.content.removeAttribute('data-collapsed');
+          const hdr = selSec.section.querySelector('.panel-header');
+          if (hdr) hdr.setAttribute('aria-expanded','true');
+          hasAutoExpandedSelection = true;
+        }
+      } catch {}
+    }
+
     function updateFromSelection(){
       const api = getViewer(); if(!api) return;
       const st = api.state;
@@ -468,6 +530,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
         return (info && typeof info.vdw === 'number') ? info.vdw : null;
       }
       if (__overrideElementSym) {
+        ensureSelectionOpenOnce();
         // Show virtual element selection
         setSphere(sphereA, __overrideElementSym); setSphere(sphereB, null);
         elNameNode.textContent = symbolToName(__overrideElementSym);
@@ -480,6 +543,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
         rotNA.style.display = 'inline'; rotBtns.style.display = 'none';
         highlight([__overrideElementSym]);
       } else if (sel.kind === 'atom') {
+        ensureSelectionOpenOnce();
         const idx = sel.data.index;
         const sym = getSymbol(st.elements[idx]);
         const name = symbolToName(sym);
@@ -495,6 +559,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
         rotNA.style.display = 'inline'; rotBtns.style.display = 'none';
         highlight([sym]);
       } else if (sel.kind === 'bond') {
+        ensureSelectionOpenOnce();
         const i = sel.data.i, j = sel.data.j;
         const symA = getSymbol(st.elements[i]);
         const symB = getSymbol(st.elements[j]);
@@ -758,13 +823,19 @@ export function buildDesktopPanel({ attachTo } = {}) {
   }
   // Rendering section removed per request
 
-  // Periodic (collapsed) — PBC + monoclinic parameters
+  // Periodic (collapsed) — PBC + monoclinic parameters, with PBC radios in header
   const periodic = createSection('section-periodic', 'Periodic', { defaultOpen: false });
   {
-    const utilRow = document.createElement('div'); utilRow.className = 'row';
-    const pbcToggle = makeToggle({ id:'togglePBC', labelOn:'PBC: On', labelOff:'PBC: Off', title:'Periodic Boundary Conditions' });
-    utilRow.appendChild(pbcToggle);
-    periodic.content.appendChild(utilRow);
+  // Insert PBC toggle control into the header (right-aligned)
+    const hdr = periodic.section.querySelector('.panel-header');
+  const pbcCtrls = document.createElement('span'); pbcCtrls.className = 'inline-controls'; pbcCtrls.id = 'pbcHeaderControls';
+  const pbcToggle = makeToggle({ id:'togglePBCHeader', labelOn:'On', labelOff:'Off', title:'Periodic Boundary Conditions' });
+  const pbcStateLabel = document.createElement('span'); pbcStateLabel.id = 'pbcStateLabel'; pbcStateLabel.className = 'state-label'; pbcStateLabel.textContent = 'Off';
+  pbcToggle.classList.add('switch');
+  // Prevent header toggle when interacting with toggle
+  ['click','pointerdown','change'].forEach(ev=> pbcToggle.addEventListener(ev, e=> e.stopPropagation()));
+  pbcCtrls.append(pbcStateLabel, pbcToggle);
+  hdr.appendChild(pbcCtrls);
 
   // Monoclinic parameters: a, b, c (Å), beta (°) — alpha=gamma=90°
   const monoBlock = document.createElement('div'); monoBlock.className = 'block';
@@ -861,17 +932,20 @@ export function buildDesktopPanel({ attachTo } = {}) {
     function prefill(){
       const api = getApi(); const st = api && api.state; const c = st && st.cell;
       const p = extractParams(c);
-  aIn.textContent = p.aLen.toFixed(2);
-  bIn.textContent = p.bLen.toFixed(2);
-  cIn.textContent = p.cLen.toFixed(2);
-  betaIn.textContent = p.beta.toFixed(2);
-  const enabled = !!(st && st.showCell && c && c.enabled);
-  for (const el of [aN.minus,aN.plus,bN.minus,bN.plus,cN.minus,cN.plus,betaN.minus,betaN.plus]) el.disabled = !enabled;
-      // Also reflect toggle state
-      const on = enabled;
-      pbcToggle.setAttribute('data-on', String(on));
-      pbcToggle.setAttribute('aria-checked', String(on));
-      pbcToggle.textContent = on ? 'PBC: On' : 'PBC: Off';
+      aIn.textContent = p.aLen.toFixed(2);
+      bIn.textContent = p.bLen.toFixed(2);
+      cIn.textContent = p.cLen.toFixed(2);
+      betaIn.textContent = p.beta.toFixed(2);
+      const enabled = !!(st && st.showCell && c && c.enabled);
+      for (const el of [aN.minus,aN.plus,bN.minus,bN.plus,cN.minus,cN.plus,betaN.minus,betaN.plus]) el.disabled = !enabled;
+      // Reflect toggle state
+      const on = !!(st && st.showCell && c && c.enabled);
+      try {
+        pbcToggle.setAttribute('data-on', String(on));
+        pbcToggle.setAttribute('aria-checked', String(on));
+        pbcToggle.textContent = on ? 'On' : 'Off';
+        if (pbcStateLabel) pbcStateLabel.textContent = on ? 'On' : 'Off';
+      } catch {}
     }
     function applyMonoclinic(){
       const api = getApi(); const st = api && api.state; if (!st) return;
@@ -892,11 +966,13 @@ export function buildDesktopPanel({ attachTo } = {}) {
     }
   // No Apply or Enter binding; auto-apply occurs on each nudge
 
-    // Toggle behavior
-    pbcToggle.addEventListener('click', ()=>{
+    // Toggle behavior to set PBC On/Off
+    function setPBC(wantOn){
       try {
         const api = getApi(); if(!api) return;
         const st = api.state; if(!st) return;
+        const cur = !!st.showCell;
+        if (cur === wantOn) return;
         const fn = (st.toggleCellVisibilityEnhanced||st.toggleCellVisibility);
         if (typeof fn === 'function') fn.call(st);
         // Keep ghosts in sync with cell visibility
@@ -905,64 +981,51 @@ export function buildDesktopPanel({ attachTo } = {}) {
           st.toggleGhostCells();
         }
         const legacy = document.getElementById('btnCell'); if(legacy) legacy.textContent = (st.showCell || st.showGhostCells) ? 'on' : 'off';
-        // Refresh fields enabled state + values (if synthetic cell was created)
         prefill();
       } catch {}
+    }
+    pbcToggle.addEventListener('click', ()=>{
+      const on = pbcToggle.getAttribute('data-on') === 'true';
+      // makeToggle already flipped it; we want to apply the new state
+      setPBC(on);
+      try { if (pbcStateLabel) pbcStateLabel.textContent = on ? 'On' : 'Off'; } catch {}
     });
     // Initial fill and react to cell changes (including external)
     try { prefill(); } catch {}
     try { const api = getApi(); api && api.state && api.state.bus && api.state.bus.on('cellChanged', prefill); } catch {}
   }
 
-  // XR (collapsed)
-  const xr = createSection('section-xr', 'XR', { defaultOpen: false });
+  // XR fixed widget (top-right)
   {
-    const row = document.createElement('div'); row.className = 'row';
-    const label = document.createElement('span'); label.className = 'form-label'; label.textContent = 'XR mode:';
-    const sel = document.createElement('select'); sel.id = 'xrModeSelect';
-    sel.innerHTML = '<option value="none">Off</option><option value="vr">VR</option><option value="ar">AR</option>';
-    // Wire dropdown to XR entry/exit
-    function getViewer(){ try { return window.viewerApi || window._viewer; } catch { return null; } }
-    sel.addEventListener('change', async (ev)=>{
-      const v = (ev && ev.target && ev.target.value) || sel.value;
-      const api = getViewer();
-      const vr = api && api.vr;
-      // Fallbacks if switchXR is not present (older API)
-      const doSwitch = async (mode)=>{
-        try {
-          if (vr && typeof vr.switchXR === 'function') {
-            return await vr.switchXR(mode);
-          }
-          if (mode === 'none') {
-            if (vr && typeof vr.exitXR === 'function') return await vr.exitXR();
-            if (vr && typeof vr.exitVR === 'function') return await vr.exitVR();
+    if (!document.getElementById('xrModeWidget')) {
+      const box = document.createElement('div'); box.id = 'xrModeWidget';
+      const label = document.createElement('span'); label.className = 'form-label'; label.textContent = 'XR:';
+      const sel = document.createElement('select'); sel.id = 'xrModeSelect';
+      sel.innerHTML = '<option value="none">Off</option><option value="vr">VR</option><option value="ar">AR</option>';
+      function getViewer(){ try { return window.viewerApi || window._viewer; } catch { return null; } }
+      sel.addEventListener('change', async (ev)=>{
+        const v = (ev && ev.target && ev.target.value) || sel.value;
+        const api = getViewer(); const vr = api && api.vr;
+        const doSwitch = async (mode)=>{
+          try {
+            if (vr && typeof vr.switchXR === 'function') return await vr.switchXR(mode);
+            if (mode === 'none') { if (vr?.exitXR) return await vr.exitXR(); if (vr?.exitVR) return await vr.exitVR(); return false; }
+            if (mode === 'vr') { if (vr?.enterVR) return await vr.enterVR(); return false; }
+            if (mode === 'ar') { if (vr?.enterAR) return await vr.enterAR(); return false; }
             return false;
-          }
-          if (mode === 'vr') {
-            if (vr && typeof vr.enterVR === 'function') return await vr.enterVR();
-            return false;
-          }
-          if (mode === 'ar') {
-            if (vr && typeof vr.enterAR === 'function') return await vr.enterAR();
-            return false;
-          }
-          return false;
-        } catch(e){ return false; }
-      };
-      if (!vr) {
-        // No VR subsystem yet; reset selection and warn softly
-        try { sel.value = 'none'; } catch {}
-  // Status element removed
-        return;
-      }
-      const ok = await doSwitch(v);
-    });
-    row.append(label, sel);
-    xr.content.appendChild(row);
+          } catch { return false; }
+        };
+        if (!vr) { try { sel.value = 'none'; } catch {} return; }
+        await doSwitch(v);
+      });
+      box.append(label, sel);
+      document.body.appendChild(box);
+    }
   }
 
   // Append all sections (Selection under Live Metrics)
-  panel.append(live.section, selSec.section, sim.section, periodic.section, sys.section, xr.section);
+  // Build panel: sections only (XR lives in a fixed widget)
+  panel.append(live.section, selSec.section, sim.section, periodic.section, sys.section);
   host.appendChild(panel);
 
   // Add a persistent reset button in bottom-right that resets the viewer state without reloading the page
@@ -1038,7 +1101,6 @@ export function buildDesktopPanel({ attachTo } = {}) {
     ['section-simulation', sim.content],
     ['section-periodic', periodic.content],
     ['section-system', sys.content],
-    ['section-xr', xr.content],
   ]);
 
   // Track original parent/nextSibling to restore reparented content
@@ -1250,7 +1312,6 @@ export function buildDesktopPanel({ attachTo } = {}) {
         selection: selSec.content,
       simulation: sim.content,
       system: sys.content,
-      xr: xr.content,
     }
   };
 }

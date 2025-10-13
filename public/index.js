@@ -1062,6 +1062,29 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       state.markPositionsChanged();
       // Clear velocities to avoid unexpected motion carry-over
       try { if(state.dynamics) state.dynamics.velocities = []; } catch {}
+      // Turn off PBC and restore initial cell snapshot (if any)
+      try {
+        // Always disable PBC visibility on reset
+        state.showCell = false;
+        // Also hide ghost cells if shown
+        if (state.showGhostCells) state.showGhostCells = false;
+        // Restore the initial cell geometry captured at load
+        if (state.__initialCellSnapshot) {
+          const c = state.__initialCellSnapshot;
+          state.cell = {
+            a: { x:c.a.x, y:c.a.y, z:c.a.z },
+            b: { x:c.b.x, y:c.b.y, z:c.b.z },
+            c: { x:c.c.x, y:c.c.y, z:c.c.z },
+            originOffset: c.originOffset ? { x:c.originOffset.x||0, y:c.originOffset.y||0, z:c.originOffset.z||0 } : { x:0,y:0,z:0 },
+            enabled: !!c.enabled,
+          };
+        } else {
+          // If no initial cell, clear any active cell config
+          try { state.cell = null; } catch {}
+        }
+        // Notify downstream listeners (UI, renderer) of cell change/reset
+        try { state.markCellChanged && state.markCellChanged(); } catch {}
+      } catch {}
       // Force recompute (sync) so forces and energy reflect reset positions promptly
       const f0 = (typeof performance!=='undefined' && performance.now)? performance.now(): Date.now();
       try { await ff.computeForces({ sync:true }); } catch(e){ try { console.warn('[Reset] computeForces failed', e?.message||e); } catch{} }
@@ -1083,6 +1106,21 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     if (need && Array.isArray(state.positions) && state.positions.length>0) {
       state.__initialPositions = state.positions.map(p=>({ x:p.x, y:p.y, z:p.z }));
       try { console.log('[Reset] baseline seeded after baselineEnergy', { count: state.__initialPositions.length }); } catch {}
+    }
+  } catch {}
+
+  // Capture initial cell snapshot once (for reset): use loader-provided cell if present
+  try {
+    if (!state.__initialCellSnapshot && state.cell && state.cell.a && state.cell.b && state.cell.c) {
+      const c = state.cell;
+      state.__initialCellSnapshot = {
+        a: { x:c.a.x, y:c.a.y, z:c.a.z },
+        b: { x:c.b.x, y:c.b.y, z:c.b.z },
+        c: { x:c.c.x, y:c.c.y, z:c.c.z },
+        originOffset: c.originOffset ? { x:c.originOffset.x||0, y:c.originOffset.y||0, z:c.originOffset.z||0 } : { x:0,y:0,z:0 },
+        enabled: !!c.enabled,
+      };
+      try { console.log('[Reset] captured initial cell snapshot'); } catch {}
     }
   } catch {}
 

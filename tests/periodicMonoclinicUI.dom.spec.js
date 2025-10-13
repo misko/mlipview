@@ -33,19 +33,19 @@ describe('Periodic tab monoclinic UI', () => {
     // Desktop: tab might not be used; ensure section exists
     const section = document.getElementById('section-periodic');
     expect(section).toBeTruthy();
-    const pbc = section.querySelector('#togglePBC');
+    const pbcToggle = section.querySelector('#togglePBCHeader');
     const a = section.querySelector('#cellA');
     const b = section.querySelector('#cellB');
     const c = section.querySelector('#cellC');
     const beta = section.querySelector('#cellBeta');
-    expect(pbc).toBeTruthy();
+    expect(pbcToggle).toBeTruthy();
     expect(a && b && c && beta).toBeTruthy();
   });
 
   test('enabling PBC enables nudgers; nudging updates cell with beta angle', async () => {
     const { state } = await setup();
     const section = document.getElementById('section-periodic');
-    const pbc = section.querySelector('#togglePBC');
+    const pbcToggle = section.querySelector('#togglePBCHeader');
     const a = section.querySelector('#cellA');
     const b = section.querySelector('#cellB');
     const c = section.querySelector('#cellC');
@@ -58,7 +58,7 @@ describe('Periodic tab monoclinic UI', () => {
     // Initially disabled because showCell=false (via buttons disabled)
     expect(aPlus.disabled && bPlus.disabled && cPlus.disabled && betaPlus.disabled).toBe(true);
     // Toggle PBC on
-    pbc.click();
+    pbcToggle.click();
     expect(state.showCell).toBe(true);
     // Controls should enable
     expect(aPlus.disabled || bPlus.disabled || cPlus.disabled || betaPlus.disabled).toBe(false);
@@ -79,10 +79,10 @@ describe('Periodic tab monoclinic UI', () => {
     // Enable fake timers after setup so the internal wait(0) can resolve
     jest.useFakeTimers();
     const section = document.getElementById('section-periodic');
-    const pbc = section.querySelector('#togglePBC');
+    const pbcToggle = section.querySelector('#togglePBCHeader');
   const beta = section.querySelector('#cellBeta');
     const betaPlus = section.querySelector('#cellBetaPlus');
-    pbc.click();
+    pbcToggle.click();
     // Start near upper bound
   beta.textContent = '178';
   // Hold pointer down to auto-increment (use generic Event for jsdom)
