@@ -40,10 +40,14 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
     }
 
     function buildWorldRow({ name='xrHudPanel', verticalFrac=0.6, top=false, includeEnergy=true, energyScaleX=1, energyScaleY=1, planeWidth, planeHeight }){
-      const __rowScaleX = (includeEnergy ? Math.max(1, energyScaleX||1) : 1);
-      const __rowScaleY = (includeEnergy ? Math.max(1, energyScaleY||1) : 1);
-      const pw = (typeof planeWidth === 'number' && planeWidth>0) ? planeWidth : (1.35 * __rowScaleX);
-      const ph = (typeof planeHeight === 'number' && planeHeight>0) ? planeHeight : (0.38 * __rowScaleY);
+      // Determine scale from explicit plane size when provided; otherwise fall back to energy scale
+      const basePW = 1.35, basePH = 0.38;
+      const hasPW = (typeof planeWidth === 'number' && planeWidth>0);
+      const hasPH = (typeof planeHeight === 'number' && planeHeight>0);
+      const sX = hasPW ? (planeWidth / basePW) : (includeEnergy ? Math.max(1, energyScaleX||1) : 1);
+      const sY = hasPH ? (planeHeight / basePH) : (includeEnergy ? Math.max(1, energyScaleY||1) : 1);
+      const pw = hasPW ? planeWidth : (basePW * sX);
+      const ph = hasPH ? planeHeight : (basePH * sY);
       const plane = BABYLON.MeshBuilder.CreatePlane(name, { width: pw, height: ph }, scene);
       const forward = cam.getDirection(BABYLON.Axis.Z).normalize();
       const up = cam.getDirection ? cam.getDirection(BABYLON.Axis.Y).normalize() : BABYLON.Vector3.Up();
@@ -54,8 +58,8 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
       plane.isPickable = true;
       try { plane.metadata = { hudPanel:true, row: top?'top':'bottom' }; } catch{}
 
-  const texW = Math.round(1300 * __rowScaleX);
-  const texH = Math.round(340 * __rowScaleY);
+  const texW = Math.round(1300 * sX);
+  const texH = Math.round(340 * sY);
   const tex = BABYLON.GUI.AdvancedDynamicTexture.CreateForMesh(plane, texW, texH, false);
       try { tex._rootContainer?.children?.forEach(c=>{ c.metadata = c.metadata||{}; c.metadata.hudRoot=true; }); } catch{}
 
@@ -64,7 +68,7 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
       tex.addControl(bg);
 
   const stack = new BABYLON.GUI.StackPanel();
-  stack.isVertical=false; stack.height = (300 * __rowScaleY) + 'px';
+  stack.isVertical=false; stack.height = (300 * sY) + 'px';
       stack.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
       bg.addControl(stack);
 
@@ -106,17 +110,20 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
 
     // Controls model shared by both rows
     const gv = ()=>{ try { return getViewer?.() || window._viewer || window.viewerApi; } catch{} return null; };
-    let controlsModel; let btnSets = { relax:[], md:[], off:[], forces:[] };
-    function syncButtons(){ try { const sel = controlsModel?.simSelection?.() || { relax:false, md:false, off:true }; const activeBg = 'rgba(40,140,100,0.9)'; const normalBg = 'rgba(60,70,82,0.85)'; btnSets.relax.forEach(b=> b.background = sel.relax ? activeBg : normalBg); btnSets.md.forEach(b=> b.background = sel.md ? activeBg : normalBg); btnSets.off.forEach(b=> b.background = sel.off ? activeBg : normalBg); const fLabel=(controlsModel?.forcesLabel?.())||'Forces'; btnSets.forces.forEach(b=>{ try { if(b.textBlock) b.textBlock.text=fLabel; else if(b.children&&b.children[0]) b.children[0].text=fLabel; } catch{} }); } catch{} }
+  let controlsModel; let btnSets = { relax:[], md:[], off:[], pbc:[], forces:[] };
+  function syncButtons(){ try { const sel = controlsModel?.simSelection?.() || { relax:false, md:false, off:true }; const activeBg = 'rgba(40,140,100,0.9)'; const normalBg = 'rgba(60,70,82,0.85)'; btnSets.relax.forEach(b=> b.background = sel.relax ? activeBg : normalBg); btnSets.md.forEach(b=> b.background = sel.md ? activeBg : normalBg); btnSets.off.forEach(b=> b.background = sel.off ? activeBg : normalBg); const fLabel=(controlsModel?.forcesLabel?.())||'Forces'; btnSets.forces.forEach(b=>{ try { if(b.textBlock) b.textBlock.text=fLabel; else if(b.children&&b.children[0]) b.children[0].text=fLabel; } catch{} }); const pLabel=(controlsModel?.pbcLabel?.())||'PBC'; btnSets.pbc.forEach(b=>{ try { if(b.textBlock) b.textBlock.text=pLabel; else if(b.children&&b.children[0]) b.children[0].text=pLabel; } catch{} }); } catch{} }
     try { import('./xr-controls-core.js').then(p=>{ try { const build=p.buildXRControlsModel||(p.default&&p.default.buildXRControlsModel); if(build){ controlsModel = build({ getViewer: gv, onStateChange: syncButtons, reloadPage: ()=>{ try { location.reload(); } catch {} } }); try { controlsModel.refresh && controlsModel.refresh(); } catch {} syncButtons(); } } catch{} }).catch(()=>{}); } catch{}
 
     // Bottom row
-  const bottom = buildWorldRow({ name:'xrHudPanel', verticalFrac:0.6, top:false, includeEnergy:false, planeWidth:1.35, planeHeight:0.38 });
+  // Widen bottom bar to fit: Relax | MD | Off | [sp] | PBC | [sp] | Forces | [sp] | Reset
+  const bottom = buildWorldRow({ name:'xrHudPanel', verticalFrac:0.6, top:false, includeEnergy:false, planeWidth:2.0, planeHeight:0.38 });
     const b_relax = btn(bottom.stack, 'Relax', ()=>{ controlsModel?.setSimulation('relax'); syncButtons(); }); btnSets.relax.push(b_relax);
   const b_md    = btn(bottom.stack, 'MD',    ()=>{ controlsModel?.setSimulation('md');    syncButtons(); }); btnSets.md.push(b_md);
   const b_off   = btn(bottom.stack, 'Off',   ()=>{ controlsModel?.setSimulation('off');   syncButtons(); }); btnSets.off.push(b_off);
-  // Spacer between Off and Forces
+  // Spacer, then PBC toggle, then spacer
   try { const sp1 = new BABYLON.GUI.Rectangle(); sp1.width='30px'; sp1.height='260px'; sp1.thickness=0; sp1.background='transparent'; bottom.stack.addControl(sp1); } catch{}
+  const b_pbc = btn(bottom.stack, (controlsModel?.pbcLabel?.())||'PBC', ()=>{ controlsModel?.togglePBC?.(); syncButtons(); }); btnSets.pbc.push(b_pbc);
+  try { const sp1b = new BABYLON.GUI.Rectangle(); sp1b.width='30px'; sp1b.height='260px'; sp1b.thickness=0; sp1b.background='transparent'; bottom.stack.addControl(sp1b); } catch{}
   const b_forces= btn(bottom.stack, (controlsModel?.forcesLabel?.())||'Forces', ()=>{ controlsModel?.toggleForces?.(); syncButtons(); }); btnSets.forces.push(b_forces);
   // Spacer between Forces and Reset
   try { const sp2 = new BABYLON.GUI.Rectangle(); sp2.width='30px'; sp2.height='260px'; sp2.thickness=0; sp2.background='transparent'; bottom.stack.addControl(sp2); } catch{}

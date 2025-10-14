@@ -23,6 +23,16 @@ function createSection(id, title, { defaultOpen = false } = {}) {
   header.setAttribute('aria-expanded', defaultOpen ? 'true' : 'false');
   header.textContent = title;
 
+  // Right-aligned +/- indicator
+  const indicator = document.createElement('span');
+  indicator.className = 'collapse-indicator';
+  const setIndicator = () => {
+    const open = header.getAttribute('aria-expanded') === 'true';
+    indicator.textContent = open ? '−' : '+';
+  };
+  setIndicator();
+  header.appendChild(indicator);
+
   const content = document.createElement('div');
   content.className = 'panel-content';
   if (!defaultOpen) content.setAttribute('data-collapsed', 'true');
@@ -36,7 +46,16 @@ function createSection(id, title, { defaultOpen = false } = {}) {
       content.setAttribute('data-collapsed', 'true');
       header.setAttribute('aria-expanded', 'false');
     }
+    setIndicator();
   });
+
+  // Keep indicator synced if aria-expanded is changed programmatically
+  try {
+    const mo = new MutationObserver((muts)=>{
+      for (const m of muts) { if (m.attributeName === 'aria-expanded') { setIndicator(); break; } }
+    });
+    mo.observe(header, { attributes: true, attributeFilter: ['aria-expanded'] });
+  } catch {}
 
   section.appendChild(header);
   section.appendChild(content);
@@ -205,11 +224,13 @@ export function buildDesktopPanel({ attachTo } = {}) {
       .value { font-size: 12px; }
       .divider { border-top: 1px solid var(--border); margin: 8px 0; }
   /* Inline controls inside headers */
-  .inline-controls { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); display: inline-flex; gap: 8px; align-items: center; }
+  .inline-controls { position: absolute; right: 28px; top: 50%; transform: translateY(-50%); display: inline-flex; gap: 8px; align-items: center; }
   .inline-controls label { font-size: 12px; color: var(--muted); }
   .inline-controls .state-label { font-size: 12px; color: var(--muted); min-width: 24px; text-align: left; }
   .radio { display: inline-flex; align-items: center; gap: 4px; }
   .radio input[type="radio"] { accent-color: #3B82F6; cursor: pointer; }
+  /* Collapse indicator at far right of header */
+  .panel-header .collapse-indicator { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); font-weight: 700; pointer-events: none; }
       /* Fixed XR widget top-right */
       #xrModeWidget {
         position: fixed;
@@ -321,11 +342,23 @@ export function buildDesktopPanel({ attachTo } = {}) {
       s.textContent = `
         /* Selection section */
         #section-selection .panel-content { padding-top:6px; padding-bottom:8px; }
-        #section-selection .mini-spheres { display:flex; align-items:center; gap:8px; height:46px; }
+  /* Selection header: keep title left-aligned; spheres on the right */
+  #section-selection .panel-header { padding-left: 10px; }
+        #section-selection .panel-header .header-spheres { position:absolute; right:10px; top:50%; transform: translateY(-50%); display:flex; gap:6px; pointer-events:none; }
+        /* Centered selection name in header */
+        #section-selection .panel-header .sel-name {
+          position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+          max-width: calc(100% - 140px); /* leave room for left text and right spheres */
+          text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+          font-weight: 600; color: var(--text); pointer-events: none;
+        }
+        #section-selection .panel-header .header-spheres .atom-sphere { width:20px; height:20px; }
         #section-selection .atom-sphere { width:30px; height:30px; border-radius:50%; border:1px solid rgba(255,255,255,0.15); box-shadow: inset 0 0 6px rgba(0,0,0,0.5); }
   #section-selection .info { font-size:12px; color: var(--text); line-height:1.4; }
   #section-selection .info #selPosition { font-size: 11px; color: var(--text); }
         #section-selection .info .label { color: var(--muted); margin-right:6px; }
+  /* Compact rotate buttons (smaller button, same icon size) */
+  #section-selection #bondRotateWrap .btn { width: 28px; height: 28px; padding: 2px; display:inline-flex; align-items:center; justify-content:center; font-size: 18px; line-height: 1; }
         #section-selection .grid { margin-top:8px; display:grid; grid-template-columns: repeat(10, 1fr); gap:4px; }
         #section-selection .pt-el { text-align:center; padding:0; border-radius:2px; border:1px solid var(--border); font-size:10px; color: var(--text); background:#171717; user-select:none; box-sizing:border-box; }
         #section-selection .pt-el.highlight { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
@@ -357,24 +390,39 @@ export function buildDesktopPanel({ attachTo } = {}) {
   function fmtPos(p){ if(!p) return '(-,-,-)'; return `(${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)})`; }
     function dist(a,b){ const dx=a.x-b.x, dy=a.y-b.y, dz=a.z-b.z; return Math.sqrt(dx*dx+dy*dy+dz*dz); }
 
-    // UI structure
-    const spheres = document.createElement('div'); spheres.className = 'mini-spheres';
-    const sphereA = document.createElement('div'); sphereA.className = 'atom-sphere'; sphereA.style.display='none'; sphereA.id='selSphereA';
-    const sphereB = document.createElement('div'); sphereB.className = 'atom-sphere'; sphereB.style.display='none'; sphereB.id='selSphereB';
-    spheres.append(sphereA, sphereB);
+  // UI structure — spheres moved into header (smaller) and not shown in content
+  const selHeader = selSec.section.querySelector('.panel-header');
+  const headerSpheres = document.createElement('div'); headerSpheres.className = 'header-spheres';
+  const headerName = document.createElement('div'); headerName.id = 'selElementName'; headerName.className = 'sel-name'; headerName.textContent = '—';
+  const sphereA = document.createElement('div'); sphereA.className = 'atom-sphere'; sphereA.style.display='none'; sphereA.id='selSphereA';
+  const sphereB = document.createElement('div'); sphereB.className = 'atom-sphere'; sphereB.style.display='none'; sphereB.id='selSphereB';
+    headerSpheres.append(sphereA, sphereB);
+    if (selHeader) { selHeader.appendChild(headerName); selHeader.appendChild(headerSpheres); }
+    // Helper: shrink header name text to fit available width
+    function fitHeaderName(node){
+      try {
+        if (!node) return;
+        // Reset to base size (inherit) before measuring
+        node.style.fontSize = '';
+        const maxLoops = 8; let loops = 0;
+        let size = parseFloat(getComputedStyle(node).fontSize) || 13;
+        while (node.scrollWidth > node.clientWidth && size > 10 && loops < maxLoops) {
+          size -= 1; loops += 1; node.style.fontSize = size + 'px';
+        }
+      } catch {}
+    }
 
     const info = document.createElement('div'); info.className = 'info';
     info.innerHTML = `
-      <div><span class="label">Element:</span><span id="selElementName">—</span></div>
       <div><span class="label">Position:</span><span id="selPosition">(-,-,-)</span></div>
       <div><span class="label">Atomic weight (amu):</span><span id="selAtomicWeight">—</span></div>
       <div><span class="label">vdW radius (Å):</span><span id="selVdw">—</span></div>
-      <div id="bondInfoRow"><span class="label">Bond length:</span><span id="bondLength">N/A</span></div>
-      <div id="rotateRow"><span class="label">Rotate bond:</span>
-        <span id="rotateNA">N/A</span>
-        <span id="rotateBtns" style="display:none; gap:6px;">
-          <button id="bondRotMinus" class="btn" title="Rotate -">-</button>
-          <button id="bondRotPlus" class="btn" title="Rotate +">+</button>
+      <div id="bondRow" class="row">
+        <span class="label">Bond:</span>
+        <span id="bondLength" class="mono" style="display:inline-block; width:8ch; text-align:right; background:#171717; border:1px solid var(--border); border-radius:8px; padding:4px 6px;">N/A</span>
+        <span id="bondRotateWrap" style="display:none; gap:6px; align-items:center;">
+          <button id="bondRotMinus" class="btn" title="Rotate counter-clockwise">↺</button>
+          <button id="bondRotPlus" class="btn" title="Rotate clockwise">↻</button>
         </span>
       </div>
     `;
@@ -462,7 +510,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
     }
   PERIOD_ROWS.forEach(r => miniBody.appendChild(makeRow(r)));
 
-    selSec.content.append(spheres, info, mini);
+  selSec.content.append(info, mini);
 
     // Live updater bound to selection changes
     function getViewer(){ try { return window.viewerApi || window._viewer; } catch { return null; } }
@@ -502,16 +550,15 @@ export function buildDesktopPanel({ attachTo } = {}) {
       const st = api.state;
       const sel = st && st.selection || { kind:null };
       try { if (typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_UI) console.log('[panel] updateFromSelection sel=', sel); } catch {}
-      const elNameNode = selSec.content.querySelector('#selElementName');
+  const elNameNode = selSec.section.querySelector('#selElementName');
       const posNode = selSec.content.querySelector('#selPosition');
       const weightNode = selSec.content.querySelector('#selAtomicWeight');
       const vdwNode = selSec.content.querySelector('#selVdw');
-      const bondRow = selSec.content.querySelector('#bondInfoRow');
-      const bondLenNode = selSec.content.querySelector('#bondLength');
-      const rotNA = selSec.content.querySelector('#rotateNA');
-      const rotBtns = selSec.content.querySelector('#rotateBtns');
-      const rotMinus = selSec.content.querySelector('#bondRotMinus');
-      const rotPlus = selSec.content.querySelector('#bondRotPlus');
+  const bondRow = selSec.content.querySelector('#bondRow');
+  const bondLenNode = selSec.content.querySelector('#bondLength');
+  const rotWrap = selSec.content.querySelector('#bondRotateWrap');
+  const rotMinus = selSec.content.querySelector('#bondRotMinus');
+  const rotPlus = selSec.content.querySelector('#bondRotPlus');
       // Bind handlers once
       if (!rotMinus.__bound) {
         const EPS = 0.1;
@@ -533,14 +580,15 @@ export function buildDesktopPanel({ attachTo } = {}) {
         ensureSelectionOpenOnce();
         // Show virtual element selection
         setSphere(sphereA, __overrideElementSym); setSphere(sphereB, null);
-        elNameNode.textContent = symbolToName(__overrideElementSym);
+  elNameNode.textContent = symbolToName(__overrideElementSym);
+  fitHeaderName(elNameNode);
         posNode.textContent = '(-,-,-)';
         const mw = weightForSym(__overrideElementSym);
         const rv = vdwForSym(__overrideElementSym);
         weightNode.textContent = (mw!=null) ? mw.toFixed(3) : '—';
         vdwNode.textContent = (rv!=null) ? rv.toFixed(2) : '—';
-        bondRow.style.display = 'block'; bondLenNode.textContent = 'N/A';
-        rotNA.style.display = 'inline'; rotBtns.style.display = 'none';
+  bondRow.style.display = 'block'; bondLenNode.textContent = 'N/A';
+  rotWrap.style.display = 'none';
         highlight([__overrideElementSym]);
       } else if (sel.kind === 'atom') {
         ensureSelectionOpenOnce();
@@ -549,14 +597,15 @@ export function buildDesktopPanel({ attachTo } = {}) {
         const name = symbolToName(sym);
         const pos = st.positions[idx];
         setSphere(sphereA, sym); setSphere(sphereB, null);
-        elNameNode.textContent = name;
+  elNameNode.textContent = name;
+  fitHeaderName(elNameNode);
         posNode.textContent = fmtPos(pos);
         const mw = weightForSym(sym);
         const rv = vdwForSym(sym);
         weightNode.textContent = (mw!=null) ? mw.toFixed(3) : '—';
         vdwNode.textContent = (rv!=null) ? rv.toFixed(2) : '—';
-        bondRow.style.display = 'block'; bondLenNode.textContent = 'N/A';
-        rotNA.style.display = 'inline'; rotBtns.style.display = 'none';
+  bondRow.style.display = 'block'; bondLenNode.textContent = 'N/A';
+  rotWrap.style.display = 'none';
         highlight([sym]);
       } else if (sel.kind === 'bond') {
         ensureSelectionOpenOnce();
@@ -568,7 +617,8 @@ export function buildDesktopPanel({ attachTo } = {}) {
         const posA = st.positions[i];
         const posB = st.positions[j];
         setSphere(sphereA, symA); setSphere(sphereB, symB);
-        elNameNode.textContent = `${nameA} – ${nameB}`;
+  elNameNode.textContent = `${nameA} – ${nameB}`;
+  fitHeaderName(elNameNode);
         posNode.textContent = `${fmtPos(posA)} – ${fmtPos(posB)}`;
         const mwA = weightForSym(symA), mwB = weightForSym(symB);
         const rvA = vdwForSym(symA), rvB = vdwForSym(symB);
@@ -576,23 +626,32 @@ export function buildDesktopPanel({ attachTo } = {}) {
         vdwNode.textContent = `${rvA!=null?rvA.toFixed(2):'—'} – ${rvB!=null?rvB.toFixed(2):'—'}`;
         const L = dist(posA, posB);
         bondRow.style.display = 'block';
-        bondLenNode.textContent = `${L.toFixed(3)} Å`;
-        rotNA.style.display = 'none'; rotBtns.style.display = 'inline-flex';
+  bondLenNode.textContent = `${L.toFixed(2)} Å`;
+  rotWrap.style.display = 'inline-flex';
         try { if (typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_UI) console.log('[panel] showing rotate buttons for bond', i, j, 'L=', L.toFixed(3)); } catch {}
         highlight([symA, symB]);
       } else {
         setSphere(sphereA, null); setSphere(sphereB, null);
-        elNameNode.textContent = '—';
+  elNameNode.textContent = '—';
+  fitHeaderName(elNameNode);
         posNode.textContent = '(-,-,-)';
         weightNode.textContent = '—';
         vdwNode.textContent = '—';
-        bondRow.style.display = 'block'; bondLenNode.textContent = 'N/A';
-        rotNA.style.display = 'inline'; rotBtns.style.display = 'none';
+  bondRow.style.display = 'block'; bondLenNode.textContent = 'N/A';
+  rotWrap.style.display = 'none';
         highlight([]);
       }
     }
     // Initial draw and subscriptions
     updateFromSelection();
+    // Keep header name fitting on resize
+    try { window.addEventListener('resize', ()=>{
+      const n = selSec.section.querySelector('#selElementName');
+      if (n) {
+        // Give layout a moment to settle
+        setTimeout(()=> fitHeaderName(n), 0);
+      }
+    }, { passive: true }); } catch {}
     try {
       const api = getViewer();
       if (api && api.state && api.state.bus) {

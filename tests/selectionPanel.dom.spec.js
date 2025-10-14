@@ -85,7 +85,7 @@ describe('Selection panel UI', () => {
     expect(pos.textContent).toContain(') – (');
     expect(w.textContent).toBe('14.007 – 15.999');
     expect(vdw.textContent).toBe('1.55 – 1.52');
-    expect(bondLen.textContent).toContain('1.000');
+  expect(bondLen.textContent).toContain('1.00');
     expect(bondLen.textContent).toContain('Å');
     const nCell = document.querySelector('#miniPeriodic .pt-el[data-symbol="N"]');
     const oCell = document.querySelector('#miniPeriodic .pt-el[data-symbol="O"]');
