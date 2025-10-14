@@ -27,7 +27,7 @@ function resolveFracMag(kind){
   return kind==='top' ? DEFAULT_TOP_FRAC_MAG : DEFAULT_BOTTOM_FRAC_MAG;
 }
 
-export function ensureWorldHUD({ scene, getViewer } = {}){
+export function ensureWorldHUD({ scene, getViewer, topEnergyDistanceMult=2, topEnergyScaleMult=2, topEnergyIsPickable=false } = {}){
   try {
     if (typeof window !== 'undefined' && window.__XR_HUD_FALLBACK) return window.__XR_HUD_FALLBACK;
     if (!scene || typeof BABYLON === 'undefined' || !BABYLON.GUI || !BABYLON.GUI.AdvancedDynamicTexture) {
@@ -36,11 +36,13 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
     }
     const cam = scene.activeCamera; if (!cam) return null;
 
-  const distBottom = 1.1;                // legacy distance for bottom controls bar
-  const distTop = distBottom * 3;        // move energy plot back 3x for better scene access
-  const fov = cam.fov || Math.PI/2; // vertical fov
-  const halfHeightBottom = Math.tan(fov/2) * distBottom;
-  const halfHeightTop = Math.tan(fov/2) * distTop;
+  const dist = 1.1; // base distance for bottom row
+  // Sanitize user-provided multipliers
+  topEnergyDistanceMult = (Number.isFinite(topEnergyDistanceMult) && topEnergyDistanceMult>0) ? topEnergyDistanceMult : 2;
+  topEnergyScaleMult = (Number.isFinite(topEnergyScaleMult) && topEnergyScaleMult>0) ? topEnergyScaleMult : 2;
+  const topDist = dist * topEnergyDistanceMult;
+    const fov = cam.fov || Math.PI/2; // vertical fov
+    const halfHeight = Math.tan(fov/2) * dist;
 
     // Debug flags helpers
     const wpEnergyDebug = ()=> (typeof window!=='undefined') && (window.XR_ENERGY_DEBUG || window.XR_HUD_DEBUG || /[?&](xrenergydebug|xrhuddebug)=1/.test(window.location.search));
@@ -60,7 +62,7 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
       return b;
     }
 
-  function buildWorldRow({ name='xrHudPanel', verticalFrac=0.6, top=false, includeEnergy=true, energyScaleX=1, energyScaleY=1, planeWidth, planeHeight, distance, halfHeight }){
+    function buildWorldRow({ name='xrHudPanel', verticalFrac=0.6, top=false, includeEnergy=true, energyScaleX=1, energyScaleY=1, planeWidth, planeHeight }){
       // Determine scale from explicit plane size when provided; otherwise fall back to energy scale
       const basePW = 1.35, basePH = 0.38;
       const hasPW = (typeof planeWidth === 'number' && planeWidth>0);
@@ -72,8 +74,8 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
       const plane = BABYLON.MeshBuilder.CreatePlane(name, { width: pw, height: ph }, scene);
       const forward = cam.getDirection(BABYLON.Axis.Z).normalize();
       const up = cam.getDirection ? cam.getDirection(BABYLON.Axis.Y).normalize() : BABYLON.Vector3.Up();
-  const downward = halfHeight * verticalFrac;
-  const basePos = cam.position.add(forward.scale(distance)).subtract(up.scale(downward));
+      const downward = halfHeight * verticalFrac;
+      const basePos = cam.position.add(forward.scale(dist)).subtract(up.scale(downward));
       plane.position.copyFrom(basePos);
       plane.billboardMode = BABYLON.Mesh.BILLBOARDMODE_NONE;
       plane.isPickable = true;
@@ -154,7 +156,7 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
     // Bottom row
   // Widen bottom bar to fit: Relax | MD | Off | [sp] | PBC | [sp] | Forces | [sp] | Reset
   // Reduce planeHeight by ~30% (0.38 -> ~0.266) for sleeker bottom bar
-  const bottom = buildWorldRow({ name:'xrHudPanel', verticalFrac:resolveFracMag('bottom'), top:false, includeEnergy:false, planeWidth:2.0, planeHeight:0.38*0.70, distance: distBottom, halfHeight: halfHeightBottom });
+  const bottom = buildWorldRow({ name:'xrHudPanel', verticalFrac:resolveFracMag('bottom'), top:false, includeEnergy:false, planeWidth:2.0, planeHeight:0.38*0.70 });
     const b_relax = btn(bottom.stack, 'Relax', ()=>{ controlsModel?.setSimulation('relax'); syncButtons(); }); btnSets.relax.push(b_relax);
   const b_md    = btn(bottom.stack, 'MD',    ()=>{ controlsModel?.setSimulation('md');    syncButtons(); }); btnSets.md.push(b_md);
   const b_off   = btn(bottom.stack, 'Off',   ()=>{ controlsModel?.setSimulation('off');   syncButtons(); }); btnSets.off.push(b_off);
@@ -168,32 +170,30 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
   const b_reset = btn(bottom.stack, 'Reset', ()=>{ controlsModel?.reset?.(); syncButtons(); });
 
     // Top row mirror
-    const distRatio = distTop / distBottom;
     const topRow = buildWorldRow({
       name:'xrHudPanelTop',
       verticalFrac:-resolveFracMag('top'),
       top:true,
       includeEnergy:true,
-      energyScaleX:3,
-      energyScaleY:2.5,
-      // Scale plane so angular size remains roughly constant when moved farther away.
-      planeWidth:(1.35*2*2) * distRatio,
-      planeHeight:(0.38*1.5*1.5) * distRatio,
-      distance: distTop,
-      halfHeight: halfHeightTop
+      // Scale the energy plot internals proportionally so the graph remains readable at farther distance
+      energyScaleX:3 * topEnergyScaleMult,
+      energyScaleY:2.5 * topEnergyScaleMult,
+      planeWidth:(1.35*2*2) * topEnergyScaleMult,
+      planeHeight:(0.38*1.5*1.5) * topEnergyScaleMult
     });
-    // Allow selection to pass through energy plot panel (do not block picks)
-    try { topRow.plane.isPickable = false; } catch {}
+    // Make energy panel non-pickable by default so it doesn't block atom/bond selection.
+    try { topRow.plane.isPickable = !!topEnergyIsPickable; } catch {}
 
     try { controlsModel?.ensureDefaultActive?.(); } catch {}
     syncButtons();
 
     // Camera-follow behaviors for both rows
-  const followBottom = scene.onBeforeRenderObservable.add(()=>{ try { const c=scene.activeCamera; if(!c) return; const mag=resolveFracMag('bottom'); const hh=Math.tan((c.fov||Math.PI/2)/2)*distBottom; const fw=c.getDirection(BABYLON.Axis.Z).normalize(); const up2=c.getDirection?c.getDirection(BABYLON.Axis.Y).normalize():BABYLON.Vector3.Up(); const target=c.position.add(fw.scale(distBottom)).subtract(up2.scale(hh*mag)); bottom.plane.position.copyFrom(target); const toCam=c.position.subtract(bottom.plane.position); toCam.y=0; toCam.normalize(); const yaw=Math.atan2(toCam.x,toCam.z); bottom.plane.rotation.y = yaw + Math.PI; } catch{} });
-  const followTop = scene.onBeforeRenderObservable.add(()=>{ try { const c=scene.activeCamera; if(!c) return; const mag=resolveFracMag('top'); const hh=Math.tan((c.fov||Math.PI/2)/2)*distTop; const fw=c.getDirection(BABYLON.Axis.Z).normalize(); const up2=c.getDirection?c.getDirection(BABYLON.Axis.Y).normalize():BABYLON.Vector3.Up(); const target=c.position.add(fw.scale(distTop)).subtract(up2.scale(hh*-mag)); topRow.plane.position.copyFrom(target); const toCam=c.position.subtract(topRow.plane.position); toCam.y=0; toCam.normalize(); const yaw=Math.atan2(toCam.x,toCam.z); topRow.plane.rotation.y = yaw + Math.PI; } catch{} });
+  const followBottom = scene.onBeforeRenderObservable.add(()=>{ try { const c=scene.activeCamera; if(!c) return; const mag=resolveFracMag('bottom'); const hh=Math.tan((c.fov||Math.PI/2)/2)*dist; const fw=c.getDirection(BABYLON.Axis.Z).normalize(); const up2=c.getDirection?c.getDirection(BABYLON.Axis.Y).normalize():BABYLON.Vector3.Up(); const target=c.position.add(fw.scale(dist)).subtract(up2.scale(hh*mag)); bottom.plane.position.copyFrom(target); const toCam=c.position.subtract(bottom.plane.position); toCam.y=0; toCam.normalize(); const yaw=Math.atan2(toCam.x,toCam.z); bottom.plane.rotation.y = yaw + Math.PI; } catch{} });
+  const followTop = scene.onBeforeRenderObservable.add(()=>{ try { const c=scene.activeCamera; if(!c) return; const mag=resolveFracMag('top'); // Keep vertical offset based on base dist so Y band unchanged
+    const baseHH = Math.tan((c.fov||Math.PI/2)/2)*dist; const fw=c.getDirection(BABYLON.Axis.Z).normalize(); const up2=c.getDirection?c.getDirection(BABYLON.Axis.Y).normalize():BABYLON.Vector3.Up(); const target=c.position.add(fw.scale(topDist)).subtract(up2.scale(baseHH*-mag)); topRow.plane.position.copyFrom(target); const toCam=c.position.subtract(topRow.plane.position); toCam.y=0; toCam.normalize(); const yaw=Math.atan2(toCam.x,toCam.z); topRow.plane.rotation.y = yaw + Math.PI; } catch{} });
 
     console.log('[XR][HUD] world bars created (camera-follow top & bottom)');
-  const result = { plane: bottom.plane, tex: bottom.tex, followObs: followBottom, planeTop: topRow.plane, texTop: topRow.tex, followObsTop: followTop, buttons: ['Relax','MD','Off','Forces','Reset'], energy:true, getControlsModel: ()=>controlsModel };
+  const result = { plane: bottom.plane, tex: bottom.tex, followObs: followBottom, planeTop: topRow.plane, texTop: topRow.tex, followObsTop: followTop, buttons: ['Relax','MD','Off','Forces','Reset'], energy:true, getControlsModel: ()=>controlsModel, topEnergyDistanceMult, topEnergyScaleMult };
     try { window.__XR_HUD_FALLBACK = result; window.__XR_HUD_FALLBACK_TOP = { plane: topRow.plane, tex: topRow.tex }; } catch {}
     return result;
   } catch(e){ console.warn('[XR][HUD] world HUD create failed', e); return null; }
