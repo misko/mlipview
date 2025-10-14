@@ -27,7 +27,7 @@ function resolveFracMag(kind){
   return kind==='top' ? DEFAULT_TOP_FRAC_MAG : DEFAULT_BOTTOM_FRAC_MAG;
 }
 
-export function ensureWorldHUD({ scene, getViewer, topEnergyDistanceMult=2, topEnergyScaleMult=2, topEnergyIsPickable=false } = {}){
+export function ensureWorldHUD({ scene, getViewer, topEnergyDistanceMult=2, topEnergyScaleMult=2, topEnergyIsPickable=false, maxHUDTextureDim } = {}){
   try {
     if (typeof window !== 'undefined' && window.__XR_HUD_FALLBACK) return window.__XR_HUD_FALLBACK;
     if (!scene || typeof BABYLON === 'undefined' || !BABYLON.GUI || !BABYLON.GUI.AdvancedDynamicTexture) {
@@ -62,6 +62,18 @@ export function ensureWorldHUD({ scene, getViewer, topEnergyDistanceMult=2, topE
       return b;
     }
 
+    // Resolve maximum HUD texture dimension (engine cap or provided). We fetch once per call.
+    let resolvedMaxHUDTex = 0;
+    try {
+      if (Number.isFinite(maxHUDTextureDim) && maxHUDTextureDim > 0) {
+        resolvedMaxHUDTex = maxHUDTextureDim|0;
+      } else {
+        const eng = scene.getEngine?.();
+        const cap = eng?.getCaps?.().maxTextureSize;
+        resolvedMaxHUDTex = (Number.isFinite(cap) && cap>0) ? cap : 4096; // conservative default for standalone headsets
+      }
+    } catch { resolvedMaxHUDTex = 4096; }
+
     function buildWorldRow({ name='xrHudPanel', verticalFrac=0.6, top=false, includeEnergy=true, energyScaleX=1, energyScaleY=1, planeWidth, planeHeight }){
       // Determine scale from explicit plane size when provided; otherwise fall back to energy scale
       const basePW = 1.35, basePH = 0.38;
@@ -81,10 +93,22 @@ export function ensureWorldHUD({ scene, getViewer, topEnergyDistanceMult=2, topE
       plane.isPickable = true;
       try { plane.metadata = { hudPanel:true, row: top?'top':'bottom' }; } catch{}
 
-  const texW = Math.round(1300 * sX);
-  const texH = Math.round(340 * sY);
+  let texW = Math.round(1300 * sX);
+  let texH = Math.round(340 * sY);
+  // Clamp oversized GUI textures to avoid black planes on devices with lower max texture size (e.g. mobile XR headsets)
+  let rawW=texW, rawH=texH; let clamped=false;
+  try {
+    const maxDim = resolvedMaxHUDTex;
+    if (maxDim && (texW>maxDim || texH>maxDim)) {
+      const scale = Math.min(maxDim/texW, maxDim/texH);
+      texW = Math.max(16, Math.floor(texW * scale));
+      texH = Math.max(16, Math.floor(texH * scale));
+      clamped = true;
+    }
+  } catch {}
   const tex = BABYLON.GUI.AdvancedDynamicTexture.CreateForMesh(plane, texW, texH, false);
       try { tex._rootContainer?.children?.forEach(c=>{ c.metadata = c.metadata||{}; c.metadata.hudRoot=true; }); } catch{}
+      try { plane.metadata = plane.metadata || {}; plane.metadata.hudTexSize = { w:texW, h:texH, rawW, rawH, clamped, max: resolvedMaxHUDTex }; } catch{}
 
   const bg = new BABYLON.GUI.Rectangle();
   bg.thickness=0; bg.cornerRadius=20; bg.background = top ? 'transparent' : 'rgba(25,32,42,0.78)';
