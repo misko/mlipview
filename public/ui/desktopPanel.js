@@ -11,6 +11,7 @@ import { showErrorBanner } from './errorBanner.js';
 import { isLikelySmiles } from '../util/smilesLoader.js';
 import { elInfo } from '../elements.js';
 import { defaultMassForZ } from '../physics/sim-model.js';
+import { getCellParameters, buildCellFromParameters } from '../util/pbc.js';
 
 function createSection(id, title, { defaultOpen = false } = {}) {
   const section = document.createElement('div');
@@ -427,6 +428,21 @@ export function buildDesktopPanel({ attachTo } = {}) {
       </div>
     `;
 
+    // Legacy test alias: some older tests expect an element with id "rotateBtns" to toggle visibility
+    // alongside the new #bondRotateWrap. Create a lightweight sibling that mirrors display state.
+    try {
+      const bondRowEl = info.querySelector('#bondRow');
+      const rotWrapEl = info.querySelector('#bondRotateWrap');
+      if (bondRowEl && rotWrapEl && !info.querySelector('#rotateBtns')) {
+        const legacy = document.createElement('span');
+        legacy.id = 'rotateBtns';
+        legacy.style.display = 'none';
+        legacy.style.gap = '6px';
+        legacy.style.alignItems = 'center';
+        bondRowEl.insertBefore(legacy, rotWrapEl.nextSibling);
+      }
+    } catch {}
+
     // Full periodic table layout as a fixed HTML table (18 columns).
     // Lanthanides/Actinides shown as separate indented rows. Using a table ensures consistent cell sizing and
     // visible grid lines for rows/columns.
@@ -557,6 +573,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
   const bondRow = selSec.content.querySelector('#bondRow');
   const bondLenNode = selSec.content.querySelector('#bondLength');
   const rotWrap = selSec.content.querySelector('#bondRotateWrap');
+  const rotWrapLegacy = selSec.content.querySelector('#rotateBtns');
   const rotMinus = selSec.content.querySelector('#bondRotMinus');
   const rotPlus = selSec.content.querySelector('#bondRotPlus');
       // Bind handlers once
@@ -588,7 +605,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
         weightNode.textContent = (mw!=null) ? mw.toFixed(3) : '—';
         vdwNode.textContent = (rv!=null) ? rv.toFixed(2) : '—';
   bondRow.style.display = 'block'; bondLenNode.textContent = 'N/A';
-  rotWrap.style.display = 'none';
+  rotWrap.style.display = 'none'; if (rotWrapLegacy) rotWrapLegacy.style.display = 'none';
         highlight([__overrideElementSym]);
       } else if (sel.kind === 'atom') {
         ensureSelectionOpenOnce();
@@ -605,7 +622,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
         weightNode.textContent = (mw!=null) ? mw.toFixed(3) : '—';
         vdwNode.textContent = (rv!=null) ? rv.toFixed(2) : '—';
   bondRow.style.display = 'block'; bondLenNode.textContent = 'N/A';
-  rotWrap.style.display = 'none';
+  rotWrap.style.display = 'none'; if (rotWrapLegacy) rotWrapLegacy.style.display = 'none';
         highlight([sym]);
       } else if (sel.kind === 'bond') {
         ensureSelectionOpenOnce();
@@ -627,7 +644,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
         const L = dist(posA, posB);
         bondRow.style.display = 'block';
   bondLenNode.textContent = `${L.toFixed(2)} Å`;
-  rotWrap.style.display = 'inline-flex';
+  rotWrap.style.display = 'inline-flex'; if (rotWrapLegacy) rotWrapLegacy.style.display = 'inline-flex';
         try { if (typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_UI) console.log('[panel] showing rotate buttons for bond', i, j, 'L=', L.toFixed(3)); } catch {}
         highlight([symA, symB]);
       } else {
@@ -882,7 +899,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
   }
   // Rendering section removed per request
 
-  // Periodic (collapsed) — PBC + monoclinic parameters, with PBC radios in header
+  // Periodic (collapsed) — PBC + full unit cell parameters, with PBC toggle in header
   const periodic = createSection('section-periodic', 'Periodic', { defaultOpen: false });
   {
   // Insert PBC toggle control into the header (right-aligned)
@@ -896,9 +913,9 @@ export function buildDesktopPanel({ attachTo } = {}) {
   pbcCtrls.append(pbcStateLabel, pbcToggle);
   hdr.appendChild(pbcCtrls);
 
-  // Monoclinic parameters: a, b, c (Å), beta (°) — alpha=gamma=90°
+  // Full parameters: a, b, c (Å), alpha, beta, gamma (°)
   const monoBlock = document.createElement('div'); monoBlock.className = 'block';
-  const monoLabel = document.createElement('div'); monoLabel.className = 'form-label'; monoLabel.textContent = 'Monoclinic cell';
+  const monoLabel = document.createElement('div'); monoLabel.className = 'form-label'; monoLabel.textContent = 'Unit cell (a,b,c,α,β,γ)';
     const makeValueDisplay = (id, placeholder) => {
       const span = document.createElement('span');
       span.id = id;
@@ -916,7 +933,9 @@ export function buildDesktopPanel({ attachTo } = {}) {
     const aIn = makeValueDisplay('cellA','a (Å)');
     const bIn = makeValueDisplay('cellB','b (Å)');
     const cIn = makeValueDisplay('cellC','c (Å)');
-    const betaIn = makeValueDisplay('cellBeta','β (°)');
+  const alphaIn = makeValueDisplay('cellAlpha','α (°)');
+  const betaIn = makeValueDisplay('cellBeta','β (°)');
+  const gammaIn = makeValueDisplay('cellGamma','γ (°)');
     // Nudge buttons (+/-) with press-and-hold auto-repeat
     function makeNudgers(valueEl, { idPrefix, step=0.1, min=0.01, max=999, onApply }){
       const minus = document.createElement('button'); minus.className='btn'; minus.textContent='-'; minus.title='Decrease'; minus.id = idPrefix+'Minus';
@@ -950,10 +969,13 @@ export function buildDesktopPanel({ attachTo } = {}) {
     }
     // No Apply button: values are controlled only via +/- and auto-apply
     // Arrange inputs with their nudgers as one row per parameter: Label: [value] (+) (-)
-  const aN = makeNudgers(aIn, { idPrefix:'cellA', step:0.1, min:0.01, max:999, onApply: ()=> applyMonoclinic() });
-  const bN = makeNudgers(bIn, { idPrefix:'cellB', step:0.1, min:0.01, max:999, onApply: ()=> applyMonoclinic() });
-  const cN = makeNudgers(cIn, { idPrefix:'cellC', step:0.1, min:0.01, max:999, onApply: ()=> applyMonoclinic() });
-  const betaN = makeNudgers(betaIn, { idPrefix:'cellBeta', step:1, min:1, max:179, onApply: ()=> applyMonoclinic() });
+  // Apply full cell parameters whenever any of a,b,c,alpha,beta,gamma changes
+  const aN = makeNudgers(aIn, { idPrefix:'cellA', step:0.1, min:0.01, max:999, onApply: ()=> applyCellParams() });
+  const bN = makeNudgers(bIn, { idPrefix:'cellB', step:0.1, min:0.01, max:999, onApply: ()=> applyCellParams() });
+  const cN = makeNudgers(cIn, { idPrefix:'cellC', step:0.1, min:0.01, max:999, onApply: ()=> applyCellParams() });
+  const alphaN = makeNudgers(alphaIn, { idPrefix:'cellAlpha', step:1, min:1, max:179, onApply: ()=> applyCellParams() });
+  const betaN = makeNudgers(betaIn, { idPrefix:'cellBeta', step:1, min:1, max:179, onApply: ()=> applyCellParams() });
+  const gammaN = makeNudgers(gammaIn, { idPrefix:'cellGamma', step:1, min:1, max:179, onApply: ()=> applyCellParams() });
     function makeParamRow(labelText, input, nudgers){
       const row = document.createElement('div'); row.className = 'row';
       const lbl = document.createElement('span'); lbl.className = 'form-label'; lbl.textContent = labelText;
@@ -963,12 +985,14 @@ export function buildDesktopPanel({ attachTo } = {}) {
       row.append(lbl, input, nudgers.plus, nudgers.minus);
       return row;
     }
-    const aRow = makeParamRow('A:', aIn, aN);
-    const bRow = makeParamRow('B:', bIn, bN);
-    const cRow = makeParamRow('C:', cIn, cN);
-    const betaRow = makeParamRow('β:', betaIn, betaN);
+  const aRow = makeParamRow('A:', aIn, aN);
+  const bRow = makeParamRow('B:', bIn, bN);
+  const cRow = makeParamRow('C:', cIn, cN);
+  const alphaRow = makeParamRow('α:', alphaIn, alphaN);
+  const betaRow = makeParamRow('β:', betaIn, betaN);
+  const gammaRow = makeParamRow('γ:', gammaIn, gammaN);
     // Append rows and apply button (its own row)
-  monoBlock.append(monoLabel, aRow, bRow, cRow, betaRow);
+  monoBlock.append(monoLabel, aRow, bRow, cRow, alphaRow, betaRow, gammaRow);
     periodic.content.appendChild(monoBlock);
 
     function getApi(){ try { return window.viewerApi||window._viewer; } catch { return null; } }
@@ -978,25 +1002,21 @@ export function buildDesktopPanel({ attachTo } = {}) {
     function rad2deg(r){ return r*180/Math.PI; }
     function deg2rad(d){ return d*Math.PI/180; }
     function extractParams(cell){
-      if(!cell) return { aLen:1, bLen:1, cLen:1, beta:90 };
-      const aL = Math.max(1e-6, len(cell.a));
-      const bL = Math.max(1e-6, len(cell.b));
-      const cL = Math.max(1e-6, len(cell.c));
-      // beta = angle between a and c
-      let cosB = 0;
-      try { cosB = clamp(dot(cell.a, cell.c) / (aL*cL), -1, 1); } catch { cosB = 0; }
-      const beta = rad2deg(Math.acos(cosB));
-      return { aLen:aL, bLen:bL, cLen:cL, beta: beta };
+      if(!cell) return { a:1, b:1, c:1, alpha:90, beta:90, gamma:90 };
+      const p = getCellParameters(cell) || { a:1, b:1, c:1, alpha:90, beta:90, gamma:90 };
+      return p;
     }
     function prefill(){
       const api = getApi(); const st = api && api.state; const c = st && st.cell;
       const p = extractParams(c);
-      aIn.textContent = p.aLen.toFixed(2);
-      bIn.textContent = p.bLen.toFixed(2);
-      cIn.textContent = p.cLen.toFixed(2);
+      aIn.textContent = p.a.toFixed(2);
+      bIn.textContent = p.b.toFixed(2);
+      cIn.textContent = p.c.toFixed(2);
+      alphaIn.textContent = p.alpha.toFixed(2);
       betaIn.textContent = p.beta.toFixed(2);
+      gammaIn.textContent = p.gamma.toFixed(2);
       const enabled = !!(st && st.showCell && c && c.enabled);
-      for (const el of [aN.minus,aN.plus,bN.minus,bN.plus,cN.minus,cN.plus,betaN.minus,betaN.plus]) el.disabled = !enabled;
+      for (const el of [aN.minus,aN.plus,bN.minus,bN.plus,cN.minus,cN.plus,alphaN.minus,alphaN.plus,betaN.minus,betaN.plus,gammaN.minus,gammaN.plus]) el.disabled = !enabled;
       // Reflect toggle state
       const on = !!(st && st.showCell && c && c.enabled);
       try {
@@ -1006,21 +1026,22 @@ export function buildDesktopPanel({ attachTo } = {}) {
         if (pbcStateLabel) pbcStateLabel.textContent = on ? 'On' : 'Off';
       } catch {}
     }
-    function applyMonoclinic(){
+    function applyCellParams(){
       const api = getApi(); const st = api && api.state; if (!st) return;
-  let aL = parseFloat(aIn.textContent), bL = parseFloat(bIn.textContent), cL = parseFloat(cIn.textContent), betaD = parseFloat(betaIn.textContent);
+  let aL = parseFloat(aIn.textContent), bL = parseFloat(bIn.textContent), cL = parseFloat(cIn.textContent);
+  let alphaD = parseFloat(alphaIn.textContent), betaD = parseFloat(betaIn.textContent), gammaD = parseFloat(gammaIn.textContent);
       if(!Number.isFinite(aL)||aL<=0) aL = 1;
       if(!Number.isFinite(bL)||bL<=0) bL = 1;
       if(!Number.isFinite(cL)||cL<=0) cL = 1;
+      if(!Number.isFinite(alphaD)) alphaD = 90;
       if(!Number.isFinite(betaD)) betaD = 90;
-      // Bound rotation angle strictly within (0,180) to avoid degenerate sin(beta)=0
+      if(!Number.isFinite(gammaD)) gammaD = 90;
+      alphaD = clamp(alphaD, 1, 179);
       betaD = clamp(betaD, 1, 179);
-      const betaR = deg2rad(betaD);
-      const a = { x:aL, y:0, z:0 };
-      const b = { x:0, y:bL, z:0 };
-      const c = { x: cL*Math.cos(betaR), y:0, z: cL*Math.sin(betaR) };
+      gammaD = clamp(gammaD, 1, 179);
+      const cell = buildCellFromParameters({ a:aL, b:bL, c:cL, alpha:alphaD, beta:betaD, gamma:gammaD });
       const originOffset = (st.cell && st.cell.originOffset) ? { ...st.cell.originOffset } : { x:0,y:0,z:0 };
-      st.cell = { a, b, c, originOffset, enabled: true };
+      st.cell = { ...cell, originOffset, enabled: true };
       st.markCellChanged && st.markCellChanged();
     }
   // No Apply or Enter binding; auto-apply occurs on each nudge

@@ -11,19 +11,21 @@ import { createManipulationService } from './domain/manipulationService.js';
 import { createVRSupport } from './vr/setup.js';
 import { createVRPicker } from './vr/vr-picker.js';
 import { __count } from './util/funcCount.js';
+import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS } from './util/constants.js';
 
 // --- Runtime Config (pacing, etc.) ---
 if (typeof window !== 'undefined') {
-  // Add mdFriction default if not present
-  window.__MLIP_CONFIG = window.__MLIP_CONFIG || { minStepIntervalMs: 30, mdFriction: 0.5 };
-  if (window.__MLIP_CONFIG.mdFriction == null) window.__MLIP_CONFIG.mdFriction = 0.5;
+  // Seed config with centralized defaults
+  window.__MLIP_CONFIG = window.__MLIP_CONFIG || { minStepIntervalMs: DEFAULT_MIN_STEP_INTERVAL_MS, mdFriction: DEFAULT_MD_FRICTION };
+  if (window.__MLIP_CONFIG.minStepIntervalMs == null) window.__MLIP_CONFIG.minStepIntervalMs = DEFAULT_MIN_STEP_INTERVAL_MS;
+  if (window.__MLIP_CONFIG.mdFriction == null) window.__MLIP_CONFIG.mdFriction = DEFAULT_MD_FRICTION;
 }
 function getConfig(){
   // Always return a valid config object with defaults; repair globals if missing
-  if (typeof window === 'undefined') return { minStepIntervalMs:30, mdFriction:0.5 };
+  if (typeof window === 'undefined') return { minStepIntervalMs: DEFAULT_MIN_STEP_INTERVAL_MS, mdFriction: DEFAULT_MD_FRICTION };
   const cfg = window.__MLIP_CONFIG || {};
-  if (cfg.minStepIntervalMs == null || !Number.isFinite(cfg.minStepIntervalMs)) cfg.minStepIntervalMs = 30;
-  if (cfg.mdFriction == null || !Number.isFinite(cfg.mdFriction)) cfg.mdFriction = 0.5;
+  if (cfg.minStepIntervalMs == null || !Number.isFinite(cfg.minStepIntervalMs)) cfg.minStepIntervalMs = DEFAULT_MIN_STEP_INTERVAL_MS;
+  if (cfg.mdFriction == null || !Number.isFinite(cfg.mdFriction)) cfg.mdFriction = DEFAULT_MD_FRICTION;
   window.__MLIP_CONFIG = cfg;
   return cfg;
 }
@@ -564,10 +566,21 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   let __mdLastApplied = 0;
   async function callMDEndpoint({ steps=1, calculator='uma', temperature=1500, timestep_fs=1.0, friction }={}){
     __count('index#callMDEndpoint');
+    // If temperature not explicitly provided, use global target when available
+    try {
+      if ((temperature == null || !Number.isFinite(temperature)) && typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) {
+        temperature = Number(window.__MLIP_TARGET_TEMPERATURE);
+      }
+    } catch {}
     const pos = state.positions.map(p=>[p.x,p.y,p.z]);
     const atomic_numbers = state.elements.map(e=> elementToZ(e));
-  const frictionFinal = (typeof friction === 'number' && Number.isFinite(friction)) ? friction : (getConfig().mdFriction ?? 0.5);
+  const frictionFinal = (typeof friction === 'number' && Number.isFinite(friction)) ? friction : (getConfig().mdFriction ?? DEFAULT_MD_FRICTION);
   const body = { atomic_numbers, coordinates: pos, steps, temperature, timestep_fs, friction: frictionFinal, calculator };
+  try {
+    if (typeof window !== 'undefined' && window.__MLIP_DEBUG_MD_TEMP) {
+      console.log('[MD][request] temperature', { T: temperature });
+    }
+  } catch {}
   try {
     if (state.showCell && state.cell && state.cell.enabled) {
       body.cell = [ [state.cell.a.x, state.cell.a.y, state.cell.a.z], [state.cell.b.x, state.cell.b.y, state.cell.b.z], [state.cell.c.x, state.cell.c.y, state.cell.c.z] ];
@@ -600,7 +613,14 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     try {
       const t0_step = performance.now();
       const reqId = (++__mdReqCounter);
-  const { data, uivAtSend, tivAtSend, epochAtSend, netMs, parseMs } = await callMDEndpoint({ steps:1, ...opts });
+      // Default temperature source: global target if not provided
+      let callOpts = { ...opts };
+      try {
+        if ((callOpts.temperature == null || !Number.isFinite(callOpts.temperature)) && typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) {
+          callOpts.temperature = Number(window.__MLIP_TARGET_TEMPERATURE);
+        }
+      } catch {}
+  const { data, uivAtSend, tivAtSend, epochAtSend, netMs, parseMs } = await callMDEndpoint({ steps:1, ...callOpts });
       // Discard responses from prior reset epoch entirely
       if (epochAtSend !== resetEpoch) {
         if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][md] staleEpoch', { epochAtSend, resetEpoch });

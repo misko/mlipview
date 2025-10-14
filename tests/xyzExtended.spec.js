@@ -5,7 +5,7 @@ describe('Extended XYZ metadata parsing', () => {
   const xyzText = `3\nSample Lattice=1,0,0;0,2,0;0,0,3 temperature=300 note=TestCase\nH 0 0 0\nC 0.5 0.5 0.5\nO 0.9 1.1 2.2`;
   test('parses lattice vectors and tags', () => {
     const parsed = parseXYZ(xyzText);
-    expect(parsed.tags.temperature).toBe('300');
+    expect(parsed.temperature).toBe(300);
     expect(parsed.tags.note).toBe('TestCase');
     expect(parsed.cell).toBeTruthy();
     expect(parsed.cell.a.x).toBe(1);

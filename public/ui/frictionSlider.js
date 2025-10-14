@@ -1,13 +1,15 @@
 // Friction slider initialization for MD integrator.
-// Controls window.__MLIP_CONFIG.mdFriction; default 0.5. Range [0, 2.0] with 0.01 step.
+// Controls window.__MLIP_CONFIG.mdFriction; default from constants. Range [0, 2.0] with 0.01 step.
+import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS } from '../util/constants.js';
 
 export function initFrictionSlider({ hudEl }){
   if (!hudEl) return;
   if (hudEl.querySelector('#frictionSliderWrapper')) return;
 
   if (typeof window !== 'undefined') {
-    window.__MLIP_CONFIG = window.__MLIP_CONFIG || { minStepIntervalMs:30, mdFriction:0.5 };
-    if (window.__MLIP_CONFIG.mdFriction == null) window.__MLIP_CONFIG.mdFriction = 0.5;
+    window.__MLIP_CONFIG = window.__MLIP_CONFIG || { minStepIntervalMs: DEFAULT_MIN_STEP_INTERVAL_MS, mdFriction: DEFAULT_MD_FRICTION };
+    if (window.__MLIP_CONFIG.minStepIntervalMs == null) window.__MLIP_CONFIG.minStepIntervalMs = DEFAULT_MIN_STEP_INTERVAL_MS;
+    if (window.__MLIP_CONFIG.mdFriction == null) window.__MLIP_CONFIG.mdFriction = DEFAULT_MD_FRICTION;
   }
 
   const wrapper = document.createElement('div');
@@ -41,7 +43,7 @@ export function initFrictionSlider({ hudEl }){
   }
 
   // Initialize from config
-  const initial = (typeof window !== 'undefined' && window.__MLIP_CONFIG?.mdFriction != null) ? window.__MLIP_CONFIG.mdFriction : 0.5;
+  const initial = (typeof window !== 'undefined' && window.__MLIP_CONFIG?.mdFriction != null) ? window.__MLIP_CONFIG.mdFriction : DEFAULT_MD_FRICTION;
   slider.value = String(initial);
   setFriction(initial);
 

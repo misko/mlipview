@@ -1,6 +1,8 @@
+/** @jest-environment jsdom */
+
 let createLinePlot;
 beforeAll(async () => {
-  ({ createLinePlot } = await import('../mlipviewer2/public/plot/line-plot-core.js'));
+  ({ createLinePlot } = await import('../public/plot/line-plot-core.js'));
 });
 
 describe('energy plot DOM integration', () => {

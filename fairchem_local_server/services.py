@@ -234,7 +234,10 @@ def _md_run(
             )
         atoms.set_velocities(v)
     else:
+        # print("MD: initializing velocities from temperature", temperature)
         MaxwellBoltzmannDistribution(atoms, temperature_K=temperature)
+        # MaxwellBoltzmannDistribution(atoms, temperature_K=0.0)
+        # print(atoms.get_velocities())
     # velocities newly initialized from temperature
 
     pre_applied: list[str] = _maybe_apply_precomputed(atoms, precomputed, len(atoms))

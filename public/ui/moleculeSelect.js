@@ -55,7 +55,12 @@ export function installMoleculeSelector(opts){
     '<option value="molecules/hydronium_hydroxide.xyz">Hydronium + Hydroxide</option>'+
     '<option value="molecules/sn2.xyz">SN2: Cl- + CH3I</option>'+
     '<option value="molecules/twomethane.xyz">Methyl radicals</option>'+
-    '<option value="molecules/rna.xyz">RNA fragment</option>';
+    '<option value="molecules/rna.xyz">RNA fragment</option>'+
+    '<option value="molecules/imidazole.xyz">Imidazole</option>'+
+    '<option value="molecules/naphthalene.xyz">Naphthalene</option>'+
+    '<option value="molecules/benzoyl_peroxide.xyz">Benzoyl Peroxide</option>'+
+    '<option value="molecules/urea.xyz">Urea</option>'+
+    '<option value="molecules/acetic_acid.xyz">Acetic Acid</option>';
   select.onchange = () => {
     const file = select.value;
     const href = buildReloadUrl(windowRef.location.href, file);

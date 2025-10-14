@@ -92,3 +92,89 @@ export function cellToMatrixArray(cell){
 }
 
 export default { wrapPositionsInPlace, computeOrthoCellFromPositions, cellToMatrixArray };
+
+// --- Extended cell helpers: parameters <-> vectors and monoclinic checks ---
+
+function _len(v){ return Math.hypot(v?.x||0, v?.y||0, v?.z||0); }
+function _clamp(x,lo,hi){ return Math.max(lo, Math.min(hi, x)); }
+function _acosd(x){ return Math.acos(_clamp(x,-1,1)) * 180/Math.PI; }
+
+// Compute cell parameters (a,b,c lengths and alpha,beta,gamma in degrees)
+// alpha = angle(b,c), beta = angle(a,c), gamma = angle(a,b)
+export function getCellParameters(cell){
+  if(!cell || !cell.a || !cell.b || !cell.c) return null;
+  const a = cell.a, b = cell.b, c = cell.c;
+  const aL = _len(a), bL = _len(b), cL = _len(c);
+  if (aL<=0 || bL<=0 || cL<=0) return { a:aL, b:bL, c:cL, alpha:90, beta:90, gamma:90 };
+  const ab = _dot(a,b)/(aL*bL);
+  const ac = _dot(a,c)/(aL*cL);
+  const bc = _dot(b,c)/(bL*cL);
+  const gamma = _acosd(ab);
+  const beta  = _acosd(ac);
+  const alpha = _acosd(bc);
+  return { a: aL, b: bL, c: cL, alpha, beta, gamma };
+}
+
+// Build lattice vectors from parameters (a,b,c lengths; alpha=∠(b,c), beta=∠(a,c), gamma=∠(a,b))
+export function buildCellFromParameters({ a, b, c, alpha, beta, gamma }){
+  const A = Math.max(1e-12, Number(a)||0);
+  const B = Math.max(1e-12, Number(b)||0);
+  const C = Math.max(1e-12, Number(c)||0);
+  const ca = Math.cos((Number(alpha)||0) * Math.PI/180);
+  const cb = Math.cos((Number(beta)||0)  * Math.PI/180);
+  const cg = Math.cos((Number(gamma)||0) * Math.PI/180);
+  const sg = Math.sin((Number(gamma)||0) * Math.PI/180) || 1e-12; // avoid divide by 0
+  // Reference: standard crystallography convention
+  // a = (A, 0, 0)
+  // b = (B*cg, B*sg, 0)
+  // c = (C*cb, C*(ca - cb*cg)/sg, C*sqrt(1 - cb^2 - ((ca-cb*cg)/sg)^2))
+  const ax = A, ay = 0, az = 0;
+  const bx = B*cg, by = B*sg, bz = 0;
+  const cx = C*cb;
+  const cy = C*((ca - cb*cg)/sg);
+  const cz2 = 1 - cb*cb - ((ca - cb*cg)/sg)*((ca - cb*cg)/sg);
+  const cz = C * (cz2>0 ? Math.sqrt(cz2) : 0);
+  return {
+    a:{ x: ax, y: ay, z: az },
+    b:{ x: bx, y: by, z: bz },
+    c:{ x: cx, y: cy, z: cz },
+    enabled: true,
+    originOffset: { x:0,y:0,z:0 }
+  };
+}
+
+export function isMonoclinicByParams(params, tolDeg=1e-3){
+  if(!params) return false;
+  const dAlpha = Math.abs((params.alpha??90) - 90);
+  const dGamma = Math.abs((params.gamma??90) - 90);
+  return dAlpha <= tolDeg && dGamma <= tolDeg;
+}
+
+export function tryPermuteToMonoclinic(cell, tolDeg=1e-2){
+  if(!cell) return null;
+  const vecs = [cell.a, cell.b, cell.c];
+  const perms = [
+    [0,1,2],[0,2,1],
+    [1,0,2],[1,2,0],
+    [2,0,1],[2,1,0]
+  ];
+  for(const p of perms){
+    const a = vecs[p[0]], b = vecs[p[1]], c = vecs[p[2]];
+    const params = getCellParameters({ a,b,c });
+    if(isMonoclinicByParams(params, tolDeg)){
+      return { a:{...a}, b:{...b}, c:{...c}, enabled:true, originOffset: { ...(cell.originOffset||{x:0,y:0,z:0}) } };
+    }
+  }
+  return null;
+}
+
+// Named export map update
+export const CellUtils = {
+  wrapPositionsInPlace,
+  computeOrthoCellFromPositions,
+  cellToMatrixArray,
+  getCellParameters,
+  buildCellFromParameters,
+  isMonoclinicByParams,
+  tryPermuteToMonoclinic
+};

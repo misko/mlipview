@@ -3,8 +3,8 @@
  */
 let createMoleculeState, createMoleculeView;
 beforeAll(async () => {
-  ({ createMoleculeState } = await import('../mlipviewer2/public/domain/moleculeState.js'));
-  ({ createMoleculeView } = await import('../mlipviewer2/public/render/moleculeView.js'));
+  ({ createMoleculeState } = await import('../public/domain/moleculeState.js'));
+  ({ createMoleculeView } = await import('../public/render/moleculeView.js'));
 });
 
 function makeScene() {

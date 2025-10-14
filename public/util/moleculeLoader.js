@@ -4,6 +4,7 @@ import { validateParsedXYZ } from './constraints.js';
 import { smilesToXYZ, isLikelySmiles } from './smilesLoader.js';
 import { base64DecodeUtf8 } from '../ui/moleculeSelect.js';
 import { showErrorBanner } from '../ui/errorBanner.js';
+import { getCellParameters, isMonoclinicByParams, tryPermuteToMonoclinic } from './pbc.js';
 
 export function getRequestedMoleculeFromUrl(win){
   try {
@@ -75,7 +76,60 @@ export function applyParsedToViewer(viewerApi, parsed){
     try { showErrorBanner(`Load blocked: ${valid.error || 'Validation failed'}`); } catch {}
     throw new Error(valid.error || 'Validation failed');
   }
-  applyXYZToState(viewerApi.state, parsed);
+  // Preprocess cell: ensure monoclinic (alpha=gamma=90). If not, attempt permutation; else drop with error.
+  let toApply = { ...parsed };
+  if (parsed.cell) {
+    try {
+      const params = getCellParameters(parsed.cell);
+      if (!isMonoclinicByParams(params)) {
+        const mono = tryPermuteToMonoclinic(parsed.cell);
+        if (mono) {
+          toApply.cell = mono;
+        } else {
+          toApply = { ...toApply, cell: null };
+          try { showErrorBanner('Provided cell is not monoclinic; loading without cell'); } catch {}
+        }
+      }
+    } catch {}
+  }
+  // If a valid cell will be applied, enable PBC visibility before applying so UI prefill sees it
+  try {
+    if (toApply.cell && viewerApi?.state) {
+      // When XYZ provides a valid cell, enable the periodic cell visual and ghost images by default
+      viewerApi.state.showCell = true;
+      // Keep ghosts in sync with periodic visibility so adjacent images render immediately
+      try { viewerApi.state.showGhostCells = true; } catch {}
+    }
+  } catch {}
+  applyXYZToState(viewerApi.state, toApply);
+  // If cell was dropped, ensure viewer state reflects disabled cell
+  try {
+    if (!toApply.cell && viewerApi?.state?.cell) {
+      viewerApi.state.cell.enabled = false;
+    } else if (toApply.cell && viewerApi?.state) {
+      // When a valid cell is provided by XYZ, show periodic cell by default and notify UI
+      viewerApi.state.showCell = true;
+      // Also ensure ghost cells are ON so ghost atoms/bonds render without user interaction
+      try { viewerApi.state.showGhostCells = true; } catch {}
+      try { if (typeof viewerApi.state.markCellChanged === 'function') viewerApi.state.markCellChanged(); } catch {}
+    }
+  } catch {}
+  // Temperature: set global and state default if provided
+  try {
+    if (toApply.temperature != null && typeof window !== 'undefined') {
+      const T = Number(toApply.temperature);
+      if (Number.isFinite(T)) {
+        window.__MLIP_TARGET_TEMPERATURE = T;
+        viewerApi.state.dynamics = viewerApi.state.dynamics || {};
+        viewerApi.state.dynamics.targetTemperature = T;
+        try {
+          // Notify UI widgets (e.g., temperature slider) to sync from global
+          const evt = new Event('mlip:temperature-changed');
+          document && document.dispatchEvent(evt);
+        } catch {}
+      }
+    }
+  } catch {}
   // Cache the freshly loaded positions as the reset baseline for VR/AR
   try {
     const st = viewerApi.state;
