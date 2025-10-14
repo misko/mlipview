@@ -561,6 +561,25 @@ export function setupVRFeatures(xrHelper, scene, picking){
         st.lastYaw=yaw; st.lastPitch=pitch;
         }
       }
+      // Joystick bond rotation (continuous): if a bond is selected, map stick X to delta angle per frame.
+      // Uses the same rotation logic as desktop by delegating to manipulation.rotateBond(deltaAngle).
+      // Active whenever a controller is present (no trigger hold required), skipped during two-hand scaling or atom drag.
+      try {
+        const sel = picking?.molState?.selection;
+        if(sel && sel.kind === 'bond' && !twoHandMode && !st.dragging){
+          const gp = c?.inputSource?.gamepad;
+          if(gp && Array.isArray(gp.axes)){
+            // Prefer right stick X if present, otherwise left stick X
+            const x = (gp.axes[2] != null) ? gp.axes[2] : ((gp.axes[0] != null) ? gp.axes[0] : 0);
+            const dead = (typeof window!=='undefined' && window.vrBondRotateDeadzone!=null) ? window.vrBondRotateDeadzone : 0.08;
+            if (Math.abs(x) > dead) {
+              const gain = (typeof window!=='undefined' && window.vrBondRotateGain!=null) ? window.vrBondRotateGain : 0.08; // rad/frame @ full deflection
+              const delta = x * gain;
+              try { picking?.manipulation?.rotateBond?.(delta); } catch {}
+            }
+          }
+        }
+      } catch {}
       // Suppress drag updates entirely in two-hand mode (scaling takes precedence)
   if(!noMasters && st.dragging && !twoHandMode) updateDrag(st);
     }
