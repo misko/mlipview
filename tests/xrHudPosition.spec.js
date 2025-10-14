@@ -123,7 +123,11 @@ describe('XR HUD vertical positioning', () => {
   test('top energy plot lowered near center and bottom bar slightly raised', () => {
     const result = ensureWorldHUD({ scene });
     expect(result).toBeTruthy();
-    const halfHeight = Math.tan((scene.activeCamera.fov||Math.PI/2)/2) * 1.1; // matches module logic
+  const distBottom = 1.1; // bottom bar distance
+  const distTop = distBottom * 3; // new top bar distance
+  const camFov = (scene.activeCamera.fov||Math.PI/2);
+  const halfHeightBottom = Math.tan(camFov/2) * distBottom;
+  const halfHeightTop = Math.tan(camFov/2) * distTop;
 
     // Simulate one frame so follow observers adjust (if they rely on onBeforeRender)
     for(const fn of scene.onBeforeRenderObservable._l){ fn(); }
@@ -131,17 +135,17 @@ describe('XR HUD vertical positioning', () => {
     const topY = result.planeTop.position.y; // should be small positive
     const bottomY = result.plane.position.y; // should be negative
 
-    // Desired band selection (post-fix expectations):
-    // Top: between 10% and 30% of halfHeight (legacy 60% is too high)
-    const topMin = halfHeight * 0.10;
-    const topMax = halfHeight * 0.30;
+  // Desired band selection (post-fix expectations):
+  // Top: between 10% and 30% of its own half frustum height at its distance.
+  const topMin = halfHeightTop * 0.10;
+  const topMax = halfHeightTop * 0.30;
     expect(topY).toBeGreaterThanOrEqual(topMin);
     expect(topY).toBeLessThanOrEqual(topMax);
 
-    // Bottom: magnitude between 35% and 55% (legacy 60% slightly farther; we want it a bit closer)
-    const bottomAbs = Math.abs(bottomY);
-    const bottomMin = halfHeight * 0.35;
-    const bottomMax = halfHeight * 0.55;
+  // Bottom: magnitude between 35% and 55% of bottom half frustum height (same expectations)
+  const bottomAbs = Math.abs(bottomY);
+  const bottomMin = halfHeightBottom * 0.35;
+  const bottomMax = halfHeightBottom * 0.55;
     expect(bottomAbs).toBeGreaterThanOrEqual(bottomMin);
     expect(bottomAbs).toBeLessThanOrEqual(bottomMax);
   });
