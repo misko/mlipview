@@ -4,6 +4,7 @@
 // Defaults to a water-like geometry (O,H,H ordering) and UMA calculator.
 
 import fs from 'fs';
+import { MAX_STEP } from '../public/util/constants.js';
 
 function parseArg(name, def){
   const idx = process.argv.indexOf('--'+name);
@@ -24,7 +25,7 @@ try { atomic_numbers = JSON.parse(anStr); } catch { console.error('Bad atomic-nu
 try { coordinates = JSON.parse(coordsStr); } catch { console.error('Bad coords JSON'); process.exit(1); }
 
 async function main(){
-  const body = { atomic_numbers, coordinates, steps, calculator: calc, fmax, return_trace: returnTrace };
+  const body = { atomic_numbers, coordinates, steps, calculator: calc, fmax, return_trace: returnTrace, max_step: MAX_STEP };
   // Updated to use prefixed modern endpoint
   const resp = await fetch(baseUrl + '/serve/relax', {
     method:'POST',

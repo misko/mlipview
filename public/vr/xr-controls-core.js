@@ -47,10 +47,10 @@ export function buildXRControlsModel(opts){
   }
   function simSelection(){ const v=getViewer(); const r=getState(v).running; return { relax: r==='relax', md: r==='md', off: !r }; }
   function toggleForces(){ const v=getViewer(); if(!v) return false; try { if (typeof v.setForceVectorsEnabled === 'function') { const cur = !!(v.state && v.state.showForces); v.setForceVectorsEnabled(!cur); } else { v.state?.toggleForceVectorsVisibility?.(); } notify(getState(v)); return true; } catch { return false; } }
-  function forcesLabel(){ const v=getViewer(); const s=getState(v).showForces; return s ? 'Forces Off' : 'Forces On'; }
+  function isForcesOn(){ const v=getViewer(); return !!getState(v).showForces; }
   function isPBCOn(){ const v=getViewer(); try { return !!(v && v.state && v.state.showCell && v.state.cell && v.state.cell.enabled); } catch { return false; } }
   function togglePBC(){ const v=getViewer(); if(!v) return false; try { const st=v.state; if(!st) return false; const fn = st.toggleCellVisibilityEnhanced||st.toggleCellVisibility; if (typeof fn==='function') fn.call(st); const wantGhosts=!!st.showCell; if ((!!st.showGhostCells)!==wantGhosts && typeof st.toggleGhostCells==='function') st.toggleGhostCells(); notify(getState(v)); return true; } catch { return false; } }
-  function pbcLabel(){ return isPBCOn() ? 'PBC Off' : 'PBC On'; }
+  // Retain isPBCOn helper (used for button highlight); label now static 'PBC'
   function reset(){
     const v = getViewer();
       const when = (typeof performance!=='undefined'&&performance.now)? performance.now(): Date.now();
@@ -86,9 +86,9 @@ export function buildXRControlsModel(opts){
     setSimulation,
     simSelection,
     toggleForces,
-    forcesLabel,
+  isForcesOn,
     togglePBC,
-    pbcLabel,
+  isPBCOn,
     reset,
     refresh,
     ensureDefaultActive,

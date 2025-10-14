@@ -8,6 +8,25 @@
 // - Globals for diagnostics/back-compat: window.__XR_HUD_FALLBACK, window.__XR_HUD_FALLBACK_TOP
 // - Returns: { plane, tex, followObs, planeTop, texTop, followObsTop, buttons:[...], energy:true }
 
+// Configuration defaults (fractions of half frustum height). Positive fraction means below center
+// when used directly (we subtract up*downward). Top row uses negative verticalFrac to invert.
+const DEFAULT_TOP_FRAC_MAG = 0.2;    // 20% of halfHeight above center
+const DEFAULT_BOTTOM_FRAC_MAG = 0.45; // 45% of halfHeight below center (raised from legacy 60%)
+
+function clamp01(v){ return isFinite(v) ? Math.max(0, Math.min(1, v)) : 0; }
+function resolveFracMag(kind){
+  try {
+    if (typeof window !== 'undefined') {
+      if (kind==='top' && window.XR_HUD_TOP_FRAC != null) return clamp01(Math.abs(Number(window.XR_HUD_TOP_FRAC)));
+      if (kind==='bottom' && window.XR_HUD_BOTTOM_FRAC != null) return clamp01(Math.abs(Number(window.XR_HUD_BOTTOM_FRAC)));
+      const qs = window.location && window.location.search || '';
+      if (kind==='top') { const m=/[?&]xrtopfrac=([0-9.]+)/.exec(qs); if(m) return clamp01(Math.abs(parseFloat(m[1]))); }
+      if (kind==='bottom') { const m=/[?&]xrbotfrac=([0-9.]+)/.exec(qs); if(m) return clamp01(Math.abs(parseFloat(m[1]))); }
+    }
+  } catch {}
+  return kind==='top' ? DEFAULT_TOP_FRAC_MAG : DEFAULT_BOTTOM_FRAC_MAG;
+}
+
 export function ensureWorldHUD({ scene, getViewer } = {}){
   try {
     if (typeof window !== 'undefined' && window.__XR_HUD_FALLBACK) return window.__XR_HUD_FALLBACK;
@@ -111,20 +130,37 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
     // Controls model shared by both rows
     const gv = ()=>{ try { return getViewer?.() || window._viewer || window.viewerApi; } catch{} return null; };
   let controlsModel; let btnSets = { relax:[], md:[], off:[], pbc:[], forces:[] };
-  function syncButtons(){ try { const sel = controlsModel?.simSelection?.() || { relax:false, md:false, off:true }; const activeBg = 'rgba(40,140,100,0.9)'; const normalBg = 'rgba(60,70,82,0.85)'; btnSets.relax.forEach(b=> b.background = sel.relax ? activeBg : normalBg); btnSets.md.forEach(b=> b.background = sel.md ? activeBg : normalBg); btnSets.off.forEach(b=> b.background = sel.off ? activeBg : normalBg); const fLabel=(controlsModel?.forcesLabel?.())||'Forces'; btnSets.forces.forEach(b=>{ try { if(b.textBlock) b.textBlock.text=fLabel; else if(b.children&&b.children[0]) b.children[0].text=fLabel; } catch{} }); const pLabel=(controlsModel?.pbcLabel?.())||'PBC'; btnSets.pbc.forEach(b=>{ try { if(b.textBlock) b.textBlock.text=pLabel; else if(b.children&&b.children[0]) b.children[0].text=pLabel; } catch{} }); } catch{} }
-    try { import('./xr-controls-core.js').then(p=>{ try { const build=p.buildXRControlsModel||(p.default&&p.default.buildXRControlsModel); if(build){ controlsModel = build({ getViewer: gv, onStateChange: syncButtons, reloadPage: ()=>{ try { location.reload(); } catch {} } }); try { controlsModel.refresh && controlsModel.refresh(); } catch {} syncButtons(); } } catch{} }).catch(()=>{}); } catch{}
+  function syncButtons(){
+    try {
+      const sel = controlsModel?.simSelection?.() || { relax:false, md:false, off:true };
+      const activeBg = 'rgba(40,140,100,0.9)';
+      const normalBg = 'rgba(60,70,82,0.85)';
+      btnSets.relax.forEach(b=> b.background = sel.relax ? activeBg : normalBg);
+      btnSets.md.forEach(b=> b.background = sel.md ? activeBg : normalBg);
+      btnSets.off.forEach(b=> b.background = sel.off ? activeBg : normalBg);
+      const forcesOn = controlsModel?.isForcesOn?.();
+      btnSets.forces.forEach(b=> b.background = forcesOn ? activeBg : normalBg);
+      const pbcOn = controlsModel?.isPBCOn?.();
+      btnSets.pbc.forEach(b=> b.background = pbcOn ? activeBg : normalBg);
+      // Static labels now (no On/Off suffix)
+      btnSets.forces.forEach(b=>{ try { if(b.textBlock) b.textBlock.text='Forces'; else if(b.children&&b.children[0]) b.children[0].text='Forces'; } catch{} });
+      btnSets.pbc.forEach(b=>{ try { if(b.textBlock) b.textBlock.text='PBC'; else if(b.children&&b.children[0]) b.children[0].text='PBC'; } catch{} });
+    } catch {}
+  }
+  try { import('./xr-controls-core.js').then(p=>{ try { const build=p.buildXRControlsModel||(p.default&&p.default.buildXRControlsModel); if(build){ controlsModel = build({ getViewer: gv, onStateChange: syncButtons, reloadPage: ()=>{ try { location.reload(); } catch {} } }); try { controlsModel.refresh && controlsModel.refresh(); } catch {} syncButtons(); try { if(window.__XR_HUD_FALLBACK) window.__XR_HUD_FALLBACK.controlsModel = controlsModel; } catch{} } } catch{} }).catch(()=>{}); } catch{}
 
     // Bottom row
   // Widen bottom bar to fit: Relax | MD | Off | [sp] | PBC | [sp] | Forces | [sp] | Reset
-  const bottom = buildWorldRow({ name:'xrHudPanel', verticalFrac:0.6, top:false, includeEnergy:false, planeWidth:2.0, planeHeight:0.38 });
+  // Reduce planeHeight by ~30% (0.38 -> ~0.266) for sleeker bottom bar
+  const bottom = buildWorldRow({ name:'xrHudPanel', verticalFrac:resolveFracMag('bottom'), top:false, includeEnergy:false, planeWidth:2.0, planeHeight:0.38*0.70 });
     const b_relax = btn(bottom.stack, 'Relax', ()=>{ controlsModel?.setSimulation('relax'); syncButtons(); }); btnSets.relax.push(b_relax);
   const b_md    = btn(bottom.stack, 'MD',    ()=>{ controlsModel?.setSimulation('md');    syncButtons(); }); btnSets.md.push(b_md);
   const b_off   = btn(bottom.stack, 'Off',   ()=>{ controlsModel?.setSimulation('off');   syncButtons(); }); btnSets.off.push(b_off);
   // Spacer, then PBC toggle, then spacer
   try { const sp1 = new BABYLON.GUI.Rectangle(); sp1.width='30px'; sp1.height='260px'; sp1.thickness=0; sp1.background='transparent'; bottom.stack.addControl(sp1); } catch{}
-  const b_pbc = btn(bottom.stack, (controlsModel?.pbcLabel?.())||'PBC', ()=>{ controlsModel?.togglePBC?.(); syncButtons(); }); btnSets.pbc.push(b_pbc);
+  const b_pbc = btn(bottom.stack, 'PBC', ()=>{ controlsModel?.togglePBC?.(); syncButtons(); }); btnSets.pbc.push(b_pbc);
   try { const sp1b = new BABYLON.GUI.Rectangle(); sp1b.width='30px'; sp1b.height='260px'; sp1b.thickness=0; sp1b.background='transparent'; bottom.stack.addControl(sp1b); } catch{}
-  const b_forces= btn(bottom.stack, (controlsModel?.forcesLabel?.())||'Forces', ()=>{ controlsModel?.toggleForces?.(); syncButtons(); }); btnSets.forces.push(b_forces);
+  const b_forces= btn(bottom.stack, 'Forces', ()=>{ controlsModel?.toggleForces?.(); syncButtons(); }); btnSets.forces.push(b_forces);
   // Spacer between Forces and Reset
   try { const sp2 = new BABYLON.GUI.Rectangle(); sp2.width='30px'; sp2.height='260px'; sp2.thickness=0; sp2.background='transparent'; bottom.stack.addControl(sp2); } catch{}
   const b_reset = btn(bottom.stack, 'Reset', ()=>{ controlsModel?.reset?.(); syncButtons(); });
@@ -132,7 +168,7 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
     // Top row mirror
     const topRow = buildWorldRow({
       name:'xrHudPanelTop',
-      verticalFrac:-0.6,
+      verticalFrac:-resolveFracMag('top'),
       top:true,
       includeEnergy:true,
       energyScaleX:3,
@@ -145,11 +181,11 @@ export function ensureWorldHUD({ scene, getViewer } = {}){
     syncButtons();
 
     // Camera-follow behaviors for both rows
-    const followBottom = scene.onBeforeRenderObservable.add(()=>{ try { const c=scene.activeCamera; if(!c) return; const hh=Math.tan((c.fov||Math.PI/2)/2)*dist; const fw=c.getDirection(BABYLON.Axis.Z).normalize(); const up2=c.getDirection?c.getDirection(BABYLON.Axis.Y).normalize():BABYLON.Vector3.Up(); const target=c.position.add(fw.scale(dist)).subtract(up2.scale(hh*0.6)); bottom.plane.position.copyFrom(target); const toCam=c.position.subtract(bottom.plane.position); toCam.y=0; toCam.normalize(); const yaw=Math.atan2(toCam.x,toCam.z); bottom.plane.rotation.y = yaw + Math.PI; } catch{} });
-    const followTop = scene.onBeforeRenderObservable.add(()=>{ try { const c=scene.activeCamera; if(!c) return; const hh=Math.tan((c.fov||Math.PI/2)/2)*dist; const fw=c.getDirection(BABYLON.Axis.Z).normalize(); const up2=c.getDirection?c.getDirection(BABYLON.Axis.Y).normalize():BABYLON.Vector3.Up(); const target=c.position.add(fw.scale(dist)).subtract(up2.scale(hh*-0.6)); topRow.plane.position.copyFrom(target); const toCam=c.position.subtract(topRow.plane.position); toCam.y=0; toCam.normalize(); const yaw=Math.atan2(toCam.x,toCam.z); topRow.plane.rotation.y = yaw + Math.PI; } catch{} });
+  const followBottom = scene.onBeforeRenderObservable.add(()=>{ try { const c=scene.activeCamera; if(!c) return; const mag=resolveFracMag('bottom'); const hh=Math.tan((c.fov||Math.PI/2)/2)*dist; const fw=c.getDirection(BABYLON.Axis.Z).normalize(); const up2=c.getDirection?c.getDirection(BABYLON.Axis.Y).normalize():BABYLON.Vector3.Up(); const target=c.position.add(fw.scale(dist)).subtract(up2.scale(hh*mag)); bottom.plane.position.copyFrom(target); const toCam=c.position.subtract(bottom.plane.position); toCam.y=0; toCam.normalize(); const yaw=Math.atan2(toCam.x,toCam.z); bottom.plane.rotation.y = yaw + Math.PI; } catch{} });
+  const followTop = scene.onBeforeRenderObservable.add(()=>{ try { const c=scene.activeCamera; if(!c) return; const mag=resolveFracMag('top'); const hh=Math.tan((c.fov||Math.PI/2)/2)*dist; const fw=c.getDirection(BABYLON.Axis.Z).normalize(); const up2=c.getDirection?c.getDirection(BABYLON.Axis.Y).normalize():BABYLON.Vector3.Up(); const target=c.position.add(fw.scale(dist)).subtract(up2.scale(hh*-mag)); topRow.plane.position.copyFrom(target); const toCam=c.position.subtract(topRow.plane.position); toCam.y=0; toCam.normalize(); const yaw=Math.atan2(toCam.x,toCam.z); topRow.plane.rotation.y = yaw + Math.PI; } catch{} });
 
     console.log('[XR][HUD] world bars created (camera-follow top & bottom)');
-    const result = { plane: bottom.plane, tex: bottom.tex, followObs: followBottom, planeTop: topRow.plane, texTop: topRow.tex, followObsTop: followTop, buttons: ['Relax','MD','Off','Forces','Reset'], energy:true };
+  const result = { plane: bottom.plane, tex: bottom.tex, followObs: followBottom, planeTop: topRow.plane, texTop: topRow.tex, followObsTop: followTop, buttons: ['Relax','MD','Off','Forces','Reset'], energy:true, getControlsModel: ()=>controlsModel };
     try { window.__XR_HUD_FALLBACK = result; window.__XR_HUD_FALLBACK_TOP = { plane: topRow.plane, tex: topRow.tex }; } catch {}
     return result;
   } catch(e){ console.warn('[XR][HUD] world HUD create failed', e); return null; }

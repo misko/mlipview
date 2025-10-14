@@ -11,7 +11,7 @@ import { createManipulationService } from './domain/manipulationService.js';
 import { createVRSupport } from './vr/setup.js';
 import { createVRPicker } from './vr/vr-picker.js';
 import { __count } from './util/funcCount.js';
-import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS } from './util/constants.js';
+import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS, MAX_STEP } from './util/constants.js';
 
 // --- Runtime Config (pacing, etc.) ---
 if (typeof window !== 'undefined') {
@@ -361,7 +361,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     __count('index#callRelaxEndpoint');
     const pos = state.positions.map(p=>[p.x,p.y,p.z]);
   const atomic_numbers = state.elements.map(e=> elementToZ(e));
-  const body = { atomic_numbers, coordinates: pos, steps, calculator:'uma' };
+  const body = { atomic_numbers, coordinates: pos, steps, calculator:'uma', max_step: MAX_STEP };
   try {
     if (state.showCell && state.cell && state.cell.enabled) {
       body.cell = [ [state.cell.a.x, state.cell.a.y, state.cell.a.z], [state.cell.b.x, state.cell.b.y, state.cell.b.z], [state.cell.c.x, state.cell.c.y, state.cell.c.z] ];

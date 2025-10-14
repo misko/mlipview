@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 
 describe('XR Controls Core Model', () => {
-  test('simulation selection and forces label toggling', async () => {
+  test('simulation selection and forces toggle state', async () => {
     const { buildXRControlsModel } = await import('../public/vr/xr-controls-core.js');
     const viewer = {
       state: { showForces: false, toggleForceVectorsVisibility: function(){ this.showForces = !this.showForces; } },
@@ -13,11 +13,12 @@ describe('XR Controls Core Model', () => {
     const model = buildXRControlsModel({ getViewer: ()=> viewer });
     // Initial
     expect(model.simSelection()).toEqual({ relax:false, md:false, off:true });
-    expect(model.forcesLabel()).toBe('Forces On');
+    // Forces initially off
+    expect(model.isForcesOn()).toBe(false);
     // Toggle forces -> now on
     model.toggleForces();
     expect(viewer.state.showForces).toBe(true);
-    expect(model.forcesLabel()).toBe('Forces Off');
+    expect(model.isForcesOn()).toBe(true);
     // Start relax
     model.setSimulation('relax');
     viewer.getMetrics = () => ({ running: 'relax' });

@@ -108,7 +108,7 @@ def _relax_run(
                 detail=f"Initial energy failed: {ee}",
             )
 
-    opt = _BFGS(atoms, logfile=None, maxstep=float(max_step or 0.2))
+    opt = _BFGS(atoms, logfile=None, maxstep=float(max_step))
 
     trace_enabled = bool(return_trace)
     trace: List[float] = []
@@ -180,7 +180,7 @@ def relax(inp: RelaxIn) -> RelaxResult:
         atoms,
         int(inp.steps),
         inp.calculator,
-        float(inp.max_step or 0.2),
+        float(inp.max_step),
         bool(inp.return_trace),
         inp.precomputed,
     )

@@ -37,7 +37,7 @@ async function buildReferenceTrace(){
   refEnergies.push(singleJson.results.energy);
   let currentCoords = coords.map(r=> [...r]);
   for(let i=0;i<STEPS;i++){
-    const resp = await fetch('http://localhost:8000/relax', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ atomic_numbers, coordinates: currentCoords, steps:1, calculator:'uma' }) });
+  const resp = await fetch('http://localhost:8000/relax', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ atomic_numbers, coordinates: currentCoords, steps:1, calculator:'uma', max_step:0.01 }) });
     if(!resp.ok) throw new Error('Reference relax step failed '+resp.status);
     const js = await resp.json();
     refEnergies.push(js.final_energy);
