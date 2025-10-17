@@ -1,0 +1,49 @@
+syntax = "proto3";
+package fairchem.session;
+
+message Vec3 { repeated double v = 1; } // length 3
+message Mat3 { repeated double m = 1; } // length 9, row-major
+
+message SimulationParams {
+  string calculator = 1; // "uma" or "lj"
+  // MD
+  float temperature = 2;
+  float timestep_fs = 3;
+  float friction = 4;
+  // Relax
+  float fmax = 5;
+  float max_step = 6;
+  string optimizer = 7;
+}
+
+message ClientAction {
+  uint64 seq = 1;
+  optional uint64 ack = 2;
+  enum Type {
+    INIT_SYSTEM = 0;
+    UPDATE_POSITIONS = 1;
+    START_SIMULATION = 2;
+    STOP_SIMULATION = 3;
+    PING = 4;
+  }
+  Type type = 3;
+  // system
+  repeated int32 atomic_numbers = 10;
+  repeated Vec3 positions = 11;
+  repeated Vec3 velocities = 12;
+  optional Mat3 cell = 13;
+  // start
+  enum SimType { MD = 0; RELAX = 1; }
+  optional SimType simulation_type = 20;
+  optional SimulationParams simulation_params = 21;
+}
+
+message ServerResult {
+  uint64 seq = 1;
+  optional uint64 client_seq = 2;
+  repeated Vec3 positions = 10;
+  repeated Vec3 forces = 11;
+  repeated Vec3 velocities = 12;
+  optional Mat3 cell = 13;
+  optional string message = 20;
+}

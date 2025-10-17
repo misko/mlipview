@@ -28,7 +28,7 @@ from ray import serve
 
 # --- Config -----------------------------------------------------------------
 
-DEVICE = "cuda"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_NAME = os.getenv("UMA_MODEL", "uma-s-1p1")
 TASK_NAME = os.getenv("UMA_TASK", "omol")
 
@@ -53,7 +53,7 @@ class _PredictDeploy:  # runs on GPU replica
         print(f"[batched:init] loading model={model_name} task={task_name}")
         self._unit = pretrained_mlip.get_predict_unit(
             model_name,
-            device="cuda",
+            device=DEVICE,
             inference_settings=InferenceSettings(
                 tf32=True,
                 activation_checkpointing=False,
@@ -68,6 +68,11 @@ class _PredictDeploy:  # runs on GPU replica
     @serve.batch(max_batch_size=MAX_BATCH, batch_wait_timeout_s=WAIT_S)
     async def predict(self, payloads: List[Tuple[tuple, dict]]):
         # Preserve order; return one result per payload.
+        print(
+            "[UMA] predict called on device %s size=%d"
+            % (DEVICE, len(payloads)),
+            flush=True,
+        )
         try:
             out: List[Any] = []
             if len(payloads) == 1:
@@ -80,7 +85,9 @@ class _PredictDeploy:  # runs on GPU replica
                 batch.dataset = [x[0] for x in batch.dataset]
                 pred = self._unit.predict(batch)
                 all_outputs = {k: v.detach().cpu() for k, v in pred.items()}
-                forces_by_mol = all_outputs["forces"].split(batch["natoms"].tolist())
+                forces_by_mol = all_outputs["forces"].split(
+                    batch["natoms"].tolist()
+                )
                 # stress_by_mol = all_outputs["stress"].split(
                 #     batch["num_atoms"]
                 # )

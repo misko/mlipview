@@ -12,9 +12,12 @@ from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.optimize import BFGS as _BFGS
 from fastapi import HTTPException
 
-from .atoms_utils import build_atoms, center_and_return_shift, compute_properties
+from .atoms_utils import (
+    build_atoms,
+    center_and_return_shift,
+    compute_properties,
+)
 from .log import log_event
-from .model_runtime import get_calculator
 from .models import (
     MDIn,
     MDResult,
@@ -28,6 +31,9 @@ from .models import (
 
 def _attach_calc(atoms, which: RelaxCalculatorName):
     if which == RelaxCalculatorName.uma:
+        # Lazy import to avoid importing UMA stack unless needed
+        from .model_runtime import get_calculator  # type: ignore
+
         atoms.calc = get_calculator()
     elif which == RelaxCalculatorName.lj:
         atoms.calc = LennardJones(rc=3.0)
@@ -91,7 +97,9 @@ def _relax_run(
     shift = center_and_return_shift(atoms)
 
     # Apply precomputed results (if any) before first energy access
-    pre_applied: list[str] = _maybe_apply_precomputed(atoms, precomputed, len(atoms))
+    pre_applied: list[str] = _maybe_apply_precomputed(
+        atoms, precomputed, len(atoms)
+    )
 
     if "energy" in pre_applied:
         # Honor client-provided energy without triggering a recalculation
@@ -240,7 +248,9 @@ def _md_run(
         # print(atoms.get_velocities())
     # velocities newly initialized from temperature
 
-    pre_applied: list[str] = _maybe_apply_precomputed(atoms, precomputed, len(atoms))
+    pre_applied: list[str] = _maybe_apply_precomputed(
+        atoms, precomputed, len(atoms)
+    )
 
     if "energy" in pre_applied:
         initial_energy = float(atoms.calc.results["energy"])  # type: ignore
@@ -277,7 +287,9 @@ def _md_run(
         if not np.isfinite(max_disp) or max_disp > 5.0:
             raise HTTPException(
                 status_code=500,
-                detail=(f"MD instability detected (max step disp {max_disp:.2f} Å)"),
+                detail=(
+                    f"MD instability detected (max step disp {max_disp:.2f} Å)"
+                ),
             )
         prev[:] = new_pos
 
