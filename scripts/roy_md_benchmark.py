@@ -117,6 +117,7 @@ async def run_one_session(
 
         deadline = time.time() + float(duration_s)
         last_seq = 0
+        server_seq_seen = 0  # advances even when frames are protobuf
         while time.time() < deadline:
             try:
                 msg = await asyncio.wait_for(ws.recv(), timeout=0.5)
@@ -146,10 +147,11 @@ async def run_one_session(
             # just count
             try:
                 data = json.loads(msg)
-                last_seq = max(last_seq, int(data.get("seq") or 0))
+                server_seq_seen = max(server_seq_seen, int(data.get("seq") or 0))
             except Exception:
-                # binary frame
-                pass
+                # binary frame (protobuf) -> advance a running counter
+                server_seq_seen += 1
+            last_seq = server_seq_seen
             # ack so server backpressure window advances
             seq += 1
             await ws.send(
