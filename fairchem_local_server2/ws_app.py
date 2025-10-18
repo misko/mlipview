@@ -41,13 +41,34 @@ class WSIngress:
         # UMA handle is optional; if present, install for UMA calculator usage
         if predict_handle is not None:
             install_predict_handle(predict_handle)
-        self._pool = WorkerPool(size=pool_size)
+        self._uma_handle = predict_handle
+        self._pool = WorkerPool(size=pool_size, uma_handle=self._uma_handle)
 
     @app.get("/serve/health")
     def health(self):
         snap = health_snapshot()
         snap["status"] = "ok"
         return snap
+
+    @app.get("/uma/stats")
+    async def uma_stats(self):
+        try:
+            if self._uma_handle is None:
+                return {"status": "error", "error": "UMA not installed"}
+            stats = await self._uma_handle.get_stats.remote()  # type: ignore
+            return {"status": "ok", "stats": stats}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    @app.post("/uma/reset")
+    async def uma_reset(self):
+        try:
+            if self._uma_handle is None:
+                return {"status": "error", "error": "UMA not installed"}
+            await self._uma_handle.reset_stats.remote()  # type: ignore
+            return {"status": "ok"}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
 
     @app.websocket("/ws")
     async def ws(self, ws: WebSocket):
@@ -250,12 +271,13 @@ class WSIngress:
 def _detect_default_ngpus() -> int:
     try:
         import torch  # type: ignore
-
         if torch.cuda.is_available():
+            # one replica per visible GPU
             return max(1, torch.cuda.device_count())
+        # No CUDA -> default to 0 UMA replicas
+        return 0
     except Exception:
-        pass
-    return 1
+        return 0
 
 
 def _detect_default_ncpus() -> int:

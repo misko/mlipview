@@ -51,6 +51,9 @@ _PU: BatchedPredictUnit | None = None
 class _PredictDeploy:  # runs on GPU replica
     def __init__(self, model_name: str, task_name: str):
         print(f"[batched:init] loading model={model_name} task={task_name}")
+        # Simple in-replica metrics for observability
+        self._predict_calls = 0  # number of predict() invocations (batches)
+        self._predict_items = 0  # total items processed across all batches
         self._unit = pretrained_mlip.get_predict_unit(
             model_name,
             device=DEVICE,
@@ -74,6 +77,9 @@ class _PredictDeploy:  # runs on GPU replica
             flush=True,
         )
         try:
+            # update simple metrics
+            self._predict_calls += 1
+            self._predict_items += int(len(payloads))
             out: List[Any] = []
             if len(payloads) == 1:
                 single = payloads[0][0][0]
@@ -104,6 +110,21 @@ class _PredictDeploy:  # runs on GPU replica
             print("Unexpected error in UMA predictor: %s" % e)
             raise
 
+    # Non-batched methods for simple stats/health observability
+    async def get_stats(self) -> dict:
+        return {
+            "calls": int(self._predict_calls),
+            "items": int(self._predict_items),
+            "device": DEVICE,
+            "model": MODEL_NAME,
+            "task": TASK_NAME,
+        }
+
+    async def reset_stats(self) -> dict:
+        self._predict_calls = 0
+        self._predict_items = 0
+        return {"ok": True}
+
 
 class BatchedPredictUnit:
     """Synchronous client wrapper (FAIRChem expects sync .predict)."""
@@ -120,16 +141,32 @@ class BatchedPredictUnit:
                 {"property": "stress"},
             ]
         }
-        self.device = "cuda"
+        self.device = DEVICE
 
     def predict(self, *args, **kwargs):
-        # print("RUNNING INFERENCE", flush=True)
+        print("[UMA-client] calling remote predict", flush=True)
         # NOTE: Called from sync code (e.g., FastAPI handler in a thread pool).
         # DeploymentResponse.result() is safe in that context.
         resp = self._handle.predict.remote((args, kwargs))  # type: ignore
         r = resp.result()
-        assert r.keys() == {"energy", "forces", "stress"}
-        return r
+        # Serve batched methods always return a list of results with the same
+        # length as the input batch. For our client wrapper, unwrap a single
+        # element list to a dict for downstream FAIRChemCalculator.
+        if isinstance(r, list):
+            if len(r) == 0:
+                raise RuntimeError("UMA predict returned empty list")
+            r0 = r[0]
+        else:
+            r0 = r
+        if not isinstance(r0, dict):
+            raise RuntimeError(
+                f"UMA predict returned unexpected type: {type(r0)}"
+            )
+        # basic schema check
+        for k in ("energy", "forces", "stress"):
+            if k not in r0:
+                raise RuntimeError(f"UMA predict missing key: {k}")
+        return r0
 
     def __getattr__(self, item):  # pragma: no cover
         if item in {"dataset_to_tasks", "device"}:

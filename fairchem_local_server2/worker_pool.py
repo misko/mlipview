@@ -6,13 +6,11 @@ import ray
 
 from fairchem_local_server.atoms_utils import build_atoms
 from fairchem_local_server.model_runtime import (
-    UMA_DEPLOYMENT_NAME,
     get_calculator,
     install_predict_handle,
 )
 from fairchem_local_server.models import RelaxCalculatorName
 from fairchem_local_server.services import _md_run, _relax_run
-from ray import serve as ray_serve
 
 
 @ray.remote(num_cpus=1)
@@ -23,12 +21,12 @@ class ASEWorker:
     results.
     """
 
-    def __init__(self):
+    def __init__(self, handle=None):
         # Each worker process must install the UMA handle in its own module
         # state so get_calculator() works here.
         try:
-            handle = ray_serve.get_deployment(UMA_DEPLOYMENT_NAME).get_handle()
-            install_predict_handle(handle)
+            if handle is not None:
+                install_predict_handle(handle)
         except Exception:
             # If Serve is not running (e.g., unit tests with LJ), ignore.
             pass
@@ -92,10 +90,12 @@ class ASEWorker:
 
 
 class WorkerPool:
-    def __init__(self, size: int):
+    def __init__(self, size: int, uma_handle=None):
         if not ray.is_initialized():
             ray.init(ignore_reinit_error=True)
-        self._actors = [ASEWorker.remote() for _ in range(max(1, int(size)))]
+        self._actors = [
+            ASEWorker.remote(uma_handle) for _ in range(max(1, int(size)))
+        ]
         self._rr = itertools.cycle(self._actors)
 
     def any(self):  # choose a worker (round-robin)
