@@ -8,6 +8,7 @@
     "dev": "NODE_ENV=development node server.js",
     "start:https-only": "SSL_PORT=$SSL_PORT node server.js",
     "test": "jest",
+    "gen:proto:js": "protoc --js_out=import_style=commonjs,binary:public/proto fairchem_local_server2/session.proto",
     "build": "vite build",
     "preview": "vite preview"
   },

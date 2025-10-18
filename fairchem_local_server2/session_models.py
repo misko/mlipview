@@ -46,6 +46,9 @@ class ClientAction(BaseModel):
     # start_simulation
     simulation_type: Optional[SimType] = None
     simulation_params: Optional[SimulationParams] = None
+    # Correlation counters from client
+    user_interaction_count: Optional[int] = None
+    sim_step: Optional[int] = None
 
     @validator("positions")
     def _validate_pos(cls, v):  # type: ignore
@@ -70,6 +73,9 @@ class ServerResult(BaseModel):
 
     # Optional metadata
     message: Optional[str] = None
+    # Echo/correlation fields
+    user_interaction_count: Optional[int] = None
+    sim_step: Optional[int] = None
 
 
 class SessionState(BaseModel):
@@ -86,3 +92,6 @@ class SessionState(BaseModel):
     server_seq: int = 0
     client_seq: int = 0
     client_ack: int = 0
+    # Frontend correlation counters (last seen)
+    user_interaction_count: int = 0
+    sim_step: int = 0

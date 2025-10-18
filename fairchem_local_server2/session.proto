@@ -25,6 +25,7 @@ message ClientAction {
     START_SIMULATION = 2;
     STOP_SIMULATION = 3;
     PING = 4;
+    SIMPLE_CALCULATE = 5; // one-shot energy/forces request
   }
   Type type = 3;
   // system
@@ -36,6 +37,14 @@ message ClientAction {
   enum SimType { MD = 0; RELAX = 1; }
   optional SimType simulation_type = 20;
   optional SimulationParams simulation_params = 21;
+
+  // Frontend state correlation
+  // user_interaction_count: monotonically increasing counter representing number of
+  // user edits (drag, bond rotate, etc.) observed by the client when sending this action.
+  // sim_step: a client-origin step counter for UI synchronization; the server may echo
+  // it back untouched. The server also maintains its own step counter internally.
+  optional uint64 user_interaction_count = 30;
+  optional uint64 sim_step = 31;
 }
 
 message ServerResult {
@@ -45,5 +54,12 @@ message ServerResult {
   repeated Vec3 forces = 11;
   repeated Vec3 velocities = 12;
   optional Mat3 cell = 13;
+  // Optional total energy for simple calculate or summary frames
+  optional float energy = 14;
   optional string message = 20;
+
+  // Echo/correlation fields for frontend state
+  optional uint64 user_interaction_count = 30;
+  // Server-side step index for the current running simulation (increments per produced frame)
+  optional uint64 sim_step = 31;
 }

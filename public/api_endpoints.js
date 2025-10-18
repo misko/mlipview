@@ -1,10 +1,5 @@
-// Modern Ray Serve endpoints only (cache variants removed).
-const modern = {
-	simple: '/serve/simple',
-	relax: '/serve/relax',
-	md: '/serve/md',
-	health: '/serve/health'
-};
-export async function getEndpoint(kind){ if(!(kind in modern)) throw new Error('unknown endpoint '+kind); return modern[kind]; }
-export function getEndpointSync(kind){ if(!(kind in modern)) throw new Error('unknown endpoint '+kind); return modern[kind]; }
-export const __endpointMaps = { modern };
+// REST endpoints removed: enforce WS usage only
+const removedMsg = '[REST removed] Use WebSocket API via fairchem_ws_client.js';
+export async function getEndpoint(kind){ throw new Error(removedMsg+' (getEndpoint:'+kind+')'); }
+export function getEndpointSync(kind){ throw new Error(removedMsg+' (getEndpointSync:'+kind+')'); }
+export const __endpointMaps = {};

@@ -1,0 +1,1 @@
+export * from '../../node_modules/google-protobuf/google-protobuf.js';

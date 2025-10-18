@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import itertools
-from typing import Any, Dict, List, Optional
 import time
+from typing import Any, Dict, List, Optional
+
 import ray
 
 from fairchem_local_server.atoms_utils import build_atoms
-from fairchem_local_server.model_runtime import (
-    get_calculator,
-    install_predict_handle,
-)
+from fairchem_local_server.model_runtime import get_calculator, install_predict_handle
 from fairchem_local_server.models import RelaxCalculatorName
 from fairchem_local_server.services import _md_run, _relax_run
+from fairchem_local_server.services import simple_calculate as _simple_calculate
 
 
 @ray.remote(num_cpus=1)
@@ -48,9 +47,7 @@ class ASEWorker:
         t0 = time.perf_counter()
         calc_enum = RelaxCalculatorName(calculator)
         atoms = build_atoms(atomic_numbers, positions, cell=cell)
-        atoms.calc = (
-            get_calculator() if calc_enum == RelaxCalculatorName.uma else None
-        )
+        atoms.calc = get_calculator() if calc_enum == RelaxCalculatorName.uma else None
         md_res = _md_run(
             atoms,
             steps=int(steps),
@@ -87,9 +84,7 @@ class ASEWorker:
         t0 = time.perf_counter()
         calc_enum = RelaxCalculatorName(calculator)
         atoms = build_atoms(atomic_numbers, positions, cell=cell)
-        atoms.calc = (
-            get_calculator() if calc_enum == RelaxCalculatorName.uma else None
-        )
+        atoms.calc = get_calculator() if calc_enum == RelaxCalculatorName.uma else None
         rx = _relax_run(
             atoms,
             steps=int(steps),
@@ -109,14 +104,45 @@ class ASEWorker:
         )
         return out
 
+    def run_simple(
+        self,
+        *,
+        atomic_numbers: List[int],
+        positions: List[List[float]],
+        cell: Optional[List[List[float]]],
+        properties: Optional[List[str]] = None,
+        calculator: str = "uma",
+    ) -> Dict[str, Any]:
+        from fairchem_local_server.models import SimpleIn
+
+        t0 = time.perf_counter()
+        try:
+            inp = SimpleIn(
+                atomic_numbers=list(map(int, atomic_numbers)),
+                coordinates=positions,
+                cell=cell,
+                properties=list(properties or ("energy", "forces")),
+                calculator=RelaxCalculatorName(calculator),
+            )
+            res = _simple_calculate(inp)
+            out = res
+        finally:
+            dt = time.perf_counter() - t0
+            print(
+                (
+                    f"[timing] ASEWorker.run_simple natoms="
+                    f"{len(atomic_numbers)} calc={calculator} wall={dt:.4f}s"
+                ),
+                flush=True,
+            )
+        return out
+
 
 class WorkerPool:
     def __init__(self, size: int, uma_handle=None):
         if not ray.is_initialized():
             ray.init(ignore_reinit_error=True)
-        self._actors = [
-            ASEWorker.remote(uma_handle) for _ in range(max(1, int(size)))
-        ]
+        self._actors = [ASEWorker.remote(uma_handle) for _ in range(max(1, int(size)))]
         self._rr = itertools.cycle(self._actors)
 
     def any(self):  # choose a worker (round-robin)

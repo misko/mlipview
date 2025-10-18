@@ -12,6 +12,7 @@ import { createVRSupport } from './vr/setup.js';
 import { createVRPicker } from './vr/vr-picker.js';
 import { __count } from './util/funcCount.js';
 import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS, MAX_STEP } from './util/constants.js';
+import { getWS } from './fairchem_ws_client.js';
 
 // --- Runtime Config (pacing, etc.) ---
 if (typeof window !== 'undefined') {
@@ -94,6 +95,10 @@ function __resolveApiBase(){
   return 'http://127.0.0.1:8000';
 }
 
+// WS is mandatory: protobuf-only
+function __useWsSimple(){ return true; }
+function __useWsSim(){ return true; }
+
 export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   __count('index#initNewViewer');
   const state = createMoleculeState({ elements, positions, bonds });
@@ -114,6 +119,35 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // Remote UMA force provider via /simple_calculate
   let lastForceResult = { energy: NaN, forces: [] };
   let inFlight = false;
+  // WS session sync state (single socket): re-init when atom count or cell changes
+  const __ws = { inited:false, lastAtomCount:0, lastCellKey:null };
+  function __cellKey(){
+    try {
+      const c = state.cell;
+      const on = !!(state.showCell && c && c.enabled);
+      if (!on || !c) return 'off';
+      return [c.a.x,c.a.y,c.a.z,c.b.x,c.b.y,c.b.z,c.c.x,c.c.y,c.c.z].map(x=>Number(x)||0).join(',');
+    } catch { return 'off'; }
+  }
+  async function __wsEnsureInit(){
+    const useWs = __useWsSimple(); if(!useWs) return false;
+    const ws = getWS(); await ws.ensureConnected();
+    const nat = (state.elements||[]).length;
+    const cellK = __cellKey();
+    const needInit = (!__ws.inited) || (__ws.lastAtomCount !== nat) || (__ws.lastCellKey !== cellK);
+    if (needInit){
+      const atomic_numbers = state.elements.map(e=> elementToZ(e));
+      const positions = state.positions.map(p=>[p.x,p.y,p.z]);
+      const v = getVelocitiesIfFresh();
+      let cell = null;
+      try { if (state.showCell && state.cell && state.cell.enabled) {
+        cell = [ [state.cell.a.x, state.cell.a.y, state.cell.a.z], [state.cell.b.x, state.cell.b.y, state.cell.b.z], [state.cell.c.x, state.cell.c.y, state.cell.c.z] ];
+      } } catch {}
+      ws.initSystem({ atomic_numbers, positions, velocities: v||undefined, cell });
+      __ws.inited = true; __ws.lastAtomCount = nat; __ws.lastCellKey = cellK;
+    }
+    return true;
+  }
   // --- API debug instrumentation ---
   if (typeof window !== 'undefined') {
     if (window.__MLIPVIEW_DEBUG_API == null) {
@@ -245,68 +279,32 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     while(inFlight && awaitResult) { await new Promise(r=>setTimeout(r,10)); }
     inFlight = true;
     try {
-  // Server-side cache removed; do not short-circuit on local cache here.
-  // Skip remote call until we actually have atoms; prevents 500 errors on empty initial state
-  if(!state.elements || state.elements.length === 0){
-        return lastForceResult;
-      }
-  const atomic_numbers = state.elements.map(e=> elementToZ(e));
-      const coordinates = state.positions.map(p=>[p.x,p.y,p.z]);
-      const body = { atomic_numbers, coordinates, properties:['energy','forces'], calculator:'uma' };
-      try {
-        if (state.showCell && state.cell && state.cell.enabled) {
-          body.cell = [ [state.cell.a.x, state.cell.a.y, state.cell.a.z], [state.cell.b.x, state.cell.b.y, state.cell.b.z], [state.cell.c.x, state.cell.c.y, state.cell.c.z] ];
-          body.pbc = [true,true,true];
-        }
-      } catch {}
-    const base = __resolveApiBase();
-    const url = base + getEndpointSync('simple');
-  const seq = ++__apiSeq; if (typeof window !== 'undefined') window.__MLIPVIEW_API_SEQ = __apiSeq;
-      const build0 = performance.now();
-      // payload already prepared above
-      const t0 = performance.now();
-      debugApi('simple_calculate','request',{ seq, url, body });
-  const epochAtSend = resetEpoch;
-  let resp, json;
-      try {
-  resp = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-      } catch(netErr){
-        debugApi('simple_calculate','network-error',{ seq, url, error: netErr?.message||String(netErr) });
-        throw netErr;
-      }
-      const t1 = performance.now();
-      const timingMs = Math.round((t1 - t0)*100)/100;
-      noteLatency('simple', 'network', { seq, ms: timingMs });
-      if(resp.ok){
-        try {
-          const p0=performance.now();
-          json = await resp.json();
-          const p1=performance.now(); noteLatency('simple','parse',{ seq, ms: Math.round((p1-p0)*100)/100 });
-        } catch(parseErr){ debugApi('simple_calculate','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); }
-        debugApi('simple_calculate','response',{ seq, url, timingMs, status: resp.status, response: json });
-      } else {
-        const txt = await resp.text();
-        debugApi('simple_calculate','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt });
-      }
-      if(resp.ok){
-        // Discard stale responses from a prior reset epoch
-        if (epochAtSend !== resetEpoch) {
-          if(window.__MLIPVIEW_DEBUG_API) console.debug('[forces][staleEpoch] ignoring response from prior epoch', { epochAtSend, resetEpoch });
-          return lastForceResult;
-        }
-        const res = json?.results||{};
-        if(typeof res.energy === 'number'){
-          lastForceResult = { energy: res.energy, forces: res.forces||[] };
-          state.dynamics = state.dynamics || {}; state.dynamics.energy = res.energy;
-          window.__RELAX_FORCES = res.forces||[];
-          state.forceCache = { version: structureVersion, energy: res.energy, forces: res.forces||[], stress: res.stress||null, stale:false };
-          // Server cache key removed
-          // Commit forces to state & notify renderer each successful fetch so visualization updates.
-          if (Array.isArray(res.forces) && res.forces.length) {
-            __updateForces(res.forces, { reason:'fetchRemoteForces' });
+      // Skip remote call until we actually have atoms
+      if(!state.elements || state.elements.length === 0){ return lastForceResult; }
+      const useWs = __useWsSimple();
+      if (useWs) {
+        const ws = getWS();
+        await __wsEnsureInit();
+        const positions = state.positions.map(p=>[p.x,p.y,p.z]);
+        ws.updatePositions(positions);
+        // Provide current user interaction count for correlation
+        try { ws.setCounters({ userInteractionCount: userInteractionVersion }); } catch {}
+        const t0 = performance.now();
+        const { energy, forces } = await ws.requestSimpleCalculate();
+        const timingMs = Math.round((performance.now()-t0)*100)/100;
+        noteLatency('simple','ws',{ ms: timingMs });
+        if (typeof energy === 'number'){
+          lastForceResult = { energy, forces: forces||[] };
+          state.dynamics = state.dynamics || {}; state.dynamics.energy = energy;
+          window.__RELAX_FORCES = forces||[];
+          state.forceCache = { version: structureVersion, energy, forces: forces||[], stress: null, stale:false };
+          if (Array.isArray(forces) && forces.length) {
+            __updateForces(forces, { reason:'fetchRemoteForcesWS' });
           }
           maybePlotEnergy('forces');
         }
+      } else {
+        throw new Error('[REST removed] simple_calculate via HTTP was removed. Use WebSocket/protobuf via fairchem_ws_client.js');
       }
     } catch(_e) { /* silent for now */ } finally { inFlight=false; }
     return lastForceResult;
@@ -371,8 +369,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const maybePre = buildPrecomputedIfFresh();
   if(maybePre){ body.precomputed = maybePre; debugApi('relax','precomputed-attach',{ seq: __apiSeq+1, keys:Object.keys(maybePre) }); }
   const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion; const epochAtSend = resetEpoch;
-    const base = __resolveApiBase();
-    const url = base + getEndpointSync('relax');
+  const url = '[REST removed]/relax';
     const payload = body;
   const seq = ++__apiSeq; if (typeof window !== 'undefined') window.__MLIPVIEW_API_SEQ = __apiSeq;
     const build0 = performance.now();
@@ -380,7 +377,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   debugApi('relax','request',{ seq, url, body: payload });
     let resp, json;
     try {
-  resp = await fetch(url || '/relax', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(payload) });
+  throw new Error('[REST removed] Relax endpoint removed. Replace with WS stream: ws.startSimulation({ type:"relax" ... })');
     } catch(netErr){
       debugApi('relax','network-error',{ seq, url, error: netErr?.message||String(netErr) });
       throw netErr;
@@ -592,21 +589,13 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const maybeV = getVelocitiesIfFresh();
   if(maybeV){ body.velocities = maybeV; }
   const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion; const epochAtSend = resetEpoch;
-    const base = __resolveApiBase();
-    const url = base + getEndpointSync('md');
+  const url = '[REST removed]/md';
     const payload = body;
   const seq = ++__apiSeq; if (typeof window !== 'undefined') window.__MLIPVIEW_API_SEQ = __apiSeq;
     const build0 = performance.now();
     const t0 = performance.now();
   debugApi('md','request',{ seq, url, body: payload });
-  let resp, json; try { resp = await fetch(url,{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) }); } catch(netErr){ debugApi('md','network-error',{ seq, url, error: netErr?.message||String(netErr) }); throw netErr; }
-    const t1 = performance.now(); const timingMs = Math.round((t1 - t0)*100)/100; // network time only
-    noteLatency('md','network',{ seq, ms: timingMs });
-    if(!resp.ok){ const txt = await resp.text(); debugApi('md','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt }); throw new Error('MD request failed '+resp.status+': '+txt); }
-    let parseMs = 0; try { const p0=performance.now(); json = await resp.json(); const p1=performance.now(); parseMs = Math.round((p1-p0)*100)/100; noteLatency('md','parse',{ seq, ms: parseMs }); } catch(parseErr){ debugApi('md','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
-    debugApi('md','response',{ seq, url, timingMs, status: resp.status, response: json });
-  // no server cache key
-    return { data: json, uivAtSend, tivAtSend, epochAtSend, netMs: timingMs, parseMs };
+  throw new Error('[REST removed] MD endpoint removed. Replace with WS stream: ws.startSimulation({ type:"md" ... })');
   }
   async function mdStep(opts={}){
     __count('index#mdStep');
@@ -936,6 +925,47 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     __count('index#startRelaxContinuous');
     if (running.kind) return { ignored:true };
     running.kind='relax';
+    if (__useWsSim()) {
+      // WS streaming mode
+      const ws = getWS(); await __wsEnsureInit();
+      __resetRPS();
+      let taken=0; let unsub=null; let stopped=false;
+      unsub = ws.onResult((r)=>{
+        if (stopped) return;
+        // only handle frames when relax is the running kind
+        if (running.kind !== 'relax') return;
+        try {
+          const seq = r.seq|0; if (seq>0) ws.ack(seq);
+        } catch {}
+        const positions = r.positions; const forces = r.forces; const energy = r.energy;
+        if (Array.isArray(positions) && positions.length === state.positions.length){
+          // apply with same exclusion rules
+          const N = positions.length;
+          const exclude = new Set();
+          // modifiedDuring
+          // For WS streaming we use current userInteractionVersion to guard partial apply
+          // reuse existing drag/latch logic
+          if(__draggingAtoms.size) for(const i of __draggingAtoms) exclude.add(i);
+          try { const now=performance.now(); for(const [i,t] of __latchedAtomsUntil){ if(t>now) exclude.add(i); else __latchedAtomsUntil.delete(i);} } catch {}
+          if(exclude.size>0){ for(let i=0;i<N;i++){ if(exclude.has(i)) continue; const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; } }
+          else { for(let i=0;i<N;i++){ const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; } }
+          __suppressNextPosChange = true; state.markPositionsChanged(); bumpSimulationVersion('relaxWS');
+        }
+        if (Array.isArray(forces) && forces.length){ lastForceResult={ energy: (typeof energy==='number'?energy: (state.dynamics?.energy||NaN)), forces };
+          state.dynamics = state.dynamics || {}; if (typeof energy==='number') state.dynamics.energy = energy;
+          state.forceCache = { version: structureVersion, energy: state.dynamics.energy, forces, stress:null, stale:false };
+          __updateForces(forces, { reason:'relaxWS' }); maybePlotEnergy('relax'); }
+        taken++; __noteRequestCompleted();
+        if (taken>=maxSteps){ // auto stop
+          stopped=true; try { ws.stopSimulation(); } catch {}
+          try { unsub && unsub(); } catch {}
+          running.kind=null; __resetRPS();
+        }
+      });
+      // Start stream
+      ws.startSimulation({ type:'relax', params: { calculator:'uma', fmax: state?.optimizer?.fmax || 0.05, max_step: MAX_STEP, optimizer:'bfgs' } });
+      return { streaming:true };
+    }
     __resetRPS();
   const minInterval = getConfig().minStepIntervalMs; // ms pacing per API request (configurable)
     let lastTime=0; // retained for focus-wait reset only
@@ -995,6 +1025,32 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   if(!featureFlags().MD_LOOP){ console.warn('[feature] MD_LOOP disabled'); return { disabled:true }; }
     if(running.kind) return { ignored:true };
     running.kind='md';
+    if (__useWsSim()){
+      const ws = getWS(); await __wsEnsureInit();
+      __resetRPS();
+      let taken=0; let unsub=null; let stopped=false;
+      unsub = ws.onResult((r)=>{
+        if (stopped) return; if (running.kind!=='md') return;
+        try { const seq=r.seq|0; if (seq>0) ws.ack(seq); } catch {}
+        const positions=r.positions, forces=r.forces, energy=r.energy, velocities=r.velocities, instT=r?.temperature;
+        if (Array.isArray(positions) && positions.length===state.positions.length){
+          const N=positions.length; const exclude=new Set(); if(__draggingAtoms.size) for(const i of __draggingAtoms) exclude.add(i);
+          try { const now=performance.now(); for(const [i,t] of __latchedAtomsUntil){ if(t>now) exclude.add(i); else __latchedAtomsUntil.delete(i);} } catch {}
+          if(exclude.size>0){ for(let i=0;i<N;i++){ if(exclude.has(i)) continue; const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; } }
+          else { for(let i=0;i<N;i++){ const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; } }
+          __suppressNextPosChange = true; state.markPositionsChanged(); bumpSimulationVersion('mdWS');
+        }
+        if (Array.isArray(forces) && forces.length){ lastForceResult={ energy: (typeof energy==='number'?energy: (state.dynamics?.energy||NaN)), forces };
+          state.dynamics = state.dynamics || {}; if (typeof energy==='number') state.dynamics.energy = energy;
+          if (Array.isArray(velocities) && velocities.length===state.elements.length) state.dynamics.velocities = velocities;
+          state.forceCache = { version: structureVersion, energy: state.dynamics.energy, forces, stress:null, stale:false };
+          __updateForces(forces, { reason:'mdWS' }); maybePlotEnergy('md'); }
+        if (typeof instT==='number' && isFinite(instT)){ state.dynamics.temperature = instT; try { const el=document.getElementById('instTemp'); if(el) el.textContent = 'T: '+instT.toFixed(1)+' K'; } catch {} }
+        taken++; __noteRequestCompleted(); if (taken>=steps){ stopped=true; try { ws.stopSimulation(); } catch {} try { unsub&&unsub(); }catch{} running.kind=null; __resetRPS(); }
+      });
+      ws.startSimulation({ type:'md', params: { calculator, temperature, timestep_fs, friction: ((typeof friction==='number'&&Number.isFinite(friction))? friction : (getConfig().mdFriction ?? DEFAULT_MD_FRICTION)) } });
+      return { streaming:true };
+    }
     __resetRPS();
   const minInterval = getConfig().minStepIntervalMs; let lastTime=0; // retained for focus-wait reset only
     let __mdLastResponseAt = 0;
