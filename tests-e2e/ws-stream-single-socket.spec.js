@@ -21,7 +21,7 @@ test.describe('WS streaming single-socket', () => {
     test.setTimeout(30000);
     // Force same-origin static hosting and point frontend to our WS backend on 8001
     await page.addInitScript(() => {
-      window.__MLIPVIEW_SERVER = 'http://localhost:4000';
+      window.__MLIPVIEW_SERVER = 'http://localhost:8000';
       window.__MLIPVIEW_TEST_MODE = true; // bypass focus gating
       // Speed up by reducing min interval pacing in case REST paths are hit at all
       window.__MLIP_CONFIG = { minStepIntervalMs: 1, mdFriction: 0.02 };
@@ -29,7 +29,23 @@ test.describe('WS streaming single-socket', () => {
 
   const sockEvents = [];
   const consoleErrors = [];
-  page.on('console', msg => { if (msg.type() === 'error') consoleErrors.push(msg.text()); });
+  // Stream all console to test output; only collect actual console.error for assertions
+  page.on('console', msg => {
+    const text = msg.text();
+    if (msg.type() === 'error') consoleErrors.push(text);
+    // eslint-disable-next-line no-console
+    console.log(`[browser:${msg.type()}] ${text}`);
+  });
+  page.on('pageerror', (err) => {
+    const text = (err && (err.message || String(err))) || 'unknown pageerror';
+    // eslint-disable-next-line no-console
+    console.log(`[pageerror] ${text}`);
+  });
+  page.on('requestfailed', (req) => {
+    const failure = (req.failure && req.failure()) || {};
+    // eslint-disable-next-line no-console
+    console.log(`[requestfailed] ${req.method()} ${req.url()} -> ${failure.errorText || 'failed'}`);
+  });
     page.on('websocket', ws => {
       sockEvents.push({ type: 'open', url: ws.url() });
       ws.on('framereceived', data => { sockEvents.push({ type: 'recv', size: (data?.length||0) }); });

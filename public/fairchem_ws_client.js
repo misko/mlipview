@@ -1,59 +1,21 @@
 // Thin WebSocket client for fairchem_local_server2 /ws protobuf stream
-// Non-breaking addition: not yet integrated into index.js loops; provides a
-// small API for future migration.
-
+// Import modern ESM protobuf stubs directly
 import { __count } from './util/funcCount.js';
-// Protobuf stubs will be loaded on-demand in the browser by injecting scripts.
-let __pb = (globalThis && globalThis.proto && globalThis.proto.fairchem && globalThis.proto.fairchem.session) || {};
-let __hasPB = !!(__pb && __pb.ClientAction && __pb.ServerResult);
-async function __ensurePB(){
-	if (__hasPB) return true;
-	if (typeof window === 'undefined' || typeof document === 'undefined') {
-		throw new Error('[WS][protobuf-missing] session_pb.js not loaded in non-browser environment');
-	}
-	// Provide a minimal require shim for generated stubs
-	if (!('require' in window)) {
-		window.require = function(name){
-			if (name === 'google-protobuf') {
-				if (window.jspb) return window.jspb;
-				// Fallback: some builds attach exports under goog.jspb
-				if (window.goog && window.goog.jspb) return window.goog.jspb;
-				throw new Error('[WS] google-protobuf not loaded');
-			}
-			throw new Error('Unsupported module '+name);
-		};
-	}
-	// 1) google-protobuf runtime
-	if (!window.goog) {
-			await new Promise((resolve, reject)=>{
-				const s = document.createElement('script');
-				// Load the browser-ready Closure runtime (classic script, defines window.goog/jspb)
-				s.src = '/vendor/google-protobuf/google-protobuf.js';
-			s.async = false;
-			s.onload = ()=> resolve(true);
-			s.onerror = ()=> reject(new Error('Failed to load google-protobuf runtime'));
-			document.head.appendChild(s);
-		});
-	}
-	// 2) generated session_pb.js (commonjs style expects require)
-	if (!(globalThis && globalThis.proto && globalThis.proto.fairchem && globalThis.proto.fairchem.session)) {
-		await new Promise((resolve, reject)=>{
-			const s = document.createElement('script');
-			s.src = '/proto/fairchem_local_server2/session_pb.js';
-			s.async = false;
-			s.onload = ()=> resolve(true);
-			s.onerror = ()=> reject(new Error('Failed to load session_pb.js'));
-			document.head.appendChild(s);
-		});
-	}
-	__pb = (globalThis && globalThis.proto && globalThis.proto.fairchem && globalThis.proto.fairchem.session) || {};
-	__hasPB = !!(__pb && __pb.ClientAction && __pb.ServerResult);
-	if (!__hasPB) throw new Error('[WS][protobuf-missing] Unable to initialize protobuf stubs');
-	return true;
-}
+import { create, toBinary, fromBinary } from '@bufbuild/protobuf';
+import {
+	ClientActionSchema,
+	ClientAction_Type,
+	ClientAction_SimType,
+	ServerResultSchema,
+	Vec3Schema,
+	Mat3Schema,
+	SimulationParamsSchema,
+} from '/proto/fairchem_local_server2/session_pb.js';
+const __hasPB = !!ClientActionSchema && !!ServerResultSchema;
+async function __ensurePB(){ if(!__hasPB) throw new Error('[WS][protobuf-missing] ESM stubs not found'); return true; }
 
 function resolveWsBase(){
-	if (typeof window === 'undefined') return 'ws://127.0.0.1:8000';
+		if (typeof window === 'undefined') return 'ws://127.0.0.1:8000';
 	const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 	const host = window.__MLIPVIEW_SERVER ? new URL(window.__MLIPVIEW_SERVER).host : window.location.host;
 	return `${proto}//${host}`;
@@ -80,31 +42,31 @@ export function createFairchemWS(){
 			ws.onopen = ()=> resolve(true);
 			ws.onerror = (e)=> reject(e);
 			ws.onclose = ()=>{};
-						ws.onmessage = (ev)=>{
+			            ws.onmessage = (ev)=>{
 					// Decode protobuf ServerResult frames only (no JSON fallback)
-					try {
-						if (!(ev.data instanceof ArrayBuffer)) {
-							throw new Error('[WS] Expected binary protobuf frame, got non-binary message');
-						}
-						const bytes = new Uint8Array(ev.data);
-						const r = __pb.ServerResult.deserializeBinary(bytes);
-						const out = {
-							seq: r.getSeq && r.getSeq(),
-							client_seq: r.getClientSeq && r.getClientSeq(),
-							userInteractionCount: (typeof r.getUserInteractionCount==='function')? r.getUserInteractionCount(): undefined,
-							simStep: (typeof r.getSimStep==='function')? r.getSimStep(): undefined,
-							message: r.getMessage && r.getMessage(),
-						};
-						if (typeof r.hasEnergy==='function' && r.hasEnergy()) out.energy = r.getEnergy();
-						if (r.getPositionsList) out.positions = r.getPositionsList().map(v=> v.getVList());
-						if (r.getForcesList) out.forces = r.getForcesList().map(v=> v.getVList());
-						if (r.getVelocitiesList) out.velocities = r.getVelocitiesList().map(v=> v.getVList());
-						if (r.getCell && r.getCell()){
-							const m = r.getCell().getMList();
-							if (Array.isArray(m) && m.length===9) out.cell = [ [m[0],m[1],m[2]],[m[3],m[4],m[5]],[m[6],m[7],m[8]] ];
-						}
-						for(const fn of listeners){ try { fn(out, lastCounters); } catch{} }
-					} catch (e) {
+								try {
+									if (!(ev.data instanceof ArrayBuffer)) {
+										throw new Error('[WS] Expected binary protobuf frame, got non-binary message');
+									}
+									const bytes = new Uint8Array(ev.data);
+									const r = fromBinary(ServerResultSchema, bytes);
+									const out = {
+										seq: r.seq,
+										client_seq: r.clientSeq,
+										userInteractionCount: r.userInteractionCount,
+										simStep: r.simStep,
+										message: r.message,
+									};
+									if (r.energy != null) out.energy = r.energy;
+									if (Array.isArray(r.positions)) out.positions = r.positions.map(v=> v && Array.isArray(v.v) ? v.v : undefined).filter(Boolean);
+									if (Array.isArray(r.forces)) out.forces = r.forces.map(v=> v && Array.isArray(v.v) ? v.v : undefined).filter(Boolean);
+									if (Array.isArray(r.velocities)) out.velocities = r.velocities.map(v=> v && Array.isArray(v.v) ? v.v : undefined).filter(Boolean);
+									if (r.cell && Array.isArray(r.cell.m)){
+										const m = r.cell.m;
+										if (m.length===9) out.cell = [ [m[0],m[1],m[2]],[m[3],m[4],m[5]],[m[6],m[7],m[8]] ];
+									}
+									for(const fn of listeners){ try { fn(out, lastCounters); } catch{} }
+								} catch (e) {
 						// Surface decode errors to console but do not crash the socket
 						try { console.error('[WS][decode-error]', e?.message||e); } catch {}
 					}
@@ -124,47 +86,30 @@ export function createFairchemWS(){
 
 				// INIT_SYSTEM: send atoms and initial positions (and optional velocities/cell)
 		function initSystem({ atomic_numbers, positions, velocities, cell }){
-			const msg = new __pb.ClientAction();
-			msg.setSeq(nextSeq());
-			msg.setType(__pb.ClientAction.Type.INIT_SYSTEM);
-			if (Array.isArray(atomic_numbers)) {
-				for (const z of atomic_numbers) msg.addAtomicNumbers(z|0);
-			}
-			if (Array.isArray(positions)) {
-				for (const p of positions) {
-					const v = new __pb.Vec3(); v.setVList([+p[0], +p[1], +p[2]]); msg.addPositions(v);
-				}
-			}
-			if (Array.isArray(velocities)) {
-				for (const p of velocities) {
-					const v = new __pb.Vec3(); v.setVList([+p[0], +p[1], +p[2]]); msg.addVelocities(v);
-				}
-			}
-			if (cell && Array.isArray(cell) && cell.length===3) {
-				const m = new __pb.Mat3();
-				const flat = [
+			const msg = create(ClientActionSchema, {
+				seq: nextSeq(),
+				type: ClientAction_Type.INIT_SYSTEM,
+				atomicNumbers: Array.isArray(atomic_numbers) ? atomic_numbers.map(z=> z|0) : [],
+				positions: Array.isArray(positions) ? positions.map(p=> create(Vec3Schema, { v: [+p[0],+p[1],+p[2]] })) : [],
+				velocities: Array.isArray(velocities) ? velocities.map(p=> create(Vec3Schema, { v: [+p[0],+p[1],+p[2]] })) : [],
+				cell: (cell && Array.isArray(cell) && cell.length===3) ? create(Mat3Schema, { m: [
 					+cell[0][0], +cell[0][1], +cell[0][2],
 					+cell[1][0], +cell[1][1], +cell[1][2],
 					+cell[2][0], +cell[2][1], +cell[2][2],
-				];
-				m.setMList(flat);
-				if (typeof msg.setCell === 'function') msg.setCell(m);
-			}
-			const buf = msg.serializeBinary();
+				] }) : undefined,
+			});
+			const buf = toBinary(ClientActionSchema, msg);
 			sendBytes(buf);
 		}
 
 				// UPDATE_POSITIONS: keep server-side state synchronized for one-shot calculations
 		function updatePositions(positions){
-			const msg = new __pb.ClientAction();
-			msg.setSeq(nextSeq());
-			msg.setType(__pb.ClientAction.Type.UPDATE_POSITIONS);
-			if (Array.isArray(positions)) {
-				for (const p of positions) {
-					const v = new __pb.Vec3(); v.setVList([+p[0], +p[1], +p[2]]); msg.addPositions(v);
-				}
-			}
-			const buf = msg.serializeBinary();
+			const msg = create(ClientActionSchema, {
+				seq: nextSeq(),
+				type: ClientAction_Type.UPDATE_POSITIONS,
+				positions: Array.isArray(positions) ? positions.map(p=> create(Vec3Schema, { v: [+p[0],+p[1],+p[2]] })) : [],
+			});
+			const buf = toBinary(ClientActionSchema, msg);
 			sendBytes(buf);
 		}
 
@@ -182,32 +127,30 @@ export function createFairchemWS(){
 
 			// Start simulation (md or relax) with SimulationParams
 			function startSimulation({ type, params }){
-				const msg = new __pb.ClientAction();
-				msg.setSeq(nextSeq());
-				msg.setType(__pb.ClientAction.Type.START_SIMULATION);
-				const t = String(type||'md').toLowerCase()==='md' ? __pb.ClientAction.SimType.MD : __pb.ClientAction.SimType.RELAX;
-				if (typeof msg.setSimulationType==='function') msg.setSimulationType(t);
-				if (params){
-					const sp = new __pb.SimulationParams();
-					if (params.calculator) sp.setCalculator(String(params.calculator));
-					if (typeof params.temperature==='number') sp.setTemperature(+params.temperature);
-					if (typeof params.timestep_fs==='number') sp.setTimestepFs(+params.timestep_fs);
-					if (typeof params.friction==='number') sp.setFriction(+params.friction);
-					if (typeof params.fmax==='number') sp.setFmax(+params.fmax);
-					if (typeof params.max_step==='number') sp.setMaxStep(+params.max_step);
-					if (params.optimizer) sp.setOptimizer(String(params.optimizer));
-					if (typeof msg.setSimulationParams==='function') msg.setSimulationParams(sp);
-				}
-				if (typeof msg.setUserInteractionCount==='function') msg.setUserInteractionCount(lastCounters.userInteractionCount|0);
-				if (typeof msg.setSimStep==='function') msg.setSimStep(lastCounters.simStep|0);
-				const buf = msg.serializeBinary(); sendBytes(buf);
+				const t = String(type||'md').toLowerCase()==='md' ? ClientAction_SimType.MD : ClientAction_SimType.RELAX;
+				const sp = params ? create(SimulationParamsSchema, {
+					calculator: params.calculator || '',
+					temperature: typeof params.temperature==='number' ? +params.temperature : undefined,
+					timestepFs: typeof params.timestep_fs==='number' ? +params.timestep_fs : undefined,
+					friction: typeof params.friction==='number' ? +params.friction : undefined,
+					fmax: typeof params.fmax==='number' ? +params.fmax : undefined,
+					maxStep: typeof params.max_step==='number' ? +params.max_step : undefined,
+					optimizer: params.optimizer || undefined,
+				}) : undefined;
+				const msg = create(ClientActionSchema, {
+					seq: nextSeq(),
+					type: ClientAction_Type.START_SIMULATION,
+					simulationType: t,
+					simulationParams: sp,
+					userInteractionCount: lastCounters.userInteractionCount|0,
+					simStep: lastCounters.simStep|0,
+				});
+				const buf = toBinary(ClientActionSchema, msg); sendBytes(buf);
 			}
 
 			function stopSimulation(){
-				const msg = new __pb.ClientAction();
-				msg.setSeq(nextSeq());
-				msg.setType(__pb.ClientAction.Type.STOP_SIMULATION);
-				const buf = msg.serializeBinary(); sendBytes(buf);
+				const msg = create(ClientActionSchema, { seq: nextSeq(), type: ClientAction_Type.STOP_SIMULATION });
+				const buf = toBinary(ClientActionSchema, msg); sendBytes(buf);
 			}
 
 				function ack(seqNum){
@@ -236,9 +179,16 @@ export function createFairchemWS(){
 						if (energy != null || (forces && forces.length)) done({ energy, forces });
 					} catch(e){ /* ignore non-matching frames */ }
 				});
-				try {
-						const msg = new __pb.ClientAction(); msg.setSeq(nextSeq()); if (clientAck) msg.setAck(clientAck); msg.setType(__pb.ClientAction.Type.SIMPLE_CALCULATE); if (typeof msg.setUserInteractionCount === 'function') { msg.setUserInteractionCount(lastCounters.userInteractionCount|0); } if (typeof msg.setSimStep === 'function') { msg.setSimStep(lastCounters.simStep|0); } const buf = msg.serializeBinary(); sendBytes(buf);
-				} catch(e){ fail(e); }
+					try {
+						const msg = create(ClientActionSchema, {
+							seq: nextSeq(),
+							ack: clientAck||undefined,
+							type: ClientAction_Type.SIMPLE_CALCULATE,
+							userInteractionCount: lastCounters.userInteractionCount|0,
+							simStep: lastCounters.simStep|0,
+						});
+						const buf = toBinary(ClientActionSchema, msg); sendBytes(buf);
+					} catch(e){ fail(e); }
 				// optional timeout
 				setTimeout(()=> fail(new Error('simple_calculate timeout')), 5000);
 			});

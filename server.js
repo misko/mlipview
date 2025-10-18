@@ -12,6 +12,8 @@ const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 4000; // HTTP
 const SSL_PORT = process.env.SSL_PORT || 4443; // HTTPS
 const app = createApp();
+let httpServerRef = null;
+let httpsServerRef = null;
 
 function getLanIp() {
   try {
@@ -28,6 +30,7 @@ function getLanIp() {
 function startServers() {
   // Always start HTTP (useful for local dev & redirect target)
   const httpServer = http.createServer(app);
+  httpServerRef = httpServer;
   httpServer.listen(PORT, '0.0.0.0', () => {
     const lan = getLanIp();
     console.log(`[mlipviewer2] HTTP  listening on  http://localhost:${PORT}` + (lan ? `  (LAN: http://${lan}:${PORT})` : ''));
@@ -52,6 +55,7 @@ function startServers() {
       const key = fs.readFileSync(keyPath);
       const cert = fs.readFileSync(certPath);
       const httpsServer = https.createServer({ key, cert }, app);
+      httpsServerRef = httpsServer;
       httpsServer.listen(SSL_PORT, '0.0.0.0', () => {
         const lan = getLanIp();
         console.log(`[mlipviewer2] HTTPS listening on https://localhost:${SSL_PORT}` + (lan ? `  (LAN: https://${lan}:${SSL_PORT})` : ''));
@@ -64,9 +68,24 @@ function startServers() {
   }
 }
 
+async function stopServers() {
+  const closeServer = (srv) => new Promise((resolve) => {
+    try {
+      if (!srv) return resolve();
+      srv.close(() => resolve());
+      // In case of lingering keep-alive, force-timeout close
+      setTimeout(() => { try { srv.close(()=>resolve()); } catch {} }, 2000);
+    } catch { resolve(); }
+  });
+  await closeServer(httpServerRef);
+  await closeServer(httpsServerRef);
+  httpServerRef = null;
+  httpsServerRef = null;
+}
+
 // Only auto-start when executed directly (node server.js), not when imported (tests).
 if (process.argv[1] === __filename) {
   startServers();
 }
 
-export { app, startServers };
+export { app, startServers, stopServers };

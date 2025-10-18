@@ -1,15 +1,13 @@
-// Basic Playwright config for e2e tests
-// We run against the dev server (node server.js) assumed running on localhost:3000
-// Tests can be invoked with: npx playwright test
-
+// tests run against Vite preview (dist/) unless BASE_URL is provided
 import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests-e2e',
   timeout: 10_000,
   globalSetup: './tests-e2e/global-setup.js',
+  globalTeardown: './tests-e2e/global-teardown.js',
   use: {
-    baseURL: 'http://localhost:4000',
+    baseURL: process.env.BASE_URL || 'http://127.0.0.1:5174',
     headless: true,
     viewport: { width: 1280, height: 800 },
     ignoreHTTPSErrors: true,

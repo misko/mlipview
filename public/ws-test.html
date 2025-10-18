@@ -6,8 +6,11 @@
   </head>
   <body>
     <div id="log"></div>
+    <!-- Use modern ESM protobuf stubs directly -->
     <script type="module">
-      import { getWS } from './fairchem_ws_client.js';
+      import { getWS } from '/fairchem_ws_client.js';
+  import { Vec3Schema } from '/proto/fairchem_local_server2/session_pb.js';
+  console.log('Vec3Schema ESM?', !!Vec3Schema);
       const params = new URLSearchParams(location.search||'');
       const useSim = params.get('sim') === '1';
       const ws = getWS();

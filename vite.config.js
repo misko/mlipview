@@ -41,14 +41,25 @@ const backendPort = process.env.FASTAPI_PORT || '8000';
 const backendTarget = process.env.FASTAPI_URL || `${backendProtocol}://${backendHost}:${backendPort}`;
 
 export default defineConfig({
+   appType: 'mpa',
   root: path.resolve(__dirname, 'public'),
-  publicDir: path.resolve(__dirname, 'public'),
+  publicDir: false,
+    resolve: {
+    alias: {
+      '@src': path.resolve(__dirname, 'src'),
+    },
+  },
+  fs: { allow: [path.resolve(__dirname, 'src'), path.resolve(__dirname, 'public')] },
   build: {
     outDir: path.resolve(__dirname, 'dist'),
     emptyOutDir: true,
     sourcemap: true,
     rollupOptions: {
-      // Entry is index.html in root; Vite auto-detects. We keep explicit config minimal.
+      // Multi-page build: include ws-test.html alongside index.html
+      input: {
+        index: path.resolve(__dirname, 'public', 'index.html'),
+        wsTest: path.resolve(__dirname, 'public', 'ws-test.html'),
+      },
     }
   },
   server: {
@@ -58,17 +69,23 @@ export default defineConfig({
     // Restrict or extend allowed host headers. Needed when accessing via hostname (e.g. http://kalman:5173).
     // Add more hostnames or patterns as needed; you can also expose an env var if desired.
     allowedHosts: ['kalman'],
+        fs: {
+      // allow Vite to serve modules from project root (so /src/* works)
+      allow: [__dirname],
+    },
   https: !!httpsCfg && !process.env.NO_VITE_HTTPS ? httpsCfg : false,
   proxy: {
     '/serve/simple': { target: backendTarget, changeOrigin: true, secure: false },
     '/serve/relax': { target: backendTarget, changeOrigin: true, secure: false },
     '/serve/md': { target: backendTarget, changeOrigin: true, secure: false },
-    '/serve/health': { target: backendTarget, changeOrigin: true, secure: false }
+    '/serve/health': { target: backendTarget, changeOrigin: true, secure: false },
+    '^/ws($|/)': { target: backendTarget, changeOrigin: true, secure: false, ws: true }
     }
   },
   preview: {
     port: 5174,
     host: '0.0.0.0'
   },
-  plugins: [rootRedirectPlugin()]
+  plugins: [rootRedirectPlugin()],
+  optimizeDeps: { },
 });
