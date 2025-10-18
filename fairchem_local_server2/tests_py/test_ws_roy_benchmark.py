@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple
 
 import pytest
 import websockets
+
 from fairchem_local_server2 import session_pb2 as pb
 
 
@@ -153,7 +154,5 @@ async def _run_ws_md_frames(
 def test_ws_roy_md_30_frames(ws_base_url: str):
     xyz_path = _find_roy_xyz()
     Z, xyz = _load_xyz(xyz_path)
-    frames = asyncio.run(
-        _run_ws_md_frames(ws_base_url, Z, xyz, 30, "uma")
-    )
+    frames = asyncio.run(_run_ws_md_frames(ws_base_url, Z, xyz, 30, "uma"))
     assert frames >= 30
