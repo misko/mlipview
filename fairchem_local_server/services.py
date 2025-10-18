@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import List
+import time
 
 import numpy as np
 from ase import units as _units
@@ -88,6 +89,7 @@ def _relax_run(
     return_trace: bool,
     precomputed: PrecomputedValues | None,
 ) -> RelaxResult:
+    t_start = time.perf_counter()
     if len(atoms) == 0:
         raise HTTPException(status_code=400, detail="No atoms provided")
     if steps <= 0:
@@ -163,7 +165,7 @@ def _relax_run(
         atoms.set_positions(atoms.get_positions() - shift)
         atoms.set_cell(None)
 
-    return RelaxResult(
+    res = RelaxResult(
         initial_energy=initial_energy,
         final_energy=final_energy,
         positions=atoms.get_positions().tolist(),
@@ -174,6 +176,16 @@ def _relax_run(
         trace_energies=(trace if trace_enabled else None),
         precomputed_applied=(pre_applied if pre_applied else None),
     )
+    dt = time.perf_counter() - t_start
+    try:
+        nat = len(atoms)
+    except Exception:
+        nat = -1
+    print(
+        f"[timing] _relax_run natoms={nat} steps={steps} wall={dt:.4f}s",
+        flush=True,
+    )
+    return res
 
 
 def relax(inp: RelaxIn) -> RelaxResult:
@@ -209,6 +221,7 @@ def _md_run(
     precomputed: PrecomputedValues | None,
     velocities_in,
 ) -> MDResult:
+    t_start = time.perf_counter()
     if len(atoms) == 0:
         raise HTTPException(status_code=400, detail="No atoms provided")
     if steps <= 0:
@@ -316,7 +329,7 @@ def _md_run(
         atoms.set_positions(atoms.get_positions() - shift)
         atoms.set_cell(None)
 
-    return MDResult(
+    res = MDResult(
         initial_energy=initial_energy,
         final_energy=final_energy,
         positions=atoms.get_positions().tolist(),
@@ -328,6 +341,19 @@ def _md_run(
         calculator=calculator,
         precomputed_applied=(pre_applied if pre_applied else None),
     )
+    dt = time.perf_counter() - t_start
+    try:
+        nat = len(atoms)
+    except Exception:
+        nat = -1
+    print(
+        (
+            f"[timing] _md_run natoms={nat} steps={steps} "
+            f"calc={calculator} wall={dt:.4f}s"
+        ),
+        flush=True,
+    )
+    return res
 
 
 def md_step(inp: MDIn) -> MDResult:

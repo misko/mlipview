@@ -5,6 +5,7 @@ import asyncio
 import time
 from pathlib import Path
 from typing import Tuple, List
+import time as _time
 
 import json
 import websockets
@@ -25,10 +26,13 @@ def _load_xyz(path: Path) -> Tuple[List[int], List[List[float]]]:
     expects standard XYZ format: first line natoms, second line comment,
     following lines 'Elem x y z'.
     """
+    t0 = _time.perf_counter()
     if ASE_AVAILABLE:
         atoms: Atoms = ase_read(str(path))  # type: ignore
         Z = atoms.get_atomic_numbers().tolist()
         pos = atoms.get_positions().tolist()
+        dt = _time.perf_counter() - t0
+        print(f"[timing] load_xyz (ASE) wall={dt:.4f}s", flush=True)
         return Z, pos
 
     # Minimal fallback parser
@@ -39,16 +43,17 @@ def _load_xyz(path: Path) -> Tuple[List[int], List[List[float]]]:
         nat = int(text[0].strip())
     except Exception as e:
         raise ValueError(f"Invalid XYZ first line: {e}")
-    lines = text[2 : 2 + nat]
+    lines = text[2: 2 + nat]
     if len(lines) < nat:
         raise ValueError("Invalid XYZ: not enough coordinate lines")
 
     # Periodic table mapping
     PT = {
         'H': 1, 'He': 2, 'Li': 3, 'Be': 4, 'B': 5, 'C': 6, 'N': 7, 'O': 8,
-        'F': 9, 'Ne': 10, 'Na': 11, 'Mg': 12, 'Al': 13, 'Si': 14, 'P': 15, 'S': 16,
-        'Cl': 17, 'Ar': 18, 'K': 19, 'Ca': 20, 'Sc': 21, 'Ti': 22, 'V': 23, 'Cr': 24,
-        'Mn': 25, 'Fe': 26, 'Co': 27, 'Ni': 28, 'Cu': 29, 'Zn': 30,
+        'F': 9, 'Ne': 10, 'Na': 11, 'Mg': 12, 'Al': 13, 'Si': 14,
+        'P': 15, 'S': 16, 'Cl': 17, 'Ar': 18, 'K': 19, 'Ca': 20,
+        'Sc': 21, 'Ti': 22, 'V': 23, 'Cr': 24, 'Mn': 25, 'Fe': 26,
+        'Co': 27, 'Ni': 28, 'Cu': 29, 'Zn': 30,
     }
 
     Z: List[int] = []
@@ -66,14 +71,23 @@ def _load_xyz(path: Path) -> Tuple[List[int], List[List[float]]]:
             raise ValueError(f"Unknown element symbol: {sym}")
         Z.append(PT[sym])
         pos.append([x, y, z])
+    dt = _time.perf_counter() - t0
+    print(f"[timing] load_xyz (fallback) wall={dt:.4f}s", flush=True)
     return Z, pos
 
 
-async def run_one_session(uri: str, Z: List[int], xyz: List[List[float]], duration_s: float, calculator: str) -> int:
+async def run_one_session(
+    uri: str,
+    Z: List[int],
+    xyz: List[List[float]],
+    duration_s: float,
+    calculator: str,
+) -> int:
     """Open one WS session, run MD for duration_s, and count frames received.
 
     Returns the number of result frames (1 result ~= 1 MD step in our server).
     """
+    t0 = _time.perf_counter()
     frames = 0
     async with websockets.connect(uri) as ws:
         # init
@@ -109,10 +123,17 @@ async def run_one_session(uri: str, Z: List[int], xyz: List[List[float]], durati
             except asyncio.TimeoutError:
                 # send periodic ack ping even on idle
                 seq += 1
-                await ws.send(json.dumps({"seq": seq, "type": "ping", "ack": last_seq}))
+                await ws.send(
+                    json.dumps({
+                        "seq": seq,
+                        "type": "ping",
+                        "ack": last_seq,
+                    })
+                )
                 continue
             frames += 1
-            # try to parse JSON to extract seq; if binary (protobuf), just count
+            # try to parse JSON to extract seq; if binary (protobuf),
+            # just count
             try:
                 data = json.loads(msg)
                 last_seq = max(last_seq, int(data.get("seq") or 0))
@@ -121,16 +142,50 @@ async def run_one_session(uri: str, Z: List[int], xyz: List[List[float]], durati
                 pass
             # ack so server backpressure window advances
             seq += 1
-            await ws.send(json.dumps({"seq": seq, "type": "ping", "ack": last_seq}))
+            await ws.send(
+                json.dumps({
+                    "seq": seq,
+                    "type": "ping",
+                    "ack": last_seq,
+                })
+            )
+    dt = _time.perf_counter() - t0
+    print(
+        (
+            f"[timing] run_one_session duration={duration_s}s "
+            f"frames={frames} wall={dt:.4f}s"
+        ),
+        flush=True,
+    )
     return frames
 
 
 def main():
-    ap = argparse.ArgumentParser(description="ROY MD steps/sec benchmark over WebSocket")
-    ap.add_argument("--base", default="ws://127.0.0.1:8000", help="Base ws URL (no trailing /ws)")
-    ap.add_argument("--file", default=str(Path("public/molecules/roy.xyz")), help="Path to ROY XYZ file")
-    ap.add_argument("--duration", type=float, default=10.0, help="Benchmark duration in seconds")
-    ap.add_argument("--calculator", choices=["lj", "uma"], default="lj", help="Calculator to request")
+    ap = argparse.ArgumentParser(
+        description="ROY MD steps/sec benchmark over WebSocket"
+    )
+    ap.add_argument(
+        "--base",
+        default="ws://127.0.0.1:8000",
+        help="Base ws URL (no trailing /ws)",
+    )
+    ap.add_argument(
+        "--file",
+        default=str(Path("public/molecules/roy.xyz")),
+        help="Path to ROY XYZ file",
+    )
+    ap.add_argument(
+        "--duration",
+        type=float,
+        default=10.0,
+        help="Benchmark duration in seconds",
+    )
+    ap.add_argument(
+        "--calculator",
+        choices=["lj", "uma"],
+        default="lj",
+        help="Calculator to request",
+    )
     args = ap.parse_args()
 
     xyz_path = Path(args.file)
@@ -139,11 +194,21 @@ def main():
     Z, xyz = _load_xyz(xyz_path)
 
     uri = args.base.rstrip("/") + "/ws"
-    frames = asyncio.run(run_one_session(uri, Z, xyz, args.duration, args.calculator))
+    t0 = _time.perf_counter()
+    frames = asyncio.run(
+        run_one_session(uri, Z, xyz, args.duration, args.calculator)
+    )
+    dt = _time.perf_counter() - t0
+    print(f"[timing] benchmark total wall={dt:.4f}s", flush=True)
 
     sps = frames / float(args.duration) if args.duration > 0 else 0.0
     print("ROY benchmark results:")
-    print(f"atoms= {len(Z)}  duration_s= {args.duration}  calculator= {args.calculator}")
+    print(
+        (
+            f"atoms= {len(Z)}  duration_s= {args.duration}  "
+            f"calculator= {args.calculator}"
+        )
+    )
     print(f"frames= {frames}  steps_per_sec= {sps:.2f}")
 
 

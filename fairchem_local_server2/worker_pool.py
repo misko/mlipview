@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 from typing import Any, Dict, List, Optional
+import time
 import ray
 
 from fairchem_local_server.atoms_utils import build_atoms
@@ -44,6 +45,7 @@ class ASEWorker:
         friction: float,
         calculator: str = "uma",
     ) -> Dict[str, Any]:
+        t0 = time.perf_counter()
         calc_enum = RelaxCalculatorName(calculator)
         atoms = build_atoms(atomic_numbers, positions, cell=cell)
         atoms.calc = (
@@ -60,7 +62,16 @@ class ASEWorker:
             precomputed=None,
             velocities_in=velocities,
         )
-        return md_res.dict()
+        out = md_res.dict()
+        dt = time.perf_counter() - t0
+        print(
+            (
+                f"[timing] ASEWorker.run_md natoms={len(atomic_numbers)} "
+                f"calc={calc_enum.value} wall={dt:.4f}s"
+            ),
+            flush=True,
+        )
+        return out
 
     def run_relax(
         self,
@@ -73,6 +84,7 @@ class ASEWorker:
         max_step: float,
         calculator: str = "uma",
     ) -> Dict[str, Any]:
+        t0 = time.perf_counter()
         calc_enum = RelaxCalculatorName(calculator)
         atoms = build_atoms(atomic_numbers, positions, cell=cell)
         atoms.calc = (
@@ -86,7 +98,16 @@ class ASEWorker:
             return_trace=False,
             precomputed=None,
         )
-        return rx.dict()
+        out = rx.dict()
+        dt = time.perf_counter() - t0
+        print(
+            (
+                f"[timing] ASEWorker.run_relax natoms={len(atomic_numbers)} "
+                f"calc={calc_enum.value} wall={dt:.4f}s"
+            ),
+            flush=True,
+        )
+        return out
 
 
 class WorkerPool:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 from typing import Any, List, Tuple
+import time
 
 # 'ray' module reference is via ray.serve imported above; avoid unused
 # direct import
@@ -76,6 +77,7 @@ class _PredictDeploy:  # runs on GPU replica
             % (DEVICE, len(payloads)),
             flush=True,
         )
+        t0 = time.perf_counter()
         try:
             # update simple metrics
             self._predict_calls += 1
@@ -84,7 +86,17 @@ class _PredictDeploy:  # runs on GPU replica
             if len(payloads) == 1:
                 single = payloads[0][0][0]
                 pred = self._unit.predict(single)
-                return [{k: v.detach().cpu() for k, v in pred.items()}]
+                res = [{k: v.detach().cpu() for k, v in pred.items()}]
+                dt = time.perf_counter() - t0
+                print(
+                    (
+                        "[UMA] predict finished size=1 "
+                        f"wall={dt:.4f}s "
+                        f"ms/item={(dt * 1000.0):.2f}"
+                    ),
+                    flush=True,
+                )
+                return res
             else:
                 # warmup
                 batch = atomicdata_list_to_batch([x[0][0] for x in payloads])
@@ -105,6 +117,16 @@ class _PredictDeploy:  # runs on GPU replica
                         all_outputs["stress"].split(1),
                     )
                 ]
+            dt = time.perf_counter() - t0
+            size = len(payloads)
+            print(
+                (
+                    f"[UMA] predict finished size={size} "
+                    f"wall={dt:.4f}s "
+                    f"ms/item={(dt * 1000.0 / max(1, size)):.2f}"
+                ),
+                flush=True,
+            )
             return out
         except Exception as e:
             print("Unexpected error in UMA predictor: %s" % e)
@@ -145,10 +167,13 @@ class BatchedPredictUnit:
 
     def predict(self, *args, **kwargs):
         print("[UMA-client] calling remote predict", flush=True)
+        t0 = time.perf_counter()
         # NOTE: Called from sync code (e.g., FastAPI handler in a thread pool).
         # DeploymentResponse.result() is safe in that context.
         resp = self._handle.predict.remote((args, kwargs))  # type: ignore
         r = resp.result()
+        dt = time.perf_counter() - t0
+        print(f"[UMA-client] predict wall={dt:.4f}s", flush=True)
         # Serve batched methods always return a list of results with the same
         # length as the input batch. For our client wrapper, unwrap a single
         # element list to a dict for downstream FAIRChemCalculator.
