@@ -119,17 +119,23 @@ async def run_one_session(
         # Start timing after start_simulation is sent
         t0 = _time.perf_counter()
         deadline = (
-            None if target_frames is not None else time.time() + float(duration_s)
+            None
+            if target_frames is not None
+            else time.time() + float(duration_s)
         )
         last_seq = 0
         server_seq_seen = 0  # advances even when frames are protobuf
         # Loop until deadline (duration mode) or until target_frames reached
+
         def _frame_mode_done() -> bool:
             if target_frames is None:
                 return False
             if frames >= int(target_frames):
                 return True
-            if timeout_s is not None and (_time.perf_counter() - t0) > float(timeout_s):
+            if (
+                timeout_s is not None
+                and (_time.perf_counter() - t0) > float(timeout_s)
+            ):
                 return True
             return False
 
@@ -168,7 +174,9 @@ async def run_one_session(
             # just count
             try:
                 data = json.loads(msg)
-                server_seq_seen = max(server_seq_seen, int(data.get("seq") or 0))
+                server_seq_seen = max(
+                    server_seq_seen, int(data.get("seq") or 0)
+                )
             except Exception:
                 # binary frame (protobuf) -> advance a running counter
                 server_seq_seen += 1
