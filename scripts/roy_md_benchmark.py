@@ -132,6 +132,16 @@ async def run_one_session(
                 )
                 continue
             frames += 1
+            # report running FPS upon each received frame
+            elapsed = _time.perf_counter() - t0
+            if elapsed > 0:
+                print(
+                    (
+                        f"[roy-fps] frames={frames} "
+                        f"fps={frames/elapsed:.2f}"
+                    ),
+                    flush=True,
+                )
             # try to parse JSON to extract seq; if binary (protobuf),
             # just count
             try:
