@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import time
-from pathlib import Path
-from typing import Tuple, List, Optional
-import time as _time
-
 import json
+import time
+import time as _time
+from pathlib import Path
+from typing import List, Optional, Tuple
+
 import websockets
+
 from fairchem_local_server2 import session_pb2 as pb
 
 try:
     # Prefer ASE for robust XYZ parsing if available
-    from ase.io import read as ase_read  # type: ignore
     from ase.atoms import Atoms  # type: ignore
+    from ase.io import read as ase_read  # type: ignore
+
     ASE_AVAILABLE = True
 except Exception:
     ASE_AVAILABLE = False
@@ -38,7 +40,7 @@ def _load_xyz(path: Path) -> Tuple[List[int], List[List[float]]]:
     if len(text) < 3:
         raise ValueError("Invalid XYZ file: too short")
     nat = int(text[0].strip())
-    lines = text[2: 2 + nat]
+    lines = text[2 : 2 + nat]
     PT = {
         "H": 1,
         "He": 2,
@@ -100,11 +102,7 @@ async def run_one_session(
     """
     frames = 0
     t0 = _time.perf_counter()
-    deadline = (
-        None
-        if target_frames is not None
-        else time.time() + float(duration_s)
-    )
+    deadline = None if target_frames is not None else time.time() + float(duration_s)
     last_seq = 0
     server_seq_seen = 0
 
@@ -113,10 +111,7 @@ async def run_one_session(
             return False
         if frames >= int(target_frames):
             return True
-        if (
-            timeout_s is not None
-            and (_time.perf_counter() - t0) > float(timeout_s)
-        ):
+        if timeout_s is not None and (_time.perf_counter() - t0) > float(timeout_s):
             return True
         return False
 
@@ -171,10 +166,7 @@ async def run_one_session(
             elapsed = _time.perf_counter() - t0
             if elapsed > 0:
                 print(
-                    (
-                        f"[roy-fps] frames={frames} "
-                        f"fps={frames/elapsed:.2f}"
-                    ),
+                    (f"[roy-fps] frames={frames} " f"fps={frames/elapsed:.2f}"),
                     flush=True,
                 )
 
@@ -190,9 +182,7 @@ async def run_one_session(
                 # Try JSON text
                 try:
                     data = json.loads(msg)
-                    server_seq_seen = max(
-                        server_seq_seen, int(data.get("seq") or 0)
-                    )
+                    server_seq_seen = max(server_seq_seen, int(data.get("seq") or 0))
                 except Exception:
                     server_seq_seen += 1
 

@@ -7,10 +7,7 @@ from typing import List, Tuple
 import numpy as np
 import pytest
 import websockets
-from ray import serve
-
 from fairchem_local_server2 import session_pb2 as pb
-from fairchem_local_server2.ws_app import deploy
 
 
 def _find_xyz() -> Path:
@@ -33,6 +30,7 @@ def _find_xyz() -> Path:
 def _load_xyz(path: Path) -> Tuple[List[int], List[List[float]]]:
     try:
         from ase.io import read as ase_read  # type: ignore
+
         atoms = ase_read(str(path))  # type: ignore
         return (
             atoms.get_atomic_numbers().tolist(),
@@ -63,7 +61,9 @@ def _load_xyz(path: Path) -> Tuple[List[int], List[List[float]]]:
         return Z, pos
 
 
-async def _run_md_0k(uri: str, Z: List[int], xyz: List[List[float]], frames: int) -> int:
+async def _run_md_0k(
+    uri: str, Z: List[int], xyz: List[List[float]], frames: int, calculator: str
+) -> int:
     """Run MD at 0K for `frames` steps using protobuf-only messages."""
     async with websockets.connect(uri) as ws:
         seq = 1
@@ -89,7 +89,7 @@ async def _run_md_0k(uri: str, Z: List[int], xyz: List[List[float]], frames: int
         start.type = pb.ClientAction.Type.START_SIMULATION
         start.simulation_type = pb.ClientAction.SimType.MD
         sp = pb.SimulationParams()
-        sp.calculator = "lj"
+        sp.calculator = calculator
         sp.temperature = 0.0
         sp.timestep_fs = 1.0
         sp.friction = 0.02
@@ -133,18 +133,11 @@ async def _run_md_0k(uri: str, Z: List[int], xyz: List[List[float]], frames: int
 
 
 @pytest.mark.timeout(60)
-def test_ws_md_runs_at_0k():
-    # Deploy WS ingress with LJ-only (CPU)
-    deploy(ngpus=0, ncpus=1, nhttp=1)
-    try:
-        xyz_path = _find_xyz()
-        Z, xyz = _load_xyz(xyz_path)
-        nframes = asyncio.run(
-            _run_md_0k("ws://127.0.0.1:8000/ws", Z, xyz, frames=10)
-        )
-        assert nframes >= 10
-    finally:
-        try:
-            serve.shutdown()
-        except Exception:
-            pass
+def test_ws_md_runs_at_0k(ws_base_url: str):
+    # UMA-only server provided by session fixture
+    xyz_path = _find_xyz()
+    Z, xyz = _load_xyz(xyz_path)
+    nframes = asyncio.run(
+        _run_md_0k(ws_base_url, Z, xyz, frames=10, calculator="uma")
+    )
+    assert nframes >= 10

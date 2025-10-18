@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 
 import pytest
 import websockets
-from ray import serve
-
 from fairchem_local_server2 import session_pb2 as pb
-from fairchem_local_server2.ws_app import deploy
 
 
 def _find_roy_xyz() -> Path:
@@ -36,6 +33,7 @@ def _load_xyz(path: Path) -> Tuple[List[int], List[List[float]]]:
     """
     try:
         from ase.io import read as ase_read  # type: ignore
+
         atoms = ase_read(str(path))  # type: ignore
         return (
             atoms.get_atomic_numbers().tolist(),
@@ -90,7 +88,9 @@ def _load_xyz(path: Path) -> Tuple[List[int], List[List[float]]]:
         return Z, pos
 
 
-async def _run_ws_md_frames(uri: str, Z: List[int], xyz: List[List[float]], n: int) -> int:
+async def _run_ws_md_frames(
+    uri: str, Z: List[int], xyz: List[List[float]], n: int, calculator: str
+) -> int:
     """Connect to websocket, init system, start MD (LJ), ack, and receive n frames."""
     frames = 0
     async with websockets.connect(uri) as ws:
@@ -113,8 +113,8 @@ async def _run_ws_md_frames(uri: str, Z: List[int], xyz: List[List[float]], n: i
         start.type = pb.ClientAction.Type.START_SIMULATION
         start.simulation_type = pb.ClientAction.SimType.MD
         sp = pb.SimulationParams()
-        sp.calculator = "lj"
-        sp.temperature = 298.0
+        sp.calculator = calculator
+        sp.temperature = 0.0
         sp.timestep_fs = 1.0
         sp.friction = 0.02
         start.simulation_params.CopyFrom(sp)
@@ -150,19 +150,10 @@ async def _run_ws_md_frames(uri: str, Z: List[int], xyz: List[List[float]], n: i
 
 
 @pytest.mark.timeout(60)
-def test_ws_roy_md_30_frames():
-    # Start WS app (LJ-only path if no UMA/GPU)
-    deploy(ngpus=0, ncpus=1, nhttp=1)
-    try:
-        xyz_path = _find_roy_xyz()
-        Z, xyz = _load_xyz(xyz_path)
-        frames = asyncio.run(
-            _run_ws_md_frames("ws://127.0.0.1:8000/ws", Z, xyz, 30)
-        )
-        assert frames >= 30
-    finally:
-        # Ensure Ray Serve is shut down to release HTTP port
-        try:
-            serve.shutdown()
-        except Exception:
-            pass
+def test_ws_roy_md_30_frames(ws_base_url: str):
+    xyz_path = _find_roy_xyz()
+    Z, xyz = _load_xyz(xyz_path)
+    frames = asyncio.run(
+        _run_ws_md_frames(ws_base_url, Z, xyz, 30, "uma")
+    )
+    assert frames >= 30

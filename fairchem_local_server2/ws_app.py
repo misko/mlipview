@@ -10,10 +10,7 @@ from ray import serve
 from ray.serve.schema import LoggingConfig
 
 from fairchem_local_server2 import session_pb2 as pb
-from fairchem_local_server2.session_models import (
-    SimulationParams,
-    SessionState,
-)
+from fairchem_local_server2.session_models import SessionState, SimulationParams
 from fairchem_local_server2.worker_pool import WorkerPool
 from fairchem_local_server.model_runtime import (
     MODEL_NAME,
@@ -158,9 +155,7 @@ class WSIngress:
                     worker = self._pool.any()
                     if state.sim_type == "md":
                         v_in = (
-                            state.velocities
-                            if state.velocities is not None
-                            else None
+                            state.velocities if state.velocities is not None else None
                         )
                         fut = worker.run_md.remote(
                             atomic_numbers=state.atomic_numbers,
@@ -257,10 +252,7 @@ class WSIngress:
                         state.client_ack = max(state.client_ack, int(msg.ack))
 
                     if msg.type == pb.ClientAction.Type.INIT_SYSTEM:
-                        if (
-                            len(msg.atomic_numbers) == 0
-                            or len(msg.positions) == 0
-                        ):
+                        if len(msg.atomic_numbers) == 0 or len(msg.positions) == 0:
                             # Cannot initialize without atoms and positions;
                             # ignore
                             continue
@@ -303,10 +295,7 @@ class WSIngress:
                             continue
                         state.sim_type = (
                             "md"
-                            if (
-                                msg.simulation_type
-                                == pb.ClientAction.SimType.MD
-                            )
+                            if (msg.simulation_type == pb.ClientAction.SimType.MD)
                             else "relax"
                         )
                         if msg.HasField("simulation_params"):
@@ -341,6 +330,7 @@ class WSIngress:
 def _detect_default_ngpus() -> int:
     try:
         import torch  # type: ignore
+
         if torch.cuda.is_available():
             # one replica per visible GPU
             return max(1, torch.cuda.device_count())
@@ -369,9 +359,7 @@ def deploy(
     - UMA predictor replicas: one per GPU
     - ASE worker pool size: ncpus (CPU-bound)
     """
-    replica_count = (
-        int(ngpus) if ngpus is not None else _detect_default_ngpus()
-    )
+    replica_count = int(ngpus) if ngpus is not None else _detect_default_ngpus()
     pool_size = int(ncpus) if ncpus is not None else _detect_default_ncpus()
     ingress_replicas = max(1, int(nhttp) if nhttp is not None else 1)
     dag = None
@@ -381,14 +369,10 @@ def deploy(
             num_replicas=int(replica_count),
             ray_actor_options={"num_gpus": 1},
         ).bind(MODEL_NAME, TASK_NAME)
-        dag = WSIngress.options(num_replicas=ingress_replicas).bind(
-            uma, pool_size
-        )
+        dag = WSIngress.options(num_replicas=ingress_replicas).bind(uma, pool_size)
     else:
         # LJ-only or client-provided calculator flows
-        dag = WSIngress.options(num_replicas=ingress_replicas).bind(
-            None, pool_size
-        )
+        dag = WSIngress.options(num_replicas=ingress_replicas).bind(None, pool_size)
     serve.run(
         dag,
         name="ws_app",
