@@ -27,3 +27,9 @@ localhost-key.pem
 # Misc
 *.DS_Store
 Thumbs.db
+
+public/proto/**
+README.md
+google-protobuf.js
+gp-shim.js
+gp-patch.js
