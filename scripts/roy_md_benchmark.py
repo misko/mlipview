@@ -82,12 +82,13 @@ async def run_one_session(
     xyz: List[List[float]],
     duration_s: float,
     calculator: str,
+    target_frames: int | None = None,
+    timeout_s: float | None = None,
 ) -> int:
     """Open one WS session, run MD for duration_s, and count frames received.
 
     Returns the number of result frames (1 result ~= 1 MD step in our server).
     """
-    t0 = _time.perf_counter()
     frames = 0
     async with websockets.connect(uri) as ws:
         # init
@@ -115,10 +116,30 @@ async def run_one_session(
         }
         await ws.send(json.dumps(start))
 
-        deadline = time.time() + float(duration_s)
+        # Start timing after start_simulation is sent
+        t0 = _time.perf_counter()
+        deadline = (
+            None if target_frames is not None else time.time() + float(duration_s)
+        )
         last_seq = 0
         server_seq_seen = 0  # advances even when frames are protobuf
-        while time.time() < deadline:
+        # Loop until deadline (duration mode) or until target_frames reached
+        def _frame_mode_done() -> bool:
+            if target_frames is None:
+                return False
+            if frames >= int(target_frames):
+                return True
+            if timeout_s is not None and (_time.perf_counter() - t0) > float(timeout_s):
+                return True
+            return False
+
+        while True:
+            if target_frames is None:
+                if time.time() >= deadline:  # type: ignore[arg-type]
+                    break
+            else:
+                if _frame_mode_done():
+                    break
             try:
                 msg = await asyncio.wait_for(ws.recv(), timeout=0.5)
             except asyncio.TimeoutError:
@@ -161,7 +182,7 @@ async def run_one_session(
                     "ack": last_seq,
                 })
             )
-    dt = _time.perf_counter() - t0
+    dt = max(1e-9, _time.perf_counter() - t0)
     print(
         (
             f"[timing] run_one_session duration={duration_s}s "
@@ -193,6 +214,24 @@ def main():
         help="Benchmark duration in seconds",
     )
     ap.add_argument(
+        "--duration-ms",
+        type=float,
+        default=None,
+        help="Benchmark duration in milliseconds (overrides --duration)",
+    )
+    ap.add_argument(
+        "--frames",
+        type=int,
+        default=None,
+        help="Target frames to receive (overrides duration mode)",
+    )
+    ap.add_argument(
+        "--timeout",
+        type=float,
+        default=5.0,
+        help="Timeout seconds when using --frames mode",
+    )
+    ap.add_argument(
         "--calculator",
         choices=["lj", "uma"],
         default="lj",
@@ -206,18 +245,31 @@ def main():
     Z, xyz = _load_xyz(xyz_path)
 
     uri = args.base.rstrip("/") + "/ws"
+    # Select duration from seconds or milliseconds flag
+    duration_s = args.duration
+    if args.duration_ms is not None:
+        duration_s = float(args.duration_ms) / 1000.0
+
     t0 = _time.perf_counter()
     frames = asyncio.run(
-        run_one_session(uri, Z, xyz, args.duration, args.calculator)
+        run_one_session(
+            uri,
+            Z,
+            xyz,
+            duration_s,
+            args.calculator,
+            target_frames=args.frames,
+            timeout_s=args.timeout if args.frames is not None else None,
+        )
     )
     dt = _time.perf_counter() - t0
     print(f"[timing] benchmark total wall={dt:.4f}s", flush=True)
 
-    sps = frames / float(args.duration) if args.duration > 0 else 0.0
+    sps = frames / float(duration_s) if duration_s > 0 else 0.0
     print("ROY benchmark results:")
     print(
         (
-            f"atoms= {len(Z)}  duration_s= {args.duration}  "
+            f"atoms= {len(Z)}  duration_s= {duration_s}  "
             f"calculator= {args.calculator}"
         )
     )
