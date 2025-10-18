@@ -8,15 +8,16 @@ except Exception:  # pragma: no cover
 import numpy as np
 import pytest
 
-from fairchem_local_server.atoms_utils import build_atoms
-from fairchem_local_server.services import _relax_run
-from fairchem_local_server.models import RelaxCalculatorName
 from fairchem_local_server2.worker_pool import ASEWorker
+from fairchem_local_server.atoms_utils import build_atoms
+from fairchem_local_server.models import RelaxCalculatorName
+from fairchem_local_server.services import _relax_run
 
 
 def _uma_available() -> bool:
     try:
         import torch  # type: ignore
+
         return bool(torch.cuda.is_available())
     except Exception:
         return False
@@ -39,6 +40,7 @@ def test_relax_single_step_parity_cpu_vs_worker(calculator: str, uma_handle):
     if calculator == "uma":
         # UMA server is already running via session fixture; use handle
         from fairchem_local_server.model_runtime import install_predict_handle
+
         h = uma_handle
         install_predict_handle(h)
 

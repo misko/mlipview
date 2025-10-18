@@ -12,6 +12,7 @@ from fairchem_local_server.atoms_utils import build_atoms
 from fairchem_local_server.models import RelaxCalculatorName
 from fairchem_local_server.services import _md_run
 
+
 async def _ws_nth_md_step(
     uri: str, Z: List[int], R: List[List[float]], n: int, calculator: str
 ) -> dict:
@@ -22,11 +23,13 @@ async def _ws_nth_md_step(
         init.type = pb.ClientAction.Type.INIT_SYSTEM
         init.atomic_numbers.extend(int(z) for z in Z)
         for p in R:
-            v = pb.Vec3(); v.v.extend([float(p[0]), float(p[1]), float(p[2])])
+            v = pb.Vec3()
+            v.v.extend([float(p[0]), float(p[1]), float(p[2])])
             init.positions.append(v)
         # zero velocities to enforce 0K
         for _ in Z:
-            v = pb.Vec3(); v.v.extend([0.0, 0.0, 0.0])
+            v = pb.Vec3()
+            v.v.extend([0.0, 0.0, 0.0])
             init.velocities.append(v)
         await ws.send(init.SerializeToString())
 
@@ -50,7 +53,8 @@ async def _ws_nth_md_step(
         while taken < int(max(1, n)):
             data = await asyncio.wait_for(ws.recv(), timeout=5.0)
             assert isinstance(data, (bytes, bytearray))
-            res = pb.ServerResult(); res.ParseFromString(data)
+            res = pb.ServerResult()
+            res.ParseFromString(data)
             if res.seq == 0:
                 continue  # initialization snapshot
             # sanity
@@ -64,7 +68,8 @@ async def _ws_nth_md_step(
             last = {"positions": P, "velocities": V, "forces": F}
             # ACK to advance window
             seq += 1
-            ack = pb.ClientAction(); ack.seq = seq
+            ack = pb.ClientAction()
+            ack.seq = seq
             ack.type = pb.ClientAction.Type.PING
             ack.ack = int(res.seq)
             await ws.send(ack.SerializeToString())
@@ -72,7 +77,8 @@ async def _ws_nth_md_step(
 
         # Stop
         seq += 1
-        stop = pb.ClientAction(); stop.seq = seq
+        stop = pb.ClientAction()
+        stop.seq = seq
         stop.type = pb.ClientAction.Type.STOP_SIMULATION
         await ws.send(stop.SerializeToString())
 

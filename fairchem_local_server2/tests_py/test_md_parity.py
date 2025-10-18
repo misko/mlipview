@@ -15,9 +15,12 @@ from fairchem_local_server2.ws_app import deploy
 def _uma_available() -> bool:
     try:
         import torch  # type: ignore
+
         return bool(torch.cuda.is_available())
     except Exception:
         return False
+
+
 from fairchem_local_server.atoms_utils import build_atoms
 from fairchem_local_server.models import RelaxCalculatorName
 from fairchem_local_server.services import _md_run
@@ -41,11 +44,12 @@ def test_md_single_step_parity_0k_worker_vs_direct(calculator: str):
     if calculator == "uma":
         deploy(ngpus=1, ncpus=1, nhttp=1)
         try:
+            from ray import serve as _serve
+
             from fairchem_local_server.model_runtime import (
                 UMA_DEPLOYMENT_NAME,
                 install_predict_handle,
             )
-            from ray import serve as _serve
 
             # Ray Serve API compatibility: retrieve handle by name
             app = _serve.get_app_handle("ws_app")
@@ -81,6 +85,7 @@ def test_md_single_step_parity_0k_worker_vs_direct(calculator: str):
         finally:
             try:
                 from ray import serve as _serve
+
                 _serve.shutdown()
             except Exception:
                 pass
@@ -134,6 +139,7 @@ def test_md_single_step_parity_0k_worker_vs_direct(calculator: str):
         rtol=0,
         atol=atol_for,
     )
-    assert pytest.approx(direct["final_energy"], rel=0, abs=atol_E) == result[
-        "final_energy"
-    ]
+    assert (
+        pytest.approx(direct["final_energy"], rel=0, abs=atol_E)
+        == result["final_energy"]
+    )

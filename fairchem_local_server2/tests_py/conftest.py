@@ -4,8 +4,8 @@ import asyncio
 import os
 from typing import Generator
 
-import pytest
 import httpx
+import pytest
 from ray import serve
 
 from fairchem_local_server2.ws_app import deploy
@@ -50,12 +50,12 @@ def ws_base_url() -> Generator[str, None, None]:
             if r.status_code == 200:
                 j = r.json()
                 # Model runtime reports global device, should be 'cuda'
-                assert j.get("cuda_available") is True, (
-                    "health indicates no CUDA availability"
-                )
-                assert (j.get("device") or "").lower() == "cuda", (
-                    f"runtime device is {j.get('device')} not cuda"
-                )
+                assert (
+                    j.get("cuda_available") is True
+                ), "health indicates no CUDA availability"
+                assert (
+                    j.get("device") or ""
+                ).lower() == "cuda", f"runtime device is {j.get('device')} not cuda"
                 break
         except Exception:
             pass

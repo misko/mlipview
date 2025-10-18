@@ -7,6 +7,7 @@ from typing import List, Tuple
 import numpy as np
 import pytest
 import websockets
+
 from fairchem_local_server2 import session_pb2 as pb
 
 
@@ -137,7 +138,5 @@ def test_ws_md_runs_at_0k(ws_base_url: str):
     # UMA-only server provided by session fixture
     xyz_path = _find_xyz()
     Z, xyz = _load_xyz(xyz_path)
-    nframes = asyncio.run(
-        _run_md_0k(ws_base_url, Z, xyz, frames=10, calculator="uma")
-    )
+    nframes = asyncio.run(_run_md_0k(ws_base_url, Z, xyz, frames=10, calculator="uma"))
     assert nframes >= 10
