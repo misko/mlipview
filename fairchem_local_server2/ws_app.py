@@ -1,21 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Optional
 
+import numpy as np
 import ray
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from ray import serve
 from ray.serve.schema import LoggingConfig
 
-from fairchem_local_server2.pb_adapter import (
-    decode_action_from_bytes,
-    encode_result_to_bytes,
-)
+from fairchem_local_server2 import session_pb2 as pb
 from fairchem_local_server2.session_models import (
-    ClientAction,
-    ServerResult,
+    SimulationParams,
     SessionState,
 )
 from fairchem_local_server2.worker_pool import WorkerPool
@@ -81,13 +77,70 @@ class WSIngress:
         # Concurrency: producer (simulation loop) and consumer (message loop)
         stop_evt = asyncio.Event()
 
-        async def send_result(payload: ServerResult):
-            # Try protobuf first, fallback to JSON
-            b = encode_result_to_bytes(payload)
-            if b is not None:
-                await ws.send_bytes(b)
-            else:
-                await ws.send_text(payload.json())
+        def _np_from_vec3_list(vecs):
+            if not vecs:
+                return None
+            arr = np.array(
+                [[v.v[0], v.v[1], v.v[2]] for v in vecs],
+                dtype=float,
+            )
+            return arr
+
+        def _mat3_to_np(m: Optional[pb.Mat3]):
+            if m is None or len(m.m) != 9:
+                return None
+            return np.array(
+                [
+                    [m.m[0], m.m[1], m.m[2]],
+                    [m.m[3], m.m[4], m.m[5]],
+                    [m.m[6], m.m[7], m.m[8]],
+                ],
+                dtype=float,
+            )
+
+        def _fill_vec3_repeated(dst, arr: Optional[np.ndarray]):
+            if arr is None:
+                return
+            for row in np.asarray(arr, dtype=float):
+                v = pb.Vec3()
+                v.v.extend([float(row[0]), float(row[1]), float(row[2])])
+                dst.append(v)
+
+        async def _send_result_bytes(
+            *,
+            seq: int,
+            client_seq: Optional[int],
+            positions: Optional[np.ndarray],
+            velocities: Optional[np.ndarray],
+            forces: Optional[np.ndarray],
+            cell: Optional[np.ndarray],
+            message: Optional[str] = None,
+        ):
+            msg = pb.ServerResult()
+            msg.seq = int(seq)
+            if client_seq is not None:
+                msg.client_seq = int(client_seq)
+            _fill_vec3_repeated(msg.positions, positions)
+            _fill_vec3_repeated(msg.forces, forces)
+            _fill_vec3_repeated(msg.velocities, velocities)
+            if cell is not None:
+                m = pb.Mat3()
+                flat = [
+                    float(cell[0, 0]),
+                    float(cell[0, 1]),
+                    float(cell[0, 2]),
+                    float(cell[1, 0]),
+                    float(cell[1, 1]),
+                    float(cell[1, 2]),
+                    float(cell[2, 0]),
+                    float(cell[2, 1]),
+                    float(cell[2, 2]),
+                ]
+                m.m.extend(flat)
+                msg.cell.CopyFrom(m)
+            if message:
+                msg.message = message
+            await ws.send_bytes(msg.SerializeToString())
 
         async def sim_loop():
             nonlocal pending
@@ -104,7 +157,11 @@ class WSIngress:
 
                     worker = self._pool.any()
                     if state.sim_type == "md":
-                        v_in = state.velocities if state.velocities else None
+                        v_in = (
+                            state.velocities
+                            if state.velocities is not None
+                            else None
+                        )
                         fut = worker.run_md.remote(
                             atomic_numbers=state.atomic_numbers,
                             positions=state.positions,
@@ -133,14 +190,22 @@ class WSIngress:
                     # Await result (Ray ObjectRef) without blocking event loop
                     res = await asyncio.to_thread(ray.get, fut)
                     # Ray returns pydantic dict
-                    state.positions = res["positions"]
+                    state.positions = np.array(res["positions"], dtype=float)
+                    v_out = res.get("velocities")
                     state.velocities = (
-                        res.get("velocities") or state.velocities
+                        np.array(v_out, dtype=float)
+                        if v_out is not None
+                        else state.velocities
                     )
-                    state.forces = res.get("forces") or state.forces
+                    f_out = res.get("forces")
+                    state.forces = (
+                        np.array(f_out, dtype=float)
+                        if f_out is not None
+                        else state.forces
+                    )
 
                     state.server_seq += 1
-                    out = ServerResult(
+                    await _send_result_bytes(
                         seq=state.server_seq,
                         client_seq=state.client_seq,
                         positions=state.positions,
@@ -148,7 +213,6 @@ class WSIngress:
                         forces=state.forces,
                         cell=state.cell,
                     )
-                    await send_result(out)
             except Exception:
                 # On any error, end the session loop
                 stop_evt.set()
@@ -170,92 +234,98 @@ class WSIngress:
                         break
                     if evtype == "websocket.receive":
                         if "bytes" in data and data["bytes"] is not None:
-                            m = decode_action_from_bytes(data["bytes"] or b"")
-                            if m is not None:
-                                msg = m
-                        elif "text" in data and data["text"] is not None:
-                            raw = data["text"]
                             try:
-                                msg = ClientAction.parse_raw(raw)
+                                m = pb.ClientAction()
+                                m.ParseFromString(
+                                    data["bytes"]
+                                )  # type: ignore[arg-type]
+                                msg = m
                             except Exception:
-                                # accept plain JSON dicts or ping strings
-                                if raw == "ping":
-                                    await ws.send_text("pong")
-                                    continue
-                                try:
-                                    msg = ClientAction.parse_obj(
-                                        json.loads(raw)
-                                    )
-                                except Exception as e:
-                                    await ws.send_text(
-                                        json.dumps(
-                                            {
-                                                "error": f"bad message: {e}"
-                                            }
-                                        )
-                                    )
-                                    continue
+                                msg = None
+                        # Ignore text frames in protobuf-only mode, except
+                        # reply to simple "ping"
+                        elif "text" in data and data["text"] is not None:
+                            if data["text"] == "ping":
+                                await ws.send_text("pong")
+                            continue
                     if msg is None:
                         continue
 
                     # ack handling
                     state.client_seq = max(state.client_seq, int(msg.seq))
-                    if msg.ack is not None:
+                    if msg.HasField("ack"):
                         state.client_ack = max(state.client_ack, int(msg.ack))
 
-                    if msg.type == "init_system":
-                        if msg.atomic_numbers is None or msg.positions is None:
-                            await ws.send_text(
-                                json.dumps(
-                                    {"error": "init_system missing fields"}
-                                )
-                            )
+                    if msg.type == pb.ClientAction.Type.INIT_SYSTEM:
+                        if (
+                            len(msg.atomic_numbers) == 0
+                            or len(msg.positions) == 0
+                        ):
+                            # Cannot initialize without atoms and positions;
+                            # ignore
                             continue
                         state.atomic_numbers = list(msg.atomic_numbers)
-                        state.positions = list(msg.positions)
-                        state.velocities = (
-                            list(msg.velocities) if msg.velocities else []
+                        state.positions = _np_from_vec3_list(msg.positions)
+                        v_in = _np_from_vec3_list(msg.velocities)
+                        state.velocities = v_in
+                        state.cell = _mat3_to_np(
+                            msg.cell if msg.HasField("cell") else None
                         )
-                        state.cell = msg.cell
-                        state.forces = []
-                        await send_result(
-                            ServerResult(
-                                seq=state.server_seq,
-                                client_seq=state.client_seq,
-                                positions=state.positions,
-                                velocities=state.velocities or [],
-                                forces=state.forces or [],
-                                cell=state.cell,
-                                message="initialized",
-                            )
-                        )
-                    elif msg.type == "update_positions":
-                        if msg.positions is None:
-                            continue
-                        state.positions = list(msg.positions)
-                        # Reset v/f on any changed atoms
-                        state.velocities = []
-                        state.forces = []
-                    elif msg.type == "start_simulation":
-                        if msg.simulation_type is None:
-                            await ws.send_text(
-                                json.dumps(
-                                    {"error": "missing simulation_type"}
+                        state.forces = None
+                        await _send_result_bytes(
+                            seq=state.server_seq,
+                            client_seq=state.client_seq,
+                            positions=state.positions,
+                            velocities=(
+                                state.velocities
+                                if state.velocities is not None
+                                else np.zeros(
+                                    (len(state.atomic_numbers), 3),
+                                    dtype=float,
                                 )
-                            )
+                            ),
+                            forces=np.zeros(
+                                (len(state.atomic_numbers), 3),
+                                dtype=float,
+                            ),
+                            cell=state.cell,
+                            message="initialized",
+                        )
+                    elif msg.type == pb.ClientAction.Type.UPDATE_POSITIONS:
+                        if len(msg.positions) == 0:
                             continue
-                        state.sim_type = msg.simulation_type
-                        if msg.simulation_params is not None:
-                            state.params = msg.simulation_params
+                        state.positions = _np_from_vec3_list(msg.positions)
+                        # Reset v/f on any changed atoms
+                        state.velocities = None
+                        state.forces = None
+                    elif msg.type == pb.ClientAction.Type.START_SIMULATION:
+                        if not msg.HasField("simulation_type"):
+                            continue
+                        state.sim_type = (
+                            "md"
+                            if (
+                                msg.simulation_type
+                                == pb.ClientAction.SimType.MD
+                            )
+                            else "relax"
+                        )
+                        if msg.HasField("simulation_params"):
+                            sp = msg.simulation_params
+                            state.params = SimulationParams(
+                                calculator=sp.calculator or "uma",
+                                temperature=float(sp.temperature),
+                                timestep_fs=float(sp.timestep_fs),
+                                friction=float(sp.friction),
+                                fmax=float(sp.fmax),
+                                max_step=float(sp.max_step),
+                                optimizer=(sp.optimizer or "bfgs"),
+                            )
                         state.running = True
-                    elif msg.type == "stop_simulation":
+                    elif msg.type == pb.ClientAction.Type.STOP_SIMULATION:
                         state.running = False
-                    elif msg.type == "ping":
-                        # Treat 'ping' as a heartbeat or ACK carrier. If it's
-                        # carrying an ACK (msg.ack present), do not respond to
-                        # avoid spurious non-protobuf frames. Otherwise, reply.
-                        if msg.ack is None:
-                            await ws.send_text("pong")
+                    elif msg.type == pb.ClientAction.Type.PING:
+                        # In protobuf-only mode, we don't echo unless needed.
+                        pass
             except WebSocketDisconnect:
                 pass
             except RuntimeError:

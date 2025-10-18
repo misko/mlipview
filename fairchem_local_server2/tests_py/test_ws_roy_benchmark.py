@@ -1,0 +1,168 @@
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import List, Tuple, Optional
+
+import pytest
+import websockets
+from ray import serve
+
+from fairchem_local_server2 import session_pb2 as pb
+from fairchem_local_server2.ws_app import deploy
+
+
+def _find_roy_xyz() -> Path:
+    """Locate public/molecules/roy.xyz starting from repo root or test dir.
+
+    Searches upward a few levels to be resilient to different cwd setups.
+    """
+    here = Path(__file__).resolve()
+    for up in [here] + list(here.parents)[:6]:
+        candidate = up.parent / "public" / "molecules" / "roy.xyz"
+        if candidate.exists():
+            return candidate
+    # Fallback to repo-root relative when running from project root
+    c2 = Path("public/molecules/roy.xyz")
+    if c2.exists():
+        return c2
+    raise FileNotFoundError("public/molecules/roy.xyz not found")
+
+
+def _load_xyz(path: Path) -> Tuple[List[int], List[List[float]]]:
+    """Load an .xyz file and return (atomic_numbers, positions).
+
+    Uses ASE if available; otherwise minimal parser for standard XYZ.
+    """
+    try:
+        from ase.io import read as ase_read  # type: ignore
+        atoms = ase_read(str(path))  # type: ignore
+        return (
+            atoms.get_atomic_numbers().tolist(),
+            atoms.get_positions().tolist(),
+        )
+    except Exception:
+        text = path.read_text().splitlines()
+        if len(text) < 3:
+            raise ValueError("Invalid XYZ file: too short")
+        nat = int(text[0].strip())
+        lines = text[2 : 2 + nat]
+        PT = {
+            "H": 1,
+            "He": 2,
+            "Li": 3,
+            "Be": 4,
+            "B": 5,
+            "C": 6,
+            "N": 7,
+            "O": 8,
+            "F": 9,
+            "Ne": 10,
+            "Na": 11,
+            "Mg": 12,
+            "Al": 13,
+            "Si": 14,
+            "P": 15,
+            "S": 16,
+            "Cl": 17,
+            "Ar": 18,
+            "K": 19,
+            "Ca": 20,
+            "Sc": 21,
+            "Ti": 22,
+            "V": 23,
+            "Cr": 24,
+            "Mn": 25,
+            "Fe": 26,
+            "Co": 27,
+            "Ni": 28,
+            "Cu": 29,
+            "Zn": 30,
+        }
+        Z: List[int] = []
+        pos: List[List[float]] = []
+        for ln in lines:
+            parts = ln.split()
+            sym = parts[0]
+            x, y, z = map(float, parts[1:4])
+            Z.append(PT[sym])
+            pos.append([x, y, z])
+        return Z, pos
+
+
+async def _run_ws_md_frames(uri: str, Z: List[int], xyz: List[List[float]], n: int) -> int:
+    """Connect to websocket, init system, start MD (LJ), ack, and receive n frames."""
+    frames = 0
+    async with websockets.connect(uri) as ws:
+        # INIT_SYSTEM
+        seq = 1
+        init = pb.ClientAction()
+        init.seq = seq
+        init.type = pb.ClientAction.Type.INIT_SYSTEM
+        init.atomic_numbers.extend([int(z) for z in Z])
+        for p in xyz:
+            v = pb.Vec3()
+            v.v.extend([float(p[0]), float(p[1]), float(p[2])])
+            init.positions.append(v)
+        await ws.send(init.SerializeToString())
+
+        # START_SIMULATION (MD, LJ)
+        seq += 1
+        start = pb.ClientAction()
+        start.seq = seq
+        start.type = pb.ClientAction.Type.START_SIMULATION
+        start.simulation_type = pb.ClientAction.SimType.MD
+        sp = pb.SimulationParams()
+        sp.calculator = "lj"
+        sp.temperature = 298.0
+        sp.timestep_fs = 1.0
+        sp.friction = 0.02
+        start.simulation_params.CopyFrom(sp)
+        await ws.send(start.SerializeToString())
+
+        last_seq = 0
+        while frames < int(n):
+            # Receive binary protobuf result
+            data = await asyncio.wait_for(ws.recv(), timeout=5.0)
+            if not isinstance(data, (bytes, bytearray)):
+                # Server is protobuf-only; ignore non-bytes
+                continue
+            res = pb.ServerResult()
+            res.ParseFromString(data)
+            last_seq = int(res.seq)
+            frames += 1
+            # Ack to allow server to continue beyond backpressure window
+            seq += 1
+            ack = pb.ClientAction()
+            ack.seq = seq
+            ack.type = pb.ClientAction.Type.PING
+            ack.ack = last_seq
+            await ws.send(ack.SerializeToString())
+
+        # STOP_SIMULATION
+        seq += 1
+        stop = pb.ClientAction()
+        stop.seq = seq
+        stop.type = pb.ClientAction.Type.STOP_SIMULATION
+        await ws.send(stop.SerializeToString())
+
+    return frames
+
+
+@pytest.mark.timeout(60)
+def test_ws_roy_md_30_frames():
+    # Start WS app (LJ-only path if no UMA/GPU)
+    deploy(ngpus=0, ncpus=1, nhttp=1)
+    try:
+        xyz_path = _find_roy_xyz()
+        Z, xyz = _load_xyz(xyz_path)
+        frames = asyncio.run(
+            _run_ws_md_frames("ws://127.0.0.1:8000/ws", Z, xyz, 30)
+        )
+        assert frames >= 30
+    finally:
+        # Ensure Ray Serve is shut down to release HTTP port
+        try:
+            serve.shutdown()
+        except Exception:
+            pass

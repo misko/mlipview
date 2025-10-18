@@ -4,11 +4,12 @@ import argparse
 import asyncio
 import time
 from pathlib import Path
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 import time as _time
 
 import json
 import websockets
+from fairchem_local_server2 import session_pb2 as pb
 
 try:
     # Prefer ASE for robust XYZ parsing if available
@@ -22,9 +23,7 @@ except Exception:
 def _load_xyz(path: Path) -> Tuple[List[int], List[List[float]]]:
     """Load an .xyz file and return (atomic_numbers, positions).
 
-    Uses ASE if available; otherwise falls back to a minimal parser that
-    expects standard XYZ format: first line natoms, second line comment,
-    following lines 'Elem x y z'.
+    Uses ASE if available; otherwise falls back to a minimal parser.
     """
     t0 = _time.perf_counter()
     if ASE_AVAILABLE:
@@ -35,40 +34,49 @@ def _load_xyz(path: Path) -> Tuple[List[int], List[List[float]]]:
         print(f"[timing] load_xyz (ASE) wall={dt:.4f}s", flush=True)
         return Z, pos
 
-    # Minimal fallback parser
     text = path.read_text().splitlines()
     if len(text) < 3:
         raise ValueError("Invalid XYZ file: too short")
-    try:
-        nat = int(text[0].strip())
-    except Exception as e:
-        raise ValueError(f"Invalid XYZ first line: {e}")
+    nat = int(text[0].strip())
     lines = text[2: 2 + nat]
-    if len(lines) < nat:
-        raise ValueError("Invalid XYZ: not enough coordinate lines")
-
-    # Periodic table mapping
     PT = {
-        'H': 1, 'He': 2, 'Li': 3, 'Be': 4, 'B': 5, 'C': 6, 'N': 7, 'O': 8,
-        'F': 9, 'Ne': 10, 'Na': 11, 'Mg': 12, 'Al': 13, 'Si': 14,
-        'P': 15, 'S': 16, 'Cl': 17, 'Ar': 18, 'K': 19, 'Ca': 20,
-        'Sc': 21, 'Ti': 22, 'V': 23, 'Cr': 24, 'Mn': 25, 'Fe': 26,
-        'Co': 27, 'Ni': 28, 'Cu': 29, 'Zn': 30,
+        "H": 1,
+        "He": 2,
+        "Li": 3,
+        "Be": 4,
+        "B": 5,
+        "C": 6,
+        "N": 7,
+        "O": 8,
+        "F": 9,
+        "Ne": 10,
+        "Na": 11,
+        "Mg": 12,
+        "Al": 13,
+        "Si": 14,
+        "P": 15,
+        "S": 16,
+        "Cl": 17,
+        "Ar": 18,
+        "K": 19,
+        "Ca": 20,
+        "Sc": 21,
+        "Ti": 22,
+        "V": 23,
+        "Cr": 24,
+        "Mn": 25,
+        "Fe": 26,
+        "Co": 27,
+        "Ni": 28,
+        "Cu": 29,
+        "Zn": 30,
     }
-
     Z: List[int] = []
     pos: List[List[float]] = []
     for ln in lines:
         parts = ln.split()
-        if len(parts) < 4:
-            raise ValueError(f"Bad XYZ line: {ln}")
         sym = parts[0]
-        try:
-            x, y, z = map(float, parts[1:4])
-        except Exception as e:
-            raise ValueError(f"Bad XYZ coords: {e}")
-        if sym not in PT:
-            raise ValueError(f"Unknown element symbol: {sym}")
+        x, y, z = map(float, parts[1:4])
         Z.append(PT[sym])
         pos.append([x, y, z])
     dt = _time.perf_counter() - t0
@@ -82,63 +90,64 @@ async def run_one_session(
     xyz: List[List[float]],
     duration_s: float,
     calculator: str,
-    target_frames: int | None = None,
-    timeout_s: float | None = None,
+    target_frames: Optional[int] = None,
+    timeout_s: Optional[float] = None,
 ) -> int:
-    """Open one WS session, run MD for duration_s, and count frames received.
+    """Open one WS session, run MD, and count frames.
 
-    Returns the number of result frames (1 result ~= 1 MD step in our server).
+    Uses protobuf frames by default; falls back to parsing JSON text frames
+    if the server sends text.
     """
     frames = 0
-    async with websockets.connect(uri) as ws:
-        # init
-        seq = 1
-        init = {
-            "seq": seq,
-            "type": "init_system",
-            "atomic_numbers": Z,
-            "positions": xyz,
-            "cell": None,
-        }
-        await ws.send(json.dumps(init))
-        # start MD
-        seq += 1
-        start = {
-            "seq": seq,
-            "type": "start_simulation",
-            "simulation_type": "md",
-            "simulation_params": {
-                "calculator": calculator,
-                "temperature": 298.0,
-                "timestep_fs": 1.0,
-                "friction": 0.02,
-            },
-        }
-        await ws.send(json.dumps(start))
+    t0 = _time.perf_counter()
+    deadline = (
+        None
+        if target_frames is not None
+        else time.time() + float(duration_s)
+    )
+    last_seq = 0
+    server_seq_seen = 0
 
-        # Start timing after start_simulation is sent
-        t0 = _time.perf_counter()
-        deadline = (
-            None
-            if target_frames is not None
-            else time.time() + float(duration_s)
-        )
-        last_seq = 0
-        server_seq_seen = 0  # advances even when frames are protobuf
-        # Loop until deadline (duration mode) or until target_frames reached
-
-        def _frame_mode_done() -> bool:
-            if target_frames is None:
-                return False
-            if frames >= int(target_frames):
-                return True
-            if (
-                timeout_s is not None
-                and (_time.perf_counter() - t0) > float(timeout_s)
-            ):
-                return True
+    def _frame_mode_done() -> bool:
+        if target_frames is None:
             return False
+        if frames >= int(target_frames):
+            return True
+        if (
+            timeout_s is not None
+            and (_time.perf_counter() - t0) > float(timeout_s)
+        ):
+            return True
+        return False
 
+    async with websockets.connect(uri) as ws:
+        # INIT_SYSTEM (protobuf)
+        seq = 1
+        init = pb.ClientAction()
+        init.seq = seq
+        init.type = pb.ClientAction.Type.INIT_SYSTEM
+        init.atomic_numbers.extend([int(z) for z in Z])
+        for p in xyz:
+            v = pb.Vec3()
+            v.v.extend([float(p[0]), float(p[1]), float(p[2])])
+            init.positions.append(v)
+        await ws.send(init.SerializeToString())
+
+        # START_SIMULATION (protobuf)
+        seq += 1
+        start = pb.ClientAction()
+        start.seq = seq
+        start.type = pb.ClientAction.Type.START_SIMULATION
+        start.simulation_type = pb.ClientAction.SimType.MD
+        sp = pb.SimulationParams()
+        sp.calculator = calculator
+        sp.temperature = 298.0
+        sp.timestep_fs = 1.0
+        sp.friction = 0.02
+        start.simulation_params.CopyFrom(sp)
+        await ws.send(start.SerializeToString())
+
+        # Main receive loop
         while True:
             if target_frames is None:
                 if time.time() >= deadline:  # type: ignore[arg-type]
@@ -149,17 +158,15 @@ async def run_one_session(
             try:
                 msg = await asyncio.wait_for(ws.recv(), timeout=0.5)
             except asyncio.TimeoutError:
-                # send periodic ack ping even on idle
+                # send periodic protobuf ack ping even on idle
                 seq += 1
-                await ws.send(
-                    json.dumps({
-                        "seq": seq,
-                        "type": "ping",
-                        "ack": last_seq,
-                    })
-                )
+                ack = pb.ClientAction()
+                ack.seq = seq
+                ack.type = pb.ClientAction.Type.PING
+                ack.ack = last_seq
+                await ws.send(ack.SerializeToString())
                 continue
-            frames += 1
+
             # report running FPS upon each received frame
             elapsed = _time.perf_counter() - t0
             if elapsed > 0:
@@ -170,26 +177,43 @@ async def run_one_session(
                     ),
                     flush=True,
                 )
-            # try to parse JSON to extract seq; if binary (protobuf),
-            # just count
-            try:
-                data = json.loads(msg)
-                server_seq_seen = max(
-                    server_seq_seen, int(data.get("seq") or 0)
-                )
-            except Exception:
-                # binary frame (protobuf) -> advance a running counter
-                server_seq_seen += 1
+
+            # Try binary protobuf first
+            if isinstance(msg, (bytes, bytearray)):
+                try:
+                    res = pb.ServerResult()
+                    res.ParseFromString(msg)
+                    server_seq_seen = max(server_seq_seen, int(res.seq or 0))
+                except Exception:
+                    server_seq_seen += 1
+            else:
+                # Try JSON text
+                try:
+                    data = json.loads(msg)
+                    server_seq_seen = max(
+                        server_seq_seen, int(data.get("seq") or 0)
+                    )
+                except Exception:
+                    server_seq_seen += 1
+
+            frames += 1
             last_seq = server_seq_seen
-            # ack so server backpressure window advances
+
+            # ack so server backpressure window advances (protobuf ack)
             seq += 1
-            await ws.send(
-                json.dumps({
-                    "seq": seq,
-                    "type": "ping",
-                    "ack": last_seq,
-                })
-            )
+            ack = pb.ClientAction()
+            ack.seq = seq
+            ack.type = pb.ClientAction.Type.PING
+            ack.ack = last_seq
+            await ws.send(ack.SerializeToString())
+
+        # STOP_SIMULATION
+        seq += 1
+        stop = pb.ClientAction()
+        stop.seq = seq
+        stop.type = pb.ClientAction.Type.STOP_SIMULATION
+        await ws.send(stop.SerializeToString())
+
     dt = max(1e-9, _time.perf_counter() - t0)
     print(
         (
