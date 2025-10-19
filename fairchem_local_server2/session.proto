@@ -20,8 +20,12 @@ message ClientAction {
   uint64 seq = 1;
   optional uint64 ack = 2;
   enum Type {
-    INIT_SYSTEM = 0;
-    UPDATE_POSITIONS = 1;
+    // USER_INTERACTION: frontend-origin state change and initialization.
+    // Clients MUST use this for initial system setup by providing atomic_numbers and positions,
+    // and MAY include velocities and/or cell. Any subsequent interaction can provide any subset
+    // of positions, velocities, and/or cell; omitted fields are left unchanged on the server.
+    // Note: INIT_SYSTEM has been removed; use USER_INTERACTION for init and updates.
+    USER_INTERACTION = 1; // was UPDATE_POSITIONS (INIT_SYSTEM removed)
     START_SIMULATION = 2;
     STOP_SIMULATION = 3;
     PING = 4;
@@ -62,4 +66,9 @@ message ServerResult {
   optional uint64 user_interaction_count = 30;
   // Server-side step index for the current running simulation (increments per produced frame)
   optional uint64 sim_step = 31;
+  // Notes:
+  // - When the server is idle (no active simulation), positions are not
+  //   updated by simple_calculate responses; only forces and energy are sent.
+  // - During an active simulation, positions/velocities are provided each
+  //   frame. The frontend may partially apply them to respect user edits.
 }

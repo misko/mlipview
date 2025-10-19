@@ -20,6 +20,12 @@ if (typeof window !== 'undefined') {
   window.__MLIP_CONFIG = window.__MLIP_CONFIG || { minStepIntervalMs: DEFAULT_MIN_STEP_INTERVAL_MS, mdFriction: DEFAULT_MD_FRICTION };
   if (window.__MLIP_CONFIG.minStepIntervalMs == null) window.__MLIP_CONFIG.minStepIntervalMs = DEFAULT_MIN_STEP_INTERVAL_MS;
   if (window.__MLIP_CONFIG.mdFriction == null) window.__MLIP_CONFIG.mdFriction = DEFAULT_MD_FRICTION;
+  // Parse URL param to disable auto MD: ?autoMD=0 or ?autoMD=false
+  try {
+    const q = new URLSearchParams(window.location?.search||'');
+    const v = q.get('autoMD');
+    if (v === '0' || String(v).toLowerCase() === 'false') window.__MLIPVIEW_NO_AUTO_MD = true;
+  } catch {}
 }
 function getConfig(){
   // Always return a valid config object with defaults; repair globals if missing
@@ -144,9 +150,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       try { if (state.showCell && state.cell && state.cell.enabled) {
         cell = [ [state.cell.a.x, state.cell.a.y, state.cell.a.z], [state.cell.b.x, state.cell.b.y, state.cell.b.z], [state.cell.c.x, state.cell.c.y, state.cell.c.z] ];
       } } catch {}
-      ws.initSystem({ atomic_numbers, positions, velocities: v||undefined, cell });
+      // Initialization now uses USER_INTERACTION carrying atomic_numbers + positions (and optional velocities/cell)
+      ws.userInteraction({ atomic_numbers, positions, velocities: v||undefined, cell });
       __ws.inited = true; __ws.lastAtomCount = nat; __ws.lastCellKey = cellK;
-      try { if (window.__MLIPVIEW_DEBUG_API) console.log('[WS][ensureInit] sent INIT_SYSTEM', { atoms: atomic_numbers.length, positions: positions.length, velocities: Array.isArray(v)? v.length: 0, hasCell: !!cell }); } catch {}
+  try { if (window.__MLIPVIEW_DEBUG_API) console.log('[WS][ensureInit][init]', { atoms: atomic_numbers.length, positions: positions.length, velocities: Array.isArray(v)? v.length: 0, hasCell: !!cell }); } catch {}
     }
     return true;
   }
@@ -285,15 +292,18 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       if(!state.elements || state.elements.length === 0){ return lastForceResult; }
       const useWs = __useWsSimple();
       if (useWs) {
-        const ws = getWS();
-        await __wsEnsureInit();
-        const positions = state.positions.map(p=>[p.x,p.y,p.z]);
-        try { if (window.__MLIPVIEW_DEBUG_API) console.log('[WS][simple] updatePositions', { n: positions.length, uic: userInteractionVersion }); } catch {}
-        ws.updatePositions(positions);
-        // Provide current user interaction count for correlation
-        try { ws.setCounters({ userInteractionCount: userInteractionVersion }); } catch {}
-        const t0 = performance.now();
-        const { energy, forces, userInteractionCount: uicFromServer } = await ws.requestSimpleCalculate();
+  const ws = getWS();
+  await __wsEnsureInit();
+  const positions = state.positions.map(p=>[p.x,p.y,p.z]);
+  // Send a USER_INTERACTION with current positions to trigger a simple_calculate on idle server
+  try { if (window.__MLIPVIEW_DEBUG_API) console.log('[WS][simple] USER_INTERACTION', { n: positions.length, uic: userInteractionVersion }); } catch {}
+  try { ws.userInteraction({ positions }); } catch {}
+  // Provide current user interaction count for correlation
+  try { ws.setCounters({ userInteractionCount: userInteractionVersion }); } catch {}
+  const t0 = performance.now();
+  // Request an explicit one-shot simple_calculate to ensure a result even if the server
+  // does not auto-run simple on idle USER_INTERACTION.
+  const { energy, forces, userInteractionCount: uicFromServer } = await ws.requestSimpleCalculate();
         const timingMs = Math.round((performance.now()-t0)*100)/100;
         noteLatency('simple','ws',{ ms: timingMs });
         try { if (window.__MLIPVIEW_DEBUG_API) console.log('[WS][simple][recv]', { energy, forcesLen: Array.isArray(forces)? forces.length: 0, uicFromServer, currentUIC: userInteractionVersion, timingMs }); } catch {}
@@ -319,6 +329,25 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     return lastForceResult;
   }
   const ff = { computeForces: ({ sync }={})=>{ if(sync) return fetchRemoteForces({ awaitResult:true }); fetchRemoteForces(); return lastForceResult; } };
+  // Deterministic one-shot: sends USER_INTERACTION and then explicitly requests SIMPLE_CALCULATE, returning the updated energy length
+  async function requestSimpleCalculateNow(){
+    try {
+      const ws = getWS();
+      await __wsEnsureInit();
+      const positions = state.positions.map(p=>[p.x,p.y,p.z]);
+      try { ws.userInteraction({ positions }); } catch{}
+      try { ws.setCounters({ userInteractionCount: userInteractionVersion }); } catch{}
+      const { energy, forces } = await ws.requestSimpleCalculate();
+      if (typeof energy === 'number') {
+        state.dynamics = state.dynamics || {}; state.dynamics.energy = energy;
+        if (Array.isArray(forces) && forces.length) {
+          __updateForces(forces, { reason:'requestSimpleCalculateNow' });
+        }
+        maybePlotEnergy('forces');
+      }
+      return energySeries.length;
+    } catch { return energySeries.length; }
+  }
 
   // Helper: construct precomputed object if force cache is fresh and matches structure
   function buildPrecomputedIfFresh(){
@@ -770,6 +799,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   // Interaction & energy time series
   const interactions = [];
   const energySeries = []; // {i,E,kind}
+  // Debug: log energy series growth in browser console when enabled via ?debug=1
+  function __logEnergyTick(){ try { if (window.__MLIPVIEW_DEBUG_API) console.log('[energy] len=', energySeries.length); } catch {} }
   let lastPlottedEnergy = undefined;
   function maybePlotEnergy(kind){
     try {
@@ -782,9 +813,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         }
       } catch {}
       if (typeof E !== 'number' || !isFinite(E)) return;
-      if (E === lastPlottedEnergy) return; // skip duplicate energy values
+      try {
+        if (E === lastPlottedEnergy && !(window && window.__ALLOW_DUPLICATE_ENERGY_TICKS)) return; // skip duplicates unless explicitly allowed
+      } catch { if (E === lastPlottedEnergy) return; }
       const idx = energySeries.length;
       energySeries.push({ i: idx, E, kind });
+  __logEnergyTick();
       lastPlottedEnergy = E;
       window.__RELAX_TRACE = energySeries.map(e=>e.E);
       drawEnergy();
@@ -1380,7 +1414,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   function getForceCacheVersion(){ return state.forceCache?.version; }
   function getVersionInfo(){ return { userInteractionVersion, totalInteractionVersion, resetEpoch }; }
   function shutdown(){ __renderActive=false; try{ engine.stopRenderLoop && engine.stopRenderLoop(); }catch{} }
-  return { state, bondService, selection, ff, dynamics, view, picking, vr, recomputeBonds, relaxStep, mdStep, startRelaxContinuous, startMDContinuous, stopSimulation, setForceProvider, getMetrics, resetToInitialPositions, debugEnergySeriesLength, debugRecordInteraction, manipulation: wrappedManipulation, scene, engine, camera, baselineEnergy, setForceVectorsEnabled, getForceCacheVersion, getVersionInfo, shutdown, enableFeatureFlag, setMinStepInterval };
+  return { state, bondService, selection, ff, dynamics, view, picking, vr, recomputeBonds, relaxStep, mdStep, startRelaxContinuous, startMDContinuous, stopSimulation, setForceProvider, getMetrics, resetToInitialPositions, debugEnergySeriesLength, debugRecordInteraction, manipulation: wrappedManipulation, scene, engine, camera, baselineEnergy, setForceVectorsEnabled, getForceCacheVersion, getVersionInfo, shutdown, enableFeatureFlag, setMinStepInterval, requestSimpleCalculateNow };
 }
 
 // Ensure global viewerApi for tests if not already set

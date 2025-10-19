@@ -6,8 +6,8 @@
   "scripts": {
     "test": "jest",
     "test:fast": "MLIPVIEW_SKIP_SERVERS=1 jest --detectOpenHandles=false --forceExit=false",
-  "test:integration": "jest -c jest.integration.config.js",
-  "gen:proto:js": "protoc --plugin=protoc-gen-es=./node_modules/.bin/protoc-gen-es --es_out=public/proto --es_opt=target=js fairchem_local_server2/session.proto",
+    "test:integration": "jest -c jest.integration.config.js",
+    "gen:proto:js": "protoc --plugin=protoc-gen-es=./node_modules/.bin/protoc-gen-es --es_out=public/proto --es_opt=target=js fairchem_local_server2/session.proto",
     "predev": "npm run gen:proto:js",
     "prebuild": "npm run gen:proto:js",
     "dev": "vite",
@@ -26,6 +26,7 @@
     "@bufbuild/protoc-gen-es": "^2.9.0",
     "@playwright/test": "^1.55.1",
     "babel-jest": "^29.7.0",
+    "canvas": "^2.11.2",
     "cross-fetch": "^4.0.0",
     "google-protobuf": "4.0.0",
     "jest": "^29.7.0",

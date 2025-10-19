@@ -50,6 +50,7 @@ export function createFairchemWS(){
 	let seq = 0;
 	let clientAck = 0;
 	let lastCounters = { userInteractionCount: 0, simStep: 0 };
+	let dragLock = null; // { index, pos }
 	const listeners = new Set();
 	function onFrame(fn){ listeners.add(fn); return ()=>listeners.delete(fn); }
 
@@ -143,6 +144,12 @@ export function createFairchemWS(){
 									};
 									if (r.energy != null) out.energy = r.energy;
 									if (Array.isArray(r.positions)) out.positions = r.positions.map(v=> v && Array.isArray(v.v) ? v.v : undefined).filter(Boolean);
+									// Apply dragLock override for the dragged atom if present
+									try {
+										if (dragLock && out.positions && out.positions[dragLock.index]) {
+											out.positions[dragLock.index] = dragLock.pos || out.positions[dragLock.index];
+										}
+									} catch{}
 									if (Array.isArray(r.forces)) out.forces = r.forces.map(v=> v && Array.isArray(v.v) ? v.v : undefined).filter(Boolean);
 									if (Array.isArray(r.velocities)) out.velocities = r.velocities.map(v=> v && Array.isArray(v.v) ? v.v : undefined).filter(Boolean);
 									if (r.cell && Array.isArray(r.cell.m)){
@@ -158,6 +165,25 @@ export function createFairchemWS(){
 				};
 		});
 	}
+						function waitForEnergy({ timeoutMs=5000 }={}){
+			return new Promise((resolve, reject)=>{
+				let off = null; let done=false; let to=null;
+				function finish(v){ if(done) return; done=true; try{ off&&off(); }catch{} if(to) try{ clearTimeout(to); }catch{} resolve(v); }
+				function fail(e){ if(done) return; done=true; try{ off&&off(); }catch{} if(to) try{ clearTimeout(to); }catch{} reject(e); }
+				off = onFrame((res)=>{
+					try {
+						if (!res || typeof res !== 'object') return;
+						const energy = (res.energy!=null ? res.energy : undefined);
+						const forces = Array.isArray(res.forces)? res.forces : [];
+						// Only resolve when we have a real energy-bearing frame or an explicit simple_calculate message.
+						// This avoids prematurely resolving on INIT_SYSTEM 'initialized' frames that may carry zero forces.
+						const isSimple = (res && typeof res.message === 'string' && res.message.toLowerCase() === 'simple_calculate');
+						if (energy != null || isSimple) finish({ energy, forces, userInteractionCount: res.userInteractionCount|0, simStep: res.simStep|0 });
+					} catch {}
+				});
+				to = setTimeout(()=> fail(new Error('waitForEnergy timeout')), timeoutMs|0);
+			});
+		}
 							function sendBytes(buf){ if(ws && ws.readyState===1) { try { __wsLog('[WS][tx-bytes]', { len: buf?.byteLength||buf?.length||0 }); } catch{} try { ws.send(buf); } catch(e){ __wsErr('[WS][send-error]', e?.message||e); } } else { __wsWarn('[WS][send-skipped:not-open]', { readyState: ws?.readyState }); } }
 	function close(){ try { ws && ws.close(); } catch{} }
 	function setCounters({ userInteractionCount, simStep }){
@@ -193,6 +219,9 @@ export function createFairchemWS(){
 					maxStep: msg.simulationParams.maxStep,
 					optimizer: msg.simulationParams.optimizer || undefined,
 				} : undefined,
+				positionsCount: Array.isArray(msg.positions) ? msg.positions.length : undefined,
+				velocitiesCount: Array.isArray(msg.velocities) ? msg.velocities.length : undefined,
+				hasCell: !!msg.cell,
 			};
 			sink(out);
 		} catch {}
@@ -206,38 +235,37 @@ export function createFairchemWS(){
 			await __connectPromise; return true;
 		}
 
-				// INIT_SYSTEM: send atoms and initial positions (and optional velocities/cell)
-		function initSystem({ atomic_numbers, positions, velocities, cell }){
-			const msg = create(ClientActionSchema, {
-				seq: nextSeq(),
-				type: ClientAction_Type.INIT_SYSTEM,
-				atomicNumbers: Array.isArray(atomic_numbers) ? atomic_numbers.map(z=> z|0) : [],
-				positions: Array.isArray(positions) ? positions.map(p=> create(Vec3Schema, { v: [+p[0],+p[1],+p[2]] })) : [],
-				velocities: Array.isArray(velocities) ? velocities.map(p=> create(Vec3Schema, { v: [+p[0],+p[1],+p[2]] })) : [],
-				cell: (cell && Array.isArray(cell) && cell.length===3) ? create(Mat3Schema, { m: [
-					+cell[0][0], +cell[0][1], +cell[0][2],
-					+cell[1][0], +cell[1][1], +cell[1][2],
-					+cell[2][0], +cell[2][1], +cell[2][2],
-				] }) : undefined,
-			});
+				// INIT removed: delegate to USER_INTERACTION for initialization.
+			function initSystem({ atomic_numbers, positions, velocities, cell }){
+				__wsWarn('[WS] initSystem deprecated; sending USER_INTERACTION for init');
+				return userInteraction({ atomic_numbers, positions, velocities, cell });
+			}
+
+				// USER_INTERACTION: allow partial state updates (positions, velocities, or cell)
+				function userInteraction({ atomic_numbers, positions, velocities, cell, dragLockIndex } = {}){
+			const out = { seq: nextSeq(), type: ClientAction_Type.USER_INTERACTION };
+			if (Array.isArray(atomic_numbers)) out.atomicNumbers = atomic_numbers.map(z=> z|0);
+			if (Array.isArray(positions)) out.positions = positions.map(p=> create(Vec3Schema, { v: [+p[0],+p[1],+p[2]] }));
+			if (Array.isArray(velocities)) out.velocities = velocities.map(p=> create(Vec3Schema, { v: [+p[0],+p[1],+p[2]] }));
+			if (cell && Array.isArray(cell) && cell.length===3) out.cell = create(Mat3Schema, { m: [
+				+cell[0][0], +cell[0][1], +cell[0][2],
+				+cell[1][0], +cell[1][1], +cell[1][2],
+				+cell[2][0], +cell[2][1], +cell[2][2],
+			] });
+			const msg = create(ClientActionSchema, out);
 			__notifyTestHook(msg);
-			try { __wsLog('[WS][tx][INIT_SYSTEM]', { seq: msg.seq|0, atoms: msg.atomicNumbers.length, positions: msg.positions.length, velocities: msg.velocities.length, hasCell: !!msg.cell }); } catch {}
+			try { __wsLog('[WS][tx][USER_INTERACTION]', { seq: msg.seq|0, atoms: msg.atomicNumbers?.length|0, positions: msg.positions?.length|0, velocities: msg.velocities?.length|0, hasCell: !!msg.cell }); } catch {}
 			const buf = toBinary(ClientActionSchema, msg);
 			sendBytes(buf);
+					try {
+						if (Number.isInteger(dragLockIndex) && Array.isArray(positions)) {
+							dragLock = { index: dragLockIndex|0, pos: positions[dragLockIndex|0] };
+						}
+					} catch {}
 		}
 
-				// UPDATE_POSITIONS: keep server-side state synchronized for one-shot calculations
-		function updatePositions(positions){
-			const msg = create(ClientActionSchema, {
-				seq: nextSeq(),
-				type: ClientAction_Type.UPDATE_POSITIONS,
-				positions: Array.isArray(positions) ? positions.map(p=> create(Vec3Schema, { v: [+p[0],+p[1],+p[2]] })) : [],
-			});
-			__notifyTestHook(msg);
-			try { __wsLog('[WS][tx][UPDATE_POSITIONS]', { seq: msg.seq|0, positions: msg.positions.length }); } catch {}
-			const buf = toBinary(ClientActionSchema, msg);
-			sendBytes(buf);
-		}
+				function beginDrag(index){ try { dragLock = { index: index|0, pos: null }; } catch {} }
+				function endDrag(){ try { dragLock = null; } catch {} }
 
 				// Subscribe to decoded ServerResult frames (convenience over raw onFrame)
 				function onResult(fn){
@@ -304,15 +332,16 @@ export function createFairchemWS(){
 			async function requestSimpleCalculate(){
 			if(!ws || ws.readyState!==1) { __wsWarn('[WS][simple][not-connected]'); throw new Error('ws not connected'); }
 			return new Promise((resolve, reject)=>{
-				let off = null;
-				const done = (v)=>{ try{ off && off(); }catch{} resolve(v); };
-				const fail = (e)=>{ try{ off && off(); }catch{} reject(e); };
+				let off = null; let to=null;
+				const done = (v)=>{ try{ off && off(); }catch{} if(to) try{ clearTimeout(to); }catch{} resolve(v); };
+				const fail = (e)=>{ try{ off && off(); }catch{} if(to) try{ clearTimeout(to); }catch{} reject(e); };
 				off = onFrame((res)=>{
 					try {
 						if (!res || typeof res !== 'object') return;
 						const energy = (res.energy!=null ? res.energy : undefined);
 						const forces = Array.isArray(res.forces)? res.forces : [];
-						if (energy != null || (forces && forces.length)) done({ energy, forces, userInteractionCount: res.userInteractionCount|0, simStep: res.simStep|0 });
+						const isSimple = (res && typeof res.message === 'string' && res.message.toLowerCase() === 'simple_calculate');
+						if (energy != null || isSimple) done({ energy, forces, userInteractionCount: res.userInteractionCount|0, simStep: res.simStep|0 });
 					} catch(e){ /* ignore non-matching frames */ }
 				});
 					try {
@@ -328,7 +357,7 @@ export function createFairchemWS(){
 						const buf = toBinary(ClientActionSchema, msg); sendBytes(buf);
 					} catch(e){ fail(e); }
 				// optional timeout
-				setTimeout(()=> { __wsWarn('[WS][simple][timeout] after 5s'); fail(new Error('simple_calculate timeout')); }, 5000);
+				to = setTimeout(()=> { __wsWarn('[WS][simple][timeout] after 5s'); fail(new Error('simple_calculate timeout')); }, 5000);
 			});
 		}
 
@@ -343,9 +372,9 @@ export function createFairchemWS(){
 				setTimeout(()=>{ if(!doneCalled) { __wsWarn('[WS][single-step][timeout] after 5s'); try{ off&&off(); }catch{} reject(new Error('single_step timeout')); } }, 5000);
 			});
 		}
-		    	const api = { connect, ensureConnected, sendBytes, close, onFrame, onResult, setCounters, nextSeq, setAck, ack, getState, requestSimpleCalculate, requestSingleStep, initSystem, updatePositions, startSimulation, stopSimulation };
+		    	const api = { connect, ensureConnected, sendBytes, close, onFrame, onResult, setCounters, nextSeq, setAck, ack, getState, requestSimpleCalculate, requestSingleStep, waitForEnergy, initSystem, userInteraction, beginDrag, endDrag, startSimulation, stopSimulation };
 		            try {
-		            if (typeof window !== 'undefined') {
+				    if (typeof window !== 'undefined') {
 		            window.__fairchem_ws__ = api;
 		            // Test bridge: allow tests to inject decoded frames without protobuf by calling window.__ON_WS_RESULT__(obj)
 		            if (typeof window.__ON_WS_RESULT__ !== 'function') {

@@ -19,7 +19,7 @@ describe('API includes cell when PBC enabled', () => {
     api.state.toggleCellVisibilityEnhanced();
     // Trigger a force compute which will init WS session and send messages
     await api.ff.computeForces({ sync:true });
-    // We expect at least INIT_SYSTEM + UPDATE_POSITIONS + SIMPLE_CALCULATE
+  // We expect at least INIT_SYSTEM + USER_INTERACTION (or positions seed) + SIMPLE_CALCULATE
     const sent = sentMessages.slice();
     expect(sent.length).toBeGreaterThan(0);
     // Find the most recent INIT_SYSTEM

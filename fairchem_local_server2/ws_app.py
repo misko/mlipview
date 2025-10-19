@@ -248,6 +248,11 @@ class WSIngress:
                         await asyncio.sleep(0.02)
                         continue
 
+                    # Snapshot the user_interaction_count that is active at the
+                    # beginning of this simulation step. This value will be
+                    # echoed on the produced frame even if newer interactions
+                    # arrive before the step completes.
+                    uic_snapshot = state.user_interaction_count or None
                     worker = self._pool.any()
                     if state.sim_type == "md":
                         v_in = (
@@ -310,7 +315,7 @@ class WSIngress:
                     await _send_result_bytes(
                         seq=state.server_seq,
                         client_seq=state.client_seq,
-                        user_interaction_count=(state.user_interaction_count or None),
+                        user_interaction_count=uic_snapshot,
                         sim_step=(state.sim_step or None),
                         positions=state.positions,
                         velocities=state.velocities,
@@ -401,15 +406,14 @@ class WSIngress:
                                 pass
                         elif self._ws_debug and state.client_ack:
                             try:
-                                print(
-                                    (f"[ws:rx][ack] " f"client_ack={state.client_ack}"),
-                                    flush=True,
-                                )
+                                txt = f"[ws:rx][ack] client_ack=" f"{state.client_ack}"
+                                print(txt, flush=True)
                             except Exception:
                                 pass
                     except Exception:
                         pass
                     # Correlation fields (optional)
+                    uic_in_msg: Optional[int] = None
                     try:
                         # Only access attributes if present in schema
                         if hasattr(msg, "user_interaction_count"):
@@ -421,6 +425,7 @@ class WSIngress:
                                 )
                                 or 0
                             )
+                            uic_in_msg = u
                             if u > (state.user_interaction_count or 0):
                                 state.user_interaction_count = u
                         if hasattr(msg, "sim_step"):
@@ -431,64 +436,51 @@ class WSIngress:
                     except Exception:
                         pass
 
-                    if (
-                        hasattr(pb.ClientAction.Type, "INIT_SYSTEM")
-                        and getattr(msg, "type", None)
-                        == pb.ClientAction.Type.INIT_SYSTEM
-                    ) or getattr(msg, "type", None) in ("init_system", "init"):
-                        if len(msg.atomic_numbers) == 0 or len(msg.positions) == 0:
-                            # Cannot initialize without atoms and positions;
-                            # ignore
-                            continue
-                        state.atomic_numbers = list(msg.atomic_numbers)
-                        state.positions = _np_from_vec3_list(msg.positions)
-                        v_in = _np_from_vec3_list(msg.velocities)
-                        state.velocities = v_in
-                        state.cell = _mat3_to_np(
-                            msg.cell if msg.HasField("cell") else None
-                        )
-                        state.forces = None
+                    if getattr(msg, "type", None) in ("init_system", "init"):
+                        # Legacy JSON/string compatibility: treat as
+                        # USER_INTERACTION init
+                        try:
+                            if len(msg.atomic_numbers) == 0 or len(msg.positions) == 0:
+                                continue
+                        except Exception:
+                            pass
+                        try:
+                            state.atomic_numbers = list(msg.atomic_numbers)
+                            state.positions = _np_from_vec3_list(msg.positions)
+                            v_in = _np_from_vec3_list(msg.velocities)
+                            state.velocities = v_in
+                            state.cell = _mat3_to_np(
+                                msg.cell if msg.HasField("cell") else None
+                            )
+                            state.forces = None
+                        except Exception:
+                            pass
                         try:
                             cs = "on" if state.cell is not None else "off"
                             print(
                                 (
-                                    "[ws] INIT_SYSTEM "
-                                    f"natoms={len(state.atomic_numbers)} "
+                                    "[ws] INIT (compat) natoms="
+                                    f"{len(state.atomic_numbers)} "
                                     f"cell={cs}"
                                 ),
                                 flush=True,
                             )
                         except Exception:
                             pass
-                        if self._ws_debug:
-                            try:
-                                vel = "yes" if v_in is not None else "no"
-                                print(
-                                    "[ws:state] set velocities=" + vel,
-                                    flush=True,
-                                )
-                            except Exception:
-                                pass
                         await _send_result_bytes(
                             seq=state.server_seq,
                             client_seq=state.client_seq,
                             user_interaction_count=(
-                                state.user_interaction_count or None
+                                int(uic_in_msg) if uic_in_msg else None
                             ),
                             sim_step=(state.sim_step or None),
                             positions=state.positions,
                             velocities=(
                                 state.velocities
                                 if state.velocities is not None
-                                else np.zeros(
-                                    (len(state.atomic_numbers), 3),
-                                    dtype=float,
-                                )
+                                else None
                             ),
-                            forces=np.zeros(
-                                (len(state.atomic_numbers), 3),
-                                dtype=float,
-                            ),
+                            forces=None,
                             cell=state.cell,
                             message="initialized",
                         )
@@ -502,16 +494,43 @@ class WSIngress:
                             continue
                         try:
                             worker = self._pool.any()
-                            res = await asyncio.to_thread(
-                                ray.get,
-                                worker.run_simple.remote(
-                                    atomic_numbers=state.atomic_numbers,
-                                    positions=state.positions,
-                                    cell=state.cell,
-                                    properties=["energy", "forces"],
-                                    calculator=state.params.calculator,
-                                ),
-                            )
+                            try:
+                                res = await asyncio.to_thread(
+                                    ray.get,
+                                    worker.run_simple.remote(
+                                        atomic_numbers=state.atomic_numbers,
+                                        positions=state.positions,
+                                        cell=state.cell,
+                                        properties=["energy", "forces"],
+                                        calculator=state.params.calculator,
+                                    ),
+                                )
+                            except Exception as e:
+                                # Fallback to LJ if UMA path is unavailable
+                                try:
+                                    print(
+                                        (
+                                            "[ws] SIMPLE_CALCULATE failed "
+                                            f"with '"
+                                            f"{state.params.calculator}"
+                                            f"', "
+                                            "retrying with 'lj': "
+                                            f"{e}"
+                                        ),
+                                        flush=True,
+                                    )
+                                except Exception:
+                                    pass
+                                res = await asyncio.to_thread(
+                                    ray.get,
+                                    worker.run_simple.remote(
+                                        atomic_numbers=state.atomic_numbers,
+                                        positions=state.positions,
+                                        cell=state.cell,
+                                        properties=["energy", "forces"],
+                                        calculator="lj",
+                                    ),
+                                )
                             results = res.get("results", {})
                             E = results.get("energy")
                             F = results.get("forces")
@@ -524,7 +543,7 @@ class WSIngress:
                                 seq=state.server_seq,
                                 client_seq=state.client_seq,
                                 user_interaction_count=(
-                                    state.user_interaction_count or None
+                                    int(uic_in_msg) if uic_in_msg else None
                                 ),
                                 sim_step=(state.sim_step or None),
                                 positions=None,
@@ -534,35 +553,213 @@ class WSIngress:
                                 energy=(float(E) if E is not None else None),
                                 message="simple_calculate",
                             )
-                        except Exception:
-                            # swallow to keep session alive
-                            pass
-                    elif (
-                        hasattr(pb.ClientAction.Type, "UPDATE_POSITIONS")
-                        and getattr(msg, "type", None)
-                        == pb.ClientAction.Type.UPDATE_POSITIONS
-                    ) or getattr(msg, "type", None) == "update_positions":
-                        if len(msg.positions) == 0:
-                            continue
-                        state.positions = _np_from_vec3_list(msg.positions)
-                        # Reset v/f on any changed atoms
-                        state.velocities = None
-                        state.forces = None
-                        try:
-                            print("[ws] UPDATE_POSITIONS", flush=True)
-                        except Exception:
-                            pass
-                        if self._ws_debug:
+                        except Exception as e:
+                            # swallow to keep session alive, but log
                             try:
                                 print(
-                                    (
-                                        "[ws:state] velocities reset due to "
-                                        "UPDATE_POSITIONS"
-                                    ),
+                                    f"[ws] SIMPLE_CALCULATE exception: {e}",
                                     flush=True,
                                 )
                             except Exception:
                                 pass
+                    elif (
+                        hasattr(pb.ClientAction.Type, "USER_INTERACTION")
+                        and getattr(msg, "type", None)
+                        == pb.ClientAction.Type.USER_INTERACTION
+                    ) or getattr(msg, "type", None) == "user_interaction":
+                        # Apply partial updates: positions, velocities,
+                        # and/or cell
+                        # If atomic_numbers provided with positions, treat this
+                        # as initialization
+                        try:
+                            if len(getattr(msg, "atomic_numbers", [])) and len(
+                                getattr(msg, "positions", [])
+                            ):
+                                state.atomic_numbers = list(msg.atomic_numbers)
+                                state.positions = _np_from_vec3_list(msg.positions)
+                                v_in = _np_from_vec3_list(msg.velocities)
+                                state.velocities = v_in
+                                state.cell = _mat3_to_np(
+                                    msg.cell if msg.HasField("cell") else None
+                                )
+                                state.forces = None
+                                try:
+                                    cs = "on" if state.cell is not None else "off"
+                                    msg_txt = (
+                                        "[ws] USER_INTERACTION init "
+                                        + "natoms="
+                                        + f"{len(state.atomic_numbers)}"
+                                        + f" cell={cs}"
+                                    )
+                                    print(msg_txt, flush=True)
+                                except Exception:
+                                    pass
+                                # On init, send immediate echo with positions
+                                # and zero forces/vel if absent
+                                await _send_result_bytes(
+                                    seq=state.server_seq,
+                                    client_seq=state.client_seq,
+                                    user_interaction_count=(
+                                        int(uic_in_msg) if uic_in_msg else None
+                                    ),
+                                    sim_step=(state.sim_step or None),
+                                    positions=state.positions,
+                                    velocities=(
+                                        state.velocities
+                                        if state.velocities is not None
+                                        else None
+                                    ),
+                                    forces=None,
+                                    cell=state.cell,
+                                    message="initialized",
+                                )
+                                # Do not fall through to simple calculate here;
+                                # the client may request it explicitly. The
+                                # client may request SIMPLE_CALCULATE
+                                # explicitly.
+                                continue
+                        except Exception:
+                            pass
+                        updated = False
+                        try:
+                            if len(getattr(msg, "positions", [])):
+                                state.positions = _np_from_vec3_list(msg.positions)
+                                updated = True
+                            if len(getattr(msg, "velocities", [])):
+                                state.velocities = _np_from_vec3_list(msg.velocities)
+                                updated = True
+                            if hasattr(msg, "cell") and msg.HasField("cell"):
+                                state.cell = _mat3_to_np(msg.cell)
+                                updated = True
+                        except Exception:
+                            updated = False
+                        if not updated:
+                            # Nothing to do
+                            continue
+                        try:
+                            n = (
+                                0
+                                if state.positions is None
+                                else int(state.positions.shape[0])
+                            )
+                            print(
+                                (
+                                    f"[ws] USER_INTERACTION recv natoms={n} "
+                                    "running="
+                                    f"{'true' if state.running else 'false'}"
+                                ),
+                                flush=True,
+                            )
+                        except Exception:
+                            pass
+                        # If a simulation is running, continue running with
+                        # updated state
+                        if state.running:
+                            # Drop forces so next produced frame recomputes
+                            state.forces = None
+                            # Keep velocities if not explicitly updated
+                            if self._ws_debug:
+                                try:
+                                    print(
+                                        (
+                                            "[ws:state] applied "
+                                            "USER_INTERACTION during "
+                                            "running sim"
+                                        ),
+                                        flush=True,
+                                    )
+                                except Exception:
+                                    pass
+                        else:
+                            # Idle: run one-shot simple calculate and send
+                            # result
+                            try:
+                                try:
+                                    print(
+                                        (
+                                            "[ws] USER_INTERACTION idle -> "
+                                            "simple_calculate"
+                                        ),
+                                        flush=True,
+                                    )
+                                except Exception:
+                                    pass
+                                if (
+                                    state.atomic_numbers == []
+                                    or state.positions is None
+                                ):
+                                    continue
+                                worker = self._pool.any()
+                                try:
+                                    res = await asyncio.to_thread(
+                                        ray.get,
+                                        worker.run_simple.remote(
+                                            atomic_numbers=(state.atomic_numbers),
+                                            positions=state.positions,
+                                            cell=state.cell,
+                                            properties=["energy", "forces"],
+                                            calculator=state.params.calculator,
+                                        ),
+                                    )
+                                except Exception as e:
+                                    # Fallback to LJ if UMA path is unavailable
+                                    try:
+                                        print(
+                                            (
+                                                "[ws] USER_INTERACTION simple "
+                                                "failed with "
+                                                f"'"
+                                                f"{state.params.calculator}"
+                                                f"', "
+                                                "retrying with 'lj': "
+                                                f"{e}"
+                                            ),
+                                            flush=True,
+                                        )
+                                    except Exception:
+                                        pass
+                                    res = await asyncio.to_thread(
+                                        ray.get,
+                                        worker.run_simple.remote(
+                                            atomic_numbers=(state.atomic_numbers),
+                                            positions=state.positions,
+                                            cell=state.cell,
+                                            properties=["energy", "forces"],
+                                            calculator="lj",
+                                        ),
+                                    )
+                                results = res.get("results", {})
+                                E = results.get("energy")
+                                F = results.get("forces")
+                                F_np = (
+                                    np.array(F, dtype=float) if F is not None else None
+                                )
+                                await _send_result_bytes(
+                                    seq=state.server_seq,
+                                    client_seq=state.client_seq,
+                                    user_interaction_count=(
+                                        int(uic_in_msg) if uic_in_msg else None
+                                    ),
+                                    sim_step=(state.sim_step or None),
+                                    positions=None,
+                                    velocities=None,
+                                    forces=F_np,
+                                    cell=None,
+                                    energy=(float(E) if E is not None else None),
+                                    message="simple_calculate",
+                                )
+                            except Exception as e:
+                                try:
+                                    print(
+                                        (
+                                            "[ws] USER_INTERACTION "
+                                            "simple_calculate exception: "
+                                            f"{e}"
+                                        ),
+                                        flush=True,
+                                    )
+                                except Exception:
+                                    pass
                     elif (
                         hasattr(pb.ClientAction.Type, "START_SIMULATION")
                         and getattr(msg, "type", None)
