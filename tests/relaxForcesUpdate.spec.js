@@ -1,7 +1,5 @@
-// Verifies force vectors update over multiple relaxation steps.
-// Similar environment stubs to forceUpdatePerturbation test.
-if(!global.window) global.window = {}; var window = global.window;
-if(!global.document) global.document = { createElement:(t)=>({ tagName:t.toUpperCase(), style:{}, getContext:()=>({ clearRect(){}, beginPath(){}, moveTo(){}, lineTo(){}, stroke(){}, arc(){}, fill(){} }) }), getElementById:()=>null, body:{ appendChild(){} } };
+/** @jest-environment jsdom */
+// Verifies force vectors update over multiple relaxation steps (WS-only path).
 
 if (!global.BABYLON) global.BABYLON = {};
 const BABYLON = global.BABYLON;
@@ -27,42 +25,42 @@ jest.mock('../public/render/scene.js', ()=>{
   return { createScene: async ()=> ({ engine:new mockEngine(), scene:new mockScene(), camera:{ detachControl(){}, attachControl(){}, alpha:0,beta:0,radius:5,target:{x:0,y:0,z:0} } }) };
 });
 
-// Mock network: baseline + 10 relax steps returning varying forces (energy decreases monotonically)
-let callSeq=0;
+// WS test stub for baseline and relax steps
+import { stubWebSocketAndHook } from './utils/wsTestStub.js';
 const baseForces=[ [0.1,0.0,0.0],[0.0,0.1,0.0],[0.0,0.0,0.1] ];
 function scaledForces(step){ return baseForces.map(f=>[ f[0]*(1+0.2*step), f[1]*(1+0.15*step), f[2]*(1+0.1*step) ]); }
-
-global.fetch = jest.fn(async (url, opts)=>{
-  callSeq++;
-  const isRelax = /relax/.test(url);
-  if(/simple_calculate/.test(url)){
-    // Provide baseline force fetch only once
-    const forces = scaledForces(0);
-    return { ok:true, status:200, json: async()=> ({ results:{ energy:-5.0, forces } }) };
-  }
-  if(isRelax){
-    // step count always 1 per call; simulate progressive geometry with changing forces
-    const step = callSeq; // rough proxy ensuring change
-    return { ok:true, status:200, json: async()=> ({ positions:[[0,0,0],[0.95,0,0],[-0.24,0.93,0]], forces: scaledForces(step), final_energy: -5.0 - 0.1*step }) };
-  }
-  // Fallback MD endpoint not used here
-  return { ok:true, status:200, json: async()=> ({ results:{ energy:-5.0, forces: scaledForces(0) } }) };
-});
 
 let initNewViewer;
 function forceInstanceCount(api){ const fg=api.view._internals.forceGroups.get('force'); if(!fg) return 0; const buf=fg.master._buffers['matrix']; return buf? buf.length/16 : 0; }
 
-describe('relax forces visualization', () => {
+describe('relax forces visualization (WS)', () => {
   test('forces update over 10 relax steps', async () => {
+    const ws = stubWebSocketAndHook();
     const mod = await import('../public/index.js'); initNewViewer = mod.initNewViewer;
-    const api = await initNewViewer({ width:800,height:600,getContext:()=>({}) }, { elements:['O','H','H'], positions:[{x:0,y:0,z:0},{x:0.95,y:0,z:0},{x:-0.24,y:0.93,z:0}], bonds:[] });
-    // Wait for baseline compute
-    await new Promise(r=>setTimeout(r,20));
+    // Build DOM similar to other jsdom tests
+    const canvas=document.createElement('canvas'); canvas.id='viewer'; canvas.addEventListener=()=>{}; document.body.appendChild(canvas);
+    const energyWrapper=document.createElement('div'); energyWrapper.id='energyPlot'; document.body.appendChild(energyWrapper);
+    const energyCanvas=document.createElement('canvas'); energyCanvas.id='energyCanvas'; energyCanvas.width=260; energyCanvas.height=80; energyCanvas.getContext=()=>({ clearRect(){}, beginPath(){}, moveTo(){}, lineTo(){}, stroke(){}, arc(){}, fill(){}, fillRect(){}, strokeStyle:null, lineWidth:1, fillStyle:null }); energyWrapper.appendChild(energyCanvas);
+    const energyLabel=document.createElement('div'); energyLabel.id='energyLabel'; energyWrapper.appendChild(energyLabel);
+    const api = await initNewViewer(canvas, { elements:['O','H','H'], positions:[{x:0,y:0,z:0},{x:0.95,y:0,z:0},{x:-0.24,y:0.93,z:0}], bonds:[] });
+  // Seed baseline forces via a simple calculate frame (allow a tick for ws init)
+  await Promise.resolve().then(()=>{});
+  await new Promise(r=>setTimeout(r,0));
+  ws.emit({ positions: api.state.positions.map(p=>[p.x,p.y,p.z]), forces: scaledForces(0), energy: -5.0 });
     api.state.bus.emit('forcesChanged');
     for(let t=0;t<20 && forceInstanceCount(api)===0;t++){ try{ api.view.rebuildForces(); }catch{} await new Promise(r=>setTimeout(r,10)); }
     const initialMatrix = api.view._internals.forceGroups.get('force').master._buffers['matrix'].slice();
     // Run 10 single relax steps
-  for(let i=0;i<10;i++) { await api.relaxStep(); api.state.bus.emit('forcesChanged'); try{ api.view.rebuildForces(); }catch{} await new Promise(r=>setTimeout(r,5)); }
+    for(let i=1;i<=10;i++) {
+      const p = api.relaxStep();
+      await Promise.resolve().then(()=>{});
+      await new Promise(r=>setTimeout(r,0));
+      ws.emit({ positions: api.state.positions.map(p=>[p.x,p.y,p.z]), forces: scaledForces(i), energy: -5.0 - 0.1*i });
+      await p;
+      api.state.bus.emit('forcesChanged');
+      try{ api.view.rebuildForces(); }catch{}
+      await new Promise(r=>setTimeout(r,5));
+    }
   // Poll for update (up to 20 * 10ms)
   let afterMatrix; for(let p=0;p<20;p++){ afterMatrix = api.view._internals.forceGroups.get('force').master._buffers['matrix']; if(afterMatrix && afterMatrix.length) break; await new Promise(r=>setTimeout(r,10)); }
   let changed=false; 

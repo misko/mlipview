@@ -1,6 +1,5 @@
 /** @jest-environment jsdom */
-// Test: temperature slider drives temperature field in /serve/md POST bodies.
-import http from 'http';
+// Test: temperature slider drives temperature field in WS START_SIMULATION params.
 
 // Minimal BABYLON stubs (align with other jsdom tests)
 beforeAll(()=>{
@@ -11,33 +10,26 @@ beforeAll(()=>{
 
 jest.mock('../public/render/scene.js', () => ({ createScene: async () => ({ engine:{ runRenderLoop:(fn)=>{} }, scene:{ meshes:[], render:()=>{}, onPointerObservable:{ _l:[], add(fn){this._l.push(fn);} } }, camera:{ attachControl:()=>{} } }) }));
 
-// Capture POST bodies for /serve/md
-const mdBodies = [];
-
-global.fetch = async function(url, opts={}){
-  if(typeof url === 'string' && /\/serve\/md$/.test(url)){
-    try { mdBodies.push(JSON.parse(opts.body||'{}')); } catch { mdBodies.push({ parseError:true, raw:opts.body }); }
-    // Return a plausible MD response echoing temperature
-    const body = JSON.stringify({ positions:[[0,0,0],[0.96,0,0],[-0.24,0.93,0]], velocities:[[0,0,0],[0,0,0],[0,0,0]], forces:[[0,0,0],[0,0,0],[0,0,0]], final_energy: -1.0, steps_completed:1, temperature:(mdBodies.slice(-1)[0].temperature||0) });
-    return { ok:true, status:200, json: async ()=> JSON.parse(body), text: async ()=> body };
-  }
-  // Force provider or relax endpoints not needed here; minimal stub
-  if(typeof url === 'string' && /\/serve\/simple$/.test(url)){
-    const body = JSON.stringify({ energy: -1.2, forces:[[0,0,0]], positions:[[0,0,0]] });
-    return { ok:true, status:200, json: async ()=> JSON.parse(body), text: async ()=> body };
-  }
-  if(typeof url === 'string' && /\/serve\/relax$/.test(url)){
-    const body = JSON.stringify({ positions:[[0,0,0],[0.96,0,0],[-0.24,0.93,0]], forces:[[0,0,0],[0,0,0],[0,0,0]], final_energy:-1.1 });
-    return { ok:true, status:200, json: async ()=> JSON.parse(body), text: async ()=> body };
-  }
-  if(typeof url === 'string' && /\/serve\/health$/.test(url)){
-    const body = JSON.stringify({ ok:true });
-    return { ok:true, status:200, json: async ()=> JSON.parse(body), text: async ()=> body };
-  }
-  throw new Error('Unexpected fetch '+url);
-};
+function stubWebSocketAndHook(){
+  const sent = [];
+  let wsOnMessage = null;
+  global.WebSocket = class {
+    constructor(){ this.readyState=1; setTimeout(()=> this.onopen && this.onopen(),0); }
+    set binaryType(_){}
+    send(_){}
+    close(){}
+    onopen(){}
+    onerror(){}
+    onclose(){}
+    set onmessage(fn){ wsOnMessage = fn; }
+    get onmessage(){ return wsOnMessage; }
+  };
+  window.__WS_TEST_HOOK__ = (msg)=>{ sent.push(msg); };
+  return { sent, emit: (obj)=>{ if (typeof window.__ON_WS_RESULT__ === 'function') window.__ON_WS_RESULT__(obj); } };
+}
 
 async function setupViewer(){
+  const ws = stubWebSocketAndHook();
   window.__MLIPVIEW_SERVER = 'http://127.0.0.1:8000';
   window.__MLIP_FEATURES = { RELAX_LOOP:false, MD_LOOP:true, ENERGY_TRACE:false, FORCE_VECTORS:false };
   const canvas=document.createElement('canvas'); canvas.id='viewer'; document.body.appendChild(canvas);
@@ -67,28 +59,32 @@ async function setupViewer(){
   const viewer = await mod.initNewViewer(canvas, { elements:[{Z:8},{Z:1},{Z:1}], positions:[{x:0,y:0,z:0},{x:0.96,y:0,z:0},{x:-0.24,y:0.93,z:0}], bonds:[] });
   window.viewerApi = viewer; // ensure slider can reference
   initTemperatureSlider({ hudEl: hud, getViewer: ()=> viewer });
-  return viewer;
+  return { viewer, ws };
 }
 
-describe('MD temperature slider', () => {
-  test('slider manipulations affect /serve/md temperature field', async () => {
-    const viewer = await setupViewer();
+describe('MD temperature slider (WS)', () => {
+  test('slider manipulations affect outgoing WS temperature', async () => {
+    const { viewer, ws } = await setupViewer();
     const slider = document.getElementById('mdTempSlider');
     expect(slider).toBeTruthy();
-    // Record initial temperature
-    mdBodies.length = 0;
-    // Trigger an MD step at default
-    await viewer.mdStep({ temperature: window.__MLIP_TARGET_TEMPERATURE }); // direct call (UI button uses same source)
-    expect(mdBodies.length).toBe(1);
-    const firstT = mdBodies[0].temperature;
+    // Trigger an MD step at default; intercept outgoing START_SIMULATION
+    const p1 = viewer.mdStep({ temperature: window.__MLIP_TARGET_TEMPERATURE });
+    ws.emit({ positions: viewer.state.positions.map(p=>[p.x,p.y,p.z]), forces: [], energy: 0, temperature: window.__MLIP_TARGET_TEMPERATURE });
+    await p1;
+    const sent1 = ws.sent || [];
+    const firstMsg = sent1.find(m=> m.simulationParams && typeof m.simulationParams.temperature === 'number');
+    const firstT = firstMsg ? firstMsg.simulationParams.temperature : undefined;
     expect(typeof firstT).toBe('number');
   // Change slider to another index (pick max index for near 3000K)
     slider.value = String(Number(slider.max));
     slider.dispatchEvent(new Event('input'));
     const newT = window.__MLIP_TARGET_TEMPERATURE;
     expect(newT).not.toBe(firstT);
-    await viewer.mdStep({ temperature: window.__MLIP_TARGET_TEMPERATURE });
-    expect(mdBodies.length).toBe(2);
-    expect(mdBodies[1].temperature).toBe(newT);
+    const p2 = viewer.mdStep({ temperature: window.__MLIP_TARGET_TEMPERATURE });
+    ws.emit({ positions: viewer.state.positions.map(p=>[p.x,p.y,p.z]), forces: [], energy: 0, temperature: newT });
+    await p2;
+    const sent2 = ws.sent || [];
+    const secondMsg = sent2.reverse().find(m=> m.simulationParams && typeof m.simulationParams.temperature === 'number');
+    expect(secondMsg && secondMsg.simulationParams.temperature).toBe(newT);
   });
 });

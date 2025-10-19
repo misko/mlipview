@@ -33,13 +33,62 @@ function killPort(port){
 
 async function cudaPreflight(pyEnv){
   return new Promise((resolve, reject)=>{
-    const code = "import torch, json, os; print(json.dumps({'cuda_available': torch.cuda.is_available(), 'cuda_device_count': torch.cuda.device_count(), 'visible': os.environ.get('CUDA_VISIBLE_DEVICES')}), flush=True)";
+    const code = (
+      'import json, os, subprocess\n'
+      + 'torch_ok=True\n'
+      + 'torch_err=None\n'
+      + 'try:\n'
+      + '    import torch as _t\n'
+      + 'except Exception as e:\n'
+      + '    torch_ok=False\n'
+      + '    torch_err=str(e)\n'
+      + 'cuda_avail=False\n'
+      + 'cuda_cnt=0\n'
+      + 'torch_ver=None\n'
+      + 'cuda_ver=None\n'
+      + 'cudnn_ver=None\n'
+      + 'dev_names=[]\n'
+      + 'if torch_ok:\n'
+      + '    try:\n'
+      + '        cuda_avail = bool(_t.cuda.is_available())\n'
+      + '        cuda_cnt = int(_t.cuda.device_count())\n'
+      + '        torch_ver = getattr(_t, "__version__", None)\n'
+      + '        cuda_ver = getattr(_t.version, "cuda", None)\n'
+      + '        try:\n'
+      + '            cudnn_ver = _t.backends.cudnn.version()\n'
+      + '        except Exception:\n'
+      + '            cudnn_ver = None\n'
+      + '        try:\n'
+      + '            dev_names = [_t.cuda.get_device_name(i) for i in range(cuda_cnt)]\n'
+      + '        except Exception:\n'
+      + '            dev_names = []\n'
+      + '    except Exception as e:\n'
+      + '        torch_err = str(e)\n'
+      + 'try:\n'
+      + '    nvsmi = subprocess.check_output(["bash","-lc","nvidia-smi -L || true"], text=True)\n'
+      + 'except Exception:\n'
+      + '    nvsmi = None\n'
+      + 'out = {\n'
+      + '  "torch_import_ok": torch_ok,\n'
+      + '  "torch_error": torch_err,\n'
+      + '  "torch_version": torch_ver,\n'
+      + '  "torch_cuda_version": cuda_ver,\n'
+      + '  "cuda_available": cuda_avail,\n'
+      + '  "cuda_device_count": cuda_cnt,\n'
+      + '  "cuda_device_names": dev_names,\n'
+      + '  "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES"),\n'
+      + '  "NV_GPU": os.environ.get("NV_GPU"),\n'
+      + '  "nvidia_smi_L": nvsmi,\n'
+      + '}\n'
+      + 'print(json.dumps(out), flush=True)\n'
+    );
     const p = spawn(pyEnv, ['-c', code], { env: { ...process.env } });
     let buf='';
     p.stdout.on('data', d=>buf+=d.toString());
     p.stderr.on('data', d=>buf+=d.toString());
     p.on('close', ()=>{
-      try { const j = JSON.parse(buf.trim().split(/\n/).pop()); resolve(j); } catch(e){ reject(new Error('CUDA preflight parse failed: '+buf)); }
+      const last = buf.trim().split(/\n/).pop();
+      try { const j = JSON.parse(last); resolve(j); } catch(e){ reject(new Error('CUDA preflight parse failed: '+buf)); }
     });
   });
 }
@@ -77,26 +126,35 @@ module.exports = async () => {
   }
   // Preflight CUDA
   const pre = await cudaPreflight(pyEnv).catch(e=>{ console.error('[globalSetup] CUDA preflight failed', e); return null; });
+  console.log('[globalSetup] Python env:', pyEnv);
+  console.log('[globalSetup] CUDA preflight:', pre);
+  log.write('[preflight] '+JSON.stringify(pre)+'\n');
   if(!pre || !pre.cuda_available){
     console.error('[globalSetup] CUDA not available in preflight', pre);
+    if(pre && pre.torch_import_ok && !pre.torch_cuda_version){
+      console.error('[globalSetup] DETECTED CPU-only torch build. Install a CUDA-enabled torch (torch.version.cuda is null).');
+    }
+    if(pre && pre.nvidia_smi_L){
+      console.error('[globalSetup] nvidia-smi -L output:\n'+pre.nvidia_smi_L);
+    }
     throw new Error('GPU-only mode but CUDA not available');
   }
-  log.write('[preflight] '+JSON.stringify(pre)+'\n');
 
   // Kill any lingering processes on required ports
   killPort(8000);
   killPort(4000);
 
-  // 1. Start Ray Serve backend (GPU-only enforced)
-  const pyCode = "from fairchem_local_server.serve_app import deploy; deploy(); import time; print('SERVE_READY', flush=True);\nwhile True: time.sleep(60)";
-  const pyArgs = ['-c', pyCode];
+  // 1. Start Ray Serve backend (GPU-only enforced) in WS mode
+  // Use fairchem_local_server2 WebSocket app with explicit ngpus=1 and http-port=8000
+  const pyArgs = ['-m', 'fairchem_local_server2.serve_ws_app', '--ngpus', '1', '--http-port', '8000'];
   const pyEnvVars = { ...process.env, UMA_DEVICE:'cuda' };
   // Do NOT inject empty CUDA_VISIBLE_DEVICES; only preserve if already set.
   if(process.env.CUDA_VISIBLE_DEVICES){
     pyEnvVars.CUDA_VISIBLE_DEVICES = process.env.CUDA_VISIBLE_DEVICES;
   }
   const pyProc = spawn(pyEnv, pyArgs, { stdio: ['ignore', 'pipe', 'pipe'], env: pyEnvVars });
-  log.write('[env] starting Ray Serve with CUDA_VISIBLE_DEVICES='+(pyEnvVars.CUDA_VISIBLE_DEVICES||'UNSET')+'\n');
+  log.write('[env] starting WS Ray Serve (fairchem_local_server2) with CUDA_VISIBLE_DEVICES='+(pyEnvVars.CUDA_VISIBLE_DEVICES||'UNSET')+'\n');
+  console.log('[globalSetup] Spawning WS Ray Serve (fairchem_local_server2) ngpus=1 on :8000 with UMA_DEVICE=cuda and CUDA_VISIBLE_DEVICES='+(pyEnvVars.CUDA_VISIBLE_DEVICES||'UNSET'));
   pyProc.stdout.on('data', d => log.write('[py] '+d));
   pyProc.stderr.on('data', d => log.write('[py][err] '+d));
   global.__MLIP_PY_SERVER = pyProc;

@@ -35,6 +35,7 @@ class Ingress:
     @app.get("/serve/health")
     def health(self):
         snap = health_snapshot()
+        print("[serve:health] " + str(snap), flush=True)
         snap["status"] = "ok"
         return snap
 
@@ -89,6 +90,10 @@ def deploy(ngpus: Optional[int] = None):
     if replica_count <= 0:
         replica_count = 1
 
+    print(
+        f"[serve:deploy] request ngpus={ngpus} -> replicas={replica_count}",
+        flush=True,
+    )
     uma = _PredictDeploy.options(
         name=UMA_DEPLOYMENT_NAME,
         num_replicas=replica_count,

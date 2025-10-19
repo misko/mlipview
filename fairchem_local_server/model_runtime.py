@@ -15,8 +15,8 @@ Notes:
 from __future__ import annotations
 
 import os
-from typing import Any, List, Tuple
 import time
+from typing import Any, List, Tuple
 
 # 'ray' module reference is via ray.serve imported above; avoid unused
 # direct import
@@ -30,6 +30,13 @@ from ray import serve
 # --- Config -----------------------------------------------------------------
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+print(
+    f"[model_runtime] torch_version={getattr(torch, '__version__', None)} "
+    f"torch_cuda_version={getattr(torch.version, 'cuda', None)} "
+    f"cuda_available={torch.cuda.is_available()} "
+    f"device={DEVICE}",
+    flush=True,
+)
 MODEL_NAME = os.getenv("UMA_MODEL", "uma-s-1p1")
 TASK_NAME = os.getenv("UMA_TASK", "omol")
 
@@ -52,6 +59,13 @@ _PU: BatchedPredictUnit | None = None
 class _PredictDeploy:  # runs on GPU replica
     def __init__(self, model_name: str, task_name: str):
         print(f"[batched:init] loading model={model_name} task={task_name}")
+        print(
+            (
+                f"[batched:init] DEVICE={DEVICE} "
+                f"cuda_available={torch.cuda.is_available()} "
+            ),
+            flush=True,
+        )
         # Simple in-replica metrics for observability
         self._predict_calls = 0  # number of predict() invocations (batches)
         self._predict_items = 0  # total items processed across all batches
@@ -73,8 +87,7 @@ class _PredictDeploy:  # runs on GPU replica
     async def predict(self, payloads: List[Tuple[tuple, dict]]):
         # Preserve order; return one result per payload.
         print(
-            "[UMA] predict called on device %s size=%d"
-            % (DEVICE, len(payloads)),
+            "[UMA] predict called on device %s size=%d" % (DEVICE, len(payloads)),
             flush=True,
         )
         t0 = time.perf_counter()
@@ -103,9 +116,7 @@ class _PredictDeploy:  # runs on GPU replica
                 batch.dataset = [x[0] for x in batch.dataset]
                 pred = self._unit.predict(batch)
                 all_outputs = {k: v.detach().cpu() for k, v in pred.items()}
-                forces_by_mol = all_outputs["forces"].split(
-                    batch["natoms"].tolist()
-                )
+                forces_by_mol = all_outputs["forces"].split(batch["natoms"].tolist())
                 # stress_by_mol = all_outputs["stress"].split(
                 #     batch["num_atoms"]
                 # )
@@ -134,13 +145,15 @@ class _PredictDeploy:  # runs on GPU replica
 
     # Non-batched methods for simple stats/health observability
     async def get_stats(self) -> dict:
-        return {
+        snap = {
             "calls": int(self._predict_calls),
             "items": int(self._predict_items),
             "device": DEVICE,
             "model": MODEL_NAME,
             "task": TASK_NAME,
         }
+        print("[batched:get_stats] " + str(snap), flush=True)
+        return snap
 
     async def reset_stats(self) -> dict:
         self._predict_calls = 0
@@ -184,9 +197,7 @@ class BatchedPredictUnit:
         else:
             r0 = r
         if not isinstance(r0, dict):
-            raise RuntimeError(
-                f"UMA predict returned unexpected type: {type(r0)}"
-            )
+            raise RuntimeError(f"UMA predict returned unexpected type: {type(r0)}")
         # basic schema check
         for k in ("energy", "forces", "stress"):
             if k not in r0:
@@ -219,6 +230,11 @@ def install_predict_handle(handle) -> None:
     """
     global _PU
 
+    print(
+        "[install_predict_handle] building CPU metadata predict_unit for "
+        "dataset_to_tasks",
+        flush=True,
+    )
     dtt = pretrained_mlip.get_predict_unit(
         MODEL_NAME,
         device="cpu",
@@ -249,13 +265,31 @@ def get_calculator() -> FAIRChemCalculator:
 
 
 def health_snapshot():
-    return {
+    # Default to ingress/local process view
+    snap = {
         "model": MODEL_NAME,
         "task": TASK_NAME,
         "device": DEVICE,
         "cuda_available": torch.cuda.is_available(),
         "model_loaded": bool(_PU is not None),
+        "ingress_device": DEVICE,
     }
+    # If UMA handle installed, attempt to read device from the GPU replica
+    try:
+        if _PU is not None:
+            # Call replica's get_stats (async on deployment) synchronously
+            resp = _PU._handle.get_stats.remote()  # type: ignore[attr-defined]
+            stats = resp.result()
+            if isinstance(stats, dict) and "device" in stats:
+                snap["device"] = stats.get("device")
+                snap["replica_device"] = stats.get("device")
+                snap["replica_stats_calls"] = stats.get("calls")
+                snap["replica_stats_items"] = stats.get("items")
+                snap["cuda_available"] = bool(stats.get("device") == "cuda")
+    except Exception as e:  # pragma: no cover - best-effort health path
+        snap["replica_error"] = str(e)
+    print("[health_snapshot] " + str(snap), flush=True)
+    return snap
 
 
 __all__ = [

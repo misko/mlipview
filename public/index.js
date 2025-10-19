@@ -136,6 +136,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const cellK = __cellKey();
     const needInit = (!__ws.inited) || (__ws.lastAtomCount !== nat) || (__ws.lastCellKey !== cellK);
     if (needInit){
+      try { if (window.__MLIPVIEW_DEBUG_API) console.log('[WS][ensureInit] init needed', { inited: __ws.inited, lastAtomCount: __ws.lastAtomCount, nat, lastCellKey: __ws.lastCellKey, cellK }); } catch {}
       const atomic_numbers = state.elements.map(e=> elementToZ(e));
       const positions = state.positions.map(p=>[p.x,p.y,p.z]);
       const v = getVelocitiesIfFresh();
@@ -145,6 +146,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       } } catch {}
       ws.initSystem({ atomic_numbers, positions, velocities: v||undefined, cell });
       __ws.inited = true; __ws.lastAtomCount = nat; __ws.lastCellKey = cellK;
+      try { if (window.__MLIPVIEW_DEBUG_API) console.log('[WS][ensureInit] sent INIT_SYSTEM', { atoms: atomic_numbers.length, positions: positions.length, velocities: Array.isArray(v)? v.length: 0, hasCell: !!cell }); } catch {}
     }
     return true;
   }
@@ -286,13 +288,20 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         const ws = getWS();
         await __wsEnsureInit();
         const positions = state.positions.map(p=>[p.x,p.y,p.z]);
+        try { if (window.__MLIPVIEW_DEBUG_API) console.log('[WS][simple] updatePositions', { n: positions.length, uic: userInteractionVersion }); } catch {}
         ws.updatePositions(positions);
         // Provide current user interaction count for correlation
         try { ws.setCounters({ userInteractionCount: userInteractionVersion }); } catch {}
         const t0 = performance.now();
-        const { energy, forces } = await ws.requestSimpleCalculate();
+        const { energy, forces, userInteractionCount: uicFromServer } = await ws.requestSimpleCalculate();
         const timingMs = Math.round((performance.now()-t0)*100)/100;
         noteLatency('simple','ws',{ ms: timingMs });
+        try { if (window.__MLIPVIEW_DEBUG_API) console.log('[WS][simple][recv]', { energy, forcesLen: Array.isArray(forces)? forces.length: 0, uicFromServer, currentUIC: userInteractionVersion, timingMs }); } catch {}
+        // Discard stale results: only accept if server's userInteractionCount >= current front-end counter
+        if (Number.isFinite(uicFromServer) && Number(uicFromServer) < Number(userInteractionVersion)) {
+          if (window.__MLIPVIEW_DEBUG_API) console.debug('[simple][discard-stale]', { uicFromServer, userInteractionVersion });
+          return lastForceResult;
+        }
         if (typeof energy === 'number'){
           lastForceResult = { energy, forces: forces||[] };
           state.dynamics = state.dynamics || {}; state.dynamics.energy = energy;
@@ -478,7 +487,42 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     __count('index#relaxStep');
     try {
   const step0 = performance.now();
-  const { data, uivAtSend, tivAtSend, epochAtSend, netMs, parseMs } = await callRelaxEndpoint(1); // single step
+  // WS one-shot: request a single relax step frame
+  if (__useWsSim()) {
+    const ws = getWS(); await __wsEnsureInit();
+    // prevent overlap with streaming handlers
+    const t_req0 = performance.now();
+    const r = await ws.requestSingleStep({ type:'relax', params: { calculator:'uma', fmax: state?.optimizer?.fmax || 0.05, max_step: MAX_STEP, optimizer:'bfgs' } });
+    const netMs = Math.round((performance.now()-t_req0)*100)/100; const parseMs = 0;
+    const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion; const epochAtSend = resetEpoch;
+    // Apply below using r as data
+    const data = { positions:r.positions, forces:r.forces, final_energy: r.energy, stress: r.stress };
+    // Continue with existing apply flow using data/versions
+    // Discard stale epoch (no epoch carried over WS one-shot; still keep this path consistent)
+    if (epochAtSend !== resetEpoch) { if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][relax] staleEpoch', { epochAtSend, resetEpoch }); return { stale:true, staleReason:'staleEpoch', epochAtSend, resetEpoch }; }
+    const netDone = performance.now();
+    let partialApplied = false; let modifiedDuring = null; const userChangedDuringFlight = false; // single-shot immediate
+    const exclude = new Set(); if(__draggingAtoms.size) for(const i of __draggingAtoms) exclude.add(i);
+    try { const now=performance.now(); for(const [i,t] of __latchedAtomsUntil){ if(t>now) exclude.add(i); else __latchedAtomsUntil.delete(i);} } catch {}
+    const { positions, forces, final_energy } = data;
+    if(Array.isArray(positions) && positions.length === state.positions.length){
+      const N=positions.length; const apply0=performance.now();
+      if(exclude.size>0){ for(let i=0;i<N;i++){ if(exclude.has(i)) continue; const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; } partialApplied=true; }
+      else { for(let i=0;i<N;i++){ const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; } }
+      state.markPositionsChanged(); __suppressNextPosChange=true; bumpSimulationVersion(partialApplied ? 'relaxStepApplyPartial' : 'relaxStepApply');
+      noteLatency('relax','apply',{ ms: Math.round((performance.now()-apply0)*100)/100 });
+    }
+    window.__RELAX_FORCES = forces; state.dynamics = state.dynamics || {}; state.dynamics.energy = final_energy;
+    if(forces && forces.length){ let mergedForces=forces; if(partialApplied && exclude.size>0){ const cur=Array.isArray(state.forces)? state.forces: null; mergedForces = forces.map((f,i)=> exclude.has(i) ? (cur && cur[i] ? cur[i] : [0,0,0]) : f); }
+      lastForceResult = { energy: final_energy, forces: mergedForces }; state.forceCache = { version: structureVersion, energy: final_energy, forces: mergedForces, stress: data.stress||null, stale:false };
+      try { __updateForces(mergedForces, { reason: partialApplied ? 'relaxStepPartial' : 'relaxStep' }); } catch {}
+    }
+    const step1=performance.now(); noteLatency('relax','step-total',{ ms: Math.round((step1-step0)*100)/100 });
+    if (partialApplied) return { applied:true, partial:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'relax', netMs, parseMs };
+    return { applied:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'relax', netMs, parseMs };
+  }
+  // Legacy (removed) fallback will throw inside callRelaxEndpoint
+  const { data, uivAtSend, tivAtSend, epochAtSend, netMs, parseMs } = await callRelaxEndpoint(1);
       // Discard responses from prior reset epoch entirely
       if (epochAtSend !== resetEpoch) {
         if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][relax] staleEpoch', { epochAtSend, resetEpoch });
@@ -595,7 +639,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     const build0 = performance.now();
     const t0 = performance.now();
   debugApi('md','request',{ seq, url, body: payload });
-  throw new Error('[REST removed] MD endpoint removed. Replace with WS stream: ws.startSimulation({ type:"md" ... })');
+  // Legacy path removed. Handled by WS requestSingleStep in mdStep.
+  throw new Error('[REST removed] MD endpoint removed. Replace with WS requestSingleStep');
   }
   async function mdStep(opts={}){
     __count('index#mdStep');
@@ -609,6 +654,36 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
           callOpts.temperature = Number(window.__MLIP_TARGET_TEMPERATURE);
         }
       } catch {}
+  // WS one-shot MD
+  if (__useWsSim()) {
+    const ws = getWS(); await __wsEnsureInit();
+    const t_req0 = performance.now();
+    const r = await ws.requestSingleStep({ type:'md', params: { calculator: callOpts.calculator||'uma', temperature: callOpts.temperature, timestep_fs: callOpts.timestep_fs, friction: ((typeof callOpts.friction==='number' && Number.isFinite(callOpts.friction)) ? callOpts.friction : (getConfig().mdFriction ?? DEFAULT_MD_FRICTION)) } });
+    const netMs = Math.round((performance.now()-t_req0)*100)/100; const parseMs = 0;
+    const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion; const epochAtSend = resetEpoch;
+    const data = { positions: r.positions, forces: r.forces, final_energy: r.energy, velocities: r.velocities, temperature: r.temperature };
+    if (epochAtSend !== resetEpoch) { if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][md] staleEpoch', { epochAtSend, resetEpoch }); return { stale:true, staleReason:'staleEpoch', epochAtSend, resetEpoch }; }
+    const reqId = (++__mdReqCounter);
+    if (reqId < __mdLastApplied) { if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][md] superseded by newer applied req', { reqId, lastApplied: __mdLastApplied }); return { stale:true, staleReason:'supersededSimulation' }; }
+    let partialApplied=false; const exclude=new Set(); if(__draggingAtoms.size) for(const i of __draggingAtoms) exclude.add(i);
+    try { const now=performance.now(); for(const [i,t] of __latchedAtomsUntil){ if(t>now) exclude.add(i); else __latchedAtomsUntil.delete(i);} } catch {}
+    const { positions, forces, final_energy, velocities, temperature: instT } = data;
+    if(Array.isArray(positions) && positions.length === state.positions.length){
+      const N=positions.length; const apply0=performance.now();
+      if(exclude.size>0){ for(let i=0;i<N;i++){ if(exclude.has(i)) continue; const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; } partialApplied=true; }
+      else { for(let i=0;i<N;i++){ const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; } }
+      state.markPositionsChanged(); __suppressNextPosChange=true; bumpSimulationVersion(partialApplied ? 'mdStepApplyPartial' : 'mdStepApply'); noteLatency('md','apply',{ ms: Math.round((performance.now()-apply0)*100)/100 });
+    }
+    window.__RELAX_FORCES = forces; state.dynamics = state.dynamics || {}; state.dynamics.energy = final_energy;
+    if(typeof instT === 'number' && isFinite(instT)) { state.dynamics.temperature = instT; try { const el=document.getElementById('instTemp'); if(el) el.textContent='T: '+instT.toFixed(1)+' K'; } catch {} }
+    if(Array.isArray(velocities) && velocities.length===state.elements.length){ if(exclude.size>0){ const curV=Array.isArray(state.dynamics?.velocities)? state.dynamics.velocities: null; state.dynamics.velocities = velocities.map((v,i)=> exclude.has(i) ? (curV && curV[i] ? curV[i] : [0,0,0]) : v); } else { state.dynamics.velocities = velocities; } }
+    if(forces && forces.length){ let mergedForces=forces; if(exclude.size>0){ const cur=Array.isArray(state.forces)? state.forces: null; mergedForces = forces.map((f,i)=> exclude.has(i) ? (cur && cur[i] ? cur[i] : [0,0,0]) : f); }
+      lastForceResult = { energy: final_energy, forces: mergedForces }; state.forceCache = { version: structureVersion, energy: final_energy, forces: mergedForces, stress:null, stale:false }; __updateForces(mergedForces, { reason: partialApplied ? 'mdStepPartial' : 'mdStep' });
+    }
+    __mdLastApplied = Math.max(__mdLastApplied, reqId);
+    const stepRes = { applied:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'md', netMs, parseMs };
+    if (partialApplied) stepRes.partial = true; return stepRes;
+  }
   const { data, uivAtSend, tivAtSend, epochAtSend, netMs, parseMs } = await callMDEndpoint({ steps:1, ...callOpts });
       // Discard responses from prior reset epoch entirely
       if (epochAtSend !== resetEpoch) {
@@ -853,7 +928,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   }
 
   // Debounced auto energy update when any positionsChanged event fires (catch-all for drag paths)
-  let posEnergyTimer=null; let pendingPosEnergy=false;
+  let posEnergyTimer=null; let pendingPosEnergy=false; let __skipFirstPosChangeForVersion=true;
   state.bus.on('positionsChanged', () => {
     pendingPosEnergy = true;
     if (posEnergyTimer) return;
@@ -866,6 +941,13 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       if (__suppressNextPosChange) {
         __suppressNextPosChange = false; // consume the suppression flag
         // Intentionally do NOT call ff.computeForces or record an interaction here.
+        return;
+      }
+      // Skip bumping the interaction version on the very first positionsChanged
+      // which typically occurs during initial molecule load/apply.
+      if (__skipFirstPosChangeForVersion) {
+        __skipFirstPosChangeForVersion = false;
+        try { if(!running.kind) ff.computeForces(); } catch{}
         return;
       }
       try { if(!running.kind) ff.computeForces(); } catch{}
@@ -928,15 +1010,20 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     if (__useWsSim()) {
       // WS streaming mode
       const ws = getWS(); await __wsEnsureInit();
+      try { ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 }); if (window.__MLIPVIEW_DEBUG_API) console.log('[relaxWS][setCounters]', { uic: userInteractionVersion }); } catch {}
       __resetRPS();
       let taken=0; let unsub=null; let stopped=false;
       unsub = ws.onResult((r)=>{
         if (stopped) return;
         // only handle frames when relax is the running kind
         if (running.kind !== 'relax') return;
-        try {
-          const seq = r.seq|0; if (seq>0) ws.ack(seq);
-        } catch {}
+        // Discard stale frames by userInteractionCount
+        if (Number.isFinite(r.userInteractionCount) && Number(r.userInteractionCount) < Number(userInteractionVersion)) {
+          if (window.__MLIPVIEW_DEBUG_API) console.debug('[relaxWS][discard-stale]', { server:r.userInteractionCount, current:userInteractionVersion });
+          return;
+        }
+        try { if (window.__MLIPVIEW_DEBUG_API) console.log('[relaxWS][frame]', { seq: Number(r.seq)||0, uic: Number(r.userInteractionCount)||0, simStep: Number(r.simStep)||0, have: { pos: !!r.positions, forces: !!r.forces, energy: typeof r.energy==='number' } }); } catch {}
+        try { const seq = Number(r.seq)||0; if (seq>0) ws.ack(seq); } catch {}
         const positions = r.positions; const forces = r.forces; const energy = r.energy;
         if (Array.isArray(positions) && positions.length === state.positions.length){
           // apply with same exclusion rules
@@ -947,7 +1034,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
           // reuse existing drag/latch logic
           if(__draggingAtoms.size) for(const i of __draggingAtoms) exclude.add(i);
           try { const now=performance.now(); for(const [i,t] of __latchedAtomsUntil){ if(t>now) exclude.add(i); else __latchedAtomsUntil.delete(i);} } catch {}
-          if(exclude.size>0){ for(let i=0;i<N;i++){ if(exclude.has(i)) continue; const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; } }
+          if(exclude.size>0){ for(let i=0;i<N;i++){ if(exclude.has(i)) continue; const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; } if (window.__MLIPVIEW_DEBUG_API) console.log('[relaxWS][apply-partial]', { excluded: Array.from(exclude) }); }
           else { for(let i=0;i<N;i++){ const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; } }
           __suppressNextPosChange = true; state.markPositionsChanged(); bumpSimulationVersion('relaxWS');
         }
@@ -964,6 +1051,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       });
       // Start stream
       ws.startSimulation({ type:'relax', params: { calculator:'uma', fmax: state?.optimizer?.fmax || 0.05, max_step: MAX_STEP, optimizer:'bfgs' } });
+      try { if (window.__MLIPVIEW_DEBUG_API) console.log('[relaxWS][start]'); } catch {}
       return { streaming:true };
     }
     __resetRPS();
@@ -1027,16 +1115,23 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     running.kind='md';
     if (__useWsSim()){
       const ws = getWS(); await __wsEnsureInit();
+      try { ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 }); if (window.__MLIPVIEW_DEBUG_API) console.log('[mdWS][setCounters]', { uic: userInteractionVersion }); } catch {}
       __resetRPS();
       let taken=0; let unsub=null; let stopped=false;
       unsub = ws.onResult((r)=>{
         if (stopped) return; if (running.kind!=='md') return;
-        try { const seq=r.seq|0; if (seq>0) ws.ack(seq); } catch {}
+        // Discard stale frames by userInteractionCount
+        if (Number.isFinite(r.userInteractionCount) && Number(r.userInteractionCount) < Number(userInteractionVersion)) {
+          if (window.__MLIPVIEW_DEBUG_API) console.debug('[mdWS][discard-stale]', { server:r.userInteractionCount, current:userInteractionVersion });
+          return;
+        }
+        try { if (window.__MLIPVIEW_DEBUG_API) console.log('[mdWS][frame]', { seq: Number(r.seq)||0, uic: Number(r.userInteractionCount)||0, simStep: Number(r.simStep)||0, have: { pos: !!r.positions, forces: !!r.forces, energy: typeof r.energy==='number', vel: !!r.velocities } }); } catch {}
+        try { const seq=Number(r.seq)||0; if (seq>0) ws.ack(seq); } catch {}
         const positions=r.positions, forces=r.forces, energy=r.energy, velocities=r.velocities, instT=r?.temperature;
         if (Array.isArray(positions) && positions.length===state.positions.length){
           const N=positions.length; const exclude=new Set(); if(__draggingAtoms.size) for(const i of __draggingAtoms) exclude.add(i);
           try { const now=performance.now(); for(const [i,t] of __latchedAtomsUntil){ if(t>now) exclude.add(i); else __latchedAtomsUntil.delete(i);} } catch {}
-          if(exclude.size>0){ for(let i=0;i<N;i++){ if(exclude.has(i)) continue; const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; } }
+          if(exclude.size>0){ for(let i=0;i<N;i++){ if(exclude.has(i)) continue; const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; } if (window.__MLIPVIEW_DEBUG_API) console.log('[mdWS][apply-partial]', { excluded: Array.from(exclude) }); }
           else { for(let i=0;i<N;i++){ const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2]; } }
           __suppressNextPosChange = true; state.markPositionsChanged(); bumpSimulationVersion('mdWS');
         }
@@ -1049,6 +1144,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
         taken++; __noteRequestCompleted(); if (taken>=steps){ stopped=true; try { ws.stopSimulation(); } catch {} try { unsub&&unsub(); }catch{} running.kind=null; __resetRPS(); }
       });
       ws.startSimulation({ type:'md', params: { calculator, temperature, timestep_fs, friction: ((typeof friction==='number'&&Number.isFinite(friction))? friction : (getConfig().mdFriction ?? DEFAULT_MD_FRICTION)) } });
+      try { if (window.__MLIPVIEW_DEBUG_API) console.log('[mdWS][start]', { temperature, timestep_fs, friction: ((typeof friction==='number'&&Number.isFinite(friction))? friction : (getConfig().mdFriction ?? DEFAULT_MD_FRICTION)) }); } catch {}
       return { streaming:true };
     }
     __resetRPS();

@@ -5,6 +5,9 @@ export default {
   transform: {
     '^.+\\.js$': 'babel-jest'
   },
+  moduleNameMapper: {
+    '^/proto/(.*)$': '<rootDir>/public/proto/$1'
+  },
   setupFilesAfterEnv: ['<rootDir>/tests/jest.setup.js','<rootDir>/tests/jest.pertest.setup.js'],
   globalSetup: '<rootDir>/tests/globalSetup.cjs',
   globalTeardown: '<rootDir>/tests/globalTeardown.cjs',

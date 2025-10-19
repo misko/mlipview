@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "jest",
+    "test:fast": "MLIPVIEW_SKIP_SERVERS=1 jest --detectOpenHandles=false --forceExit=false",
+  "test:integration": "jest -c jest.integration.config.js",
   "gen:proto:js": "protoc --plugin=protoc-gen-es=./node_modules/.bin/protoc-gen-es --es_out=public/proto --es_opt=target=js fairchem_local_server2/session.proto",
     "predev": "npm run gen:proto:js",
     "prebuild": "npm run gen:proto:js",

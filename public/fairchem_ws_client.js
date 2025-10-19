@@ -3,16 +3,27 @@
 import { __count } from './util/funcCount.js';
 import { create, toBinary, fromBinary } from '@bufbuild/protobuf';
 import {
-	ClientActionSchema,
-	ClientAction_Type,
-	ClientAction_SimType,
-	ServerResultSchema,
-	Vec3Schema,
-	Mat3Schema,
-	SimulationParamsSchema,
+		ClientActionSchema,
+		ClientAction_Type,
+		ClientAction_SimType,
+		ServerResultSchema,
+		Vec3Schema,
+		Mat3Schema,
+		SimulationParamsSchema,
 } from '/proto/fairchem_local_server2/session_pb.js';
 const __hasPB = !!ClientActionSchema && !!ServerResultSchema;
 async function __ensurePB(){ if(!__hasPB) throw new Error('[WS][protobuf-missing] ESM stubs not found'); return true; }
+function __n(v){ return (typeof v==='bigint') ? Number(v) : (typeof v==='number' ? v : 0); }
+function __wsDebugOn(){
+	try {
+		if (typeof window !== 'undefined') return !!(window.__MLIPVIEW_DEBUG_WS || window.__MLIPVIEW_DEBUG_API);
+	} catch {}
+	try { return !!(typeof process!=='undefined' && process.env && process.env.JEST_WORKER_ID); } catch {}
+	return false;
+}
+function __wsLog(...a){ try { if(__wsDebugOn()) console.log(...a); } catch {} }
+function __wsWarn(...a){ try { if(__wsDebugOn()) console.warn(...a); } catch {} }
+function __wsErr(...a){ try { console.error(...a); } catch {} }
 
 function resolveWsBase(){
 		if (typeof window === 'undefined') return 'ws://127.0.0.1:8000';
@@ -22,6 +33,7 @@ function resolveWsBase(){
 }
 
 let __singleton = null;
+let __connectPromise = null; // guard parallel connects
 
 export function createFairchemWS(){
 	__count('ws#createFairchemWS');
@@ -36,25 +48,57 @@ export function createFairchemWS(){
 		await __ensurePB();
 		const base = resolveWsBase();
 		const url = base.replace(/\/$/, '') + '/ws';
+		__wsLog('[WS][connect]', url);
 		ws = new WebSocket(url);
 			return new Promise((resolve, reject)=>{
 			ws.binaryType = 'arraybuffer';
-			ws.onopen = ()=> resolve(true);
-			ws.onerror = (e)=> reject(e);
-			ws.onclose = ()=>{};
-			            ws.onmessage = (ev)=>{
-					// Decode protobuf ServerResult frames only (no JSON fallback)
+			ws.onopen = ()=> { __wsLog('[WS][open]'); try { ws.send('{"type":"ping"}'); } catch{} resolve(true); };
+			ws.onerror = (e)=> { __wsErr('[WS][error]', e?.message||e); reject(e); };
+			ws.onclose = (ev)=>{ __wsWarn('[WS][close]', { code: ev?.code, reason: ev?.reason }); };
+						ws.onmessage = (ev)=>{
+								// Decode protobuf ServerResult frames; also accept JSON
 								try {
-									if (!(ev.data instanceof ArrayBuffer)) {
-										throw new Error('[WS] Expected binary protobuf frame, got non-binary message');
+												// Text JSON path
+												if (typeof ev.data === 'string'){
+													try {
+														const obj = JSON.parse(ev.data);
+														const out = {
+															seq: __n(obj.seq),
+															client_seq: __n(obj.client_seq||obj.clientSeq),
+															userInteractionCount: __n(obj.userInteractionCount||obj.user_interaction_count),
+															simStep: __n(obj.simStep||obj.sim_step),
+															message: obj.message,
+														};
+														if (typeof obj.energy === 'number') out.energy = obj.energy;
+														if (Array.isArray(obj.positions)) out.positions = obj.positions;
+														if (Array.isArray(obj.forces)) out.forces = obj.forces;
+														if (Array.isArray(obj.velocities)) out.velocities = obj.velocities;
+														if (Array.isArray(obj.cell)) out.cell = obj.cell;
+														__wsLog('[WS][rx]', { seq: out.seq, client_seq: out.client_seq, uic: out.userInteractionCount, simStep: out.simStep, have: { pos: !!out.positions, forces: !!out.forces, vel: !!out.velocities, cell: !!out.cell, energy: typeof out.energy==='number' } });
+														for(const fn of listeners){ try { fn(out, lastCounters); } catch{} }
+														return;
+													} catch(_jerr) {
+														// fallthrough to binary path
+													}
+												}
+												let bytes;
+									// Accept ArrayBuffer (browser) and Buffer (Node/ws)
+									if (ev.data instanceof ArrayBuffer) {
+										bytes = new Uint8Array(ev.data);
+									} else if (typeof Buffer !== 'undefined' && ev.data && Buffer.isBuffer(ev.data)) {
+										bytes = new Uint8Array(ev.data.buffer, ev.data.byteOffset||0, ev.data.byteLength||ev.data.length||0);
+									} else if (ev.data && ev.data.arrayBuffer && typeof ev.data.arrayBuffer === 'function') {
+										// Blob fallback
+										return ev.data.arrayBuffer().then(ab=>{ ws.onmessage({ data: ab }); }).catch(()=>{});
+									} else {
+										throw new Error('[WS] Expected binary protobuf frame, got unsupported message type');
 									}
-									const bytes = new Uint8Array(ev.data);
 									const r = fromBinary(ServerResultSchema, bytes);
 									const out = {
-										seq: r.seq,
-										client_seq: r.clientSeq,
-										userInteractionCount: r.userInteractionCount,
-										simStep: r.simStep,
+										seq: __n(r.seq),
+										client_seq: __n(r.clientSeq),
+										userInteractionCount: __n(r.userInteractionCount),
+										simStep: __n(r.simStep),
 										message: r.message,
 									};
 									if (r.energy != null) out.energy = r.energy;
@@ -65,24 +109,56 @@ export function createFairchemWS(){
 										const m = r.cell.m;
 										if (m.length===9) out.cell = [ [m[0],m[1],m[2]],[m[3],m[4],m[5]],[m[6],m[7],m[8]] ];
 									}
+									__wsLog('[WS][rx]', { seq: out.seq, client_seq: out.client_seq, uic: out.userInteractionCount, simStep: out.simStep, have: { pos: !!out.positions, forces: !!out.forces, vel: !!out.velocities, cell: !!out.cell, energy: typeof out.energy==='number' } });
 									for(const fn of listeners){ try { fn(out, lastCounters); } catch{} }
 								} catch (e) {
 						// Surface decode errors to console but do not crash the socket
-						try { console.error('[WS][decode-error]', e?.message||e); } catch {}
+								try { __wsErr('[WS][decode-error]', e?.message||e); } catch {}
 					}
 				};
 		});
 	}
-					function sendBytes(buf){ if(ws && ws.readyState===1) ws.send(buf); }
+					function sendBytes(buf){ if(ws && ws.readyState===1) { try { __wsLog('[WS][tx-bytes]', { len: buf?.byteLength||buf?.length||0 }); } catch{} ws.send(buf); } }
 	function close(){ try { ws && ws.close(); } catch{} }
 	function setCounters({ userInteractionCount, simStep }){
 		if(Number.isFinite(userInteractionCount)) lastCounters.userInteractionCount = userInteractionCount|0;
 		if(Number.isFinite(simStep)) lastCounters.simStep = simStep|0;
 	}
 	function nextSeq(){ seq = (seq|0) + 1; return seq; }
+	// Test hook: if window.__WS_TEST_HOOK__ is a function, call with a shallow JSON of the outgoing message
+	function __notifyTestHook(msg){
+		try {
+			if (typeof window !== 'undefined' && typeof window.__WS_TEST_HOOK__ === 'function') {
+				// Project a minimal JSON snapshot (type, simulation params, counters)
+				const out = {
+					seq: msg.seq|0,
+					type: msg.type,
+					userInteractionCount: msg.userInteractionCount|0,
+					simStep: msg.simStep|0,
+					// Include simulation params when present
+					simulationType: msg.simulationType,
+					simulationParams: msg.simulationParams ? {
+						calculator: msg.simulationParams.calculator || '',
+						temperature: msg.simulationParams.temperature,
+						timestepFs: msg.simulationParams.timestepFs,
+						friction: msg.simulationParams.friction,
+						fmax: msg.simulationParams.fmax,
+						maxStep: msg.simulationParams.maxStep,
+						optimizer: msg.simulationParams.optimizer || undefined,
+					} : undefined,
+				};
+				window.__WS_TEST_HOOK__(out);
+			}
+		} catch {}
+	}
 	function setAck(s){ clientAck = Math.max(clientAck, s|0); }
 	function getState(){ return { seq, clientAck, ...lastCounters, connected: !!ws && ws.readyState===1 }; }
-		async function ensureConnected(){ if(ws && ws.readyState===1) return true; await connect(); return true; }
+		async function ensureConnected(){
+			if (ws && ws.readyState === 1) return true;
+			if (__connectPromise) { try { await __connectPromise; return true; } catch { /* fallthrough */ } }
+			__connectPromise = connect().finally(()=>{ __connectPromise = null; });
+			await __connectPromise; return true;
+		}
 
 				// INIT_SYSTEM: send atoms and initial positions (and optional velocities/cell)
 		function initSystem({ atomic_numbers, positions, velocities, cell }){
@@ -98,6 +174,8 @@ export function createFairchemWS(){
 					+cell[2][0], +cell[2][1], +cell[2][2],
 				] }) : undefined,
 			});
+			__notifyTestHook(msg);
+			try { __wsLog('[WS][tx][INIT_SYSTEM]', { seq: msg.seq|0, atoms: msg.atomicNumbers.length, positions: msg.positions.length, velocities: msg.velocities.length, hasCell: !!msg.cell }); } catch {}
 			const buf = toBinary(ClientActionSchema, msg);
 			sendBytes(buf);
 		}
@@ -109,21 +187,24 @@ export function createFairchemWS(){
 				type: ClientAction_Type.UPDATE_POSITIONS,
 				positions: Array.isArray(positions) ? positions.map(p=> create(Vec3Schema, { v: [+p[0],+p[1],+p[2]] })) : [],
 			});
+			__notifyTestHook(msg);
+			try { __wsLog('[WS][tx][UPDATE_POSITIONS]', { seq: msg.seq|0, positions: msg.positions.length }); } catch {}
 			const buf = toBinary(ClientActionSchema, msg);
 			sendBytes(buf);
 		}
 
 				// Subscribe to decoded ServerResult frames (convenience over raw onFrame)
-			function onResult(fn){
-					// With binary-only decode in ws.onmessage, listeners already receive decoded objects
+				function onResult(fn){
+					// Directly invoke the provided callback with decoded frames.
+					// Do NOT re-broadcast via window.__ON_WS_RESULT__ here to avoid recursion,
+					// since window.__ON_WS_RESULT__ itself fans out to these listeners in tests.
 					return onFrame((decoded)=>{
 						try {
 							if (!decoded || typeof decoded !== 'object') return;
-							try { if (typeof window !== 'undefined') { window.__ON_WS_RESULT__ && window.__ON_WS_RESULT__(decoded); } } catch {}
 							fn(decoded);
 						} catch {}
 					});
-			}
+				}
 
 			// Start simulation (md or relax) with SimulationParams
 			function startSimulation({ type, params }){
@@ -145,26 +226,35 @@ export function createFairchemWS(){
 					userInteractionCount: lastCounters.userInteractionCount|0,
 					simStep: lastCounters.simStep|0,
 				});
+				__notifyTestHook(msg);
+				try { __wsLog('[WS][tx][START_SIMULATION]', { seq: msg.seq|0, simType: (t===ClientAction_SimType.MD?'MD':'RELAX'), uic: msg.userInteractionCount|0, simStep: msg.simStep|0, params: { calculator: sp?.calculator, temperature: sp?.temperature, timestepFs: sp?.timestepFs, friction: sp?.friction, fmax: sp?.fmax, maxStep: sp?.maxStep, optimizer: sp?.optimizer } }); } catch {}
 				const buf = toBinary(ClientActionSchema, msg); sendBytes(buf);
 			}
 
 			function stopSimulation(){
 				const msg = create(ClientActionSchema, { seq: nextSeq(), type: ClientAction_Type.STOP_SIMULATION });
+				__notifyTestHook(msg);
+				try { __wsLog('[WS][tx][STOP_SIMULATION]', { seq: msg.seq|0 }); } catch {}
 				const buf = toBinary(ClientActionSchema, msg); sendBytes(buf);
 			}
 
 				function ack(seqNum){
 					try {
-						const msg = new __pb.ClientAction();
-						msg.setSeq(nextSeq());
-						msg.setType(__pb.ClientAction.Type.PING);
-						if (typeof msg.setAck==='function') msg.setAck(seqNum|0);
-						const buf = msg.serializeBinary(); sendBytes(buf);
-					} catch {}
+						const msg = create(ClientActionSchema, {
+							seq: nextSeq(),
+							type: ClientAction_Type.PING,
+							ack: seqNum|0,
+						});
+						const buf = toBinary(ClientActionSchema, msg);
+						sendBytes(buf);
+						__wsLog('[WS][tx][ACK]', { seq: msg.seq|0, ack: seqNum|0 });
+						setAck(seqNum|0);
+					} catch (e) { try { console.error('[WS][ack-error]', e?.message||e); } catch {} }
 				}
 		// High-level helper: request one-shot simple calculation via WS.
 			// Encodes a ClientAction SIMPLE_CALCULATE referencing current session state.
 			// Decodes first matching ServerResult with energy/forces and resolves.
+			// Returns { energy, forces, userInteractionCount, simStep } so caller can gate staleness.
 			async function requestSimpleCalculate(){
 			if(!ws || ws.readyState!==1) throw new Error('ws not connected');
 			return new Promise((resolve, reject)=>{
@@ -176,7 +266,7 @@ export function createFairchemWS(){
 						if (!res || typeof res !== 'object') return;
 						const energy = (res.energy!=null ? res.energy : undefined);
 						const forces = Array.isArray(res.forces)? res.forces : [];
-						if (energy != null || (forces && forces.length)) done({ energy, forces });
+						if (energy != null || (forces && forces.length)) done({ energy, forces, userInteractionCount: res.userInteractionCount|0, simStep: res.simStep|0 });
 					} catch(e){ /* ignore non-matching frames */ }
 				});
 					try {
@@ -187,14 +277,36 @@ export function createFairchemWS(){
 							userInteractionCount: lastCounters.userInteractionCount|0,
 							simStep: lastCounters.simStep|0,
 						});
+						__notifyTestHook(msg);
+						try { __wsLog('[WS][tx][SIMPLE_CALCULATE]', { seq: msg.seq|0, uic: msg.userInteractionCount|0, simStep: msg.simStep|0, ack: msg.ack? (msg.ack|0) : undefined }); } catch {}
 						const buf = toBinary(ClientActionSchema, msg); sendBytes(buf);
 					} catch(e){ fail(e); }
 				// optional timeout
 				setTimeout(()=> fail(new Error('simple_calculate timeout')), 5000);
 			});
 		}
-	    		const api = { connect, ensureConnected, sendBytes, close, onFrame, onResult, setCounters, nextSeq, setAck, ack, getState, requestSimpleCalculate, initSystem, updatePositions, startSimulation, stopSimulation };
-		            try { if (typeof window !== 'undefined') { window.__fairchem_ws__ = api; } } catch {}
+
+		// One-shot request for a single simulation step (md or relax). Starts, waits 1 frame, stops, resolves.
+		async function requestSingleStep({ type, params }){
+			if(!ws || ws.readyState!==1) throw new Error('ws not connected');
+			return new Promise((resolve, reject)=>{
+				let off = null; let doneCalled=false;
+				function done(v){ if(doneCalled) return; doneCalled=true; try{ off && off(); }catch{} try{ stopSimulation(); }catch{} resolve(v); }
+				off = onFrame((res)=>{ try { if(res && typeof res==='object'){ __wsLog('[WS][rx][single-step]', { hasPos: !!res.positions, hasForces: !!res.forces, energy: res.energy }); done(res); } } catch{} });
+				try { startSimulation({ type, params }); } catch(e){ try{ off&&off(); }catch{} reject(e); }
+				setTimeout(()=>{ if(!doneCalled) { try{ off&&off(); }catch{} reject(new Error('single_step timeout')); } }, 5000);
+			});
+		}
+	    		const api = { connect, ensureConnected, sendBytes, close, onFrame, onResult, setCounters, nextSeq, setAck, ack, getState, requestSimpleCalculate, requestSingleStep, initSystem, updatePositions, startSimulation, stopSimulation };
+		            try {
+		            if (typeof window !== 'undefined') {
+		            window.__fairchem_ws__ = api;
+		            // Test bridge: allow tests to inject decoded frames without protobuf by calling window.__ON_WS_RESULT__(obj)
+		            if (typeof window.__ON_WS_RESULT__ !== 'function') {
+		              window.__ON_WS_RESULT__ = (obj)=>{ try { for(const fn of listeners){ try { fn(obj, lastCounters); } catch{} } } catch{} };
+		            }
+		          }
+		          } catch {}
 		            return api;
 }
 

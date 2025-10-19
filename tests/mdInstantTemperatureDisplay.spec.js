@@ -1,5 +1,7 @@
 /** @jest-environment jsdom */
-// Verifies that the instantaneous temperature returned by /serve/md updates the HUD element #instTemp.
+// Verifies that the instantaneous temperature from WS updates the HUD element #instTemp.
+
+import { stubWebSocketAndHook } from './utils/wsTestStub.js';
 
 beforeAll(()=>{
   if(!global.BABYLON){
@@ -9,50 +11,41 @@ beforeAll(()=>{
 
 jest.mock('../public/render/scene.js', () => ({ createScene: async () => ({ engine:{ runRenderLoop:(fn)=>{} }, scene:{ meshes:[], render:()=>{}, onPointerObservable:{ _l:[], add(fn){this._l.push(fn);} } }, camera:{ attachControl:()=>{} } }) }));
 
-// Capture last temperature sent and simulate backend returning a slightly different instantaneous temperature
-let lastSentTemp = null;
-
-global.fetch = async (url, opts={}) => {
-  if(/\/serve\/md$/.test(url)){
-    let reqBody={}; try { reqBody = JSON.parse(opts.body||'{}'); } catch{}
-    lastSentTemp = reqBody.temperature;
-    const inst = (reqBody.temperature||0) + 12.34; // backend instantaneous temp
-    const body = JSON.stringify({ positions:[[0,0,0]], velocities:[[0,0,0]], forces:[[0,0,0]], final_energy:-1.0, steps_completed:1, temperature: inst });
-    return { ok:true, status:200, json: async ()=> JSON.parse(body), text: async ()=> body };
-  }
-  if(/\/serve\/simple$/.test(url)){
-    const body = JSON.stringify({ results:{ energy:-5, forces:[[0,0,0]], stress:[0,0,0,0,0,0] } });
-    return { ok:true, status:200, json: async ()=> JSON.parse(body), text: async ()=> body };
-  }
-  if(/\/serve\/relax$/.test(url)){
-    const body = JSON.stringify({ initial_energy:-5, final_energy:-5, positions:[[0,0,0]], forces:[[0,0,0]], steps_completed:1 });
-    return { ok:true, status:200, json: async ()=> JSON.parse(body), text: async ()=> body };
-  }
-  if(/\/serve\/health$/.test(url)){
-    const body = JSON.stringify({ status:'ok' });
-    return { ok:true, status:200, json: async ()=> JSON.parse(body), text: async ()=> body };
-  }
-  throw new Error('Unexpected fetch '+url);
-};
-
 async function setup(){
-  document.body.innerHTML = `<canvas id="viewer"></canvas><div class="hud"><button id="btnMD"></button><button id="btnMDRun"></button><select id="forceProviderSel"></select><button id="btnCell"></button><button id="btnGhosts"></button><button id="btnToggleForces"></button><span id="status"></span><span id="instTemp">T: --.- K</span><select id="xrModeSelect"></select></div><div id="energyPlot"><canvas id="energyCanvas" width="260" height="80"></canvas><div id="energyLabel"></div></div>`;
+  // Minimal DOM similar to app
+  document.body.innerHTML = '';
+  const canvas = document.createElement('canvas'); canvas.id='viewer'; canvas.addEventListener=()=>{}; document.body.appendChild(canvas);
+  const hud = document.createElement('div'); hud.className='hud'; document.body.appendChild(hud);
+  const inst = document.createElement('span'); inst.id='instTemp'; inst.textContent='T: --.- K'; hud.appendChild(inst);
+  const energyWrapper=document.createElement('div'); energyWrapper.id='energyPlot'; document.body.appendChild(energyWrapper);
+  const energyCanvas=document.createElement('canvas'); energyCanvas.id='energyCanvas'; energyCanvas.width=260; energyCanvas.height=80; energyCanvas.getContext=()=>({ clearRect(){}, beginPath(){}, moveTo(){}, lineTo(){}, stroke(){}, arc(){}, fill(){}, fillRect(){}, strokeStyle:null, lineWidth:1, fillStyle:null }); energyWrapper.appendChild(energyCanvas);
+  const energyLabel=document.createElement('div'); energyLabel.id='energyLabel'; energyWrapper.appendChild(energyLabel);
   const mod = await import('../public/index.js');
-  const viewer = await mod.initNewViewer(document.getElementById('viewer'), { elements:[{Z:8}], positions:[{x:0,y:0,z:0}], bonds:[] });
+  const viewer = await mod.initNewViewer(canvas, { elements:[{Z:8}], positions:[{x:0,y:0,z:0}], bonds:[] });
   return viewer;
 }
 
 describe('Instantaneous MD temperature HUD', () => {
   test('updates #instTemp after mdStep', async () => {
+    window.__MLIPVIEW_TEST_MODE = true;
+    const ws = stubWebSocketAndHook();
     const viewer = await setup();
-    // Pre condition
     const el = document.getElementById('instTemp');
     expect(el).toBeTruthy();
     expect(el.textContent).toMatch(/--/);
-    // Perform an mdStep
-    await viewer.mdStep({ temperature: 500 });
-    expect(lastSentTemp).toBe(500);
-    // HUD should reflect instantaneous value (500 + 12.34)
+    // Kick off mdStep; it will subscribe for a single frame via WS
+    const p = viewer.mdStep({ temperature: 500 });
+    // Allow listener to attach
+    await Promise.resolve();
+    await new Promise(r=>setTimeout(r,0));
+    // Emit a frame with instantaneous temperature (500 + 12.34)
+    const instT = 512.34;
+    ws.emit({ positions: viewer.state.positions.map(p=>[p.x,p.y,p.z]), forces: [[0,0,0]], velocities: [[0,0,0]], energy: -1.0, temperature: instT });
+    await p; // resolve mdStep
+  // Outgoing START_SIMULATION captured with temperature (enum is numeric)
+  const startMsg = ws.sent.find(m=> m && m.simulationParams && typeof m.simulationParams.temperature === 'number');
+  expect(startMsg && startMsg.simulationParams && startMsg.simulationParams.temperature).toBe(500);
+    // HUD should reflect instantaneous value (rounded to 1 decimal)
     expect(el.textContent).toMatch(/T: 512\.3/);
   });
 });

@@ -27,3 +27,11 @@ if (typeof window !== 'undefined') {
     };
   }
 }
+
+// Debug: surface unhandled promise rejections origin during jsdom tests
+if (typeof process !== 'undefined' && !global.__JEST_UNHANDLED_REJECTION_LOGGER__) {
+  global.__JEST_UNHANDLED_REJECTION_LOGGER__ = true;
+  process.on('unhandledRejection', (reason) => {
+    try { console.error('[jsdom][unhandledRejection]', reason && reason.stack ? reason.stack : reason); } catch {}
+  });
+}

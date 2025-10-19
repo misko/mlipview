@@ -36,6 +36,13 @@ class WSIngress:
             install_predict_handle(predict_handle)
         self._uma_handle = predict_handle
         self._pool = WorkerPool(size=pool_size, uma_handle=self._uma_handle)
+        print(
+            (
+                f"[ws:init] pool_size={pool_size} "
+                f"uma_handle={'yes' if predict_handle is not None else 'no'}"
+            ),
+            flush=True,
+        )
 
     @app.get("/serve/health")
     def health(self):
@@ -66,11 +73,16 @@ class WSIngress:
     @app.websocket("/ws")
     async def ws(self, ws: WebSocket):
         await ws.accept()
+        try:
+            print("[ws] accepted connection", flush=True)
+        except Exception:
+            pass
         state = SessionState()
         max_unacked = 10
         last_ack = 0
         pending = 0
-        json_mode = False  # switch to JSON I/O if client sends JSON text frames
+        # switch to JSON I/O if client sends JSON text frames
+        json_mode = False
 
         # Concurrency: producer (simulation loop) and consumer (message loop)
         stop_evt = asyncio.Event()
@@ -149,17 +161,11 @@ class WSIngress:
                 msg.seq = int(seq)
                 if client_seq is not None:
                     msg.client_seq = int(client_seq)
-                # Set optional correlation fields only if present in schema
+                # Optional correlation fields
                 try:
-                    if (
-                        user_interaction_count is not None
-                        and "user_interaction_count" in msg.DESCRIPTOR.fields_by_name
-                    ):
+                    if user_interaction_count is not None:
                         msg.user_interaction_count = int(user_interaction_count)
-                    if (
-                        sim_step is not None
-                        and "sim_step" in msg.DESCRIPTOR.fields_by_name
-                    ):
+                    if sim_step is not None:
                         msg.sim_step = int(sim_step)
                 except Exception:
                     pass
@@ -185,7 +191,7 @@ class WSIngress:
                     msg.message = message
                 # optional energy field
                 try:
-                    if energy is not None and "energy" in msg.DESCRIPTOR.fields_by_name:
+                    if energy is not None:
                         msg.energy = float(energy)
                 except Exception:
                     pass
@@ -250,6 +256,12 @@ class WSIngress:
                         if f_out is not None
                         else state.forces
                     )
+                    # Prefer per-step final energy if provided by the worker
+                    try:
+                        _fe = res.get("final_energy")
+                        energy_out = float(_fe) if _fe is not None else None
+                    except Exception:
+                        energy_out = None
 
                     state.server_seq += 1
                     # Advance server-side sim_step counter per produced frame
@@ -266,13 +278,26 @@ class WSIngress:
                         velocities=state.velocities,
                         forces=state.forces,
                         cell=state.cell,
+                        energy=energy_out,
                     )
+                    try:
+                        if state.server_seq % 10 == 0:
+                            print(
+                                (
+                                    f"[ws] sent frame seq={state.server_seq} "
+                                    f"sim_step={state.sim_step}"
+                                ),
+                                flush=True,
+                            )
+                    except Exception:
+                        pass
             except Exception:
                 # On any error, end the session loop
                 stop_evt.set()
 
         async def recv_loop():
             nonlocal last_ack
+            nonlocal json_mode
             try:
                 while True:
                     # Accept binary (protobuf) or text (JSON)
@@ -281,7 +306,8 @@ class WSIngress:
                         data = await ws.receive()
                     except WebSocketDisconnect:
                         break
-                    # data is a dict with keys like 'type' and one of 'text' or 'bytes'
+                    # data is a dict with keys like 'type' and one of
+                    # 'text' or 'bytes'
                     evtype = data.get("type")
                     if evtype == "websocket.disconnect":
                         break
@@ -296,11 +322,13 @@ class WSIngress:
                             except Exception:
                                 msg = None
                         elif "text" in data and data["text"] is not None:
-                            # Try JSON mode: parse a JSON object and map to fields
+                            # Try JSON mode: parse a JSON object and map
+                            # to fields
                             import json
 
                             try:
                                 obj = json.loads(data["text"])
+                                # Toggle JSON mode so sender uses JSON frames
                                 json_mode = True
                                 # Minimal mapping for required fields
                                 _type = str(obj.get("type") or "").lower()
@@ -312,7 +340,8 @@ class WSIngress:
                                     # don't generate a reply in JSON mode
                                     continue
 
-                                # Construct a pseudo message namespace using dicts
+                                # Construct a pseudo message namespace
+                                # using dicts
                                 class _Msg:
                                     pass
 
@@ -322,16 +351,24 @@ class WSIngress:
                                 setattr(
                                     m,
                                     "atomic_numbers",
-                                    list(map(int, obj.get("atomic_numbers") or [])),
+                                    list(
+                                        map(
+                                            int,
+                                            obj.get("atomic_numbers") or [],
+                                        )
+                                    ),
                                 )
                                 setattr(m, "positions", obj.get("positions") or [])
-                                setattr(m, "velocities", obj.get("velocities") or [])
+                                _vel = obj.get("velocities") or []
+                                setattr(m, "velocities", _vel)
                                 setattr(m, "cell", obj.get("cell"))
                                 setattr(m, "ack", int(obj.get("ack") or 0))
                                 sp = obj.get("simulation_params") or {}
                                 setattr(m, "simulation_params", sp)
                                 setattr(
-                                    m, "simulation_type", obj.get("simulation_type")
+                                    m,
+                                    "simulation_type",
+                                    obj.get("simulation_type"),
                                 )
                                 msg = m
                             except Exception:
@@ -388,6 +425,18 @@ class WSIngress:
                             msg.cell if msg.HasField("cell") else None
                         )
                         state.forces = None
+                        try:
+                            cs = "on" if state.cell is not None else "off"
+                            print(
+                                (
+                                    "[ws] INIT_SYSTEM "
+                                    f"natoms={len(state.atomic_numbers)} "
+                                    f"cell={cs}"
+                                ),
+                                flush=True,
+                            )
+                        except Exception:
+                            pass
                         await _send_result_bytes(
                             seq=state.server_seq,
                             client_seq=state.client_seq,
@@ -434,7 +483,10 @@ class WSIngress:
                             results = res.get("results", {})
                             E = results.get("energy")
                             F = results.get("forces")
-                            F_np = np.array(F, dtype=float) if F is not None else None
+                            if F is not None:
+                                F_np = np.array(F, dtype=float)
+                            else:
+                                F_np = None
                             # server_seq unchanged for one-shot; echo fields
                             await _send_result_bytes(
                                 seq=state.server_seq,
@@ -464,6 +516,10 @@ class WSIngress:
                         # Reset v/f on any changed atoms
                         state.velocities = None
                         state.forces = None
+                        try:
+                            print("[ws] UPDATE_POSITIONS", flush=True)
+                        except Exception:
+                            pass
                     elif (
                         hasattr(pb.ClientAction.Type, "START_SIMULATION")
                         and getattr(msg, "type", None)
@@ -488,18 +544,41 @@ class WSIngress:
                                 optimizer=(sp.optimizer or "bfgs"),
                             )
                         state.running = True
+                        try:
+                            print(
+                                (
+                                    f"[ws] START_SIM type={state.sim_type} "
+                                    f"T={state.params.temperature} "
+                                    f"dt={state.params.timestep_fs} "
+                                    f"friction={state.params.friction}"
+                                ),
+                                flush=True,
+                            )
+                        except Exception:
+                            pass
                     elif (
                         hasattr(pb.ClientAction.Type, "STOP_SIMULATION")
                         and getattr(msg, "type", None)
                         == pb.ClientAction.Type.STOP_SIMULATION
                     ) or getattr(msg, "type", None) == "stop_simulation":
                         state.running = False
+                        try:
+                            print("[ws] STOP_SIM", flush=True)
+                        except Exception:
+                            pass
                     elif (
                         hasattr(pb.ClientAction.Type, "PING")
-                        and getattr(msg, "type", None) == pb.ClientAction.Type.PING
+                        and (getattr(msg, "type", None) == pb.ClientAction.Type.PING)
                     ) or getattr(msg, "type", None) == "ping":
                         # In protobuf-only mode, we don't echo unless needed.
-                        pass
+                        try:
+                            if hasattr(msg, "ack"):
+                                a = int(getattr(msg, "ack", 0) or 0)
+                                if a:
+                                    state.client_ack = max(state.client_ack, a)
+                                    print(f"[ws] ACK {a}", flush=True)
+                        except Exception:
+                            pass
             except WebSocketDisconnect:
                 pass
             except RuntimeError:

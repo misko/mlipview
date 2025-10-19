@@ -20,6 +20,33 @@ try {
   }
 } catch (_) {}
 
+// Provide WebSocket for jsdom/node by using the 'ws' package when not available
+try {
+  // Prefer not to override if environment already provides a WebSocket
+  if (typeof global.WebSocket === 'undefined') {
+    // eslint-disable-next-line global-require
+    const WSImpl = require('ws');
+    if (WSImpl) global.WebSocket = WSImpl;
+  }
+  if (typeof global.window !== 'undefined' && typeof window.WebSocket === 'undefined' && typeof global.WebSocket !== 'undefined') {
+    window.WebSocket = global.WebSocket;
+  }
+} catch (_) { /* optional */ }
+
+// Map ESM-style "/proto/..." imports to local public/proto for Jest
+try {
+  const Module = require('module');
+  const path = require('path');
+  const originalResolveFilename = Module._resolveFilename;
+  Module._resolveFilename = function(request, parent, isMain, options){
+    if (typeof request === 'string' && request.startsWith('/proto/')){
+      const local = path.resolve(process.cwd(), 'public', request.replace(/^\//,''));
+      return originalResolveFilename.call(this, local, parent, isMain, options);
+    }
+    return originalResolveFilename.call(this, request, parent, isMain, options);
+  };
+} catch(_e) { /* best-effort */ }
+
 // Global BABYLON mock for tests needing molecule/cell logic
 if (!global.BABYLON) {
   const BABYLON = {
