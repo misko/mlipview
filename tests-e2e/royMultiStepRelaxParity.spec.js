@@ -1,4 +1,4 @@
-import { test, expect, request } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import fs from 'fs';
 
 test.setTimeout(60000);
@@ -22,28 +22,46 @@ function loadROYXYZ(){
 const SYMBOL_TO_Z = {H:1, He:2, C:6, N:7, O:8, S:16};
 function symbolToZ(s){ return SYMBOL_TO_Z[s] || 0; }
 
-async function buildReferenceTrace(){
-  // Use backend /relax sequential one-step calls to mimic UI steps and store energies
+async function buildReferenceTrace(page){
+  // Build reference energies using the WS client directly (no REST)
   const { symbols, coords } = loadROYXYZ();
   const atomic_numbers = symbols.map(symbolToZ);
-  const refEnergies = [];
-  // First: single-point baseline energy via /simple_calculate
-  const singleResp = await fetch('http://localhost:8000/simple_calculate', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ atomic_numbers, coordinates: coords, properties:['energy','forces'], calculator:'uma' })
-  });
-  if(!singleResp.ok) throw new Error('Reference baseline failed '+singleResp.status);
-  const singleJson = await singleResp.json();
-  refEnergies.push(singleJson.results.energy);
-  let currentCoords = coords.map(r=> [...r]);
-  for(let i=0;i<STEPS;i++){
-  const resp = await fetch('http://localhost:8000/relax', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ atomic_numbers, coordinates: currentCoords, steps:1, calculator:'uma', max_step:0.01 }) });
-    if(!resp.ok) throw new Error('Reference relax step failed '+resp.status);
-    const js = await resp.json();
-    refEnergies.push(js.final_energy);
-    currentCoords = js.positions; // update for next step
-  }
-  return refEnergies;
+  // Navigate to the minimal WS harness to ensure WS client is available
+  // and not influenced by the full viewer's state.
+  await page.addInitScript(() => { window.__MLIPVIEW_SERVER = 'http://localhost:8000'; window.__MLIPVIEW_TEST_MODE = true; });
+  await page.goto('/ws-test.html?sim=0');
+  await page.waitForFunction(() => !!window.__WS_READY__, null, { timeout: 10000 });
+  // Perform INIT_SYSTEM and WS simple calculate, then run a streaming relax and collect N frames.
+  const energies = await page.evaluate(async ({ atomic_numbers, coords, steps }) => {
+    const ws = window.__WS_API__ || window.__fairchem_ws__;
+    if (!ws) throw new Error('WS API not present on harness page');
+    await ws.ensureConnected();
+    ws.initSystem({ atomic_numbers, positions: coords });
+    // Baseline energy via WS simple calculate
+    const single = await ws.requestSimpleCalculate();
+    const out = [single.energy];
+    // Start a streaming relax and collect energies from subsequent frames
+    window.__WS_EVENTS__ = [];
+    const off = ws.onResult((r)=>{ try { if (r && r.seq) ws.ack(r.seq|0); } catch{} });
+    ws.startSimulation({ type: 'relax', params: { calculator: 'uma', max_step: 0.01 } });
+    const t0 = Date.now();
+    while (out.length < (steps + 1)) {
+      const evs = window.__WS_EVENTS__ || [];
+      for (const r of evs) {
+        if (r && typeof r.energy === 'number') {
+          // append only new energies; avoid duplicates by checking length vs seen
+          if (out.length === 0 || r.energy !== out[out.length - 1]) out.push(r.energy);
+        }
+      }
+      window.__WS_EVENTS__ = [];
+      if (Date.now() - t0 > 30000) break; // safety cap 30s
+      await new Promise(r=> setTimeout(r, 50));
+    }
+    try { off && off(); } catch {}
+    try { ws.stopSimulation(); } catch {}
+    return out.slice(0, steps + 1);
+  }, { atomic_numbers, coords, steps: STEPS });
+  return energies;
 }
 
 async function ensureROY(page){
@@ -56,11 +74,12 @@ async function ensureROY(page){
   await page.waitForFunction(()=> typeof window.viewerApi?.state?.dynamics?.energy === 'number' && isFinite(window.viewerApi.state.dynamics.energy), null, { timeout:20000 });
 }
 
-test('ROY multi-step relax parity (20 steps) vs dynamic backend reference', async ({ page }) => {
-  // Build reference energies (initial + steps)
-  const ref = await buildReferenceTrace();
+test('ROY multi-step relax parity (20 steps) vs dynamic backend reference', async ({ page, baseURL }) => {
+  // Build reference energies (initial + steps) using WS-only harness
+  const ref = await buildReferenceTrace(page);
   expect(ref.length).toBe(STEPS+1);
-  await page.goto('/');
+  // Now load the full viewer UI and perform the same relax steps via UI
+  await page.goto(baseURL || '/');
   await ensureROY(page);
   const energies = [];
   energies.push(await page.evaluate(()=> window.viewerApi.state.dynamics.energy));

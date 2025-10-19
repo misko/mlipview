@@ -10,7 +10,6 @@ from ray import serve
 
 from fairchem_local_server2.ws_app import deploy
 from fairchem_local_server.model_runtime import (
-    DEVICE,
     UMA_DEPLOYMENT_NAME,
     install_predict_handle,
 )
@@ -69,7 +68,7 @@ def ws_base_url() -> Generator[str, None, None]:
     s = r2.json()
     assert s.get("status") == "ok", f"UMA stats error: {s}"
     stats = s.get("stats") or {}
-    dev = (stats.get("device") or DEVICE or "").lower()
+    dev = (stats.get("device") or "").lower()
     assert dev == "cuda", f"UMA device must be CUDA, got {dev}"
 
     # Retrieve UMA deployment handle for this app and install into test proc

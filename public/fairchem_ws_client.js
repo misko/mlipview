@@ -16,7 +16,16 @@ async function __ensurePB(){ if(!__hasPB) throw new Error('[WS][protobuf-missing
 function __n(v){ return (typeof v==='bigint') ? Number(v) : (typeof v==='number' ? v : 0); }
 function __wsDebugOn(){
 	try {
-		if (typeof window !== 'undefined') return !!(window.__MLIPVIEW_DEBUG_WS || window.__MLIPVIEW_DEBUG_API);
+		if (typeof window !== 'undefined') {
+			// URL param wsDebug=1|true toggles
+			try {
+				const q = new URLSearchParams(window.location.search||'');
+				if (q.get('wsDebug') === '1' || q.get('wsDebug') === 'true') window.__MLIPVIEW_DEBUG_WS = true;
+			} catch {}
+			// localStorage key 'mlip.wsDebug' toggles
+			try { if (window.localStorage && window.localStorage.getItem('mlip.wsDebug') === '1') window.__MLIPVIEW_DEBUG_WS = true; } catch {}
+			return !!(window.__MLIPVIEW_DEBUG_WS || window.__MLIPVIEW_DEBUG_API);
+		}
 	} catch {}
 	try { return !!(typeof process!=='undefined' && process.env && process.env.JEST_WORKER_ID); } catch {}
 	return false;
@@ -52,16 +61,22 @@ export function createFairchemWS(){
 		ws = new WebSocket(url);
 			return new Promise((resolve, reject)=>{
 			ws.binaryType = 'arraybuffer';
-			ws.onopen = ()=> { __wsLog('[WS][open]'); try { ws.send('{"type":"ping"}'); } catch{} resolve(true); };
-			ws.onerror = (e)=> { __wsErr('[WS][error]', e?.message||e); reject(e); };
-			ws.onclose = (ev)=>{ __wsWarn('[WS][close]', { code: ev?.code, reason: ev?.reason }); };
+			ws.onopen = ()=> {
+				__wsLog('[WS][open]', { readyState: ws?.readyState });
+				try { if (typeof window !== 'undefined' && typeof window.__WS_ON_STATE__==='function') window.__WS_ON_STATE__({ type:'open', url }); } catch {}
+				resolve(true);
+			};
+			ws.onerror = (e)=> { __wsErr('[WS][error]', e?.message||e); try { if (typeof window!=='undefined' && typeof window.__WS_ON_STATE__==='function') window.__WS_ON_STATE__({ type:'error', error: (e?.message||String(e)) }); } catch {} reject(e); };
+			ws.onclose = (ev)=>{ __wsWarn('[WS][close]', { code: ev?.code, reason: ev?.reason }); try { if (typeof window!=='undefined' && typeof window.__WS_ON_STATE__==='function') window.__WS_ON_STATE__({ type:'close', code: ev?.code, reason: ev?.reason }); } catch {} };
 						ws.onmessage = (ev)=>{
 								// Decode protobuf ServerResult frames; also accept JSON
 								try {
-												// Text JSON path
-												if (typeof ev.data === 'string'){
+												// Text JSON path (handle primitive string and String object)
+												const isStringLike = (typeof ev.data === 'string') || (!!ev.data && ev.data.constructor && ev.data.constructor.name === 'String');
+												if (isStringLike){
 													try {
-														const obj = JSON.parse(ev.data);
+														const s = String(ev.data);
+														const obj = JSON.parse(s);
 														const out = {
 															seq: __n(obj.seq),
 															client_seq: __n(obj.client_seq||obj.clientSeq),
@@ -74,25 +89,50 @@ export function createFairchemWS(){
 														if (Array.isArray(obj.forces)) out.forces = obj.forces;
 														if (Array.isArray(obj.velocities)) out.velocities = obj.velocities;
 														if (Array.isArray(obj.cell)) out.cell = obj.cell;
-														__wsLog('[WS][rx]', { seq: out.seq, client_seq: out.client_seq, uic: out.userInteractionCount, simStep: out.simStep, have: { pos: !!out.positions, forces: !!out.forces, vel: !!out.velocities, cell: !!out.cell, energy: typeof out.energy==='number' } });
+														__wsLog('[WS][rx]', { seq: out.seq, client_seq: out.client_seq, uic: out.userInteractionCount, simStep: out.simStep, have: { pos: !!out.positions, forces: !!out.forces, vel: !!out.velocities, cell: !!out.cell, energy: typeof out.energy==='number' }, message: out.message });
+														try { if (out && out.message === 'WAITING_FOR_ACK') __wsWarn('[WS][rx][WAITING_FOR_ACK]', { seq: out.seq, clientAck }); } catch {}
 														for(const fn of listeners){ try { fn(out, lastCounters); } catch{} }
 														return;
 													} catch(_jerr) {
-														// fallthrough to binary path
+														// Non-JSON string (e.g., 'pong') — ignore quietly
+														try { const s = String(ev.data).trim(); if (s === 'pong') return; } catch {}
+														// For any other text that isn't valid JSON, ignore and return (server may send metrics or keepalive)
+														return;
 													}
 												}
 												let bytes;
-									// Accept ArrayBuffer (browser) and Buffer (Node/ws)
-									if (ev.data instanceof ArrayBuffer) {
-										bytes = new Uint8Array(ev.data);
-									} else if (typeof Buffer !== 'undefined' && ev.data && Buffer.isBuffer(ev.data)) {
-										bytes = new Uint8Array(ev.data.buffer, ev.data.byteOffset||0, ev.data.byteLength||ev.data.length||0);
-									} else if (ev.data && ev.data.arrayBuffer && typeof ev.data.arrayBuffer === 'function') {
-										// Blob fallback
-										return ev.data.arrayBuffer().then(ab=>{ ws.onmessage({ data: ab }); }).catch(()=>{});
-									} else {
-										throw new Error('[WS] Expected binary protobuf frame, got unsupported message type');
-									}
+												// Accept ArrayBuffer (browser)
+												if (ev.data instanceof ArrayBuffer) {
+													bytes = new Uint8Array(ev.data);
+												// Accept any ArrayBufferView (Uint8Array, DataView, Buffer-backed typed arrays)
+												} else if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(ev.data)) {
+													const v = ev.data; bytes = new Uint8Array(v.buffer, v.byteOffset||0, v.byteLength||0);
+												// Accept Uint8Array explicitly (redundant with ArrayBufferView but safe)
+												} else if (typeof Uint8Array !== 'undefined' && ev.data instanceof Uint8Array) {
+													bytes = ev.data;
+												// Accept Node Buffer (ws)
+												} else if (typeof Buffer !== 'undefined' && ev.data && Buffer.isBuffer(ev.data)) {
+													bytes = new Uint8Array(ev.data.buffer, ev.data.byteOffset||0, ev.data.byteLength||ev.data.length||0);
+												// Blob fallback (browser)
+												} else if (ev.data && ev.data.arrayBuffer && typeof ev.data.arrayBuffer === 'function') {
+													return ev.data.arrayBuffer().then(ab=>{ ws.onmessage({ data: ab }); }).catch(()=>{});
+												} else {
+													const t = (ev && ev.data) ? (ev.data.constructor && ev.data.constructor.name ? ev.data.constructor.name : typeof ev.data) : String(ev && ev.data);
+													throw new Error('[WS] Expected binary protobuf frame, got unsupported message type: ' + t);
+												}
+												// Some Node WS stacks deliver text frames as Buffer/Uint8Array; detect JSON and parse
+												try {
+													if (bytes && bytes.length) {
+														let i=0; while(i<bytes.length && bytes[i]<=32) i++;
+														const b0 = bytes[i];
+														if (b0===123 /*'{'*/ || b0===91 /*'['*/){
+															const td = new TextDecoder('utf-8');
+															const s = td.decode(bytes);
+															// Re-dispatch to the JSON path
+															try { ws.onmessage({ data: s }); return; } catch {}
+														}
+													}
+												} catch {}
 									const r = fromBinary(ServerResultSchema, bytes);
 									const out = {
 										seq: __n(r.seq),
@@ -118,7 +158,7 @@ export function createFairchemWS(){
 				};
 		});
 	}
-					function sendBytes(buf){ if(ws && ws.readyState===1) { try { __wsLog('[WS][tx-bytes]', { len: buf?.byteLength||buf?.length||0 }); } catch{} ws.send(buf); } }
+							function sendBytes(buf){ if(ws && ws.readyState===1) { try { __wsLog('[WS][tx-bytes]', { len: buf?.byteLength||buf?.length||0 }); } catch{} try { ws.send(buf); } catch(e){ __wsErr('[WS][send-error]', e?.message||e); } } else { __wsWarn('[WS][send-skipped:not-open]', { readyState: ws?.readyState }); } }
 	function close(){ try { ws && ws.close(); } catch{} }
 	function setCounters({ userInteractionCount, simStep }){
 		if(Number.isFinite(userInteractionCount)) lastCounters.userInteractionCount = userInteractionCount|0;
@@ -128,27 +168,33 @@ export function createFairchemWS(){
 	// Test hook: if window.__WS_TEST_HOOK__ is a function, call with a shallow JSON of the outgoing message
 	function __notifyTestHook(msg){
 		try {
-			if (typeof window !== 'undefined' && typeof window.__WS_TEST_HOOK__ === 'function') {
-				// Project a minimal JSON snapshot (type, simulation params, counters)
-				const out = {
-					seq: msg.seq|0,
-					type: msg.type,
-					userInteractionCount: msg.userInteractionCount|0,
-					simStep: msg.simStep|0,
-					// Include simulation params when present
-					simulationType: msg.simulationType,
-					simulationParams: msg.simulationParams ? {
-						calculator: msg.simulationParams.calculator || '',
-						temperature: msg.simulationParams.temperature,
-						timestepFs: msg.simulationParams.timestepFs,
-						friction: msg.simulationParams.friction,
-						fmax: msg.simulationParams.fmax,
-						maxStep: msg.simulationParams.maxStep,
-						optimizer: msg.simulationParams.optimizer || undefined,
-					} : undefined,
-				};
-				window.__WS_TEST_HOOK__(out);
-			}
+			const sink = (typeof window !== 'undefined' && typeof window.__WS_TEST_HOOK__ === 'function')
+				? window.__WS_TEST_HOOK__
+				: (typeof globalThis !== 'undefined' && typeof globalThis.__WS_TEST_HOOK__ === 'function')
+					? globalThis.__WS_TEST_HOOK__
+					: (typeof global !== 'undefined' && typeof global.__WS_TEST_HOOK__ === 'function')
+						? global.__WS_TEST_HOOK__
+						: null;
+			if (!sink) return;
+			// Project a minimal JSON snapshot (type, simulation params, counters)
+			const out = {
+				seq: msg.seq|0,
+				type: msg.type,
+				userInteractionCount: msg.userInteractionCount|0,
+				simStep: msg.simStep|0,
+				// Include simulation params when present
+				simulationType: msg.simulationType,
+				simulationParams: msg.simulationParams ? {
+					calculator: msg.simulationParams.calculator || '',
+					temperature: msg.simulationParams.temperature,
+					timestepFs: msg.simulationParams.timestepFs,
+					friction: msg.simulationParams.friction,
+					fmax: msg.simulationParams.fmax,
+					maxStep: msg.simulationParams.maxStep,
+					optimizer: msg.simulationParams.optimizer || undefined,
+				} : undefined,
+			};
+			sink(out);
 		} catch {}
 	}
 	function setAck(s){ clientAck = Math.max(clientAck, s|0); }
@@ -256,7 +302,7 @@ export function createFairchemWS(){
 			// Decodes first matching ServerResult with energy/forces and resolves.
 			// Returns { energy, forces, userInteractionCount, simStep } so caller can gate staleness.
 			async function requestSimpleCalculate(){
-			if(!ws || ws.readyState!==1) throw new Error('ws not connected');
+			if(!ws || ws.readyState!==1) { __wsWarn('[WS][simple][not-connected]'); throw new Error('ws not connected'); }
 			return new Promise((resolve, reject)=>{
 				let off = null;
 				const done = (v)=>{ try{ off && off(); }catch{} resolve(v); };
@@ -278,26 +324,26 @@ export function createFairchemWS(){
 							simStep: lastCounters.simStep|0,
 						});
 						__notifyTestHook(msg);
-						try { __wsLog('[WS][tx][SIMPLE_CALCULATE]', { seq: msg.seq|0, uic: msg.userInteractionCount|0, simStep: msg.simStep|0, ack: msg.ack? (msg.ack|0) : undefined }); } catch {}
+						try { __wsLog('[WS][tx][SIMPLE_CALCULATE]', { seq: msg.seq|0, uic: msg.userInteractionCount|0, simStep: msg.simStep|0, ack: msg.ack? (msg.ack|0) : undefined, state: getState() }); } catch {}
 						const buf = toBinary(ClientActionSchema, msg); sendBytes(buf);
 					} catch(e){ fail(e); }
 				// optional timeout
-				setTimeout(()=> fail(new Error('simple_calculate timeout')), 5000);
+				setTimeout(()=> { __wsWarn('[WS][simple][timeout] after 5s'); fail(new Error('simple_calculate timeout')); }, 5000);
 			});
 		}
 
 		// One-shot request for a single simulation step (md or relax). Starts, waits 1 frame, stops, resolves.
 		async function requestSingleStep({ type, params }){
-			if(!ws || ws.readyState!==1) throw new Error('ws not connected');
+			if(!ws || ws.readyState!==1) { __wsWarn('[WS][single-step][not-connected]'); throw new Error('ws not connected'); }
 			return new Promise((resolve, reject)=>{
 				let off = null; let doneCalled=false;
 				function done(v){ if(doneCalled) return; doneCalled=true; try{ off && off(); }catch{} try{ stopSimulation(); }catch{} resolve(v); }
 				off = onFrame((res)=>{ try { if(res && typeof res==='object'){ __wsLog('[WS][rx][single-step]', { hasPos: !!res.positions, hasForces: !!res.forces, energy: res.energy }); done(res); } } catch{} });
 				try { startSimulation({ type, params }); } catch(e){ try{ off&&off(); }catch{} reject(e); }
-				setTimeout(()=>{ if(!doneCalled) { try{ off&&off(); }catch{} reject(new Error('single_step timeout')); } }, 5000);
+				setTimeout(()=>{ if(!doneCalled) { __wsWarn('[WS][single-step][timeout] after 5s'); try{ off&&off(); }catch{} reject(new Error('single_step timeout')); } }, 5000);
 			});
 		}
-	    		const api = { connect, ensureConnected, sendBytes, close, onFrame, onResult, setCounters, nextSeq, setAck, ack, getState, requestSimpleCalculate, requestSingleStep, initSystem, updatePositions, startSimulation, stopSimulation };
+		    	const api = { connect, ensureConnected, sendBytes, close, onFrame, onResult, setCounters, nextSeq, setAck, ack, getState, requestSimpleCalculate, requestSingleStep, initSystem, updatePositions, startSimulation, stopSimulation };
 		            try {
 		            if (typeof window !== 'undefined') {
 		            window.__fairchem_ws__ = api;
@@ -305,7 +351,26 @@ export function createFairchemWS(){
 		            if (typeof window.__ON_WS_RESULT__ !== 'function') {
 		              window.__ON_WS_RESULT__ = (obj)=>{ try { for(const fn of listeners){ try { fn(obj, lastCounters); } catch{} } } catch{} };
 		            }
+		            // Toggle WS debug at runtime from tests or devtools
+		            if (typeof window.__WS_DEBUG_ENABLE__ !== 'function') {
+		              window.__WS_DEBUG_ENABLE__ = (on)=>{ try { window.__MLIPVIEW_DEBUG_WS = !!on; if (on && window.localStorage) window.localStorage.setItem('mlip.wsDebug','1'); else if (window.localStorage) window.localStorage.removeItem('mlip.wsDebug'); console.log('[WS] debug set to', !!on); } catch {} };
+		            }
 		          }
+		          // Also expose test hook in Node/Jest environments without window
+		          try {
+		            if (typeof globalThis !== 'undefined') {
+		              globalThis.__fairchem_ws__ = globalThis.__fairchem_ws__ || api;
+		              if (typeof globalThis.__ON_WS_RESULT__ !== 'function') {
+		                globalThis.__ON_WS_RESULT__ = (obj)=>{ try { for(const fn of listeners){ try { fn(obj, lastCounters); } catch{} } } catch{} };
+		              }
+		            }
+		            if (typeof global !== 'undefined') {
+		              global.__fairchem_ws__ = global.__fairchem_ws__ || api;
+		              if (typeof global.__ON_WS_RESULT__ !== 'function') {
+		                global.__ON_WS_RESULT__ = (obj)=>{ try { for(const fn of listeners){ try { fn(obj, lastCounters); } catch{} } } catch{} };
+		              }
+		            }
+		          } catch {}
 		          } catch {}
 		            return api;
 }

@@ -3,11 +3,25 @@ import { test, expect } from '@playwright/test';
 test.setTimeout(30000);
 
 async function loadWater(page){
+  const base = process.env.BASE_URL || 'http://127.0.0.1:5174';
+  await page.goto(`${base}/?mol=molecules/water.xyz`);
   await page.waitForFunction(()=>window.__MLIP_DEFAULT_LOADED===true);
-  await page.selectOption('#moleculeSelect','molecules/water.xyz');
-  await page.waitForTimeout(200);
-  await page.evaluate(async ()=>{ try { window.__MLIPVIEW_SERVER='http://localhost:8000'; await window.viewerApi?.baselineEnergy?.(); window.viewerApi?.ff?.computeForces?.(); } catch{} });
-  await page.waitForFunction(()=> typeof (window.viewerApi?.state?.dynamics?.energy) === 'number' && isFinite(window.viewerApi.state.dynamics.energy), null, { timeout: 15000 });
+  await page.evaluate(async ()=>{ try {
+    window.__MLIPVIEW_SERVER='http://localhost:8000';
+    const ws = window.__fairchem_ws__ || window.__WS_API__;
+    if (ws && typeof ws.ensureConnected==='function'){
+      await ws.ensureConnected();
+      const st = window.viewerApi?.state;
+      if (st) {
+        const Z = (st.elements||[]).map(e=> typeof e==='number'? e : 0);
+        const R = (st.positions||[]).map(p=> [p.x,p.y,p.z]);
+        ws.initSystem({ atomic_numbers: Z, positions: R });
+      }
+    }
+    await window.viewerApi?.baselineEnergy?.();
+    window.viewerApi?.ff?.computeForces?.();
+  } catch{} });
+  await page.waitForFunction(()=> typeof (window.viewerApi?.state?.dynamics?.energy) === 'number' && isFinite(window.viewerApi.state.dynamics.energy), null, { timeout: 30000 });
   await page.waitForFunction(()=> Array.isArray(window.__RELAX_TRACE) && window.__RELAX_TRACE.length===1);
 }
 

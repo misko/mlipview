@@ -29,14 +29,6 @@ from ray import serve
 
 # --- Config -----------------------------------------------------------------
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print(
-    f"[model_runtime] torch_version={getattr(torch, '__version__', None)} "
-    f"torch_cuda_version={getattr(torch.version, 'cuda', None)} "
-    f"cuda_available={torch.cuda.is_available()} "
-    f"device={DEVICE}",
-    flush=True,
-)
 MODEL_NAME = os.getenv("UMA_MODEL", "uma-s-1p1")
 TASK_NAME = os.getenv("UMA_TASK", "omol")
 
@@ -58,10 +50,19 @@ _PU: BatchedPredictUnit | None = None
 @serve.deployment(ray_actor_options={"num_gpus": 1})
 class _PredictDeploy:  # runs on GPU replica
     def __init__(self, model_name: str, task_name: str):
+
+        self.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+        print(
+            f"[model_runtime] torch_version={getattr(torch, '__version__', None)} "
+            f"torch_cuda_version={getattr(torch.version, 'cuda', None)} "
+            f"cuda_available={torch.cuda.is_available()} "
+            f"device={self.DEVICE}",
+            flush=True,
+        )
         print(f"[batched:init] loading model={model_name} task={task_name}")
         print(
             (
-                f"[batched:init] DEVICE={DEVICE} "
+                f"[batched:init] DEVICE={self.DEVICE} "
                 f"cuda_available={torch.cuda.is_available()} "
             ),
             flush=True,
@@ -71,7 +72,7 @@ class _PredictDeploy:  # runs on GPU replica
         self._predict_items = 0  # total items processed across all batches
         self._unit = pretrained_mlip.get_predict_unit(
             model_name,
-            device=DEVICE,
+            device=self.DEVICE,
             inference_settings=InferenceSettings(
                 tf32=True,
                 activation_checkpointing=False,
@@ -87,7 +88,7 @@ class _PredictDeploy:  # runs on GPU replica
     async def predict(self, payloads: List[Tuple[tuple, dict]]):
         # Preserve order; return one result per payload.
         print(
-            "[UMA] predict called on device %s size=%d" % (DEVICE, len(payloads)),
+            "[UMA] predict called on device %s size=%d" % (self.DEVICE, len(payloads)),
             flush=True,
         )
         t0 = time.perf_counter()
@@ -148,7 +149,7 @@ class _PredictDeploy:  # runs on GPU replica
         snap = {
             "calls": int(self._predict_calls),
             "items": int(self._predict_items),
-            "device": DEVICE,
+            "device": self.DEVICE,
             "model": MODEL_NAME,
             "task": TASK_NAME,
         }
@@ -176,7 +177,15 @@ class BatchedPredictUnit:
                 {"property": "stress"},
             ]
         }
-        self.device = DEVICE
+
+        self.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+        print(
+            f"[model_runtime] torch_version={getattr(torch, '__version__', None)} "
+            f"torch_cuda_version={getattr(torch.version, 'cuda', None)} "
+            f"cuda_available={torch.cuda.is_available()} "
+            f"device={self.DEVICE}",
+            flush=True,
+        )
 
     def predict(self, *args, **kwargs):
         print("[UMA-client] calling remote predict", flush=True)
@@ -269,10 +278,10 @@ def health_snapshot():
     snap = {
         "model": MODEL_NAME,
         "task": TASK_NAME,
-        "device": DEVICE,
+        "device": "cuda" if torch.cuda.is_available() else "cpu",
         "cuda_available": torch.cuda.is_available(),
         "model_loaded": bool(_PU is not None),
-        "ingress_device": DEVICE,
+        "ingress_device": "cuda" if torch.cuda.is_available() else "cpu",
     }
     # If UMA handle installed, attempt to read device from the GPU replica
     try:
@@ -295,7 +304,6 @@ def health_snapshot():
 __all__ = [
     "MODEL_NAME",
     "TASK_NAME",
-    "DEVICE",
     "UMA_DEPLOYMENT_NAME",
     "_PredictDeploy",
     "install_predict_handle",

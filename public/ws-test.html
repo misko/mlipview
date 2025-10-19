@@ -21,9 +21,10 @@
       const Z = [8,1,1];
       const R = [[0,0,0],[0,0.757,0.586],[0,-0.757,0.586]];
       ws.initSystem({ atomic_numbers: Z, positions: R });
-      window.__WS_EVENTS__ = [];
-      ws.onResult((r)=>{ window.__WS_EVENTS__.push(r); });
+  window.__WS_EVENTS__ = [];
+  ws.onResult((r)=>{ window.__WS_EVENTS__.push(r); try { if (r && r.seq) ws.ack(r.seq|0); } catch{} });
       if (useSim) {
+        // Start an explicit MD stream to produce frames
         ws.startSimulation({ type: 'md', params: { calculator: 'lj', temperature: 500, timestep_fs: 1.0, friction: 0.02 } });
       }
       window.__WS_READY__ = true;

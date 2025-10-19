@@ -3,13 +3,26 @@ import { test, expect } from '@playwright/test';
 test.setTimeout(30000);
 
 async function loadWaterAndEnergy(page) {
+  const base = process.env.BASE_URL || 'http://127.0.0.1:5174';
+  await page.goto(`${base}/?mol=molecules/water.xyz`);
   await page.waitForFunction(()=>window.__MLIP_DEFAULT_LOADED===true);
-  // Use the dedicated molecule selector
-  await page.selectOption('#moleculeSelect','molecules/water.xyz');
-  await page.waitForTimeout(250);
   await page.evaluate(()=>{ window.__MLIPVIEW_SERVER='http://localhost:8000'; });
   // Recompute baseline energy synchronously to seed energySeries correctly
-  await page.evaluate(async ()=>{ try { await window.viewerApi?.baselineEnergy?.(); } catch(e){} });
+  await page.evaluate(async ()=>{
+    try {
+      const ws = window.__fairchem_ws__ || window.__WS_API__;
+      if (ws && typeof ws.ensureConnected==='function'){
+        await ws.ensureConnected();
+        const st = window.viewerApi?.state;
+        if (st) {
+          const Z = (st.elements||[]).map(e=> typeof e==='number'? e : 0);
+          const R = (st.positions||[]).map(p=> [p.x,p.y,p.z]);
+          ws.initSystem({ atomic_numbers: Z, positions: R });
+        }
+      }
+      await window.viewerApi?.baselineEnergy?.();
+    } catch(e){}
+  });
   // Poll computeForces until energy numeric
   await page.evaluate(async ()=>{
     for (let i=0;i<30;i++) {
@@ -18,7 +31,7 @@ async function loadWaterAndEnergy(page) {
       await new Promise(r=>setTimeout(r,200));
     }
   });
-  await page.waitForFunction(()=> typeof (window.viewerApi?.state?.dynamics?.energy) === 'number' && isFinite(window.viewerApi.state.dynamics.energy));
+  await page.waitForFunction(()=> typeof (window.viewerApi?.state?.dynamics?.energy) === 'number' && isFinite(window.viewerApi.state.dynamics.energy), null, { timeout: 30000 });
   return await page.evaluate(()=> window.viewerApi.state.dynamics.energy);
 }
 

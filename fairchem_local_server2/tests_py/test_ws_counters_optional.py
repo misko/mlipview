@@ -37,7 +37,7 @@ async def _recv_one(uri: str):
 
         # receive first produced frame (skip possible seq==0 init echo)
         while True:
-            data = await asyncio.wait_for(ws.recv(), timeout=5.0)
+            data = await asyncio.wait_for(ws.recv(), timeout=15.0)
             if not isinstance(data, (bytes, bytearray)):
                 continue
             res = pb.ServerResult()

@@ -86,6 +86,34 @@ export default defineConfig({
     port: 5174,
     host: '0.0.0.0'
   },
-  plugins: [rootRedirectPlugin()],
+  plugins: [
+    rootRedirectPlugin(),
+    // Ensure runtime-loaded assets like molecules/*.xyz exist in dist for preview server
+    {
+      name: 'copy-molecules-on-build',
+      closeBundle() {
+        try {
+          const src = path.resolve(__dirname, 'public', 'molecules');
+          const dst = path.resolve(__dirname, 'dist', 'molecules');
+          if (fs.existsSync(src)) {
+            fs.mkdirSync(dst, { recursive: true });
+            // Node >=16 supports cpSync
+            if (fs.cpSync) {
+              fs.cpSync(src, dst, { recursive: true });
+            } else {
+              // Fallback: shallow copy files only (unlikely on our Node engine)
+              for (const f of fs.readdirSync(src)) {
+                const s = path.join(src, f);
+                const d = path.join(dst, f);
+                if (fs.statSync(s).isFile()) fs.copyFileSync(s, d);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('[vite][copy-molecules] failed:', e?.message || e);
+        }
+      }
+    }
+  ],
   optimizeDeps: { },
 });

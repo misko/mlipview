@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Optional
 
 import numpy as np
@@ -36,6 +37,12 @@ class WSIngress:
             install_predict_handle(predict_handle)
         self._uma_handle = predict_handle
         self._pool = WorkerPool(size=pool_size, uma_handle=self._uma_handle)
+        self._ws_debug = os.environ.get("WS_DEBUG", "0") in (
+            "1",
+            "true",
+            "TRUE",
+            "True",
+        )
         print(
             (
                 f"[ws:init] pool_size={pool_size} "
@@ -81,8 +88,7 @@ class WSIngress:
         max_unacked = 10
         last_ack = 0
         pending = 0
-        # switch to JSON I/O if client sends JSON text frames
-        json_mode = False
+        # JSON fallback removed: protobuf-only WS
 
         # Concurrency: producer (simulation loop) and consumer (message loop)
         stop_evt = asyncio.Event()
@@ -132,73 +138,69 @@ class WSIngress:
             message: Optional[str] = None,
             energy: Optional[float] = None,
         ):
-            if json_mode:
-                # JSON payload for browser clients without protobuf
-                out = {
-                    "seq": int(seq),
-                    "client_seq": int(client_seq or 0),
-                }
+            if self._ws_debug:
+                try:
+                    print(
+                        (
+                            f"[ws:tx] seq={seq} client_seq={client_seq} "
+                            f"uic={user_interaction_count} step={sim_step} "
+                            f"has={{pos:{positions is not None}, "
+                            f"vel:{velocities is not None}, "
+                            f"forces:{forces is not None}, "
+                            f"cell:{cell is not None}}} "
+                            f"energy={energy if energy is not None else 'na'} "
+                            f"msg={message or ''}"
+                        ),
+                        flush=True,
+                    )
+                except Exception:
+                    pass
+            # Protobuf binary only (ensure this runs regardless of debug flag)
+            msg = pb.ServerResult()
+            msg.seq = int(seq)
+            if client_seq is not None:
+                msg.client_seq = int(client_seq)
+            try:
                 if user_interaction_count is not None:
-                    out["userInteractionCount"] = int(user_interaction_count)
+                    msg.user_interaction_count = int(user_interaction_count)
                 if sim_step is not None:
-                    out["simStep"] = int(sim_step)
-                if positions is not None:
-                    out["positions"] = np.asarray(positions).tolist()
-                if velocities is not None:
-                    out["velocities"] = np.asarray(velocities).tolist()
-                if forces is not None:
-                    out["forces"] = np.asarray(forces).tolist()
-                if cell is not None:
-                    out["cell"] = np.asarray(cell).tolist()
+                    msg.sim_step = int(sim_step)
+            except Exception:
+                pass
+            _fill_vec3_repeated(msg.positions, positions)
+            _fill_vec3_repeated(msg.forces, forces)
+            _fill_vec3_repeated(msg.velocities, velocities)
+            if cell is not None:
+                m = pb.Mat3()
+                flat = [
+                    float(cell[0, 0]),
+                    float(cell[0, 1]),
+                    float(cell[0, 2]),
+                    float(cell[1, 0]),
+                    float(cell[1, 1]),
+                    float(cell[1, 2]),
+                    float(cell[2, 0]),
+                    float(cell[2, 1]),
+                    float(cell[2, 2]),
+                ]
+                m.m.extend(flat)
+                msg.cell.CopyFrom(m)
+            if message:
+                msg.message = message
+            # optional energy field
+            try:
                 if energy is not None:
-                    out["energy"] = float(energy)
-                if message:
-                    out["message"] = message
-                await ws.send_json(out)
-            else:
-                # Protobuf binary
-                msg = pb.ServerResult()
-                msg.seq = int(seq)
-                if client_seq is not None:
-                    msg.client_seq = int(client_seq)
-                # Optional correlation fields
-                try:
-                    if user_interaction_count is not None:
-                        msg.user_interaction_count = int(user_interaction_count)
-                    if sim_step is not None:
-                        msg.sim_step = int(sim_step)
-                except Exception:
-                    pass
-                _fill_vec3_repeated(msg.positions, positions)
-                _fill_vec3_repeated(msg.forces, forces)
-                _fill_vec3_repeated(msg.velocities, velocities)
-                if cell is not None:
-                    m = pb.Mat3()
-                    flat = [
-                        float(cell[0, 0]),
-                        float(cell[0, 1]),
-                        float(cell[0, 2]),
-                        float(cell[1, 0]),
-                        float(cell[1, 1]),
-                        float(cell[1, 2]),
-                        float(cell[2, 0]),
-                        float(cell[2, 1]),
-                        float(cell[2, 2]),
-                    ]
-                    m.m.extend(flat)
-                    msg.cell.CopyFrom(m)
-                if message:
-                    msg.message = message
-                # optional energy field
-                try:
-                    if energy is not None:
-                        msg.energy = float(energy)
-                except Exception:
-                    pass
-                await ws.send_bytes(msg.SerializeToString())
+                    msg.energy = float(energy)
+            except Exception:
+                pass
+            await ws.send_bytes(msg.SerializeToString())
 
         async def sim_loop():
             nonlocal pending
+            import time
+
+            stall_notice_last = 0.0
+            stall_notice_interval = 0.25  # seconds
             try:
                 while not stop_evt.is_set():
                     if not state.running or state.atomic_numbers == []:
@@ -207,7 +209,43 @@ class WSIngress:
 
                     # Backpressure: don't exceed last_ack + 10
                     if state.server_seq - state.client_ack >= max_unacked:
-                        await asyncio.sleep(0.005)
+                        # Send a periodic informational frame so clients
+                        # know we're waiting on ACKs instead of stalling
+                        now = time.time()
+                        if now - stall_notice_last >= stall_notice_interval:
+                            stall_notice_last = now
+                            try:
+                                try:
+                                    # Explicit debug for WAITING_FOR_ACK send
+                                    delta = state.server_seq - state.client_ack
+                                    print(
+                                        (
+                                            "[ws] WAITING_FOR_ACK send "
+                                            f"server_seq={state.server_seq} "
+                                            f"client_ack={state.client_ack} "
+                                            f"delta={delta}"
+                                        ),
+                                        flush=True,
+                                    )
+                                except Exception:
+                                    pass
+                                await _send_result_bytes(
+                                    seq=state.server_seq,
+                                    client_seq=state.client_seq,
+                                    user_interaction_count=(
+                                        state.user_interaction_count or None
+                                    ),
+                                    sim_step=(state.sim_step or None),
+                                    positions=state.positions,
+                                    velocities=state.velocities,
+                                    forces=state.forces,
+                                    cell=None,
+                                    energy=None,
+                                    message="WAITING_FOR_ACK",
+                                )
+                            except Exception:
+                                pass
+                        await asyncio.sleep(0.02)
                         continue
 
                     worker = self._pool.any()
@@ -291,16 +329,20 @@ class WSIngress:
                             )
                     except Exception:
                         pass
-            except Exception:
+            except Exception as e:
+                if self._ws_debug:
+                    try:
+                        print(f"[ws:sim_loop:error] {e}", flush=True)
+                    except Exception:
+                        pass
                 # On any error, end the session loop
                 stop_evt.set()
 
         async def recv_loop():
             nonlocal last_ack
-            nonlocal json_mode
             try:
                 while True:
-                    # Accept binary (protobuf) or text (JSON)
+                    # Accept binary (protobuf only)
                     msg = None
                     try:
                         data = await ws.receive()
@@ -321,61 +363,11 @@ class WSIngress:
                                 msg = m
                             except Exception:
                                 msg = None
+                        # Ignore text frames (protobuf-only server)
                         elif "text" in data and data["text"] is not None:
-                            # Try JSON mode: parse a JSON object and map
-                            # to fields
-                            import json
-
-                            try:
-                                obj = json.loads(data["text"])
-                                # Toggle JSON mode so sender uses JSON frames
-                                json_mode = True
-                                # Minimal mapping for required fields
-                                _type = str(obj.get("type") or "").lower()
-                                if _type == "ping":
-                                    # ack passthrough
-                                    a = int(obj.get("ack") or 0)
-                                    if a:
-                                        state.client_ack = max(state.client_ack, a)
-                                    # don't generate a reply in JSON mode
-                                    continue
-
-                                # Construct a pseudo message namespace
-                                # using dicts
-                                class _Msg:
-                                    pass
-
-                                m = _Msg()
-                                setattr(m, "seq", int(obj.get("seq") or 0))
-                                setattr(m, "type", _type)
-                                setattr(
-                                    m,
-                                    "atomic_numbers",
-                                    list(
-                                        map(
-                                            int,
-                                            obj.get("atomic_numbers") or [],
-                                        )
-                                    ),
-                                )
-                                setattr(m, "positions", obj.get("positions") or [])
-                                _vel = obj.get("velocities") or []
-                                setattr(m, "velocities", _vel)
-                                setattr(m, "cell", obj.get("cell"))
-                                setattr(m, "ack", int(obj.get("ack") or 0))
-                                sp = obj.get("simulation_params") or {}
-                                setattr(m, "simulation_params", sp)
-                                setattr(
-                                    m,
-                                    "simulation_type",
-                                    obj.get("simulation_type"),
-                                )
-                                msg = m
-                            except Exception:
-                                # Not JSON: treat as ping
-                                if data["text"] == "ping":
-                                    await ws.send_text("pong")
-                                continue
+                            # Accept optional plain 'ping' text for health,
+                            # no reply
+                            continue
                     if msg is None:
                         continue
 
@@ -385,19 +377,50 @@ class WSIngress:
                     )
                     # ack handling
                     try:
+                        prev_ack = int(state.client_ack)
                         if hasattr(msg, "HasField") and msg.HasField("ack"):
                             state.client_ack = max(state.client_ack, int(msg.ack))
                         else:
                             a = int(getattr(msg, "ack", 0) or 0)
                             if a:
                                 state.client_ack = max(state.client_ack, a)
+                        if state.client_ack and state.client_ack > prev_ack:
+                            try:
+                                # Explicit ACK receive log
+                                delta = state.server_seq - state.client_ack
+                                print(
+                                    (
+                                        "[ws] ACK recv "
+                                        f"client_ack={state.client_ack} "
+                                        f"server_seq={state.server_seq} "
+                                        f"delta={delta}"
+                                    ),
+                                    flush=True,
+                                )
+                            except Exception:
+                                pass
+                        elif self._ws_debug and state.client_ack:
+                            try:
+                                print(
+                                    (f"[ws:rx][ack] " f"client_ack={state.client_ack}"),
+                                    flush=True,
+                                )
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                     # Correlation fields (optional)
                     try:
                         # Only access attributes if present in schema
                         if hasattr(msg, "user_interaction_count"):
-                            u = int(getattr(msg, "user_interaction_count", 0) or 0)
+                            u = int(
+                                getattr(
+                                    msg,
+                                    "user_interaction_count",
+                                    0,
+                                )
+                                or 0
+                            )
                             if u > (state.user_interaction_count or 0):
                                 state.user_interaction_count = u
                         if hasattr(msg, "sim_step"):
@@ -437,6 +460,15 @@ class WSIngress:
                             )
                         except Exception:
                             pass
+                        if self._ws_debug:
+                            try:
+                                vel = "yes" if v_in is not None else "no"
+                                print(
+                                    "[ws:state] set velocities=" + vel,
+                                    flush=True,
+                                )
+                            except Exception:
+                                pass
                         await _send_result_bytes(
                             seq=state.server_seq,
                             client_seq=state.client_seq,
@@ -520,6 +552,17 @@ class WSIngress:
                             print("[ws] UPDATE_POSITIONS", flush=True)
                         except Exception:
                             pass
+                        if self._ws_debug:
+                            try:
+                                print(
+                                    (
+                                        "[ws:state] velocities reset due to "
+                                        "UPDATE_POSITIONS"
+                                    ),
+                                    flush=True,
+                                )
+                            except Exception:
+                                pass
                     elif (
                         hasattr(pb.ClientAction.Type, "START_SIMULATION")
                         and getattr(msg, "type", None)
@@ -556,6 +599,18 @@ class WSIngress:
                             )
                         except Exception:
                             pass
+                        if self._ws_debug:
+                            try:
+                                print(
+                                    (
+                                        f"[ws:state] counters "
+                                        f"uic={state.user_interaction_count} "
+                                        f"sim_step={state.sim_step}"
+                                    ),
+                                    flush=True,
+                                )
+                            except Exception:
+                                pass
                     elif (
                         hasattr(pb.ClientAction.Type, "STOP_SIMULATION")
                         and getattr(msg, "type", None)
@@ -566,6 +621,11 @@ class WSIngress:
                             print("[ws] STOP_SIM", flush=True)
                         except Exception:
                             pass
+                        if self._ws_debug:
+                            try:
+                                print("[ws:state] running=false", flush=True)
+                            except Exception:
+                                pass
                     elif (
                         hasattr(pb.ClientAction.Type, "PING")
                         and (getattr(msg, "type", None) == pb.ClientAction.Type.PING)
