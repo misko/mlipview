@@ -23,14 +23,15 @@ describe('desktop left panel UI', () => {
     // Rendering section removed; XR lives as a fixed widget instead of a panel section
     expect(live && sim && sys).toBeTruthy();
 
-    const isCollapsed = (sec)=> sec.querySelector('.panel-content').getAttribute('data-collapsed') === 'true';
+    const isCollapsed = (sec) =>
+      sec.querySelector('.panel-content').getAttribute('data-collapsed') === 'true';
     // Defaults: live open; simulation + system collapsed
     expect(isCollapsed(live)).toBe(false);
     expect(isCollapsed(sim)).toBe(true);
     expect(isCollapsed(sys)).toBe(true);
 
     // Live stats controls exist
-  // Status element removed from Live Metrics
+    // Status element removed from Live Metrics
     expect(document.getElementById('instTemp')).toBeTruthy();
     expect(document.getElementById('rpsLabel')).toBeTruthy();
     expect(document.getElementById('energyPlot')).toBeTruthy();
@@ -55,9 +56,9 @@ describe('desktop left panel UI', () => {
     // Rendering controls
     expect(document.getElementById('btnToggleForces')).toBeTruthy();
 
-  // XR controls (fixed widget)
-  const xrSel = document.getElementById('xrModeSelect');
+    // XR controls (fixed widget)
+    const xrSel = document.getElementById('xrModeSelect');
     expect(xrSel).toBeTruthy();
-    expect(Array.from(xrSel.options).map(o=>o.value)).toEqual(['none','vr','ar']);
+    expect(Array.from(xrSel.options).map((o) => o.value)).toEqual(['none', 'vr', 'ar']);
   });
 });

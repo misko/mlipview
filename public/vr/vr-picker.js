@@ -15,23 +15,42 @@
 import { __count } from '../util/funcCount.js';
 export function createVRPicker({ scene, view }) {
   __count('vrPicker#createVRPicker');
-  if (!scene || typeof scene.pickWithRay !== 'function') throw new Error('createVRPicker requires a Babylon scene with pickWithRay');
-  if (!view || typeof view.resolveAtomPick !== 'function' || typeof view.resolveBondPick !== 'function') {
-    throw new Error('createVRPicker requires a molecule view with resolveAtomPick & resolveBondPick');
+  if (!scene || typeof scene.pickWithRay !== 'function')
+    throw new Error('createVRPicker requires a Babylon scene with pickWithRay');
+  if (
+    !view ||
+    typeof view.resolveAtomPick !== 'function' ||
+    typeof view.resolveBondPick !== 'function'
+  ) {
+    throw new Error(
+      'createVRPicker requires a molecule view with resolveAtomPick & resolveBondPick'
+    );
   }
-  const debugLast = { bondPickRaw:null, atomPickRaw:null, durations:null };
+  const debugLast = { bondPickRaw: null, atomPickRaw: null, durations: null };
   function pickCore(ray) {
     __count('vrPicker#pickCore');
     if (!ray) return null;
     const t0 = performance.now();
     const pick = scene.pickWithRay(ray);
-  if (!pick || !pick.hit) { debugLast.durations = { total: performance.now()-t0 }; return null; }
+    if (!pick || !pick.hit) {
+      debugLast.durations = { total: performance.now() - t0 };
+      return null;
+    }
     // Attempt bond first
     const b = view.resolveBondPick(pick);
-  if (b) { debugLast.bondPickRaw = pick; debugLast.durations = { total: performance.now()-t0 }; return b; }
+    if (b) {
+      debugLast.bondPickRaw = pick;
+      debugLast.durations = { total: performance.now() - t0 };
+      return b;
+    }
     const a = view.resolveAtomPick(pick);
-    if (a) { debugLast.atomPickRaw = pick; debugLast.durations = { total: performance.now()-t0 }; return a; }
-    debugLast.durations = { total: performance.now()-t0 }; return null;
+    if (a) {
+      debugLast.atomPickRaw = pick;
+      debugLast.durations = { total: performance.now() - t0 };
+      return a;
+    }
+    debugLast.durations = { total: performance.now() - t0 };
+    return null;
   }
   function pickBondWithRay(ray) {
     __count('vrPicker#pickBondWithRay');
@@ -47,6 +66,9 @@ export function createVRPicker({ scene, view }) {
     if (!pick || !pick.hit) return null;
     return view.resolveAtomPick(pick);
   }
-  function pickWithRay(ray) { __count('vrPicker#pickWithRay'); return pickCore(ray); }
+  function pickWithRay(ray) {
+    __count('vrPicker#pickWithRay');
+    return pickCore(ray);
+  }
   return { pickWithRay, pickBondWithRay, pickAtomWithRay, debugLast };
 }

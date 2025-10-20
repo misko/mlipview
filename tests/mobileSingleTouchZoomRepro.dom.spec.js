@@ -12,10 +12,17 @@ describe('mobile: single-finger should not zoom (bug repro)', () => {
   }
   function mkScene(canvas) {
     return {
-      pointerX: 0, pointerY: 0,
+      pointerX: 0,
+      pointerY: 0,
       onPointerObservable: { add: () => {} },
-      getEngine(){ return { getRenderingCanvas(){ return canvas; } }; },
-      onBeforeRenderObservable: { add: () => {} }
+      getEngine() {
+        return {
+          getRenderingCanvas() {
+            return canvas;
+          },
+        };
+      },
+      onBeforeRenderObservable: { add: () => {} },
     };
   }
 
@@ -25,12 +32,22 @@ describe('mobile: single-finger should not zoom (bug repro)', () => {
 
     // Camera stub that zooms on pointermove if attached (simulates Babylon input still active)
     let attached = false;
-    const onMove = () => { if (attached) camera.radius += 1; };
+    const onMove = () => {
+      if (attached) camera.radius += 1;
+    };
     const camera = {
-      alpha: 1, beta: 1, radius: 10,
+      alpha: 1,
+      beta: 1,
+      radius: 10,
       inputs: { attached: { pointers: {} }, removeByType: jest.fn(), remove: jest.fn() },
-      attachControl: jest.fn(() => { canvas.addEventListener('pointermove', onMove); attached = true; }),
-      detachControl: jest.fn(() => { canvas.removeEventListener('pointermove', onMove); attached = false; })
+      attachControl: jest.fn(() => {
+        canvas.addEventListener('pointermove', onMove);
+        attached = true;
+      }),
+      detachControl: jest.fn(() => {
+        canvas.removeEventListener('pointermove', onMove);
+        attached = false;
+      }),
     };
     // Attach once like the app does
     camera.attachControl(canvas, true);
@@ -38,7 +55,18 @@ describe('mobile: single-finger should not zoom (bug repro)', () => {
     const scene = mkScene(canvas);
 
     // Install touch controls - prior to fix this won't stop the camera from zooming on single finger
-    installTouchControls({ canvas, scene, camera, picking: { _debug: { get dragActive(){ return false; } } } });
+    installTouchControls({
+      canvas,
+      scene,
+      camera,
+      picking: {
+        _debug: {
+          get dragActive() {
+            return false;
+          },
+        },
+      },
+    });
 
     const start = new Event('touchstart', { bubbles: true, cancelable: true });
     start.changedTouches = [{ identifier: 0, clientX: 100, clientY: 100 }];

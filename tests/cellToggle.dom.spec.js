@@ -2,20 +2,50 @@
 
 // Verify that a single Cell button toggles both cell and ghost states and updates label
 
-jest.mock('../public/render/scene.js', () => ({ createScene: async () => ({ engine:{ runRenderLoop:(fn)=>{} }, scene:{ meshes:[], render:()=>{}, onPointerObservable:{ _l:[], add(fn){this._l.push(fn);} } }, camera:{ attachControl:()=>{} } }) }));
+jest.mock('../public/render/scene.js', () => ({
+  createScene: async () => ({
+    engine: { runRenderLoop: (fn) => {} },
+    scene: {
+      meshes: [],
+      render: () => {},
+      onPointerObservable: {
+        _l: [],
+        add(fn) {
+          this._l.push(fn);
+        },
+      },
+    },
+    camera: { attachControl: () => {} },
+  }),
+}));
 
-beforeAll(()=>{
-  if(!global.BABYLON){
-    global.BABYLON = { TransformNode: class {}, MeshBuilder: { CreateCylinder: ()=>({}), CreateSphere: ()=>({}) }, StandardMaterial: class {}, Color3: class {}, Vector3: class { constructor(x=0,y=0,z=0){ this.x=x; this.y=y; this.z=z; } }, Quaternion: class {}, Scene: class {}, Matrix: class {} };
+beforeAll(() => {
+  if (!global.BABYLON) {
+    global.BABYLON = {
+      TransformNode: class {},
+      MeshBuilder: { CreateCylinder: () => ({}), CreateSphere: () => ({}) },
+      StandardMaterial: class {},
+      Color3: class {},
+      Vector3: class {
+        constructor(x = 0, y = 0, z = 0) {
+          this.x = x;
+          this.y = y;
+          this.z = z;
+        }
+      },
+      Quaternion: class {},
+      Scene: class {},
+      Matrix: class {},
+    };
   }
 });
 
 // Minimal fetch stubs for endpoints invoked during viewer init
-global.fetch = async function(url){
-  return { ok:true, status:200, json: async ()=> ({}) };
+global.fetch = async function (url) {
+  return { ok: true, status: 200, json: async () => ({}) };
 };
 
-async function setup(){
+async function setup() {
   document.body.innerHTML = `
     <canvas id="viewer"></canvas>
     <div class="hud">
@@ -33,9 +63,17 @@ async function setup(){
   const { initNewViewer } = await import('../public/index.js');
   const { initCellToggle } = await import('../public/ui/cellToggle.js');
   const canvas = document.getElementById('viewer');
-  const viewer = await initNewViewer(canvas, { elements:[{Z:8},{Z:1},{Z:1}], positions:[{x:0,y:0,z:0},{x:0.96,y:0,z:0},{x:-0.24,y:0.93,z:0}], bonds:[] });
+  const viewer = await initNewViewer(canvas, {
+    elements: [{ Z: 8 }, { Z: 1 }, { Z: 1 }],
+    positions: [
+      { x: 0, y: 0, z: 0 },
+      { x: 0.96, y: 0, z: 0 },
+      { x: -0.24, y: 0.93, z: 0 },
+    ],
+    bonds: [],
+  });
   window.viewerApi = viewer;
-  initCellToggle({ getViewer: ()=> viewer });
+  initCellToggle({ getViewer: () => viewer });
   return viewer;
 }
 

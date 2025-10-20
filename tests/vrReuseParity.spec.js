@@ -6,16 +6,25 @@ function makeMockScene() {
   return {
     meshes: [],
     _renderCalls: 0,
-    render(){ this._renderCalls++; },
+    render() {
+      this._renderCalls++;
+    },
     createDefaultXRExperienceAsync: async () => ({ baseExperience: {} }),
   };
 }
 function makeMockEngine(scene) {
   return {
     _loops: 0,
-    runRenderLoop(cb){ this._cb = cb; },
-    step(){ if (this._cb) { this._loops++; this._cb(); } },
-    resize(){},
+    runRenderLoop(cb) {
+      this._cb = cb;
+    },
+    step() {
+      if (this._cb) {
+        this._loops++;
+        this._cb();
+      }
+    },
+    resize() {},
     // minimal compatibility for code expecting engine reference
   };
 }
@@ -25,7 +34,7 @@ describe('VR reuse parity', () => {
     // Arrange a pseudo-viewer environment
     const scene = makeMockScene();
     // Pretend we have some atom meshes already
-    for (let i=0;i<10;i++) scene.meshes.push({ name: 'atom_'+i });
+    for (let i = 0; i < 10; i++) scene.meshes.push({ name: 'atom_' + i });
     const engine = makeMockEngine(scene);
     global.window = global.window || {};
     window._viewer = { engine, scene };

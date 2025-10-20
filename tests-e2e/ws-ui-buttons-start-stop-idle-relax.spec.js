@@ -26,7 +26,9 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
   await page.evaluate(async () => {
     const ws = window.__fairchem_ws__ || window.__WS_API__;
     await ws.ensureConnected();
-    try { await ws.waitForEnergy({ timeoutMs: 20000 }); } catch {}
+    try {
+      await ws.waitForEnergy({ timeoutMs: 20000 });
+    } catch {}
   });
 
   // Expect auto MD to run and produce >= 12 frames
@@ -34,25 +36,41 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
     const ws = window.__fairchem_ws__;
     const N = (window.viewerApi?.state?.positions || []).length | 0;
     let count = 0;
-    const off = ws.onResult(r => { try { if (Array.isArray(r.positions) && r.positions.length === N) count++; } catch {} });
+    const off = ws.onResult((r) => {
+      try {
+        if (Array.isArray(r.positions) && r.positions.length === N) count++;
+      } catch {}
+    });
     try {
       const t0 = Date.now();
-      while (Date.now() - t0 < 25000 && count < 12) await new Promise(r => setTimeout(r, 100));
-    } finally { off && off(); }
+      while (Date.now() - t0 < 25000 && count < 12) await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      off && off();
+    }
     return count;
   });
   expect(mdFrames).toBeGreaterThanOrEqual(12);
 
   // Stop MD via UI toggle and verify stop indicator (use DOM click to avoid visibility issues)
   await page.waitForSelector('#toggleMD', { state: 'attached' });
-  await page.evaluate(() => { const el = document.getElementById('toggleMD'); if (el) el.click(); });
+  await page.evaluate(() => {
+    const el = document.getElementById('toggleMD');
+    if (el) el.click();
+  });
   const sawStopMd = await page.evaluate(async () => {
     const ws = window.__fairchem_ws__;
-    let saw = false; const off = ws.onResult(r => { try { if (r && (r.message === 'SIMULATION_STOPPED' || r.simulationStopped === true)) saw = true; } catch {} });
+    let saw = false;
+    const off = ws.onResult((r) => {
+      try {
+        if (r && (r.message === 'SIMULATION_STOPPED' || r.simulationStopped === true)) saw = true;
+      } catch {}
+    });
     try {
       const t0 = Date.now();
-      while (Date.now() - t0 < 6000 && !saw) await new Promise(r => setTimeout(r, 50));
-    } finally { off && off(); }
+      while (Date.now() - t0 < 6000 && !saw) await new Promise((r) => setTimeout(r, 50));
+    } finally {
+      off && off();
+    }
     return saw;
   });
   expect(sawStopMd).toBeTruthy();
@@ -61,54 +79,90 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
   const idleResults = await page.evaluate(async () => {
     const ws = window.__fairchem_ws__;
     const N = (window.viewerApi?.state?.positions || []).length | 0;
-    let count = 0; const off = ws.onResult(r => { try { if (r && typeof r.energy === 'number' && (!r.positions || r.positions.length !== N)) count++; } catch {} });
+    let count = 0;
+    const off = ws.onResult((r) => {
+      try {
+        if (r && typeof r.energy === 'number' && (!r.positions || r.positions.length !== N))
+          count++;
+      } catch {}
+    });
     try {
       const idx = 1; // hydrogen
       const start = window.viewerApi.state.positions[idx];
-      try { window.viewerApi.selection.clickAtom(idx); } catch {}
+      try {
+        window.viewerApi.selection.clickAtom(idx);
+      } catch {}
       const planePoint = { x: start.x, y: start.y, z: start.z };
       const planeNormal = { x: 1, y: 0, z: 0 };
       const intersector0 = () => ({ x: planePoint.x, y: planePoint.y, z: planePoint.z });
-      window.viewerApi.manipulation.beginDrag(intersector0, { planePoint, planeNormal, source: 'desktop' });
+      window.viewerApi.manipulation.beginDrag(intersector0, {
+        planePoint,
+        planeNormal,
+        source: 'desktop',
+      });
       for (let i = 0; i < 20; i++) {
         const dx = (i % 2 ? 1 : -1) * 0.01;
         const p = { x: start.x + dx, y: start.y, z: start.z };
         const intersector = () => ({ x: p.x, y: p.y, z: p.z });
         window.viewerApi.manipulation.updateDrag(intersector);
-        try { await window.viewerApi.requestSimpleCalculateNow(); } catch {}
-        await new Promise(r => setTimeout(r, 50));
+        try {
+          await window.viewerApi.requestSimpleCalculateNow();
+        } catch {}
+        await new Promise((r) => setTimeout(r, 50));
       }
       window.viewerApi.manipulation.endDrag();
       const t0 = Date.now();
-      while (Date.now() - t0 < 5000 && count < 12) await new Promise(r => setTimeout(r, 50));
-    } finally { off && off(); }
+      while (Date.now() - t0 < 5000 && count < 12) await new Promise((r) => setTimeout(r, 50));
+    } finally {
+      off && off();
+    }
     return count;
   });
   expect(idleResults).toBeGreaterThanOrEqual(12);
 
   // Start Relax via UI toggle and collect >= 12 frames
   await page.waitForSelector('#toggleRelax', { state: 'attached' });
-  await page.evaluate(() => { const el = document.getElementById('toggleRelax'); if (el) el.click(); });
+  await page.evaluate(() => {
+    const el = document.getElementById('toggleRelax');
+    if (el) el.click();
+  });
   const relaxFrames = await page.evaluate(async () => {
     const ws = window.__fairchem_ws__;
-    let count = 0; const off = ws.onResult(r => { try { if (Array.isArray(r.positions)) count++; } catch {} });
+    let count = 0;
+    const off = ws.onResult((r) => {
+      try {
+        if (Array.isArray(r.positions)) count++;
+      } catch {}
+    });
     try {
       const t0 = Date.now();
-      while (Date.now() - t0 < 20000 && count < 12) await new Promise(r => setTimeout(r, 100));
-    } finally { off && off(); }
+      while (Date.now() - t0 < 20000 && count < 12) await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      off && off();
+    }
     return count;
   });
   expect(relaxFrames).toBeGreaterThanOrEqual(12);
 
   // Stop Relax via UI toggle and verify stop indicator
-  await page.evaluate(() => { const el = document.getElementById('toggleRelax'); if (el) el.click(); });
+  await page.evaluate(() => {
+    const el = document.getElementById('toggleRelax');
+    if (el) el.click();
+  });
   const sawStopRelax = await page.evaluate(async () => {
     const ws = window.__fairchem_ws__;
-    let saw = false; const off = ws.onResult(r => { try { if (r && (r.message === 'SIMULATION_STOPPED' || r.simulationStopped === true)) saw = true; } catch {} });
+    let saw = false;
+    const off = ws.onResult((r) => {
+      try {
+        if (r && (r.message === 'SIMULATION_STOPPED' || r.simulationStopped === true)) saw = true;
+      } catch {}
+    });
     try {
       const t0 = Date.now();
-      while (Date.now() - t0 < 6000 && !saw) await new Promise(r => setTimeout(r, 50));
-    } finally { off && off(); }
+      while (Date.now() - t0 < 6000 && !saw) await new Promise((r) => setTimeout(r, 50));
+    } finally {
+      off && off();
+    }
     return saw;
   });
   expect(sawStopRelax).toBeTruthy();

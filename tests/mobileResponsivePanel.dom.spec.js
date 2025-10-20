@@ -2,16 +2,23 @@
 
 import { buildDesktopPanel } from '../public/ui/desktopPanel.js';
 
-function setViewport(width){
+function setViewport(width) {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
   // jsdom doesn't implement matchMedia fully; provide a stub to satisfy our code
   if (!window.matchMedia) {
-    window.matchMedia = (q)=>({ matches: /max-width:\s*800px/.test(q) ? (width <= 800) : false, media:q, addListener:()=>{}, removeListener:()=>{}, addEventListener:()=>{}, removeEventListener:()=>{} });
+    window.matchMedia = (q) => ({
+      matches: /max-width:\s*800px/.test(q) ? width <= 800 : false,
+      media: q,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
   }
 }
 
 describe('responsive: desktop panel vs mobile top bar', () => {
-  beforeEach(()=>{
+  beforeEach(() => {
     document.body.innerHTML = '<div id="app"></div>';
     // default: desktop size
     setViewport(1200);

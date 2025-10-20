@@ -11,15 +11,23 @@ import { test, expect } from '@playwright/test';
 
 async function exposeHighlight(page) {
   await page.addInitScript(() => {
-    window.__MLIP_E2E__ = { getHighlightInfo: () => {
-      const scene = window.scene; // if app exposed it; else try from global BABYLON
-      try {
-        const meshes = scene?.meshes || [];
-        const hi = meshes.filter(m => m.name && m.name.startsWith('highlight_'));
-        return hi.map(m => ({ name: m.name, pos: m.position && { x:m.position.x, y:m.position.y, z:m.position.z },
-          scaling: m.scaling && { x:m.scaling.x, y:m.scaling.y, z:m.scaling.z }, isVisible: !!m.isVisible }));
-      } catch(e) { return { error: e.message }; }
-    }};
+    window.__MLIP_E2E__ = {
+      getHighlightInfo: () => {
+        const scene = window.scene; // if app exposed it; else try from global BABYLON
+        try {
+          const meshes = scene?.meshes || [];
+          const hi = meshes.filter((m) => m.name && m.name.startsWith('highlight_'));
+          return hi.map((m) => ({
+            name: m.name,
+            pos: m.position && { x: m.position.x, y: m.position.y, z: m.position.z },
+            scaling: m.scaling && { x: m.scaling.x, y: m.scaling.y, z: m.scaling.z },
+            isVisible: !!m.isVisible,
+          }));
+        } catch (e) {
+          return { error: e.message };
+        }
+      },
+    };
   });
 }
 
@@ -35,9 +43,12 @@ test.describe('Benzene selection / highlight cleanliness', () => {
       // Expect a selector panel to appear - we look for any button or option containing 'benzene'
       const benzeneOption = page.locator('text=/benzene/i');
       // Allow some time for fetch of molecule list
-      if (await benzeneOption.count() === 0) {
+      if ((await benzeneOption.count()) === 0) {
         // Wait for dynamic list
-        await benzeneOption.first().waitFor({ state: 'visible', timeout: 5000 }).catch(()=>{});
+        await benzeneOption
+          .first()
+          .waitFor({ state: 'visible', timeout: 5000 })
+          .catch(() => {});
       }
       if (await benzeneOption.count()) {
         await benzeneOption.first().click();
@@ -53,7 +64,13 @@ test.describe('Benzene selection / highlight cleanliness', () => {
     // If not available, we just ensure no visible highlight sphere with extremely large scaling.
     let suspicious = [];
     if (Array.isArray(highlightInfo)) {
-      suspicious = highlightInfo.filter(h => h.isVisible && h.name.includes('highlight_atom') && h.scaling && (h.scaling.x > 2.5 || h.scaling.y > 2.5 || h.scaling.z > 2.5));
+      suspicious = highlightInfo.filter(
+        (h) =>
+          h.isVisible &&
+          h.name.includes('highlight_atom') &&
+          h.scaling &&
+          (h.scaling.x > 2.5 || h.scaling.y > 2.5 || h.scaling.z > 2.5)
+      );
     }
 
     expect(suspicious.length, 'No oversized highlight sphere should remain visible').toBe(0);

@@ -8,7 +8,8 @@ beforeAll(async () => {
 describe('energy plot DOM integration', () => {
   test('adds points without error', () => {
     const canvas = document.createElement('canvas');
-    canvas.width = 200; canvas.height = 100;
+    canvas.width = 200;
+    canvas.height = 100;
     document.body.appendChild(canvas);
     const plot = createLinePlot(canvas, { maxPoints: 5 });
     plot.addPoint(0, 1.0);

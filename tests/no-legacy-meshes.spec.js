@@ -7,7 +7,7 @@ describe('no legacy mesh artifacts', () => {
     const legacyNames = ['atomSelect', 'bondSelMesh'];
     // If there is a global scene stub (some other test might have added one), inspect it.
     if (global.scene && Array.isArray(global.scene.meshes)) {
-      const present = global.scene.meshes.map(m => m.name).filter(n => legacyNames.includes(n));
+      const present = global.scene.meshes.map((m) => m.name).filter((n) => legacyNames.includes(n));
       expect(present).toHaveLength(0);
     } else {
       // Without a scene, guarantee by construction (nothing registered) so test passes but still asserts expectation intent.

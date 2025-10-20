@@ -25,6 +25,7 @@ When enabled, the UMA replica emits lines like the following:
   - `[UMA][geom][out] item=0 E=[-2079.8650...] forces=[[...], [...], [...]]`
 
 You may also see timing and device lines useful for performance checks:
+
 - `[UMA] predict called on device cuda size=1`
 - `[UMA] predict finished size=1 wall=0.0267s ms/item=26.72`
 
@@ -56,6 +57,7 @@ You may also see timing and device lines useful for performance checks:
   - Enable only for short, targeted tests; disable for load or long streaming runs.
 
 Notes:
+
 - Geometry debug printing is intended for development and CI diagnostics. It adds I/O but does not change numerical results.
 - If you need to grep for a specific field in the Playwright log, e.g., to verify species wiring:
   - `grep -n "Z=\[1, 1, 8\]" test-ws-e2e.log || true`
@@ -103,11 +105,15 @@ import { getWS } from '../public/fairchem_ws_client.js';
 it('sends USER_INTERACTION init with atoms + positions', async () => {
   const ws = getWS();
   const sent = [];
-  ws.setTestHook(msg => sent.push(msg));
+  ws.setTestHook((msg) => sent.push(msg));
 
   // Simulate app init path
   const atomic_numbers = [8, 1, 1];
-  const positions = [[0,0,0],[0.96,0,0],[-0.24,0.93,0]];
+  const positions = [
+    [0, 0, 0],
+    [0.96, 0, 0],
+    [-0.24, 0.93, 0],
+  ];
   ws.userInteraction({ atomic_numbers, positions });
 
   // Minimal assertion on type and counts
@@ -128,7 +134,7 @@ it('resolves idle compute energy via waitForEnergy', async () => {
   const ws = getWS();
   // Inject an immediate frame to avoid standing up a backend in unit tests
   const p = ws.waitForEnergy({ timeoutMs: 100 });
-  ws.injectTestResult({ energy: -1.23, forces: [[0,0,0]], userInteractionCount: 1, simStep: 0 });
+  ws.injectTestResult({ energy: -1.23, forces: [[0, 0, 0]], userInteractionCount: 1, simStep: 0 });
   const { energy, forces } = await p;
   expect(energy).toBeCloseTo(-1.23, 6);
   expect(Array.isArray(forces)).toBe(true);
@@ -143,25 +149,29 @@ import { getWS } from '../public/fairchem_ws_client.js';
 it('requestSingleStep relax resolves with frame', async () => {
   const ws = getWS();
   // Simulate a backend response injected by the test harness
-  const resP = new Promise(resolve => {
-    ws.onResult(frame => resolve(frame));
+  const resP = new Promise((resolve) => {
+    ws.onResult((frame) => resolve(frame));
   });
   setTimeout(() => {
     ws.injectTestResult({
-      positions: [[0,0,0]],
-      forces: [[0,0,0]],
+      positions: [[0, 0, 0]],
+      forces: [[0, 0, 0]],
       energy: -2.0,
       simStep: 1,
     });
   }, 10);
 
-  const r = await ws.requestSingleStep({ type: 'relax', params: { calculator: 'lj', fmax: 0.1, max_step: 0.2, optimizer: 'bfgs' } });
+  const r = await ws.requestSingleStep({
+    type: 'relax',
+    params: { calculator: 'lj', fmax: 0.1, max_step: 0.2, optimizer: 'bfgs' },
+  });
   expect(typeof r.energy).toBe('number');
   await expect(resP).resolves.toBeDefined();
 });
 ```
 
 Notes:
+
 - In pure unit tests, prefer `injectTestResult()` over standing up the server.
 - Use `setTestHook()` to assert the shape and routing of outgoing messages, including counters.
 
@@ -178,7 +188,14 @@ await page.evaluate(() => {
   const ws = window.__fairchem_ws__;
   ws.setTestHook(window.__REC);
   // Kick off a user interaction init
-  ws.userInteraction({ atomic_numbers: [8,1,1], positions: [[0,0,0],[0.96,0,0],[-0.24,0.93,0]] });
+  ws.userInteraction({
+    atomic_numbers: [8, 1, 1],
+    positions: [
+      [0, 0, 0],
+      [0.96, 0, 0],
+      [-0.24, 0.93, 0],
+    ],
+  });
 });
 ```
 
@@ -188,7 +205,7 @@ await page.evaluate(() => {
 await page.evaluate(async () => {
   const ws = window.__fairchem_ws__;
   const p = ws.waitForEnergy({ timeoutMs: 1000 });
-  ws.injectTestResult({ energy: -1.0, forces: [[0,0,0]], simStep: 0 });
+  ws.injectTestResult({ energy: -1.0, forces: [[0, 0, 0]], simStep: 0 });
   const r = await p;
   // r.energy is -1.0
 });
@@ -199,11 +216,16 @@ await page.evaluate(async () => {
 ```ts
 await page.evaluate(() => {
   const ws = window.__fairchem_ws__;
-  ws.startSimulation({ type: 'md', params: { calculator: 'uma', temperature: 300, timestep_fs: 1.0, friction: 0.02 } });
+  ws.startSimulation({
+    type: 'md',
+    params: { calculator: 'uma', temperature: 300, timestep_fs: 1.0, friction: 0.02 },
+  });
 });
 // Optionally listen for frames via global fallback
 await page.evaluate(() => {
-  window.__ON_WS_RESULT__ = (obj) => { /* collect frames */ };
+  window.__ON_WS_RESULT__ = (obj) => {
+    /* collect frames */
+  };
 });
 // Stop later:
 await page.evaluate(() => window.__fairchem_ws__.stopSimulation());
@@ -235,6 +257,7 @@ await page.evaluate(() => window.__fairchem_ws__.stopSimulation());
 - [ ] If evaluating gating, set `ws.setCounters({ userInteractionCount, simStep })` on the client prior to sending `startSimulation`
 
 ---
+
 ## UI test intents (WebSocket, protobuf)
 
 - autoMdStartsRoy.ws.spec.js
@@ -291,7 +314,7 @@ await page.evaluate(() => window.__fairchem_ws__.stopSimulation());
   - Design alignment: Matches new_design.md — single-step MD via requestSingleStep; frames carry velocities. Should pass.
   - Status: Implemented with WS injection of velocities for two steps; asserts continuity.
 - Legacy REST parity tests (mark for removal)
-- fairchem_bfgs_parity.spec.js, relaxWaterIntegration.spec.js, water_relaxation_browser_parity.spec.js, water_relax_run_parity.spec.js, water_md_lj*.spec.js, water_md_run_stability.spec.js
+- fairchem_bfgs_parity.spec.js, relaxWaterIntegration.spec.js, water_relaxation_browser_parity.spec.js, water_relax_run_parity.spec.js, water_md_lj\*.spec.js, water_md_run_stability.spec.js
   - Reason: Exercise HTTP /serve/simple and /serve/relax endpoints removed in new_design.md.
   - Action: Remove or rewrite against WS-only protocol using ws.injectTestResult or a fake WS server.
 
@@ -308,4 +331,5 @@ await page.evaluate(() => window.__fairchem_ws__.stopSimulation());
   - Design alignment: Matches new_design.md — relax via WS single-step; idle USER_INTERACTION for recompute. Should pass.
 
 ---
+
 If you find any gaps or edge cases not covered here, add an example to this file so we can keep tests consistent with the new protocol.

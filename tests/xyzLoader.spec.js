@@ -5,7 +5,7 @@ describe('XYZ loader', () => {
   const sample = `3\nwater\nO 0 0 0\nH 0.95 0 0\nH -0.24 0.93 0`;
   test('parses valid XYZ', () => {
     const parsed = parseXYZ(sample);
-    expect(parsed.elements).toEqual(['O','H','H']);
+    expect(parsed.elements).toEqual(['O', 'H', 'H']);
     expect(parsed.positions.length).toBe(3);
   });
   test('applies to molecule state', () => {

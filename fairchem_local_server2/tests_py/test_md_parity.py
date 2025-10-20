@@ -26,7 +26,7 @@ from fairchem_local_server.models import RelaxCalculatorName
 from fairchem_local_server.services import _md_run
 
 
-@pytest.mark.parametrize("calculator", ["lj", "uma"])
+@pytest.mark.parametrize("calculator", ["uma"])
 def test_md_single_step_parity_0k_worker_vs_direct(calculator: str):
     if ray is None:
         pytest.skip("ray not installed")

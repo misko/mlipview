@@ -8,26 +8,45 @@
 import { parseXYZ, applyXYZToState } from '../public/util/xyzLoader.js';
 import { createMoleculeView } from '../public/render/moleculeView.js';
 
-async function loadXYZText(name){
+async function loadXYZText(name) {
   const fs = await import('fs');
   const path = await import('path');
-  const p = path.join(process.cwd(),'public','molecules',name);
+  const p = path.join(process.cwd(), 'public', 'molecules', name);
   if (!fs.existsSync(p)) return null; // allow skip
-  return fs.readFileSync(p,'utf8');
+  return fs.readFileSync(p, 'utf8');
 }
 
-function buildStateFromXYZ(xyzText){
+function buildStateFromXYZ(xyzText) {
   const parsed = parseXYZ(xyzText);
-  const state = { elements:[], positions:[], bonds:[], selection:null, showCell:false, showGhostCells:false, cell:{enabled:false}, bus:createBus() };
+  const state = {
+    elements: [],
+    positions: [],
+    bonds: [],
+    selection: null,
+    showCell: false,
+    showGhostCells: false,
+    cell: { enabled: false },
+    bus: createBus(),
+  };
   // Inject minimal event emitters used by xyzLoader adapter
-  state.markPositionsChanged = ()=> state.bus.emit('positionsChanged');
-  state.markBondsChanged = ()=> state.bus.emit('bondsChanged');
-  state.markCellChanged = ()=> state.bus.emit('cellChanged');
+  state.markPositionsChanged = () => state.bus.emit('positionsChanged');
+  state.markBondsChanged = () => state.bus.emit('bondsChanged');
+  state.markCellChanged = () => state.bus.emit('cellChanged');
   applyXYZToState(state, parsed);
   return { state, parsed };
 }
 
-function createBus(){const map=new Map();return {on:(e,f)=>{(map.get(e)||map.set(e,[]).get(e)).push(f);}, emit:(e)=>{(map.get(e)||[]).forEach(fn=>fn());}};}
+function createBus() {
+  const map = new Map();
+  return {
+    on: (e, f) => {
+      (map.get(e) || map.set(e, []).get(e)).push(f);
+    },
+    emit: (e) => {
+      (map.get(e) || []).forEach((fn) => fn());
+    },
+  };
+}
 
 describe('red sphere artifact regression', () => {
   test('atom highlight disabled after molecule switch', async () => {
@@ -40,16 +59,16 @@ describe('red sphere artifact regression', () => {
     const { state: royState } = buildStateFromXYZ(roy);
     const view = createMoleculeView({}, royState);
     // Select an atom in ROY (e.g., index 0)
-    royState.selection = { kind:'atom', data:{ index:0 } };
+    royState.selection = { kind: 'atom', data: { index: 0 } };
     royState.bus.emit('selectionChanged');
     const hi = view._internals.highlight;
     expect(hi.atom.isVisible).toBe(true);
     // Switch to Benzene: mutate state in-place simulating loader
     const parsedB = parseXYZ(benz);
     // Provide required mark* functions if lost
-    royState.markPositionsChanged = ()=> royState.bus.emit('positionsChanged');
-    royState.markBondsChanged = ()=> royState.bus.emit('bondsChanged');
-    royState.markCellChanged = ()=> royState.bus.emit('cellChanged');
+    royState.markPositionsChanged = () => royState.bus.emit('positionsChanged');
+    royState.markBondsChanged = () => royState.bus.emit('bondsChanged');
+    royState.markCellChanged = () => royState.bus.emit('cellChanged');
     applyXYZToState(royState, parsedB); // overrides & emits events
     // Simulate recompute (empty -> should hide existing highlight)
     royState.bus.emit('bondsChanged');

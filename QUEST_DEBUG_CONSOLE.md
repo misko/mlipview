@@ -25,11 +25,13 @@
    - Note the IP address
 
 2. **Enable ADB on Computer**:
+
    ```bash
    adb connect YOUR_QUEST_IP:5555
    ```
 
 3. **Port Forward**:
+
    ```bash
    adb forward tcp:9222 localabstract:chrome_devtools_remote
    ```
@@ -44,10 +46,18 @@
    - Press Enter to execute
 
 2. **Bookmarklet Console**:
-   - Bookmark this JavaScript: 
+   - Bookmark this JavaScript:
    ```javascript
-   javascript:(function(){var script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/eruda';document.body.appendChild(script);script.onload=function(){eruda.init();}})();
+   javascript: (function () {
+     var script = document.createElement('script');
+     script.src = 'https://cdn.jsdelivr.net/npm/eruda';
+     document.body.appendChild(script);
+     script.onload = function () {
+       eruda.init();
+     };
+   })();
    ```
+
    - Click bookmark to show on-device console
 
 ## Quick Debug Commands

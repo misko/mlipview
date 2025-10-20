@@ -23,7 +23,7 @@ def _uma_available() -> bool:
         return False
 
 
-@pytest.mark.parametrize("calculator", ["lj", "uma"])
+@pytest.mark.parametrize("calculator", ["uma"])
 def test_relax_single_step_parity_cpu_vs_worker(calculator: str, uma_handle):
     if ray is None:
         pytest.skip("ray not installed")

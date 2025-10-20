@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import fs from 'fs';
 
 // Attempt to load localhost TLS certs for HTTPS dev (optional)
-function loadHttpsConfig(){
+function loadHttpsConfig() {
   const keyPath = './localhost-key.pem';
   const certPath = './localhost-cert.pem';
   try {
@@ -18,19 +18,19 @@ import path from 'path';
 // We serve static assets out of public/. Index.html already lives there and uses module scripts.
 // Output will go to dist/ which can be hosted statically (no Node server required for basic usage).
 // Simple plugin to redirect bare '/' requests explicitly to '/index.html' (helps when hostname restrictions / caching caused prior mismatch)
-function rootRedirectPlugin(){
+function rootRedirectPlugin() {
   return {
     name: 'root-redirect',
-    configureServer(server){
-      server.middlewares.use((req,res,next)=>{
-        if(req.url === '/' || req.url === ''){
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url === '/' || req.url === '') {
           res.statusCode = 302;
-          res.setHeader('Location','/index.html');
+          res.setHeader('Location', '/index.html');
           return res.end();
         }
         next();
       });
-    }
+    },
   };
 }
 
@@ -38,13 +38,14 @@ function rootRedirectPlugin(){
 const backendProtocol = process.env.FASTAPI_PROTOCOL || 'http';
 const backendHost = process.env.FASTAPI_HOST || '127.0.0.1';
 const backendPort = process.env.FASTAPI_PORT || '8000';
-const backendTarget = process.env.FASTAPI_URL || `${backendProtocol}://${backendHost}:${backendPort}`;
+const backendTarget =
+  process.env.FASTAPI_URL || `${backendProtocol}://${backendHost}:${backendPort}`;
 
 export default defineConfig({
-   appType: 'mpa',
+  appType: 'mpa',
   root: path.resolve(__dirname, 'public'),
   publicDir: false,
-    resolve: {
+  resolve: {
     alias: {
       '@src': path.resolve(__dirname, 'src'),
     },
@@ -60,7 +61,7 @@ export default defineConfig({
         index: path.resolve(__dirname, 'public', 'index.html'),
         wsTest: path.resolve(__dirname, 'public', 'ws-test.html'),
       },
-    }
+    },
   },
   server: {
     port: 5173,
@@ -69,22 +70,22 @@ export default defineConfig({
     // Restrict or extend allowed host headers. Needed when accessing via hostname (e.g. http://kalman:5173).
     // Add more hostnames or patterns as needed; you can also expose an env var if desired.
     allowedHosts: ['kalman'],
-        fs: {
+    fs: {
       // allow Vite to serve modules from project root (so /src/* works)
       allow: [__dirname],
     },
-  https: !!httpsCfg && !process.env.NO_VITE_HTTPS ? httpsCfg : false,
-  proxy: {
-    '/serve/simple': { target: backendTarget, changeOrigin: true, secure: false },
-    '/serve/relax': { target: backendTarget, changeOrigin: true, secure: false },
-    '/serve/md': { target: backendTarget, changeOrigin: true, secure: false },
-    '/serve/health': { target: backendTarget, changeOrigin: true, secure: false },
-    '^/ws($|/)': { target: backendTarget, changeOrigin: true, secure: false, ws: true }
-    }
+    https: !!httpsCfg && !process.env.NO_VITE_HTTPS ? httpsCfg : false,
+    proxy: {
+      '/serve/simple': { target: backendTarget, changeOrigin: true, secure: false },
+      '/serve/relax': { target: backendTarget, changeOrigin: true, secure: false },
+      '/serve/md': { target: backendTarget, changeOrigin: true, secure: false },
+      '/serve/health': { target: backendTarget, changeOrigin: true, secure: false },
+      '^/ws($|/)': { target: backendTarget, changeOrigin: true, secure: false, ws: true },
+    },
   },
   preview: {
     port: 5174,
-    host: '0.0.0.0'
+    host: '0.0.0.0',
   },
   plugins: [
     rootRedirectPlugin(),
@@ -112,8 +113,8 @@ export default defineConfig({
         } catch (e) {
           console.warn('[vite][copy-molecules] failed:', e?.message || e);
         }
-      }
-    }
+      },
+    },
   ],
-  optimizeDeps: { },
+  optimizeDeps: {},
 });

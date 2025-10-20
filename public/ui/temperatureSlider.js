@@ -6,23 +6,35 @@
 function buildTemps() {
   const steps = 30;
   const MAX_K = 3000;
-  let temps = Array.from({ length: steps }, (_, i) => Math.round(i * MAX_K / (steps - 1)));
+  let temps = Array.from({ length: steps }, (_, i) => Math.round((i * MAX_K) / (steps - 1)));
   // Force include 298 by finding closest index and setting it; adjust neighbor if collision.
-  let idx298 = 0; let closestDiff = Infinity;
+  let idx298 = 0;
+  let closestDiff = Infinity;
   for (let i = 0; i < temps.length; i++) {
     const d = Math.abs(temps[i] - 298);
-    if (d < closestDiff) { closestDiff = d; idx298 = i; }
+    if (d < closestDiff) {
+      closestDiff = d;
+      idx298 = i;
+    }
   }
   temps[idx298] = 298;
-  for (let i = 1; i < temps.length; i++) { if (temps[i] === temps[i - 1]) temps[i] += 1; }
+  for (let i = 1; i < temps.length; i++) {
+    if (temps[i] === temps[i - 1]) temps[i] += 1;
+  }
   // Force include 1500
-  let idx1500 = 0; let diff1500 = Infinity;
+  let idx1500 = 0;
+  let diff1500 = Infinity;
   for (let i = 0; i < temps.length; i++) {
     const d = Math.abs(temps[i] - 1500);
-    if (d < diff1500) { diff1500 = d; idx1500 = i; }
+    if (d < diff1500) {
+      diff1500 = d;
+      idx1500 = i;
+    }
   }
   temps[idx1500] = 1500;
-  for (let i = 1; i < temps.length; i++) { if (temps[i] === temps[i - 1]) temps[i] += 1; }
+  for (let i = 1; i < temps.length; i++) {
+    if (temps[i] === temps[i - 1]) temps[i] += 1;
+  }
   return { temps, idx1500, MAX_K };
 }
 
@@ -64,7 +76,7 @@ export function initTemperatureSlider({ hudEl, getViewer }) {
   ticks.style.fontSize = '9px';
   ticks.style.display = 'block';
   ticks.style.pointerEvents = 'none';
-  function addTick(val, labelText){
+  function addTick(val, labelText) {
     const span = document.createElement('span');
     span.textContent = labelText;
     span.style.position = 'absolute';
@@ -77,7 +89,9 @@ export function initTemperatureSlider({ hudEl, getViewer }) {
   //addTick(400, '400K');
   addTick(MAX_K, MAX_K + 'K');
 
-  function getTempForIndex(idx) { return temps[idx] ?? 1500; }
+  function getTempForIndex(idx) {
+    return temps[idx] ?? 1500;
+  }
   function updateTarget(idx) {
     const T = getTempForIndex(idx);
     window.__MLIP_TARGET_TEMPERATURE = T;
@@ -90,14 +104,23 @@ export function initTemperatureSlider({ hudEl, getViewer }) {
 
   // Initialize from existing global if provided by loader (XYZ temperature), else default to 1500
   if (typeof window !== 'undefined') {
-    const preset = (window.__MLIP_TARGET_TEMPERATURE != null) ? Number(window.__MLIP_TARGET_TEMPERATURE) : null;
+    const preset =
+      window.__MLIP_TARGET_TEMPERATURE != null ? Number(window.__MLIP_TARGET_TEMPERATURE) : null;
     if (preset == null || !Number.isFinite(preset)) {
       window.__MLIP_TARGET_TEMPERATURE = 1500;
       slider.value = String(idx1500);
     } else {
       // Find nearest slider index for pre-set temperature
-      let bestI = 0, bestD = Infinity; const want = preset;
-      for (let i=0;i<temps.length;i++){ const d = Math.abs(temps[i]-want); if (d < bestD) { bestD=d; bestI=i; } }
+      let bestI = 0,
+        bestD = Infinity;
+      const want = preset;
+      for (let i = 0; i < temps.length; i++) {
+        const d = Math.abs(temps[i] - want);
+        if (d < bestD) {
+          bestD = d;
+          bestI = i;
+        }
+      }
       slider.value = String(bestI);
     }
   }
@@ -109,7 +132,8 @@ export function initTemperatureSlider({ hudEl, getViewer }) {
   col.style.display = 'flex';
   col.style.flexDirection = 'column';
   col.style.alignItems = 'stretch';
-  col.appendChild(slider); col.appendChild(ticks);
+  col.appendChild(slider);
+  col.appendChild(ticks);
 
   wrapper.appendChild(label);
   wrapper.appendChild(col);
@@ -118,11 +142,17 @@ export function initTemperatureSlider({ hudEl, getViewer }) {
   // Mark widget so a global sync can find and update it later
   wrapper.setAttribute('data-mlip-temp-widget', 'true');
 
-  return { getTemperature: () => window.__MLIP_TARGET_TEMPERATURE, setIndex: (i) => { slider.value = String(i); updateTarget(i); } };
+  return {
+    getTemperature: () => window.__MLIP_TARGET_TEMPERATURE,
+    setIndex: (i) => {
+      slider.value = String(i);
+      updateTarget(i);
+    },
+  };
 }
 
 // Synchronize an existing temperature slider widget to the current global temperature
-export function syncTemperatureSliderToGlobal(root=document){
+export function syncTemperatureSliderToGlobal(root = document) {
   try {
     const wrapper = root.querySelector('#tempSliderWrapper');
     if (!wrapper) return;
@@ -130,11 +160,20 @@ export function syncTemperatureSliderToGlobal(root=document){
     const label = wrapper.querySelector('#tempLabel');
     if (!slider || !label) return;
     const { temps } = buildTemps();
-    const want = (typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null)
-      ? Number(window.__MLIP_TARGET_TEMPERATURE) : null;
+    const want =
+      typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null
+        ? Number(window.__MLIP_TARGET_TEMPERATURE)
+        : null;
     if (want == null || !Number.isFinite(want)) return;
-    let bestI = 0, bestD = Infinity;
-    for (let i=0;i<temps.length;i++){ const d = Math.abs(temps[i]-want); if (d < bestD) { bestD=d; bestI=i; } }
+    let bestI = 0,
+      bestD = Infinity;
+    for (let i = 0; i < temps.length; i++) {
+      const d = Math.abs(temps[i] - want);
+      if (d < bestD) {
+        bestD = d;
+        bestI = i;
+      }
+    }
     slider.value = String(bestI);
     label.textContent = `T=${want}K`;
   } catch {}
@@ -144,6 +183,10 @@ export function syncTemperatureSliderToGlobal(root=document){
 try {
   if (typeof window !== 'undefined' && !window.__MLIP_TEMP_SLIDER_EVT) {
     window.__MLIP_TEMP_SLIDER_EVT = true;
-    document.addEventListener('mlip:temperature-changed', ()=>{ try { syncTemperatureSliderToGlobal(document); } catch {} });
+    document.addEventListener('mlip:temperature-changed', () => {
+      try {
+        syncTemperatureSliderToGlobal(document);
+      } catch {}
+    });
   }
 } catch {}

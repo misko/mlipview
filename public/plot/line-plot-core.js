@@ -7,7 +7,12 @@ export function createLinePlot(arg1, maybeOpts) {
   // New preferred signature: createLinePlot({ width, height, getContext, updateTexture, ... })
   let opts;
   let canvasRef = null;
-  if (arg1 && typeof arg1 === 'object' && typeof arg1.getContext === 'function' && (arg1.nodeName === 'CANVAS' || arg1.tagName === 'CANVAS')) {
+  if (
+    arg1 &&
+    typeof arg1 === 'object' &&
+    typeof arg1.getContext === 'function' &&
+    (arg1.nodeName === 'CANVAS' || arg1.tagName === 'CANVAS')
+  ) {
     canvasRef = arg1;
     opts = { ...(maybeOpts || {}) };
     if (!opts.getContext) {
@@ -28,7 +33,9 @@ export function createLinePlot(arg1, maybeOpts) {
     getContext = () => canvasRef.getContext('2d');
   }
   if (!getContext) {
-    throw new Error('createLinePlot: getContext function required (provide opts.getContext or pass a <canvas>)');
+    throw new Error(
+      'createLinePlot: getContext function required (provide opts.getContext or pass a <canvas>)'
+    );
   }
   const updateTexture = opts.updateTexture || (() => {});
   const labels = opts.labels || { x: 'X', y: 'Y' };
@@ -41,7 +48,7 @@ export function createLinePlot(arg1, maybeOpts) {
 
   function addPoint(value, stepIndex) {
     if (typeof value !== 'number' || !isFinite(value)) return; // ignore non-finite
-    const s = (typeof stepIndex === 'number') ? stepIndex : autoStep++;
+    const s = typeof stepIndex === 'number' ? stepIndex : autoStep++;
     steps.push(s);
     data.push(value);
     if (data.length > maxPoints) {
@@ -72,8 +79,10 @@ export function createLinePlot(arg1, maybeOpts) {
       if (d < min) min = d;
       if (d > max) max = d;
     }
-    if (min === max) { // expand degenerate range
-      min -= 0.5; max += 0.5;
+    if (min === max) {
+      // expand degenerate range
+      min -= 0.5;
+      max += 0.5;
     }
     return { min, max };
   }
@@ -82,9 +91,9 @@ export function createLinePlot(arg1, maybeOpts) {
     const ctx = getContext();
     if (!ctx) return;
 
-    ctx.clearRect(0,0,width,height);
+    ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#000';
-    ctx.fillRect(0,0,width,height);
+    ctx.fillRect(0, 0, width, height);
 
     // padding for axes labels
     const padL = 50;
@@ -107,11 +116,11 @@ export function createLinePlot(arg1, maybeOpts) {
     // labels
     ctx.fillStyle = '#ccc';
     ctx.font = '20px sans-serif';
-    ctx.fillText(labels.x, originX + plotW/2 - ctx.measureText(labels.x).width/2, originY + 30);
+    ctx.fillText(labels.x, originX + plotW / 2 - ctx.measureText(labels.x).width / 2, originY + 30);
     ctx.save();
-    ctx.translate(originX - 35, originY - plotH/2);
-    ctx.rotate(-Math.PI/2);
-    ctx.fillText(labels.y, -ctx.measureText(labels.y).width/2, 0);
+    ctx.translate(originX - 35, originY - plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText(labels.y, -ctx.measureText(labels.y).width / 2, 0);
     ctx.restore();
 
     if (data.length) {
@@ -124,7 +133,8 @@ export function createLinePlot(arg1, maybeOpts) {
         const x = originX + (i / Math.max(1, data.length - 1)) * plotW;
         const yNorm = (data[i] - min) / range; // 0..1
         const y = originY - yNorm * plotH;
-        if (i === 0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       }
       ctx.stroke();
     }
@@ -139,7 +149,8 @@ export function createLinePlot(arg1, maybeOpts) {
     setVisible,
     data: () => data.slice(),
     steps: () => steps.slice(),
-    setAutoStep(v) { autoStep = v|0; },
+    setAutoStep(v) {
+      autoStep = v | 0;
+    },
   };
 }
-

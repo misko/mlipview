@@ -18,10 +18,10 @@ describe('XR dropdown -> VR API wiring (jsdom)', () => {
           // simulate success for vr/ar/none
           return mode === 'vr' || mode === 'ar' || mode === 'none';
         }),
-        enterVR: jest.fn(async ()=>true),
-        enterAR: jest.fn(async ()=>true),
-        exitXR: jest.fn(async ()=>true)
-      }
+        enterVR: jest.fn(async () => true),
+        enterAR: jest.fn(async () => true),
+        exitXR: jest.fn(async () => true),
+      },
     };
   });
 
@@ -55,22 +55,28 @@ describe('XR dropdown -> VR API wiring (jsdom)', () => {
   test('fallback to enterVR/enterAR/exitXR when switchXR missing', async () => {
     // Replace vr object without switchXR
     window.viewerApi.vr = {
-      enterVR: jest.fn(async ()=>true),
-      enterAR: jest.fn(async ()=>true),
-      exitXR: jest.fn(async ()=>true)
+      enterVR: jest.fn(async () => true),
+      enterAR: jest.fn(async () => true),
+      exitXR: jest.fn(async () => true),
     };
     const { buildDesktopPanel } = await import('../public/ui/desktopPanel.js');
     buildDesktopPanel({ attachTo: document.getElementById('app') });
 
     const sel = document.getElementById('xrModeSelect');
     // VR
-    sel.value = 'vr'; sel.dispatchEvent(new Event('change')); await Promise.resolve();
+    sel.value = 'vr';
+    sel.dispatchEvent(new Event('change'));
+    await Promise.resolve();
     expect(window.viewerApi.vr.enterVR).toHaveBeenCalled();
     // AR
-    sel.value = 'ar'; sel.dispatchEvent(new Event('change')); await Promise.resolve();
+    sel.value = 'ar';
+    sel.dispatchEvent(new Event('change'));
+    await Promise.resolve();
     expect(window.viewerApi.vr.enterAR).toHaveBeenCalled();
     // None
-    sel.value = 'none'; sel.dispatchEvent(new Event('change')); await Promise.resolve();
+    sel.value = 'none';
+    sel.dispatchEvent(new Event('change'));
+    await Promise.resolve();
     expect(window.viewerApi.vr.exitXR).toHaveBeenCalled();
   });
 

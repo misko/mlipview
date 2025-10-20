@@ -33,13 +33,16 @@ function startServers() {
   httpServerRef = httpServer;
   httpServer.listen(PORT, '0.0.0.0', () => {
     const lan = getLanIp();
-    console.log(`[mlipviewer2] HTTP  listening on  http://localhost:${PORT}` + (lan ? `  (LAN: http://${lan}:${PORT})` : ''));
+    console.log(
+      `[mlipviewer2] HTTP  listening on  http://localhost:${PORT}` +
+        (lan ? `  (LAN: http://${lan}:${PORT})` : '')
+    );
   });
 
   // Attempt HTTPS if certs exist
   const certDirCandidates = [
     path.join(__dirname, 'certs'),
-    path.join(__dirname) // fallback if user placed certs at project root
+    path.join(__dirname), // fallback if user placed certs at project root
   ];
 
   let keyPath = null;
@@ -47,7 +50,11 @@ function startServers() {
   for (const dir of certDirCandidates) {
     const k = path.join(dir, 'localhost-key.pem');
     const c = path.join(dir, 'localhost-cert.pem');
-    if (fs.existsSync(k) && fs.existsSync(c)) { keyPath = k; certPath = c; break; }
+    if (fs.existsSync(k) && fs.existsSync(c)) {
+      keyPath = k;
+      certPath = c;
+      break;
+    }
   }
 
   if (!process.env.NO_HTTPS && keyPath && certPath) {
@@ -58,25 +65,37 @@ function startServers() {
       httpsServerRef = httpsServer;
       httpsServer.listen(SSL_PORT, '0.0.0.0', () => {
         const lan = getLanIp();
-        console.log(`[mlipviewer2] HTTPS listening on https://localhost:${SSL_PORT}` + (lan ? `  (LAN: https://${lan}:${SSL_PORT})` : ''));
+        console.log(
+          `[mlipviewer2] HTTPS listening on https://localhost:${SSL_PORT}` +
+            (lan ? `  (LAN: https://${lan}:${SSL_PORT})` : '')
+        );
       });
     } catch (e) {
       console.warn('[mlipviewer2] Failed to start HTTPS server:', e.message);
     }
   } else {
-    console.warn('[mlipviewer2] HTTPS certs not found (expected localhost-key.pem & localhost-cert.pem in ./certs). Skipping HTTPS.');
+    console.warn(
+      '[mlipviewer2] HTTPS certs not found (expected localhost-key.pem & localhost-cert.pem in ./certs). Skipping HTTPS.'
+    );
   }
 }
 
 async function stopServers() {
-  const closeServer = (srv) => new Promise((resolve) => {
-    try {
-      if (!srv) return resolve();
-      srv.close(() => resolve());
-      // In case of lingering keep-alive, force-timeout close
-      setTimeout(() => { try { srv.close(()=>resolve()); } catch {} }, 2000);
-    } catch { resolve(); }
-  });
+  const closeServer = (srv) =>
+    new Promise((resolve) => {
+      try {
+        if (!srv) return resolve();
+        srv.close(() => resolve());
+        // In case of lingering keep-alive, force-timeout close
+        setTimeout(() => {
+          try {
+            srv.close(() => resolve());
+          } catch {}
+        }, 2000);
+      } catch {
+        resolve();
+      }
+    });
   await closeServer(httpServerRef);
   await closeServer(httpsServerRef);
   httpServerRef = null;

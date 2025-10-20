@@ -5,9 +5,11 @@ import { createSelectionService } from '../public/domain/selectionService.js';
 function createMolState() {
   return {
     selection: createEmptySelection(),
-    elements: new Array(5).fill(0).map((_,i)=>({ Z:6, index:i })),
+    elements: new Array(5).fill(0).map((_, i) => ({ Z: 6, index: i })),
     markSelectionChangedCalls: 0,
-    markSelectionChanged() { this.markSelectionChangedCalls++; }
+    markSelectionChanged() {
+      this.markSelectionChangedCalls++;
+    },
   };
 }
 
@@ -17,7 +19,7 @@ describe('selectionService null selection robustness', () => {
     const svc = createSelectionService(molState);
     // Simulate external code nulling selection (as seen in browser error)
     molState.selection = null; // <-- replicates bad state
-    expect(()=> svc.clickAtom(0)).not.toThrow();
+    expect(() => svc.clickAtom(0)).not.toThrow();
     expect(molState.selection).toBeTruthy();
   });
 
@@ -25,8 +27,8 @@ describe('selectionService null selection robustness', () => {
     const molState = createMolState();
     const svc = createSelectionService(molState);
     molState.selection = null;
-    const bondRef = { i:0, j:1, key:'0-1', index:0 };
-    expect(()=> svc.clickBond(bondRef)).not.toThrow();
+    const bondRef = { i: 0, j: 1, key: '0-1', index: 0 };
+    expect(() => svc.clickBond(bondRef)).not.toThrow();
     expect(molState.selection).toBeTruthy();
   });
 });

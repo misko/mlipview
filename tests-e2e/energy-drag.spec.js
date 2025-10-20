@@ -16,7 +16,10 @@ test.describe('Energy plot updates on atom drag (full page)', () => {
     await page.waitForFunction(() => !!window._viewer, null, { timeout: 10000 });
     await page.waitForSelector('#energyLabel');
 
-    const parseSteps = txt => { const m = txt.match(/steps=(\d+)/); return m? +m[1] : 0; };
+    const parseSteps = (txt) => {
+      const m = txt.match(/steps=(\d+)/);
+      return m ? +m[1] : 0;
+    };
     const initialSteps = parseSteps(await page.locator('#energyLabel').innerText());
 
     // Perform deterministic position mutation inside the page context
@@ -24,7 +27,9 @@ test.describe('Energy plot updates on atom drag (full page)', () => {
       const v = window._viewer;
       if (!v || !v.state?.positions?.length) return;
       // Select first atom using public selection service API if available
-      try { v.selection.clickAtom?.(0); } catch {}
+      try {
+        v.selection.clickAtom?.(0);
+      } catch {}
       // Shift x coordinate slightly
       v.state.positions[0].x += 0.4;
       // Notify system of position change; energy debounced listener will fire
@@ -33,7 +38,7 @@ test.describe('Energy plot updates on atom drag (full page)', () => {
 
     // Allow debounce (50ms) + force compute + draw
     let afterSteps = initialSteps;
-    for (let t=0; t<12; t++) {
+    for (let t = 0; t < 12; t++) {
       await page.waitForTimeout(50);
       afterSteps = parseSteps(await page.locator('#energyLabel').innerText());
       if (afterSteps > initialSteps) break;

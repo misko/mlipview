@@ -5,7 +5,9 @@ test.describe('WS protocol: backpressure and ACK', () => {
   test('WAITING_FOR_ACK appears and then clears after ack', async ({ page, baseURL }) => {
     test.setTimeout(45_000);
     await page.goto(`${baseURL || ''}/index.html?autoMD=0`);
-    await page.waitForFunction(() => !!window.viewerApi && !!window.__MLIP_DEFAULT_LOADED, { timeout: 45000 });
+    await page.waitForFunction(() => !!window.viewerApi && !!window.__MLIP_DEFAULT_LOADED, {
+      timeout: 45000,
+    });
 
     const outcome = await page.evaluate(async () => {
       const ws = window.__fairchem_ws__;
@@ -19,22 +21,35 @@ test.describe('WS protocol: backpressure and ACK', () => {
         const off = ws.onResult((r) => {
           try {
             // Intentionally do NOT ack initially to trigger backpressure
-            events.push({ seq: r.seq|0, msg: r.message||null });
-            if (r && r.message === 'WAITING_FOR_ACK') { waitingSeen = true; seqSeen = r.seq|0; }
-            if (!firstSimSeq && Array.isArray(r.positions)) firstSimSeq = r.seq|0;
+            events.push({ seq: r.seq | 0, msg: r.message || null });
+            if (r && r.message === 'WAITING_FOR_ACK') {
+              waitingSeen = true;
+              seqSeen = r.seq | 0;
+            }
+            if (!firstSimSeq && Array.isArray(r.positions)) firstSimSeq = r.seq | 0;
             if (waitingSeen && !cleared && firstSimSeq && r.seq > firstSimSeq + 15) {
               // Send an ack to clear the backlog
-              ws.ack(r.seq|0);
+              ws.ack(r.seq | 0);
             }
             if (waitingSeen && !cleared && r.message !== 'WAITING_FOR_ACK' && r.seq > seqSeen) {
               cleared = true;
-              try { off && off(); } catch {}
+              try {
+                off && off();
+              } catch {}
               resolve({ waitingSeen, cleared });
             }
           } catch {}
         });
-        ws.startSimulation({ type: 'md', params: { calculator: 'lj', temperature: 300, timestep_fs: 1.0, friction: 0.01 } });
-        setTimeout(() => { try { off && off(); } catch {}; resolve({ waitingSeen, cleared }); }, 35000);
+        ws.startSimulation({
+          type: 'md',
+          params: { calculator: 'lj', temperature: 300, timestep_fs: 1.0, friction: 0.01 },
+        });
+        setTimeout(() => {
+          try {
+            off && off();
+          } catch {}
+          resolve({ waitingSeen, cleared });
+        }, 35000);
       });
     });
 

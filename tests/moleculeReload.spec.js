@@ -16,9 +16,18 @@ describe('molecule reload selection flow', () => {
 
   test('installMoleculeSelector sets location on change', async () => {
     const { installMoleculeSelector } = await import('../public/ui/moleculeSelect.js');
-    const doc = { createElement: (tag)=> ({ tagName: tag, id:'', innerHTML:'', onchange:null, value:'', appendChild(){}, }) };
+    const doc = {
+      createElement: (tag) => ({
+        tagName: tag,
+        id: '',
+        innerHTML: '',
+        onchange: null,
+        value: '',
+        appendChild() {},
+      }),
+    };
     const appended = [];
-    const hudEl = { appendChild: (el)=> appended.push(el) };
+    const hudEl = { appendChild: (el) => appended.push(el) };
     const loc = { href: 'http://localhost:4000/', assign: jest.fn() };
     const win = { location: loc };
     const { selectEl } = installMoleculeSelector({ hudEl, windowRef: win, documentRef: doc });
@@ -34,12 +43,22 @@ describe('molecule reload selection flow', () => {
 
   test('loadDefault honors ?mol= from URL when valid', async () => {
     jest.resetModules();
-    const { loadDefault, getRequestedMoleculeFromUrl } = await import('../public/util/moleculeLoader.js');
+    const { loadDefault, getRequestedMoleculeFromUrl } = await import(
+      '../public/util/moleculeLoader.js'
+    );
     // fake viewer API minimal surface with required state methods
-    const viewerApi = { state: { markPositionsChanged(){}, markBondsChanged(){} }, recomputeBonds: jest.fn() };
-    global.window = { location: { search: '?mol=molecules/water.xyz', origin:'http://localhost:4000' } };
+    const viewerApi = {
+      state: { markPositionsChanged() {}, markBondsChanged() {} },
+      recomputeBonds: jest.fn(),
+    };
+    global.window = {
+      location: { search: '?mol=molecules/water.xyz', origin: 'http://localhost:4000' },
+    };
     // mock fetch to return trivial xyz
-    global.fetch = jest.fn(async ()=> ({ ok:true, text: async()=> '3\nwater\nH 0 0 0\nH 0 0 1\nO 1 0 0\n' }));
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      text: async () => '3\nwater\nH 0 0 0\nH 0 0 1\nO 1 0 0\n',
+    }));
     expect(getRequestedMoleculeFromUrl()).toBe('molecules/water.xyz');
     const res = await loadDefault(viewerApi);
     expect(res.file).toBe('molecules/water.xyz');

@@ -15,8 +15,14 @@ function mkScene(canvas) {
     pointerX: 0,
     pointerY: 0,
     onPointerObservable: { add: () => {} },
-    getEngine() { return { getRenderingCanvas() { return canvas; } }; },
-    onBeforeRenderObservable: { add: () => {} }
+    getEngine() {
+      return {
+        getRenderingCanvas() {
+          return canvas;
+        },
+      };
+    },
+    onBeforeRenderObservable: { add: () => {} },
   };
 }
 
@@ -29,7 +35,13 @@ describe('mobile: single-finger orbit rotation', () => {
     const scene = mkScene(canvas);
 
     // Picking not needed for empty-space orbit; ensure dragActive is false if referenced
-    const picking = { _debug: { get dragActive() { return false; } } };
+    const picking = {
+      _debug: {
+        get dragActive() {
+          return false;
+        },
+      },
+    };
 
     installTouchControls({ canvas, scene, camera, picking });
 

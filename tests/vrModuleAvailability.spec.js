@@ -12,4 +12,3 @@ describe('VR module availability', () => {
     expect(text.includes('public_to_be_deleted')).toBe(false);
   });
 });
-

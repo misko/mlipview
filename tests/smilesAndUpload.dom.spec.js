@@ -4,17 +4,27 @@
 
 describe('System panel SMILES + XYZ upload', () => {
   let origFetch;
-  beforeAll(()=>{ origFetch = global.fetch; });
-  afterAll(()=>{ global.fetch = origFetch; });
+  beforeAll(() => {
+    origFetch = global.fetch;
+  });
+  afterAll(() => {
+    global.fetch = origFetch;
+  });
 
   beforeEach(() => {
     document.body.innerHTML = '<div id="app" style="position:relative"></div>';
     // Provide minimal window.location behavior for buildReloadUrlWithParam usage
     delete window.location; // jsdom allows reassignment
-    window.location = { href: 'http://localhost:4000/?foo=bar', origin: 'http://localhost:4000', assign: function(h){ this.href = h; } };
+    window.location = {
+      href: 'http://localhost:4000/?foo=bar',
+      origin: 'http://localhost:4000',
+      assign: function (h) {
+        this.href = h;
+      },
+    };
   });
 
-  async function buildPanel(){
+  async function buildPanel() {
     const { buildDesktopPanel } = await import('../public/ui/desktopPanel.js');
     buildDesktopPanel({ attachTo: document.getElementById('app') });
   }
@@ -49,14 +59,16 @@ describe('System panel SMILES + XYZ upload', () => {
     const uploadBtn = document.getElementById('uploadXyzBtn');
     expect(uploadBtn).toBeTruthy();
     // Spy assign to observe navigation
-    window.location.assign = jest.fn(function(h){ this.href = h; });
+    window.location.assign = jest.fn(function (h) {
+      this.href = h;
+    });
     // Prepare a valid small XYZ (H2O)
     const xyz = '3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0';
-  const file = new File([xyz], 'water.xyz', { type: 'text/plain' });
-  // Some jsdom versions may not implement File.prototype.text reliably; force it
-  Object.defineProperty(file, 'text', { configurable: true, value: () => Promise.resolve(xyz) });
-  // Simulate file selection (jsdom: files is a readonly getter)
-  Object.defineProperty(fileInput, 'files', { configurable: true, get: () => [file] });
+    const file = new File([xyz], 'water.xyz', { type: 'text/plain' });
+    // Some jsdom versions may not implement File.prototype.text reliably; force it
+    Object.defineProperty(file, 'text', { configurable: true, value: () => Promise.resolve(xyz) });
+    // Simulate file selection (jsdom: files is a readonly getter)
+    Object.defineProperty(fileInput, 'files', { configurable: true, get: () => [file] });
     fileInput.dispatchEvent(new Event('change'));
     // Allow async handler to run (file.text() + navigation). Retry briefly.
     const start = Date.now();
@@ -67,7 +79,7 @@ describe('System panel SMILES + XYZ upload', () => {
       if (String(window.location.href).includes('molxyz=')) break;
       // wait a tick
       // eslint-disable-next-line no-await-in-loop
-      await new Promise(r=>setTimeout(r, 5));
+      await new Promise((r) => setTimeout(r, 5));
     }
     if (window.location.assign.mock.calls.length > 0) {
       const calledUrl = window.location.assign.mock.calls[0][0];
@@ -82,7 +94,9 @@ describe('System panel SMILES + XYZ upload', () => {
     const fileInput = document.getElementById('xyzFileInput');
     const uploadBtn = document.getElementById('uploadXyzBtn');
     expect(uploadBtn).toBeTruthy();
-    window.location.assign = jest.fn(function(h){ this.href = h; });
+    window.location.assign = jest.fn(function (h) {
+      this.href = h;
+    });
     // XYZ with empty second line (valid XYZ format)
     const xyz = '3\n\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n';
     const file = new File([xyz], 'water_blank_comment.xyz', { type: 'text/plain' });
@@ -95,7 +109,7 @@ describe('System panel SMILES + XYZ upload', () => {
       if (window.location.assign.mock.calls.length > 0) break;
       if (String(window.location.href).includes('molxyz=')) break;
       // eslint-disable-next-line no-await-in-loop
-      await new Promise(r=>setTimeout(r, 5));
+      await new Promise((r) => setTimeout(r, 5));
     }
     if (window.location.assign.mock.calls.length > 0) {
       const calledUrl = window.location.assign.mock.calls[0][0];
@@ -110,11 +124,11 @@ describe('System panel SMILES + XYZ upload', () => {
     const fileInput = document.getElementById('xyzFileInput');
     // Invalid XYZ (declares 2 but provides 1)
     const bad = '2\nbad\nH 0 0 0';
-  const file = new File([bad], 'bad.xyz', { type: 'text/plain' });
-  Object.defineProperty(fileInput, 'files', { configurable: true, get: () => [file] });
+    const file = new File([bad], 'bad.xyz', { type: 'text/plain' });
+    Object.defineProperty(fileInput, 'files', { configurable: true, get: () => [file] });
     const prevHref = window.location.href;
-  fileInput.dispatchEvent(new Event('change'));
-  await new Promise(r=>setTimeout(r,0));
+    fileInput.dispatchEvent(new Event('change'));
+    await new Promise((r) => setTimeout(r, 0));
     expect(window.location.href).toBe(prevHref);
   });
 });

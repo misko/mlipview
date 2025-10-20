@@ -40,6 +40,7 @@ Message types are defined in `fairchem_local_server2/session.proto`.
     sim_step)
 
 Notes:
+
 - The frontend already treats WS as protobuf-only. The backend ignores incoming
   text messages, and sends binary protobuf frames.
 - INIT_SYSTEM is still present in code paths but we are removing it (see changes
@@ -151,18 +152,21 @@ Notes:
 
 ## Sequence diagrams (simplified)
 
-1) Baseline forces on idle (current):
+1. Baseline forces on idle (current):
+
 - Frontend connects WS -> sends USER_INTERACTION init -> may also call
   SIMPLE_CALCULATE
 - Backend echoes initialized -> computes and returns forces+energy either
   implicitly (idle USER_INTERACTION) or via the one-shot
 - Frontend updates forces, draws energy point
 
-2) USER_INTERACTION while idle:
+2. USER_INTERACTION while idle:
+
 - Frontend sends USER_INTERACTION positions (debounced) -> may also call
   SIMPLE_CALCULATE -> Backend runs run_simple -> returns forces/energy
 
-3) Start MD:
+3. Start MD:
+
 - Frontend startSimulation(MD) -> Backend running=true
 - Backend sim_loop produces frames -> Frontend applies partial positions,
   merges forces, updates visuals and energy
@@ -182,4 +186,3 @@ Notes:
   handler, frontend client and tests. Regeneration steps must be executed.
 - Per-atom interaction count policy is only on the frontend; any divergence in
   future may require server awareness to prune updates earlier.
-

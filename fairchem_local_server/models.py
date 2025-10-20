@@ -63,7 +63,6 @@ class RelaxIn(BaseModel):
     max_step: float = 0.2
     optimizer: Optional[str] = "bfgs"
     optimizer_params: Optional[Dict[str, Any]] = None
-    return_trace: bool = False
     precomputed: Optional["PrecomputedValues"] = None
 
     @root_validator(skip_on_failure=True)
@@ -79,7 +78,6 @@ class RelaxResult(BaseModel):
     stress: Optional[List[float]] = None
     steps_completed: int
     calculator: RelaxCalculatorName
-    trace_energies: Optional[List[float]] = None
     precomputed_applied: Optional[List[str]] = None
 
 

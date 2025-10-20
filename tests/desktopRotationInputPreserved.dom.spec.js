@@ -2,7 +2,7 @@
 
 import installTouchControls from '../public/ui/touchControls.js';
 
-function mkCanvas(){
+function mkCanvas() {
   const c = document.createElement('canvas');
   Object.defineProperty(c, 'clientWidth', { value: 300, configurable: true });
   Object.defineProperty(c, 'clientHeight', { value: 300, configurable: true });
@@ -15,13 +15,16 @@ describe('desktop rotation inputs remain intact', () => {
     const canvas = mkCanvas();
     const scene = { pointerX: 0, pointerY: 0 };
     const camera = {
-      alpha: 1, beta: 1, radius: 10,
-      attachControl: jest.fn(), detachControl: jest.fn(),
+      alpha: 1,
+      beta: 1,
+      radius: 10,
+      attachControl: jest.fn(),
+      detachControl: jest.fn(),
       inputs: {
         removeByType: jest.fn(),
         remove: jest.fn(),
-        attached: { pointers: {} }
-      }
+        attached: { pointers: {} },
+      },
     };
 
     // Desktop-like environment: no touch events fired. Installing should not

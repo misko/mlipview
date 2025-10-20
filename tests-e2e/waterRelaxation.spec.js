@@ -28,9 +28,14 @@ try {
 test('water UMA BFGS 20-step first/last parity (WS)', async ({ page, baseURL }) => {
   test.setTimeout(45_000);
   // Ensure WS server endpoint is known to the client before scripts run
-  await page.addInitScript(()=>{ window.__MLIPVIEW_SERVER='http://127.0.0.1:8000'; window.__FORCE_SYNC_REMOTE__=true; window.__MLIPVIEW_NO_AUTO_MD = true; window.__MLIPVIEW_TEST_MODE = true; });
+  await page.addInitScript(() => {
+    window.__MLIPVIEW_SERVER = 'http://127.0.0.1:8000';
+    window.__FORCE_SYNC_REMOTE__ = true;
+    window.__MLIPVIEW_NO_AUTO_MD = true;
+    window.__MLIPVIEW_TEST_MODE = true;
+  });
   await page.goto(`${baseURL || ''}/index.html?mol=molecules/water.xyz&autoMD=0`);
-  await page.waitForFunction(()=>window.__MLIP_DEFAULT_LOADED === true, null, { timeout: 45000 });
+  await page.waitForFunction(() => window.__MLIP_DEFAULT_LOADED === true, null, { timeout: 45000 });
 
   // Initialize WS session with current viewer state and seed baseline energy deterministically
   const initOk = await page.evaluate(async () => {
@@ -39,7 +44,9 @@ test('water UMA BFGS 20-step first/last parity (WS)', async ({ page, baseURL }) 
     await ws.ensureConnected();
     // The viewer initializes WS with proper atomic_numbers internally.
     await window.viewerApi?.baselineEnergy?.();
-    try { await ws.waitForEnergy({ timeoutMs: 5000 }); } catch {}
+    try {
+      await ws.waitForEnergy({ timeoutMs: 5000 });
+    } catch {}
     const E = window.viewerApi?.state?.dynamics?.energy;
     return typeof E === 'number' && isFinite(E);
   });
@@ -47,26 +54,30 @@ test('water UMA BFGS 20-step first/last parity (WS)', async ({ page, baseURL }) 
 
   // Collect energies by reading viewerApi.state.dynamics.energy after each relaxStep
   // Capture initial UI positions for comparison
-  const uiInitPos = await page.evaluate(()=> (window.viewerApi?.state?.positions||[]).map(p=>[p.x,p.y,p.z]));
+  const uiInitPos = await page.evaluate(() =>
+    (window.viewerApi?.state?.positions || []).map((p) => [p.x, p.y, p.z])
+  );
   // Energies over 20 relax steps
   const energies = [];
-  const initialE = await page.evaluate(()=> window.viewerApi?.state?.dynamics?.energy);
+  const initialE = await page.evaluate(() => window.viewerApi?.state?.dynamics?.energy);
   energies.push(initialE);
-  for (let i=0;i<20;i++) {
-    const e = await page.evaluate(async ()=>{
+  for (let i = 0; i < 20; i++) {
+    const e = await page.evaluate(async () => {
       const r = await window.viewerApi?.relaxStep?.();
       return window.viewerApi?.state?.dynamics?.energy;
     });
     energies.push(e);
   }
   // Capture final UI positions
-  const uiFinalPos = await page.evaluate(()=> (window.viewerApi?.state?.positions||[]).map(p=>[p.x,p.y,p.z]));
+  const uiFinalPos = await page.evaluate(() =>
+    (window.viewerApi?.state?.positions || []).map((p) => [p.x, p.y, p.z])
+  );
   expect(Array.isArray(energies)).toBeTruthy();
   expect(energies.length).toBeGreaterThanOrEqual(21); // init + 20 steps
   const firstEnergy = energies[0];
-  const lastEnergy = energies[energies.length-1];
+  const lastEnergy = energies[energies.length - 1];
   const refFirst = REF.energies?.[0];
-  const refLast = REF.energies?.[REF.energies.length-1];
+  const refLast = REF.energies?.[REF.energies.length - 1];
 
   // Compare deltas to tolerate any UI baseline offset (should be small ~1e-3..1e-2 eV)
   const uiDelta = lastEnergy - firstEnergy;
@@ -75,13 +86,23 @@ test('water UMA BFGS 20-step first/last parity (WS)', async ({ page, baseURL }) 
   console.log('RELAX_PARITY_UI', { firstEnergy, lastEnergy, uiDelta });
   console.log('RELAX_PARITY_REF', { refFirst, refLast, refDelta });
   // Position consistency checks against UMA reference JSON if provided
-  function nearlyEqual(a,b,eps){ return Math.abs(a-b) <= eps; }
-  function arraysClose(arrA, arrB, eps){
+  function nearlyEqual(a, b, eps) {
+    return Math.abs(a - b) <= eps;
+  }
+  function arraysClose(arrA, arrB, eps) {
     if (!Array.isArray(arrA) || !Array.isArray(arrB) || arrA.length !== arrB.length) return false;
-    for (let i=0;i<arrA.length;i++){
-      const A = arrA[i], B = arrB[i];
-      if (!Array.isArray(A) || !Array.isArray(B) || A.length!==3 || B.length!==3) return false;
-      if (!(nearlyEqual(A[0],B[0],1e-3) && nearlyEqual(A[1],B[1],1e-3) && nearlyEqual(A[2],B[2],1e-3))) return false;
+    for (let i = 0; i < arrA.length; i++) {
+      const A = arrA[i],
+        B = arrB[i];
+      if (!Array.isArray(A) || !Array.isArray(B) || A.length !== 3 || B.length !== 3) return false;
+      if (
+        !(
+          nearlyEqual(A[0], B[0], 1e-3) &&
+          nearlyEqual(A[1], B[1], 1e-3) &&
+          nearlyEqual(A[2], B[2], 1e-3)
+        )
+      )
+        return false;
     }
     return true;
   }
@@ -93,7 +114,7 @@ test('water UMA BFGS 20-step first/last parity (WS)', async ({ page, baseURL }) 
   }
   // Emit backend log tail for debugging when available
   try {
-    const text = fs.readFileSync('test-ws-e2e.log','utf8');
+    const text = fs.readFileSync('test-ws-e2e.log', 'utf8');
     const lines = text.trim().split(/\r?\n/);
     const tail = lines.slice(-200).join('\n');
     console.log('\n--- BACKEND LOG (tail) ---\n' + tail + '\n--------------------------\n');

@@ -27,7 +27,9 @@ test.describe('WS mock page load', () => {
     page.on('requestfailed', (req) => {
       const failure = (req.failure && req.failure()) || {};
       // eslint-disable-next-line no-console
-      console.log(`[requestfailed] ${req.method()} ${req.url()} -> ${failure.errorText || 'failed'}`);
+      console.log(
+        `[requestfailed] ${req.method()} ${req.url()} -> ${failure.errorText || 'failed'}`
+      );
     });
 
     // Mock WebSocket so page can call ensureConnected/init without hitting a real backend
@@ -37,14 +39,26 @@ test.describe('WS mock page load', () => {
       window.__MLIPVIEW_SERVER = 'http://localhost:8000';
 
       class MockWS {
-        constructor(url){ this._url = url; this.readyState = 0; setTimeout(()=>{ this.readyState = 1; this.onopen && this.onopen({}); }, 10); }
-        set binaryType(_){}
-        send(_){ /* ignore */ }
-        close(){ this.readyState = 3; this.onclose && this.onclose({}); }
-        onopen(){}
-        onmessage(){}
-        onerror(){}
-        onclose(){}
+        constructor(url) {
+          this._url = url;
+          this.readyState = 0;
+          setTimeout(() => {
+            this.readyState = 1;
+            this.onopen && this.onopen({});
+          }, 10);
+        }
+        set binaryType(_) {}
+        send(_) {
+          /* ignore */
+        }
+        close() {
+          this.readyState = 3;
+          this.onclose && this.onclose({});
+        }
+        onopen() {}
+        onmessage() {}
+        onerror() {}
+        onclose() {}
       }
       window.WebSocket = MockWS;
     });
@@ -52,14 +66,16 @@ test.describe('WS mock page load', () => {
     // Navigate to the test harness
     await page.goto(`${baseURL}/ws-test.html?sim=0`);
 
-  // With bundling, we don't expose goog/jspb globals; instead, assert the client API boots
-  await page.waitForFunction(() => typeof window.__WS_API__ === 'object', { timeout: 10000 });
+    // With bundling, we don't expose goog/jspb globals; instead, assert the client API boots
+    await page.waitForFunction(() => typeof window.__WS_API__ === 'object', { timeout: 10000 });
 
     // The page sets __WS_READY__ = true after initializing the ws client
     await page.waitForFunction(() => !!window.__WS_READY__, { timeout: 10000 });
 
     // Assert no protobuf initialization error messages
     const errBlob = consoleErrors.join('\n');
-    expect(errBlob).not.toMatch(/protobuf-missing|Failed to load google-protobuf|Failed to load session_pb|goog\.exportSymbol is not a function/);
+    expect(errBlob).not.toMatch(
+      /protobuf-missing|Failed to load google-protobuf|Failed to load session_pb|goog\.exportSymbol is not a function/
+    );
   });
 });

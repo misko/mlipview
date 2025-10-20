@@ -23,7 +23,7 @@ function makeCtx() {
     fillStyle: '',
     strokeStyle: '',
     lineWidth: 1,
-    font: ''
+    font: '',
   };
 }
 
@@ -35,7 +35,7 @@ function makePlot(extra = {}) {
     getContext: () => ctx,
     updateTexture: () => {},
     maxPoints: extra.maxPoints || 5,
-    labels: { x: 'Step', y: 'Energy' }
+    labels: { x: 'Step', y: 'Energy' },
   });
   return plot;
 }
@@ -46,8 +46,8 @@ describe('line-plot-core', () => {
     p.addPoint(10); // step 0
     p.addPoint(11); // step 1
     p.addPoint(12); // step 2
-    expect(p.steps()).toEqual([0,1,2]);
-    expect(p.data()).toEqual([10,11,12]);
+    expect(p.steps()).toEqual([0, 1, 2]);
+    expect(p.data()).toEqual([10, 11, 12]);
   });
 
   test('explicit step indices preserved (non-contiguous)', () => {
@@ -55,8 +55,8 @@ describe('line-plot-core', () => {
     p.addPoint(1, 5);
     p.addPoint(2, 10);
     p.addPoint(3, 20);
-    expect(p.steps()).toEqual([5,10,20]);
-    expect(p.data()).toEqual([1,2,3]);
+    expect(p.steps()).toEqual([5, 10, 20]);
+    expect(p.data()).toEqual([1, 2, 3]);
   });
 
   test('maxPoints rollover drops oldest', () => {
@@ -65,13 +65,14 @@ describe('line-plot-core', () => {
     p.addPoint(2); // 1
     p.addPoint(3); // 2
     p.addPoint(4); // 3 -> drop first
-    expect(p.data()).toEqual([2,3,4]);
-    expect(p.steps()).toEqual([1,2,3]);
+    expect(p.data()).toEqual([2, 3, 4]);
+    expect(p.steps()).toEqual([1, 2, 3]);
   });
 
   test('reset clears data and steps', () => {
     const p = makePlot();
-    p.addPoint(5); p.addPoint(6);
+    p.addPoint(5);
+    p.addPoint(6);
     p.reset();
     expect(p.data()).toEqual([]);
     expect(p.steps()).toEqual([]);

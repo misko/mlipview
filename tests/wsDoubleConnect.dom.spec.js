@@ -11,12 +11,20 @@ describe('[mock-browser] WS double connect guard', () => {
     const origWS = global.WebSocket;
     let constructed = 0;
     class FakeWS {
-      constructor(url){ constructed++; this.url=url; this.readyState=0; setTimeout(()=>{ this.readyState=1; this.onopen && this.onopen(); }, 5); }
-      send(){}
-      close(){}
-      onopen(){}
-      onmessage(){}
-      onerror(){}
+      constructor(url) {
+        constructed++;
+        this.url = url;
+        this.readyState = 0;
+        setTimeout(() => {
+          this.readyState = 1;
+          this.onopen && this.onopen();
+        }, 5);
+      }
+      send() {}
+      close() {}
+      onopen() {}
+      onmessage() {}
+      onerror() {}
     }
     global.WebSocket = FakeWS;
 

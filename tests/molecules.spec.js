@@ -3,11 +3,13 @@ import path from 'path';
 import { parseXYZ } from '../public/util/xyzLoader.js';
 
 describe('molecule XYZ files', () => {
-  function read(name){ return fs.readFileSync(path.join(process.cwd(),'public','molecules', name),'utf-8'); }
+  function read(name) {
+    return fs.readFileSync(path.join(process.cwd(), 'public', 'molecules', name), 'utf-8');
+  }
   test('benzene has 12 atoms', () => {
     const p = parseXYZ(read('benzene.xyz'));
     expect(p.elements.length).toBe(12);
-    expect(p.elements.filter(e=>e==='C').length).toBe(6);
+    expect(p.elements.filter((e) => e === 'C').length).toBe(6);
   });
   test('roy atom count reflects current fixture', () => {
     const p = parseXYZ(read('roy.xyz'));

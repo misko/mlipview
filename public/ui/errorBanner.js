@@ -6,7 +6,8 @@ let __hideTimer = null;
 
 function ensureBanner() {
   if (__bannerEl && __bannerEl.parentNode) return __bannerEl;
-  const host = (typeof document !== 'undefined') ? (document.getElementById('app') || document.body) : null;
+  const host =
+    typeof document !== 'undefined' ? document.getElementById('app') || document.body : null;
   if (!host) return null;
   const el = document.createElement('div');
   el.id = 'mlip-top-error-banner';
@@ -39,13 +40,19 @@ export function showErrorBanner(message, opts = {}) {
     el.style.transform = 'translateY(0)';
     el.style.opacity = '0.98';
     const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 4000;
-    if (__hideTimer) { clearTimeout(__hideTimer); __hideTimer = null; }
-    __hideTimer = setTimeout(() => {
-      try {
-        el.style.transform = 'translateY(-100%)';
-        el.style.opacity = '0.0';
-      } catch {}
-    }, Math.max(500, timeoutMs));
+    if (__hideTimer) {
+      clearTimeout(__hideTimer);
+      __hideTimer = null;
+    }
+    __hideTimer = setTimeout(
+      () => {
+        try {
+          el.style.transform = 'translateY(-100%)';
+          el.style.opacity = '0.0';
+        } catch {}
+      },
+      Math.max(500, timeoutMs)
+    );
   } catch {}
 }
 
@@ -55,4 +62,6 @@ export function showInfoBanner(message, opts = {}) {
 }
 
 // Expose globally for ad-hoc use/debug
-try { if (typeof window !== 'undefined') window.showErrorBanner = showErrorBanner; } catch {}
+try {
+  if (typeof window !== 'undefined') window.showErrorBanner = showErrorBanner;
+} catch {}

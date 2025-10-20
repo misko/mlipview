@@ -16,7 +16,13 @@ describe('mobile: camera detach/reattach during touch gestures', () => {
       pointerY: 0,
       onPointerObservable: { add: jest.fn() },
       onBeforeRenderObservable: { add: jest.fn() },
-      getEngine() { return { getRenderingCanvas() { return canvas; } }; },
+      getEngine() {
+        return {
+          getRenderingCanvas() {
+            return canvas;
+          },
+        };
+      },
     };
   }
 
@@ -32,7 +38,9 @@ describe('mobile: camera detach/reattach during touch gestures', () => {
 
     // Simulate an attached camera that would normally zoom on pointermove if left attached
     let isAttached = false;
-    const onPointerMove = () => { if (isAttached) camera.radius += 1000; }; // extreme zoom to catch any leakage
+    const onPointerMove = () => {
+      if (isAttached) camera.radius += 1000;
+    }; // extreme zoom to catch any leakage
 
     const camera = {
       alpha: 1,
@@ -40,15 +48,27 @@ describe('mobile: camera detach/reattach during touch gestures', () => {
       radius: 10,
       inertialRadiusOffset: 0,
       inputs: { attached: { pointers: {} }, removeByType: jest.fn(), remove: jest.fn() },
-      attachControl: jest.fn(() => { isAttached = true; canvas.addEventListener('pointermove', onPointerMove); }),
-      detachControl: jest.fn(() => { isAttached = false; canvas.removeEventListener('pointermove', onPointerMove); }),
+      attachControl: jest.fn(() => {
+        isAttached = true;
+        canvas.addEventListener('pointermove', onPointerMove);
+      }),
+      detachControl: jest.fn(() => {
+        isAttached = false;
+        canvas.removeEventListener('pointermove', onPointerMove);
+      }),
     };
 
     // App would usually attach once at init
     camera.attachControl(canvas, true);
 
     const scene = mkScene(canvas);
-    const picking = { _debug: { get dragActive() { return false; } } };
+    const picking = {
+      _debug: {
+        get dragActive() {
+          return false;
+        },
+      },
+    };
 
     installTouchControls({ canvas, scene, camera, picking });
 
@@ -58,7 +78,8 @@ describe('mobile: camera detach/reattach during touch gestures', () => {
     // Should have detached camera controls to avoid default zoom behavior
     expect(camera.detachControl).toHaveBeenCalled();
 
-    const a0 = camera.alpha; const r0 = camera.radius;
+    const a0 = camera.alpha;
+    const r0 = camera.radius;
 
     // Move finger - should rotate (alpha != a0) and not zoom (radius === r0)
     canvas.dispatchEvent(touchEvent('touchmove', [{ x: 140, y: 120 }]));
