@@ -70,13 +70,11 @@ class ASEWorker:
         friction: float,
         calculator: str = "uma",
     ) -> Dict[str, Any]:
-        print("RUNNING MD WITH VELOCITIES:", velocities, flush=True)
         t0 = time.perf_counter()
         calc_enum = RelaxCalculatorName(calculator)
         _validate_atomic_numbers_or_raise(atomic_numbers)
         atoms = build_atoms(atomic_numbers, positions, cell=cell)
         atoms.calc = get_calculator() if calc_enum == RelaxCalculatorName.uma else None
-        print("RUNNING MD WITH VELOCITIES2:", velocities, flush=True)
         md_res = _md_run(
             atoms,
             steps=int(steps),
