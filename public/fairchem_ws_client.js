@@ -93,6 +93,7 @@ export function createFairchemWS(){
 															simStep: __n(obj.simStep||obj.sim_step),
 															message: obj.message,
 														};
+														try { if (typeof obj.simulationStopped === 'boolean') out.simulationStopped = !!obj.simulationStopped; } catch {}
 														if (typeof obj.energy === 'number') out.energy = obj.energy;
 														if (Array.isArray(obj.positions)) out.positions = obj.positions;
 														if (Array.isArray(obj.forces)) out.forces = obj.forces;
@@ -151,6 +152,7 @@ export function createFairchemWS(){
 										simStep: __n(r.simStep),
 										message: r.message,
 									};
+									try { if (typeof r.simulationStopped === 'boolean') out.simulationStopped = !!r.simulationStopped; } catch {}
 									if (r.energy != null) out.energy = r.energy;
 									if (Array.isArray(r.positions)) out.positions = r.positions.map(v=> v && Array.isArray(v.v) ? v.v : undefined).filter(Boolean);
 									// Apply dragLock override for the dragged atom if present
@@ -169,7 +171,7 @@ export function createFairchemWS(){
 										const m = r.stress.m;
 										if (m.length===9) out.stress = [ [m[0],m[1],m[2]],[m[3],m[4],m[5]],[m[6],m[7],m[8]] ];
 									}
-									__wsLog('[WS][rx]', { seq: out.seq, client_seq: out.client_seq, uic: out.userInteractionCount, simStep: out.simStep, have: { pos: !!out.positions, forces: !!out.forces, vel: !!out.velocities, cell: !!out.cell, energy: typeof out.energy==='number' } });
+									__wsLog('[WS][rx]', { seq: out.seq, client_seq: out.client_seq, uic: out.userInteractionCount, simStep: out.simStep, have: { pos: !!out.positions, forces: !!out.forces, vel: !!out.velocities, cell: !!out.cell, energy: typeof out.energy==='number' }, simulationStopped: !!out.simulationStopped });
 									for(const fn of listeners){ try { fn(out, lastCounters); } catch{} }
 								} catch (e) {
 						// Surface decode errors to console but do not crash the socket

@@ -95,9 +95,6 @@ class WSIngress:
         max_unacked = 10
         last_ack = 0
         pending = 0
-        # Position logging guards to avoid excessive spam
-        logged_init_positions = False
-        logged_first_sim_positions = False
         # JSON fallback removed: protobuf-only WS
 
         # Concurrency: producer (simulation loop) and consumer (message loop)
@@ -148,6 +145,7 @@ class WSIngress:
             message: Optional[str] = None,
             energy: Optional[float] = None,
             stress: Optional[np.ndarray] = None,
+            simulation_stopped: Optional[bool] = None,
         ):
             if self._ws_debug:
                 try:
@@ -215,6 +213,12 @@ class WSIngress:
                     pass
             if message:
                 msg.message = message
+            if simulation_stopped is True:
+                try:
+                    # Optional field: mark simulation stopped
+                    msg.simulation_stopped = True
+                except Exception:
+                    pass
             # optional energy field
             try:
                 if energy is not None:
@@ -225,7 +229,6 @@ class WSIngress:
 
         async def sim_loop():
             nonlocal pending
-            nonlocal logged_first_sim_positions
             import time
 
             stall_notice_last = 0.0
@@ -376,28 +379,6 @@ class WSIngress:
                         cell=state.cell,
                         energy=energy_out,
                     )
-                    # Log first simulation frame positions once
-                    try:
-                        if (
-                            not logged_first_sim_positions
-                            and state.positions is not None
-                        ):
-                            logged_first_sim_positions = True
-                            try:
-                                pos_list = (
-                                    state.positions.tolist()
-                                    if hasattr(state.positions, 'tolist')
-                                    else state.positions
-                                )
-                                print(
-                                    "[ws][SIM_POS][step=1] positions=",
-                                    pos_list,
-                                    flush=True,
-                                )
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
                     try:
                         if state.server_seq % 10 == 0:
                             print(
@@ -420,7 +401,6 @@ class WSIngress:
 
         async def recv_loop():
             nonlocal last_ack
-            nonlocal logged_init_positions
             try:
                 while True:
                     # Accept binary (protobuf only)
@@ -460,9 +440,7 @@ class WSIngress:
                     try:
                         prev_ack = int(state.client_ack)
                         if hasattr(msg, "HasField") and msg.HasField("ack"):
-                            state.client_ack = max(
-                                state.client_ack, int(msg.ack)
-                            )
+                            state.client_ack = max(state.client_ack, int(msg.ack))
                         else:
                             a = int(getattr(msg, "ack", 0) or 0)
                             if a:
@@ -484,10 +462,7 @@ class WSIngress:
                                 pass
                         elif self._ws_debug and state.client_ack:
                             try:
-                                txt = (
-                                    f"[ws:rx][ack] client_ack="
-                                    f"{state.client_ack}"
-                                )
+                                txt = f"[ws:rx][ack] client_ack=" f"{state.client_ack}"
                                 print(txt, flush=True)
                             except Exception:
                                 pass
@@ -518,12 +493,9 @@ class WSIngress:
                         pass
 
                     if getattr(msg, "type", None) in ("init_system", "init"):
-                        # Legacy JSON/string compatibility: treat as
-                        # USER_INTERACTION init
+                        # Legacy JSON/string compatibility: treat as USER_INTERACTION init
                         try:
-                            if len(msg.atomic_numbers) == 0 or (
-                                len(msg.positions) == 0
-                            ):
+                            if len(msg.atomic_numbers) == 0 or len(msg.positions) == 0:
                                 continue
                         except Exception:
                             pass
@@ -550,27 +522,7 @@ class WSIngress:
                             )
                         except Exception:
                             pass
-                        # Log initial positions once at init
-                        try:
-                            if (
-                                not logged_init_positions
-                                and state.positions is not None
-                            ):
-                                logged_init_positions = True
-                                pos_list = (
-                                    state.positions.tolist()
-                                    if hasattr(state.positions, 'tolist')
-                                    else state.positions
-                                )
-                                print(
-                                    "[ws][INIT_POS] positions=",
-                                    pos_list,
-                                    flush=True,
-                                )
-                        except Exception:
-                            pass
-                        # After init, perform idle compute (forces/energy,
-                        # positions omitted)
+                        # After init, perform idle compute (forces/energy, positions omitted)
                         try:
                             if (
                                 state.atomic_numbers != []
@@ -581,8 +533,7 @@ class WSIngress:
                                     res = await asyncio.to_thread(
                                         ray.get,
                                         worker.run_simple.remote(
-                                            atomic_numbers=
-                                            state.atomic_numbers,
+                                            atomic_numbers=state.atomic_numbers,
                                             positions=state.positions,
                                             cell=state.cell,
                                             properties=["energy", "forces"],
@@ -593,12 +544,7 @@ class WSIngress:
                                     try:
                                         print(
                                             (
-                                                (
-                                                    "[ws] INIT idle compute failed with '"
-                                                    f"{state.params.calculator}'"
-                                                    ", retrying with 'lj': "
-                                                    f"{e}"
-                                                )
+                                                f"[ws] INIT idle compute failed with '{state.params.calculator}', retrying with 'lj': {e}"
                                             ),
                                             flush=True,
                                         )
@@ -607,8 +553,7 @@ class WSIngress:
                                     res = await asyncio.to_thread(
                                         ray.get,
                                         worker.run_simple.remote(
-                                            atomic_numbers=
-                                            state.atomic_numbers,
+                                            atomic_numbers=state.atomic_numbers,
                                             positions=state.positions,
                                             cell=state.cell,
                                             properties=["energy", "forces"],
@@ -619,9 +564,7 @@ class WSIngress:
                                 E = results.get("energy")
                                 F = results.get("forces")
                                 F_np = (
-                                    np.array(F, dtype=float)
-                                    if F is not None
-                                    else None
+                                    np.array(F, dtype=float) if F is not None else None
                                 )
                                 # Optional stress support if provided as 3x3
                                 S = (
@@ -650,9 +593,7 @@ class WSIngress:
                                     velocities=None,
                                     forces=F_np,
                                     cell=None,
-                                    energy=(
-                                        float(E) if E is not None else None
-                                    ),
+                                    energy=(float(E) if E is not None else None),
                                     stress=S_np,
                                 )
                         except Exception:
@@ -671,9 +612,7 @@ class WSIngress:
                                 getattr(msg, "positions", [])
                             ):
                                 state.atomic_numbers = list(msg.atomic_numbers)
-                                state.positions = _np_from_vec3_list(
-                                    msg.positions
-                                )
+                                state.positions = _np_from_vec3_list(msg.positions)
                                 v_in = _np_from_vec3_list(msg.velocities)
                                 state.velocities = v_in
                                 state.cell = _mat3_to_np(
@@ -681,9 +620,7 @@ class WSIngress:
                                 )
                                 state.forces = None
                                 try:
-                                    cs = (
-                                        "on" if state.cell is not None else "off"
-                                    )
+                                    cs = "on" if state.cell is not None else "off"
                                     msg_txt = (
                                         "[ws] USER_INTERACTION init "
                                         + "natoms="
@@ -693,21 +630,16 @@ class WSIngress:
                                     print(msg_txt, flush=True)
                                 except Exception:
                                     pass
-                                # Do not send an echo frame with positions;
-                                # fall through to idle compute
+                                # Do not send an echo frame with positions; fall through to idle compute
                         except Exception:
                             pass
                         updated = False
                         try:
                             if len(getattr(msg, "positions", [])):
-                                state.positions = _np_from_vec3_list(
-                                    msg.positions
-                                )
+                                state.positions = _np_from_vec3_list(msg.positions)
                                 updated = True
                             if len(getattr(msg, "velocities", [])):
-                                state.velocities = _np_from_vec3_list(
-                                    msg.velocities
-                                )
+                                state.velocities = _np_from_vec3_list(msg.velocities)
                                 updated = True
                             if hasattr(msg, "cell") and msg.HasField("cell"):
                                 state.cell = _mat3_to_np(msg.cell)
@@ -733,26 +665,6 @@ class WSIngress:
                             )
                         except Exception:
                             pass
-                        # Log positions on USER_INTERACTION updates as well
-                        # (first only)
-                        try:
-                            if (
-                                not logged_init_positions
-                                and state.positions is not None
-                            ):
-                                logged_init_positions = True
-                                pos_list = (
-                                    state.positions.tolist()
-                                    if hasattr(state.positions, 'tolist')
-                                    else state.positions
-                                )
-                                print(
-                                    "[ws][INIT_POS] positions=",
-                                    pos_list,
-                                    flush=True,
-                                )
-                        except Exception:
-                            pass
                         # If a simulation is running, continue running with
                         # updated state
                         if state.running:
@@ -772,15 +684,11 @@ class WSIngress:
                                 except Exception:
                                     pass
                         else:
-                            # Idle: run one-shot compute and send result
-                            # (positions omitted)
+                            # Idle: run one-shot compute and send result (positions omitted)
                             try:
                                 try:
                                     print(
-                                        (
-                                            "[ws] USER_INTERACTION idle -> "
-                                            "compute"
-                                        ),
+                                        "[ws] USER_INTERACTION idle -> compute",
                                         flush=True,
                                     )
                                 except Exception:
@@ -795,9 +703,7 @@ class WSIngress:
                                     res = await asyncio.to_thread(
                                         ray.get,
                                         worker.run_simple.remote(
-                                            atomic_numbers=(
-                                                state.atomic_numbers
-                                            ),
+                                            atomic_numbers=(state.atomic_numbers),
                                             positions=state.positions,
                                             cell=state.cell,
                                             properties=["energy", "forces"],
@@ -809,13 +715,7 @@ class WSIngress:
                                     try:
                                         print(
                                             (
-                                                (
-                                                    "[ws] USER_INTERACTION"
-                                                    " compute failed with '"
-                                                    f"{state.params.calculator}'"
-                                                    ", retrying with 'lj': "
-                                                    f"{e}"
-                                                )
+                                                f"[ws] USER_INTERACTION compute failed with '{state.params.calculator}', retrying with 'lj': {e}"
                                             ),
                                             flush=True,
                                         )
@@ -938,6 +838,27 @@ class WSIngress:
                                 print("[ws:state] running=false", flush=True)
                             except Exception:
                                 pass
+                        # Send a special one-shot informational frame indicating stop
+                        try:
+                            state.server_seq += 1
+                            await _send_result_bytes(
+                                seq=state.server_seq,
+                                client_seq=state.client_seq,
+                                user_interaction_count=(
+                                    state.user_interaction_count or None
+                                ),
+                                sim_step=(state.sim_step or None),
+                                positions=None,
+                                velocities=None,
+                                forces=None,
+                                cell=None,
+                                energy=None,
+                                message="SIMULATION_STOPPED",
+                                stress=None,
+                                simulation_stopped=True,
+                            )
+                        except Exception:
+                            pass
                     elif (
                         hasattr(pb.ClientAction.Type, "PING")
                         and (getattr(msg, "type", None) == pb.ClientAction.Type.PING)

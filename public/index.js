@@ -1318,7 +1318,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     __resetRPS();
     return { completed, steps: i };
   }
-  function stopSimulation(){ running.kind=null; __resetRPS(); }
+  function stopSimulation(){
+    try {
+      if (__useWsSim()) { const ws = getWS(); ws.stopSimulation(); }
+    } catch {}
+    running.kind=null; __resetRPS();
+  }
 
   const lastMetrics = { energy:null, maxForce:null, maxStress:null };
   function getMetrics(){ __count('index#getMetrics'); return { energy: state.dynamics?.energy, running: running.kind }; }

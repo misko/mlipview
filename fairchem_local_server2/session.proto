@@ -62,6 +62,9 @@ message ServerResult {
   optional float energy = 14;
   // Optional stress tensor (3x3, row-major). Present when available and when cell is defined.
   optional Mat3 stress = 15;
+  // Special flag indicating the server has stopped the active simulation in response to STOP_SIMULATION
+  // or an internal condition; clients may use this to update UI state deterministically.
+  optional bool simulation_stopped = 16;
   optional string message = 20;
 
   // Echo/correlation fields for frontend state

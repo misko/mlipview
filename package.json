@@ -9,6 +9,9 @@
     "test:integration": "jest -c jest.integration.config.js",
     "test:e2e": "playwright test",
     "test:e2e:smoke": "playwright test tests-e2e/smoke-*",
+    "test:py": "./mlipview_venv/bin/python -m pytest -q",
+    "format": "prettier --write \"**/*.{js,jsx,ts,tsx,json,css,md}\"",
+    "format:check": "prettier --check \"**/*.{js,jsx,ts,tsx,json,css,md}\"",
     "gen:proto:js": "protoc --plugin=protoc-gen-es=./node_modules/.bin/protoc-gen-es --es_out=public/proto --es_opt=target=js fairchem_local_server2/session.proto",
     "predev": "npm run gen:proto:js",
     "prebuild": "npm run gen:proto:js",
@@ -33,6 +36,7 @@
     "google-protobuf": "4.0.0",
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^29.7.0",
+    "prettier": "^3.3.3",
     "protoc-gen-js": "^3.21.4-4",
     "supertest": "^6.3.4",
     "vite": "^7.1.7"
