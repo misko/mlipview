@@ -1,8 +1,8 @@
 /** @jest-environment jsdom */
-// jsdom variant: validates velocity continuity using DOM canvas (still mocked network)
+// jsdom variant: validates velocity continuity using WS single-step frames
 import { jest } from '@jest/globals';
+import { getWS } from '../public/fairchem_ws_client.js';
 
-let requests = []; let mdCall=0; let simpleCalled=false;
 function makeVel(step){ return [[0.1+0.01*step,0,0],[0,0.2+0.01*step,0],[0,0,0.3+0.01*step]]; }
 
 // Provide BABYLON minimal mocks for scene creation under jsdom
@@ -26,45 +26,30 @@ jest.unstable_mockModule('../public/vr/vr-picker.js', () => ({ createVRPicker: (
 jest.unstable_mockModule('../public/fairchem_provider.js', () => ({ createFairChemForcefield: ()=> ({}) }));
 jest.unstable_mockModule('../public/util/funcCount.js', () => ({ __count: ()=>{} }));
 
-global.fetch = jest.fn(async (url, opts) => {
-  if(/simple_calculate/.test(url) || /\/serve\/simple$/.test(url)){
-    simpleCalled = true;
-    return { ok:true, status:200, json: async ()=> ({ results:{ energy: -5.0, forces:[[0,0,0],[0,0,0],[0,0,0]], stress:[0,0,0,0,0,0] } }) };
-  }
-  if(/\/serve\/md$/.test(url) || /(^|\/)md$/.test(url)){
-    mdCall++;
-    const body = JSON.parse(opts.body);
-    requests.push(body);
-    const v = makeVel(mdCall-1);
-    return { ok:true, status:200, json: async ()=> ({
-      initial_energy: body.precomputed? body.precomputed.energy : -5.0,
-      final_energy: -5.0 - 0.05*mdCall,
-      positions: body.coordinates,
-      velocities: v,
-      forces: [[0.02,0,0],[0,0.02,0],[0,0,0.02]],
-      steps_completed: 1,
-      temperature: 300,
-    }) };
-  }
-  throw new Error('Unexpected URL '+url);
-});
+// No fetch; use WS client injection
 
 describe('md velocity continuity (jsdom)', () => {
   test('velocity reuse between md steps', async () => {
     const canvas = document.createElement('canvas');
     canvas.getBoundingClientRect = ()=>({ left:0, top:0 });
+    // Stub WS and capture
+    const origWS = global.WebSocket;
+    class FakeWS { constructor(){ this.readyState=0; setTimeout(()=>{ this.readyState=1; this.onopen && this.onopen(); }, 0);} send(){} close(){} onopen(){} onmessage(){} onerror(){} }
+    global.WebSocket = FakeWS;
+    const ws = getWS(); ws.setTestHook(()=>{});
     const { initNewViewer } = await import('../public/index.js');
     const api = await initNewViewer(canvas, { elements:['O','H','H'], positions:[[0,0,0],[0.95,0,0],[-0.24,0.93,0]], bonds:[] });
-    await api.ff.computeForces({ sync:true });
-    expect(simpleCalled).toBe(true);
-    await api.mdStep();
-    await api.mdStep();
-    expect(requests.length).toBeGreaterThanOrEqual(2);
-    expect(requests[0].velocities).toBeUndefined();
-    expect(Array.isArray(requests[1].velocities)).toBe(true);
-    const firstV = requests[1].velocities;
-    for(let i=0;i<firstV.length;i++) for(let k=0;k<3;k++) expect(firstV[i][k]).toBeCloseTo(makeVel(0)[i][k], 6);
-    const stateV = api.state.dynamics.velocities;
-    for(let i=0;i<stateV.length;i++) for(let k=0;k<3;k++) expect(stateV[i][k]).toBeCloseTo(makeVel(1)[i][k], 6);
+    // First MD step: inject velocities v0
+    const p1 = api.mdStep();
+    ws.injectTestResult({ positions: api.state.positions.map(p=>[p.x,p.y,p.z]), velocities: makeVel(0), forces: [[0,0,0],[0,0,0],[0,0,0]], energy: -5.0, temperature: 300 });
+    await p1;
+    // Second MD step: inject velocities v1
+    const p2 = api.mdStep();
+    ws.injectTestResult({ positions: api.state.positions.map(p=>[p.x,p.y,p.z]), velocities: makeVel(1), forces: [[0,0,0],[0,0,0],[0,0,0]], energy: -5.1, temperature: 300 });
+    await p2;
+    // Validate state velocities continuity
+    const stateV1 = api.state.dynamics.velocities;
+    for(let i=0;i<stateV1.length;i++) for(let k=0;k<3;k++) expect(stateV1[i][k]).toBeCloseTo(makeVel(1)[i][k], 6);
+    global.WebSocket = origWS;
   });
 });

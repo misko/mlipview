@@ -178,7 +178,7 @@ export function createFairchemWS(){
 				};
 		});
 	}
-						function waitForEnergy({ timeoutMs=5000 }={}){
+						function waitForEnergy({ timeoutMs=10000 }={}){
 			return new Promise((resolve, reject)=>{
 				let off = null; let done=false; let to=null;
 				function finish(v){ if(done) return; done=true; try{ off&&off(); }catch{} if(to) try{ clearTimeout(to); }catch{} resolve(v); }
@@ -352,7 +352,7 @@ export function createFairchemWS(){
 					function done(v){ if(doneCalled) return; doneCalled=true; try{ off && off(); }catch{} try{ stopSimulation(); }catch{} resolve(v); }
 					off = onFrame((res)=>{ try { if(res && typeof res==='object'){ __wsLog('[WS][rx][single-step]', { hasPos: !!res.positions, hasForces: !!res.forces, energy: res.energy }); try { if (typeof res.seq === 'number') ack(res.seq); } catch {} done(res); } } catch{} });
 				try { startSimulation({ type, params }); } catch(e){ try{ off&&off(); }catch{} reject(e); }
-				setTimeout(()=>{ if(!doneCalled) { __wsWarn('[WS][single-step][timeout] after 5s'); try{ off&&off(); }catch{} reject(new Error('single_step timeout')); } }, 5000);
+						setTimeout(()=>{ if(!doneCalled) { __wsWarn('[WS][single-step][timeout] after 15s'); try{ off&&off(); }catch{} reject(new Error('single_step timeout')); } }, 15000);
 			});
 		}
 			    // Allow tests to inject decoded frames directly into listeners, avoiding globals

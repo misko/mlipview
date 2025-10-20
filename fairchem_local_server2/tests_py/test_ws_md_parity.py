@@ -53,6 +53,7 @@ async def _ws_nth_md_step(
         last = None
         while taken < int(max(1, n)):
             data = await asyncio.wait_for(ws.recv(), timeout=5.0)
+            # Protocol is protobuf-only; enforce binary frames
             assert isinstance(data, (bytes, bytearray))
             res = pb.ServerResult()
             res.ParseFromString(data)

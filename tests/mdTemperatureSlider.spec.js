@@ -9,27 +9,15 @@ beforeAll(()=>{
 });
 
 jest.mock('../public/render/scene.js', () => ({ createScene: async () => ({ engine:{ runRenderLoop:(fn)=>{} }, scene:{ meshes:[], render:()=>{}, onPointerObservable:{ _l:[], add(fn){this._l.push(fn);} } }, camera:{ attachControl:()=>{} } }) }));
-
-function stubWebSocketAndHook(){
-  const sent = [];
-  let wsOnMessage = null;
-  global.WebSocket = class {
-    constructor(){ this.readyState=1; setTimeout(()=> this.onopen && this.onopen(),0); }
-    set binaryType(_){}
-    send(_){}
-    close(){}
-    onopen(){}
-    onerror(){}
-    onclose(){}
-    set onmessage(fn){ wsOnMessage = fn; }
-    get onmessage(){ return wsOnMessage; }
-  };
-  window.__WS_TEST_HOOK__ = (msg)=>{ sent.push(msg); };
-  return { sent, emit: (obj)=>{ if (typeof window.__ON_WS_RESULT__ === 'function') window.__ON_WS_RESULT__(obj); } };
-}
+import { getWS } from '../public/fairchem_ws_client.js';
 
 async function setupViewer(){
-  const ws = stubWebSocketAndHook();
+  // Stub WebSocket and capture messages
+  const origWS = global.WebSocket;
+  class FakeWS { constructor(){ this.readyState=0; setTimeout(()=>{ this.readyState=1; this.onopen && this.onopen(); }, 0);} send(){} close(){} onopen(){} onmessage(){} onerror(){} }
+  global.WebSocket = FakeWS;
+  const ws = getWS();
+  const sent = []; ws.setTestHook(m=> sent.push(m));
   window.__MLIPVIEW_SERVER = 'http://127.0.0.1:8000';
   window.__MLIP_FEATURES = { RELAX_LOOP:false, MD_LOOP:true, ENERGY_TRACE:false, FORCE_VECTORS:false };
   const canvas=document.createElement('canvas'); canvas.id='viewer'; document.body.appendChild(canvas);
@@ -59,20 +47,19 @@ async function setupViewer(){
   const viewer = await mod.initNewViewer(canvas, { elements:[{Z:8},{Z:1},{Z:1}], positions:[{x:0,y:0,z:0},{x:0.96,y:0,z:0},{x:-0.24,y:0.93,z:0}], bonds:[] });
   window.viewerApi = viewer; // ensure slider can reference
   initTemperatureSlider({ hudEl: hud, getViewer: ()=> viewer });
-  return { viewer, ws };
+  return { viewer, ws, sent, restore: ()=>{ global.WebSocket = origWS; } };
 }
 
 describe('MD temperature slider (WS)', () => {
   test('slider manipulations affect outgoing WS temperature', async () => {
-    const { viewer, ws } = await setupViewer();
+    const { viewer, ws, sent, restore } = await setupViewer();
     const slider = document.getElementById('mdTempSlider');
     expect(slider).toBeTruthy();
     // Trigger an MD step at default; intercept outgoing START_SIMULATION
     const p1 = viewer.mdStep({ temperature: window.__MLIP_TARGET_TEMPERATURE });
-    ws.emit({ positions: viewer.state.positions.map(p=>[p.x,p.y,p.z]), forces: [], energy: 0, temperature: window.__MLIP_TARGET_TEMPERATURE });
+    ws.injectTestResult({ positions: viewer.state.positions.map(p=>[p.x,p.y,p.z]), forces: [], energy: 0, temperature: window.__MLIP_TARGET_TEMPERATURE });
     await p1;
-    const sent1 = ws.sent || [];
-    const firstMsg = sent1.find(m=> m.simulationParams && typeof m.simulationParams.temperature === 'number');
+    const firstMsg = sent.find(m=> m.simulationParams && typeof m.simulationParams.temperature === 'number');
     const firstT = firstMsg ? firstMsg.simulationParams.temperature : undefined;
     expect(typeof firstT).toBe('number');
   // Change slider to another index (pick max index for near 3000K)
@@ -81,10 +68,10 @@ describe('MD temperature slider (WS)', () => {
     const newT = window.__MLIP_TARGET_TEMPERATURE;
     expect(newT).not.toBe(firstT);
     const p2 = viewer.mdStep({ temperature: window.__MLIP_TARGET_TEMPERATURE });
-    ws.emit({ positions: viewer.state.positions.map(p=>[p.x,p.y,p.z]), forces: [], energy: 0, temperature: newT });
+    ws.injectTestResult({ positions: viewer.state.positions.map(p=>[p.x,p.y,p.z]), forces: [], energy: 0, temperature: newT });
     await p2;
-    const sent2 = ws.sent || [];
-    const secondMsg = sent2.reverse().find(m=> m.simulationParams && typeof m.simulationParams.temperature === 'number');
+    const secondMsg = [...sent].reverse().find(m=> m.simulationParams && typeof m.simulationParams.temperature === 'number');
     expect(secondMsg && secondMsg.simulationParams.temperature).toBe(newT);
+    restore();
   });
 });

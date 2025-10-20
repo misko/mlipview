@@ -26,36 +26,48 @@ jest.mock('../public/render/scene.js', ()=>{
   return { createScene: async ()=> ({ engine:new mockEngine(), scene:new mockScene(), camera:{ detachControl(){}, attachControl(){}, alpha:0,beta:0,radius:5,target:{x:0,y:0,z:0} } }) };
 });
 
-// Mock network: baseline + md steps. MD endpoint pattern '/md'
-let simpleSeq=0; let mdSeq=0;
+// WebSocket-only: inject baseline idle forces and then changing forces for each mdStep()
+import { getWS } from '../public/fairchem_ws_client.js';
+// Deterministic force pattern
 const baseForces=[ [0.05,0.0,0.0],[0.0,0.06,0.0],[0.0,0.0,0.07] ];
 function mdForces(step){ return baseForces.map(f=>[ f[0]*(1+0.25*step), f[1]*(1+0.18*step), f[2]*(1+0.12*step) ]); }
-
-global.fetch = jest.fn(async (url, opts)=>{
-  if(/simple_calculate/.test(url)){
-    simpleSeq++; return { ok:true, status:200, json: async()=> ({ results:{ energy:-3.0, forces: mdForces(0) } }) };
-  }
-  if(/md/.test(url)){
-    mdSeq++; return { ok:true, status:200, json: async()=> ({ positions:[[0,0,0],[0.95,0,0],[-0.24,0.93,0]], forces: mdForces(mdSeq), final_energy: -3.0 - 0.05*mdSeq }) };
-  }
-  return { ok:true, status:200, json: async()=> ({ results:{ energy:-3.0, forces: mdForces(0) } }) };
-});
 
 let initNewViewer;
 function forceInstanceCount(api){ const fg=api.view._internals.forceGroups.get('force'); if(!fg) return 0; const buf=fg.master._buffers['matrix']; return buf? buf.length/16 : 0; }
 
 describe('md forces visualization', () => {
   test('forces update over 10 md steps', async () => {
+    // Stub WebSocket and inject baseline + md frames
+    const origWS = global.WebSocket;
+    class FakeWS { constructor(){ this.readyState=0; setTimeout(()=>{ this.readyState=1; this.onopen && this.onopen(); }, 0);} send(){} close(){} onopen(){} onmessage(){} onerror(){} }
+    global.WebSocket = FakeWS;
+    const ws = getWS();
+    let mdStepCount = 0;
+    ws.setTestHook((msg)=>{
+      try {
+        if (msg && msg.simulationParams) {
+          mdStepCount += 1;
+          setTimeout(()=>{
+            ws.injectTestResult({ positions:[[0,0,0],[0.95,0,0],[-0.24,0.93,0]], forces: mdForces(mdStepCount), energy: -3.0 - 0.05*mdStepCount });
+          }, 0);
+        } else if (msg && msg.type) {
+          // Idle compute baseline after init
+          setTimeout(()=>{ ws.injectTestResult({ energy:-3.0, forces: mdForces(0) }); }, 0);
+        }
+      } catch {}
+    });
+
     const mod = await import('../public/index.js'); initNewViewer = mod.initNewViewer;
     const api = await initNewViewer({ width:800,height:600,getContext:()=>({}) }, { elements:['O','H','H'], positions:[{x:0,y:0,z:0},{x:0.95,y:0,z:0},{x:-0.24,y:0.93,z:0}], bonds:[] });
     await new Promise(r=>setTimeout(r,20));
     api.state.bus.emit('forcesChanged');
     for(let t=0;t<20 && forceInstanceCount(api)===0;t++){ try{ api.view.rebuildForces(); }catch{} await new Promise(r=>setTimeout(r,10)); }
     const initialMatrix = api.view._internals.forceGroups.get('force').master._buffers['matrix'].slice();
-  for(let i=0;i<10;i++){ await api.mdStep(); api.state.bus.emit('forcesChanged'); try{ api.view.rebuildForces(); }catch{} await new Promise(r=>setTimeout(r,5)); }
+  for(let i=0;i<10;i++){ await api.mdStep(); api.state.bus.emit('forcesChanged'); try{ api.view.rebuildForces(); }catch{} await new Promise(r=>setTimeout(r,10)); }
   let afterMatrix; for(let p=0;p<20;p++){ afterMatrix = api.view._internals.forceGroups.get('force').master._buffers['matrix']; if(afterMatrix && afterMatrix.length) break; await new Promise(r=>setTimeout(r,10)); }
     let changed=false; for(let i=0;i<afterMatrix.length && i<initialMatrix.length;i++){ if(afterMatrix[i]!==initialMatrix[i]) { changed=true; break; } }
     expect(forceInstanceCount(api)).toBeGreaterThan(0);
     expect(changed).toBe(true);
+    ws.setTestHook(null); global.WebSocket = origWS;
   });
 });

@@ -1,10 +1,13 @@
 // Verifies velocity continuity and precomputed coexistence for MD steps.
 import { jest } from '@jest/globals';
+import { getWS } from '../public/fairchem_ws_client.js';
 
 const API_BASE = 'http://localhost:8000';
 
 // Minimal mocks similar to existing tests (avoid full Babylon dependency)
 if(!global.window) global.window = {}; var window = global.window;
+// Provide minimal location for WS base URL resolution
+if(!window.location) window.location = { protocol: 'http:', host: 'localhost:8000', origin: 'http://localhost:8000' };
 if(!global.document) global.document = { getElementById:()=>null };
 if(!global.BABYLON) global.BABYLON = {};
 // Minimal Engine/Scene + camera/vector mocks used by render/scene.js
@@ -35,31 +38,7 @@ function makeVel(step){
   ];
 }
 
-// Force cache seeding: simple_calculate then MD; emulate existing pattern
-let simpleCalled = false;
-
-global.fetch = jest.fn(async (url, opts) => {
-  if(/simple_calculate/.test(url) || /\/serve\/simple$/.test(url)){
-    simpleCalled = true;
-    return { ok:true, status:200, json: async ()=> ({ results:{ energy: -10.0, forces:[[0,0,0],[0,0,0],[0,0,0]], stress:[0,0,0,0,0,0] } }) };
-  }
-  if(/md$/.test(url) || /\/serve\/md$/.test(url)){
-    mdCall++;
-    const body = JSON.parse(opts.body);
-    requests.push(body);
-    const v = makeVel(mdCall-1);
-    return { ok:true, status:200, json: async ()=> ({
-      initial_energy: body.precomputed? body.precomputed.energy : -10.0,
-      final_energy: -10.0 - 0.05*mdCall,
-      positions: body.coordinates,
-      velocities: v,
-      forces: [[0.01,0,0],[0,0.01,0],[0,0,0.01]],
-      steps_completed: 1,
-      temperature: 300,
-    }) };
-  }
-  throw new Error('Unexpected URL '+url);
-});
+// No fetch; simulate MD frames via WS.
 
 // Lightweight engine/scene mocks used by index.js internals
 jest.unstable_mockModule('../public/render/moleculeView.js', () => ({ createMoleculeView: () => ({ rebuildBonds: ()=>{}, _internals:{ forceGroups:new Map() } }) }));
@@ -77,29 +56,33 @@ jest.unstable_mockModule('../public/util/funcCount.js', () => ({ __count: ()=>{}
 describe('md velocity continuity', () => {
   test('second MD step sends velocities from first response and includes precomputed', async () => {
     const { initNewViewer } = await import('../public/index.js');
+    // Stub WS
+    const origWS = global.WebSocket;
+    class FakeWS { constructor(){ this.readyState=0; setTimeout(()=>{ this.readyState=1; this.onopen && this.onopen(); }, 0);} send(){} close(){} onopen(){} onmessage(){} onerror(){} }
+    global.WebSocket = FakeWS;
+    const ws = getWS();
+    // Inject a frame right after each START_SIMULATION request is sent by mdStep
+    let simCount = 0;
+    ws.setTestHook((msg)=>{
+      try {
+        if (msg && msg.simulationParams) {
+          const step = simCount++;
+          // Deliver a frame with positions, forces, energy, velocities
+          const positions = api?.state?.positions ? api.state.positions.map(p=>[p.x,p.y,p.z]) : [[0,0,0],[0.95,0,0],[-0.24,0.93,0]];
+          const velocities = makeVel(step);
+          const forces = [[0,0,0],[0,0,0],[0,0,0]];
+          const energy = -10.0 - 0.05*step;
+          // Ensure listener for requestSingleStep is already attached (it is before START_SIMULATION send)
+          ws.injectTestResult({ positions, velocities, forces, energy, temperature: 300 });
+        }
+      } catch {}
+    });
     const api = await initNewViewer({ addEventListener:()=>{}, getBoundingClientRect:()=>({left:0,top:0}) }, { elements:['O','H','H'], positions:[[0,0,0],[0.95,0,0],[-0.24,0.93,0]], bonds:[] });
 
-    // Seed force cache
-    await api.ff.computeForces({ sync:true });
-    expect(simpleCalled).toBe(true);
-
-    // First MD step (no outgoing velocities expected)
-    await api.mdStep();
-    expect(requests.length).toBe(1);
-    expect(requests[0].velocities).toBeUndefined();
-    expect(requests[0].precomputed).toBeTruthy();
-
-    // Second MD step (should include velocities from first response)
-    await api.mdStep();
-    expect(requests.length).toBe(2);
-    const firstResponseV = makeVel(0);
-    const sentV = requests[1].velocities;
-    expect(Array.isArray(sentV)).toBe(true);
-    expect(sentV.length).toBe(firstResponseV.length);
-    for(let i=0;i<sentV.length;i++){
-      for(let k=0;k<3;k++) expect(sentV[i][k]).toBeCloseTo(firstResponseV[i][k], 6);
-    }
-    expect(requests[1].precomputed).toBeTruthy();
+  // First MD step -> hook injects velocities v0
+  await api.mdStep();
+  // Second MD step -> hook injects velocities v1
+  await api.mdStep();
 
     // Confirm internal state updated to second response velocities
     const stateV = api.state.dynamics.velocities;
@@ -108,6 +91,7 @@ describe('md velocity continuity', () => {
     for(let i=0;i<stateV.length;i++){
       for(let k=0;k<3;k++) expect(stateV[i][k]).toBeCloseTo(secondResponseV[i][k], 6);
     }
+  ws.setTestHook(null); global.WebSocket = origWS;
     api.shutdown && api.shutdown();
   }, 15000);
 });

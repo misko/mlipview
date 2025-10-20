@@ -132,7 +132,7 @@ async def _run_ws_md_frames(
             # Receive binary protobuf result
             data = await asyncio.wait_for(ws.recv(), timeout=5.0)
             if not isinstance(data, (bytes, bytearray)):
-                # Server is protobuf-only; ignore non-bytes
+                # Protocol is protobuf-only; ignore non-bytes (defensive)
                 continue
             res = pb.ServerResult()
             res.ParseFromString(data)

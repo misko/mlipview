@@ -3,7 +3,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { stubWebSocketAndHook } from './utils/wsTestStub.js';
+import { getWS } from '../public/fairchem_ws_client.js';
 
 // Minimal Babylon stubs so render/scene.js doesn't blow up
 jest.mock('../public/render/scene.js', () => ({
@@ -17,7 +17,21 @@ jest.mock('../public/render/scene.js', () => ({
 describe('auto MD on page load (ROY)', () => {
   test('auto-starts MD and receives >= 20 frames', async () => {
     // Ensure auto-start is allowed: do NOT set __MLIPVIEW_TEST_MODE or __MLIPVIEW_NO_AUTO_MD
-    const ws = stubWebSocketAndHook();
+    // Stub the browser WebSocket to avoid real network and trigger onopen.
+    const origWS = global.WebSocket;
+    let constructed = 0;
+    class FakeWS {
+      constructor(url){ constructed++; this.url=url; this.readyState=0; setTimeout(()=>{ this.readyState=1; this.onopen && this.onopen(); }, 0); }
+      set binaryType(_){}
+      send(){}
+      close(){}
+      onopen(){}
+      onerror(){}
+      onclose(){}
+      set onmessage(fn){ this._onmsg = fn; }
+      get onmessage(){ return this._onmsg; }
+    }
+    global.WebSocket = FakeWS;
 
     // DOM scaffold similar to index.html
     document.body.innerHTML = '';
@@ -46,24 +60,28 @@ describe('auto MD on page load (ROY)', () => {
       const { loadDefault } = await import('../public/util/moleculeLoader.js');
 
       // Initialize viewer with empty placeholders like index.html
-  const api = await initNewViewer(canvas, { elements:[], positions:[], bonds:[] });
-  // Expose for auto-start path that checks window.viewerApi
-  window.viewerApi = api;
+      const api = await initNewViewer(canvas, { elements:[], positions:[], bonds:[] });
+      // Expose for auto-start path that checks window.viewerApi
+      window.viewerApi = api;
 
-      // Load ROY by default using loader (mirrors index.html behavior)
+      // Capture outgoing WS actions using instance-level hook
+      const ws = getWS();
+      const sent = [];
+      ws.setTestHook(msg => sent.push(msg));
+
+      // Load ROY by default using loader (mirrors index.js behavior)
       const ld = await loadDefault(api);
       expect(ld && ld.file).toBe('molecules/roy.xyz');
 
-  // Allow auto-start tick to schedule startMDContinuous
-  await Promise.resolve();
-  await new Promise(r=>setTimeout(r,0));
-  // Extra yield to cover ws.ensureConnected onopen tick
-  await new Promise(r=>setTimeout(r,0));
+      // Allow auto-start tick to schedule startMDContinuous and connection to open
+      await Promise.resolve();
+      await new Promise(r=>setTimeout(r,0));
+      await new Promise(r=>setTimeout(r,0));
 
       // Wait briefly for a START_SIMULATION for MD to be sent
       let started = false;
       for(let k=0;k<10 && !started;k++){
-        started = ws.sent.some(m => m && m.simulationParams && m.simulationType != null);
+        started = sent.some(m => m && m.simulationParams && m.simulationType != null);
         if(!started) await new Promise(r=>setTimeout(r,5));
       }
       expect(started).toBe(true);
@@ -72,11 +90,9 @@ describe('auto MD on page load (ROY)', () => {
       const N = api.state.positions.length;
       const basePos = api.state.positions.map(p=>[p.x,p.y,p.z]);
       for (let i=0;i<20;i++){
-        // Slightly nudge a coordinate to simulate movement
         const pos = basePos.map((p,idx)=> [p[0] + (i*0.0001) + (idx===0? i*0.00005:0), p[1], p[2]]);
-        // Provide non-empty forces array (one per atom) so maybePlotEnergy executes
         const forces = Array.from({length:N}, (_,k)=> [0.001*((k+i)%3+1), 0, 0]);
-        ws.emit({ positions: pos, forces, energy: -100 - i, temperature: 300 + i*0.1 });
+        ws.injectTestResult({ positions: pos, forces, energy: -100 - i, temperature: 300 + i*0.1 });
         await new Promise(r=>setTimeout(r,0));
       }
 
@@ -86,6 +102,7 @@ describe('auto MD on page load (ROY)', () => {
       expect(ticks).toBeGreaterThanOrEqual(20);
     } finally {
       global.fetch = origFetch;
+      global.WebSocket = origWS;
     }
   }, 15000);
 });

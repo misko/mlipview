@@ -25,8 +25,8 @@ jest.mock('../public/render/scene.js', ()=>{
   return { createScene: async ()=> ({ engine:new mockEngine(), scene:new mockScene(), camera:{ detachControl(){}, attachControl(){}, alpha:0,beta:0,radius:5,target:{x:0,y:0,z:0} } }) };
 });
 
-// WS test stub for baseline and relax steps
-import { stubWebSocketAndHook } from './utils/wsTestStub.js';
+// WS client instance for baseline and relax steps
+import { getWS } from '../public/fairchem_ws_client.js';
 const baseForces=[ [0.1,0.0,0.0],[0.0,0.1,0.0],[0.0,0.0,0.1] ];
 function scaledForces(step){ return baseForces.map(f=>[ f[0]*(1+0.2*step), f[1]*(1+0.15*step), f[2]*(1+0.1*step) ]); }
 
@@ -35,7 +35,12 @@ function forceInstanceCount(api){ const fg=api.view._internals.forceGroups.get('
 
 describe('relax forces visualization (WS)', () => {
   test('forces update over 10 relax steps', async () => {
-    const ws = stubWebSocketAndHook();
+    // Stub WS to auto-open and provide injection
+    const origWS = global.WebSocket;
+    class FakeWS { constructor(){ this.readyState=0; setTimeout(()=>{ this.readyState=1; this.onopen && this.onopen(); }, 0);} send(){} close(){} onopen(){} onmessage(){} onerror(){} }
+    global.WebSocket = FakeWS;
+    const ws = getWS();
+    ws.setTestHook(()=>{});
     const mod = await import('../public/index.js'); initNewViewer = mod.initNewViewer;
     // Build DOM similar to other jsdom tests
     const canvas=document.createElement('canvas'); canvas.id='viewer'; canvas.addEventListener=()=>{}; document.body.appendChild(canvas);
@@ -46,7 +51,7 @@ describe('relax forces visualization (WS)', () => {
   // Seed baseline forces via a simple calculate frame (allow a tick for ws init)
   await Promise.resolve().then(()=>{});
   await new Promise(r=>setTimeout(r,0));
-  ws.emit({ positions: api.state.positions.map(p=>[p.x,p.y,p.z]), forces: scaledForces(0), energy: -5.0 });
+  ws.injectTestResult({ positions: api.state.positions.map(p=>[p.x,p.y,p.z]), forces: scaledForces(0), energy: -5.0 });
     api.state.bus.emit('forcesChanged');
     for(let t=0;t<20 && forceInstanceCount(api)===0;t++){ try{ api.view.rebuildForces(); }catch{} await new Promise(r=>setTimeout(r,10)); }
     const initialMatrix = api.view._internals.forceGroups.get('force').master._buffers['matrix'].slice();
@@ -55,7 +60,7 @@ describe('relax forces visualization (WS)', () => {
       const p = api.relaxStep();
       await Promise.resolve().then(()=>{});
       await new Promise(r=>setTimeout(r,0));
-      ws.emit({ positions: api.state.positions.map(p=>[p.x,p.y,p.z]), forces: scaledForces(i), energy: -5.0 - 0.1*i });
+  ws.injectTestResult({ positions: api.state.positions.map(p=>[p.x,p.y,p.z]), forces: scaledForces(i), energy: -5.0 - 0.1*i });
       await p;
       api.state.bus.emit('forcesChanged');
       try{ api.view.rebuildForces(); }catch{}
@@ -67,5 +72,6 @@ describe('relax forces visualization (WS)', () => {
     for(let i=0;i<afterMatrix.length && i<initialMatrix.length;i++){ if(afterMatrix[i]!==initialMatrix[i]) { changed=true; break; } }
     expect(forceInstanceCount(api)).toBeGreaterThan(0);
     expect(changed).toBe(true);
+    global.WebSocket = origWS;
   });
 });

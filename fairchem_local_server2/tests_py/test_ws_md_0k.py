@@ -106,6 +106,7 @@ async def _run_md_0k(
         got = 0
         while got < int(frames):
             data = await asyncio.wait_for(ws.recv(), timeout=5.0)
+            # Protocol is protobuf-only; enforce binary frames
             assert isinstance(data, (bytes, bytearray))
             res = pb.ServerResult()
             res.ParseFromString(data)
@@ -146,5 +147,7 @@ def test_ws_md_runs_at_0k(ws_base_url: str):
     # UMA-only server provided by session fixture
     xyz_path = _find_xyz()
     Z, xyz = _load_xyz(xyz_path)
-    nframes = asyncio.run(_run_md_0k(ws_base_url, Z, xyz, frames=10, calculator="uma"))
+    nframes = asyncio.run(
+        _run_md_0k(ws_base_url, Z, xyz, frames=10, calculator="uma")
+    )
     assert nframes >= 10

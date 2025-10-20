@@ -28,11 +28,9 @@ async def _recv_one(uri: str):
         start.seq = seq
         start.type = pb.ClientAction.Type.START_SIMULATION
         start.simulation_type = pb.ClientAction.SimType.RELAX
-        # Attach optional counters if fields exist
-        if hasattr(start, "user_interaction_count"):
-            setattr(start, "user_interaction_count", 5)
-        if hasattr(start, "sim_step"):
-            setattr(start, "sim_step", 42)
+        # Set counters explicitly; schema guarantees presence
+        start.user_interaction_count = 5
+        start.sim_step = 42
         await ws.send(start.SerializeToString())
 
         # receive first produced simulation frame
@@ -52,9 +50,6 @@ async def _recv_one(uri: str):
 @pytest.mark.timeout(30)
 def test_ws_optional_counters_present_or_skipped(ws_base_url: str):
     res = asyncio.run(_recv_one(ws_base_url))
-    # If sim_step exists in compiled schema, expect >= 1 for simulation frames
-    if hasattr(res, "sim_step"):
-        assert int(getattr(res, "sim_step", 0)) >= 1
-    # If user_interaction_count exists, expect echo >= 0
-    if hasattr(res, "user_interaction_count"):
-        assert int(getattr(res, "user_interaction_count", 0)) >= 0
+    # Assert echo semantics on required fields in new protocol
+    assert int(res.sim_step) >= 1
+    assert int(res.user_interaction_count) >= 0

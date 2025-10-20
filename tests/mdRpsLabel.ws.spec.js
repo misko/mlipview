@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 // Validate that streaming WS frames drive the RPS label via __noteRequestCompleted.
 
-import { stubWebSocketAndHook } from './utils/wsTestStub.js';
+import { getWS } from '../public/fairchem_ws_client.js';
 
 beforeAll(()=>{
   // Minimal BABYLON stubs
@@ -26,7 +26,12 @@ describe('MD RPS label (WS)', () => {
     const energyCanvas=document.createElement('canvas'); energyCanvas.id='energyCanvas'; energyCanvas.width=260; energyCanvas.height=80; energyCanvas.getContext=()=>({ clearRect(){}, beginPath(){}, moveTo(){}, lineTo(){}, stroke(){}, arc(){}, fill(){}, fillRect(){}, strokeStyle:null, lineWidth:1, fillStyle:null }); energyWrapper.appendChild(energyCanvas);
     const energyLabel=document.createElement('div'); energyLabel.id='energyLabel'; energyWrapper.appendChild(energyLabel);
 
-    const ws = stubWebSocketAndHook();
+  // Stub WebSocket to avoid network and auto-open
+  const origWS = global.WebSocket;
+  class FakeWS { constructor(){ this.readyState=0; setTimeout(()=>{ this.readyState=1; this.onopen && this.onopen(); }, 0);} send(){} close(){} onopen(){} onmessage(){} onerror(){} }
+  global.WebSocket = FakeWS;
+  const ws = getWS();
+  ws.setTestHook(()=>{});
     const mod = await import('../public/index.js');
     const api = await mod.initNewViewer(canvas, { elements:[{Z:8},{Z:1},{Z:1}], positions:[{x:0,y:0,z:0},{x:0.96,y:0,z:0},{x:-0.24,y:0.93,z:0}], bonds:[] });
     // Override performance.now for deterministic RPS
@@ -35,13 +40,13 @@ describe('MD RPS label (WS)', () => {
     performance.now = ()=> now;
     try {
       // Start streaming MD and wait a tick so onResult is subscribed
-  api.startMDContinuous({ steps:100, temperature: 1500 });
+      api.startMDContinuous({ steps:100, temperature: 1500 });
       await Promise.resolve().then(()=>{});
       await new Promise(r=>setTimeout(r,0));
       // Emit 5 frames with 100ms intervals => dt ~ 400ms for 5 samples => RPS ~ 4*1000/400 = 10
       for(let i=0;i<5;i++){
         now += 100; // advance time BEFORE sample so dt accumulates
-        ws.emit({ positions: api.state.positions.map(p=>[p.x,p.y,p.z]), forces: [], energy: -1.0, temperature: 1500 });
+        ws.injectTestResult({ positions: api.state.positions.map(p=>[p.x,p.y,p.z]), forces: [], energy: -1.0, temperature: 1500 });
         // allow __noteRequestCompleted to run and label to update
         await new Promise(r=>setTimeout(r,0));
       }
@@ -49,11 +54,12 @@ describe('MD RPS label (WS)', () => {
       await Promise.resolve().then(()=>{});
       const label = document.getElementById('rpsLabel');
       expect(label).toBeTruthy();
-  // It should update from default '--' to a numeric value
-  expect(label.textContent).toMatch(/^RPS:\s+\d+\.\d/);
-  api.stopSimulation();
+      // It should update from default '--' to a numeric value
+      expect(label.textContent).toMatch(/^RPS:\s+\d+\.\d/);
+      api.stopSimulation();
     } finally {
       performance.now = origNow;
+      global.WebSocket = origWS;
     }
   });
 });

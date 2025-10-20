@@ -3,7 +3,7 @@
  * Mock browser test: ?autoMD=0 and a user interaction results in multiple plotted energies
  */
 import { jest } from '@jest/globals';
-import { stubWebSocketAndHook } from './utils/wsTestStub.js';
+import { getWS } from '../public/fairchem_ws_client.js';
 
 describe('autoMD=0 interaction energies', () => {
   beforeEach(() => { if (!global.window) global.window = global; });
@@ -12,21 +12,22 @@ describe('autoMD=0 interaction energies', () => {
     window.__MLIPVIEW_TEST_MODE = true;
     window.location = { protocol: 'http:', host: '127.0.0.1:4000', search: '?autoMD=0' };
     window.__MLIPVIEW_SERVER = 'ws://127.0.0.1:8000';
-    const { sent, emit } = stubWebSocketAndHook();
-    const __origHook = window.__WS_TEST_HOOK__;
+    // Stub WS and respond to each USER_INTERACTION with a distinct energy
+    const origWS = global.WebSocket;
+    class FakeWS { constructor(){ this.readyState=0; setTimeout(()=>{ this.readyState=1; this.onopen && this.onopen(); }, 0);} send(){} close(){} onopen(){} onmessage(){} onerror(){} }
+    global.WebSocket = FakeWS;
+    const ws = getWS();
     let __uiCount = 0;
-    window.__WS_TEST_HOOK__ = (msg)=>{
-      try { __origHook && __origHook(msg); } catch {}
+    ws.setTestHook((msg)=>{
       try {
-        if (msg && (msg.type === 'USER_INTERACTION' || msg.type === 1)) {
-          // emit an energy frame for each interaction; vary energy each time so plot de-dup doesn't skip
+        if (msg && msg.type != null && msg.type !== 'INIT_SYSTEM') {
           __uiCount++;
           const seq = 100 + __uiCount;
           const e = -0.97 + (__uiCount * 0.01);
-          setTimeout(()=> emit({ seq, energy: e, forces: [[0,0,0],[0,0,0]] }), 0);
+          setTimeout(()=> ws.injectTestResult({ seq, energy: e, forces: [[0,0,0],[0,0,0]] }), 0);
         }
       } catch {}
-    };
+    });
 
   document.body.innerHTML = '<canvas id="energyCanvas" width="200" height="50"></canvas><div id="energyLabel"></div>';
   const viewer = document.createElement('canvas'); viewer.id='viewer'; viewer.addEventListener=()=>{}; document.body.appendChild(viewer);
@@ -55,5 +56,6 @@ describe('autoMD=0 interaction energies', () => {
   // Wait for at least one more point to appear
   const ok2 = await (async()=>{ const t0=Date.now(); while(Date.now()-t0<400){ if(api.debugEnergySeriesLength()>=baseLen+1) return true; await new Promise(r=> setTimeout(r, 20)); } return false; })();
   expect(ok2).toBe(true);
+  global.WebSocket = origWS;
   });
 });

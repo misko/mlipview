@@ -41,14 +41,12 @@ def _make_vec3(arr):
 
 
 async def _recv_server_result(ws):
-    # Receive a single binary ServerResult
+    # Receive a single binary ServerResult (protobuf-only protocol)
     msg = await ws.recv()
-    if isinstance(msg, (bytes, bytearray)):
-        r = pb.ServerResult()
-        r.ParseFromString(msg)
-        return r
-    # Text fallback: allow JSON logs to be interspersed (ignore)
-    return None
+    assert isinstance(msg, (bytes, bytearray))
+    r = pb.ServerResult()
+    r.ParseFromString(msg)
+    return r
 
 
 async def run_relax_20(ws_url: str, xyz_path: str):
@@ -134,7 +132,10 @@ def _uma_direct_reference(xyz_path: str) -> Tuple[float, float]:
     - steps: 20
     """
     try:
-        from fairchem.core import FAIRChemCalculator, pretrained_mlip  # type: ignore
+        from fairchem.core import (  # type: ignore
+            FAIRChemCalculator,
+            pretrained_mlip,
+        )
     except Exception as e:  # pragma: no cover
         pytest.skip(f"fairchem not available: {e}")
 
@@ -173,7 +174,10 @@ def _uma_reference_trace(
     - Convergence criterion: fmax=0.05 (but capped at 'steps')
     """
     try:
-        from fairchem.core import FAIRChemCalculator, pretrained_mlip  # type: ignore
+        from fairchem.core import (  # type: ignore
+            FAIRChemCalculator,
+            pretrained_mlip,
+        )
     except Exception as e:  # pragma: no cover
         pytest.skip(f"fairchem not available: {e}")
 

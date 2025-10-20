@@ -235,4 +235,77 @@ await page.evaluate(() => window.__fairchem_ws__.stopSimulation());
 - [ ] If evaluating gating, set `ws.setCounters({ userInteractionCount, simStep })` on the client prior to sending `startSimulation`
 
 ---
+## UI test intents (WebSocket, protobuf)
+
+- autoMdStartsRoy.ws.spec.js
+  - Intent: On app load with default ROY molecule, the UI auto-starts MD via START_SIMULATION over WebSocket and processes a stream of frames. The energy plot should tick at least 20 times as frames arrive.
+  - Design alignment: Matches new_design.md — init via USER_INTERACTION, then START_SIMULATION(MD); frames drive UI; no REST. Should pass.
+
+- mdRpsLabel.ws.spec.js
+  - Intent: The RPS label reflects frame rate during MD streaming. Injecting 5 frames over ~400 ms should yield an RPS around 10.0.
+  - Design alignment: Matches new_design.md — streaming frames update UI; counters/ACKs are internal; test asserts label changes only. Should pass.
+
+- userInteractionWhenIdle.dom.spec.js
+  - Intent: When idle, sending USER_INTERACTION (positions update) triggers an idle compute response carrying energy (and forces) without positions.
+  - Design alignment: Matches new_design.md — idle responses omit positions and include forces/energy; no SIMPLE_CALCULATE verb. Should pass.
+  - Status: Updated to assert outgoing USER_INTERACTION and to inject idle energy via ws.injectTestResult.
+
+- relaxSingleStepNetwork.spec.js
+  - Intent: A single relax step issues exactly one START_SIMULATION with optimizer=BFGS and resolves on the first streamed frame.
+  - Design alignment: Matches new_design.md — single-step implemented via START_SIMULATION + immediate stop in client helper; no SIMPLE_CALCULATE usage. Should pass.
+  - Status: Uses getWS().setTestHook and injects a result; asserts one START_SIMULATION sent.
+
+- autoMdDisabledBaseline.dom.spec.js
+  - Intent: With ?autoMD=0, auto-start is disabled; the app initializes via USER_INTERACTION and plots a baseline idle energy from the first energy-bearing frame.
+  - Design alignment: Matches new_design.md — initialization via USER_INTERACTION and first idle compute frame sets baseline energy; no REST calls. Should pass.
+  - Status: Hook updated to treat any USER_INTERACTION as a trigger; injects idle energy frame.
+
+- autoMdDisabledInteractionEnergies.dom.spec.js
+  - Intent: With ?autoMD=0, user interactions (drag) trigger multiple idle energy computes; energy plot grows by multiple ticks with distinct energies.
+  - Design alignment: Matches new_design.md — idle USER_INTERACTION produces energy/forces frames without positions. Should pass.
+
+- mdTemperatureSlider.spec.js
+  - Intent: Temperature slider value influences outgoing START_SIMULATION(MD) temperature; subsequent mdStep calls use the updated value.
+  - Design alignment: Matches new_design.md — simulation params flow through START_SIMULATION; instantaneous temperature comes from frames. Should pass.
+
+- mdInstantTemperatureDisplay.spec.js
+  - Intent: The HUD instantaneous temperature label (#instTemp) updates from MD frames’ temperature value.
+  - Design alignment: Matches new_design.md — temperature provided in simulation frames is used for UI. Should pass.
+
+- mdTemperatureSync.dom.spec.js
+  - Intent: Slider label and outgoing MD temperature stay consistent on initial load (1500 K default) and after moving the slider.
+  - Design alignment: Matches new_design.md — client drives START_SIMULATION params; tests assert outgoing params only. Should pass.
+
+- relaxForcesUpdate.spec.js
+  - Intent: Force vectors update across successive relax steps; matrix buffers change as injected forces vary.
+  - Design alignment: Matches new_design.md — relax step frames include positions and forces; UI updates force visualization per frame. Should pass.
+  - Status: mdForcesUpdate.spec.js also rewritten to WS-only; removes REST usage and injects baseline + per-step forces via WebSocket hooks.
+
+- apiCellPayload.spec.js
+  - Intent: Enabling PBC triggers USER_INTERACTION init/update that includes cell; test asserts PBC state toggled and message sent.
+  - Design alignment: Matches new_design.md — init/update via USER_INTERACTION carries optional cell; no INIT_SYSTEM/SIMPLE_CALCULATE. Should pass.
+  - Status: Updated to remove INIT_SYSTEM filter in hook; relies on client test hook projection.
+
+- mdVelocityContinuity.spec.js
+  - Intent: A second MD step uses velocities returned from the first step; viewer dynamics.velocities reflects the latest frame.
+  - Design alignment: Matches new_design.md — single-step MD via requestSingleStep; frames carry velocities. Should pass.
+  - Status: Implemented with WS injection of velocities for two steps; asserts continuity.
+- Legacy REST parity tests (mark for removal)
+- fairchem_bfgs_parity.spec.js, relaxWaterIntegration.spec.js, water_relaxation_browser_parity.spec.js, water_relax_run_parity.spec.js, water_md_lj*.spec.js, water_md_run_stability.spec.js
+  - Reason: Exercise HTTP /serve/simple and /serve/relax endpoints removed in new_design.md.
+  - Action: Remove or rewrite against WS-only protocol using ws.injectTestResult or a fake WS server.
+
+- energyApiOnlyTicks.spec.js
+  - Intent: Only API energy responses add ticks; drag events do not. Relax and MD steps increment the energy chart.
+  - Design alignment: Matches new_design.md — plotting occurs on energy-bearing frames; no SIMPLE_CALCULATE. Should pass.
+
+- forceCache.spec.js
+  - Intent: Client-side force cache version increments only on geometry changes; repeated computeForces without changes should keep version stable; after a mutation, idle USER_INTERACTION recompute bumps version.
+  - Design alignment: Matches new_design.md — idle computes over WS seed/update the cache; HTTP simple_calculate removed. Should pass.
+
+- relaxForceCache.spec.js
+  - Intent: A relax step seeds the force cache; computeForces without change keeps version stable; after mutation, idle compute bumps version.
+  - Design alignment: Matches new_design.md — relax via WS single-step; idle USER_INTERACTION for recompute. Should pass.
+
+---
 If you find any gaps or edge cases not covered here, add an example to this file so we can keep tests consistent with the new protocol.

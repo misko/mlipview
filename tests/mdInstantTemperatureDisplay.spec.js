@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 // Verifies that the instantaneous temperature from WS updates the HUD element #instTemp.
 
-import { stubWebSocketAndHook } from './utils/wsTestStub.js';
+import { getWS } from '../public/fairchem_ws_client.js';
 
 beforeAll(()=>{
   if(!global.BABYLON){
@@ -28,7 +28,12 @@ async function setup(){
 describe('Instantaneous MD temperature HUD', () => {
   test('updates #instTemp after mdStep', async () => {
     window.__MLIPVIEW_TEST_MODE = true;
-    const ws = stubWebSocketAndHook();
+    // Stub WS and capture outgoing messages
+    const origWS = global.WebSocket;
+    class FakeWS { constructor(){ this.readyState=0; setTimeout(()=>{ this.readyState=1; this.onopen && this.onopen(); }, 0);} send(){} close(){} onopen(){} onmessage(){} onerror(){} }
+    global.WebSocket = FakeWS;
+    const ws = getWS();
+    const sent = []; ws.setTestHook(m=> sent.push(m));
     const viewer = await setup();
     const el = document.getElementById('instTemp');
     expect(el).toBeTruthy();
@@ -40,12 +45,13 @@ describe('Instantaneous MD temperature HUD', () => {
     await new Promise(r=>setTimeout(r,0));
     // Emit a frame with instantaneous temperature (500 + 12.34)
     const instT = 512.34;
-    ws.emit({ positions: viewer.state.positions.map(p=>[p.x,p.y,p.z]), forces: [[0,0,0]], velocities: [[0,0,0]], energy: -1.0, temperature: instT });
+    ws.injectTestResult({ positions: viewer.state.positions.map(p=>[p.x,p.y,p.z]), forces: [[0,0,0]], velocities: [[0,0,0]], energy: -1.0, temperature: instT });
     await p; // resolve mdStep
   // Outgoing START_SIMULATION captured with temperature (enum is numeric)
-  const startMsg = ws.sent.find(m=> m && m.simulationParams && typeof m.simulationParams.temperature === 'number');
+  const startMsg = sent.find(m=> m && m.simulationParams && typeof m.simulationParams.temperature === 'number');
   expect(startMsg && startMsg.simulationParams && startMsg.simulationParams.temperature).toBe(500);
     // HUD should reflect instantaneous value (rounded to 1 decimal)
     expect(el.textContent).toMatch(/T: 512\.3/);
+    global.WebSocket = origWS;
   });
 });
