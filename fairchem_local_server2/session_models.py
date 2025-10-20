@@ -79,10 +79,10 @@ class ServerResult(BaseModel):
 
 
 class SessionState(BaseModel):
-    atomic_numbers: List[int] = []
-    positions: List[List[float]] = []
-    velocities: List[List[float]] = []
-    forces: List[List[float]] = []
+    atomic_numbers: List[int] = None
+    positions: List[List[float]] = None
+    velocities: List[List[float]] = None
+    forces: List[List[float]] = None
     cell: Optional[List[List[float]]] = None
 
     running: bool = False
