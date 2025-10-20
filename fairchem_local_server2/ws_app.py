@@ -261,15 +261,16 @@ class WSIngress:
                             stall_notice_last = now
                             # Explicit debug for WAITING_FOR_ACK send
                             delta = state.server_seq - state.client_ack
-                            print(
-                                (
-                                    "[ws] WAITING_FOR_ACK send "
-                                    f"server_seq={state.server_seq} "
-                                    f"client_ack={state.client_ack} "
-                                    f"delta={delta}"
-                                ),
-                                flush=True,
-                            )
+                            if self._ws_debug:
+                                print(
+                                    (
+                                        "[ws] WAITING_FOR_ACK send "
+                                        f"server_seq={state.server_seq} "
+                                        f"client_ack={state.client_ack} "
+                                        f"delta={delta}"
+                                    ),
+                                    flush=True,
+                                )
                             await _send_result_bytes(
                                 seq=state.server_seq,
                                 client_seq=state.client_seq,
@@ -296,14 +297,16 @@ class WSIngress:
                     worker = self._pool.any()
                     if state.sim_type == "md":
                         if self._log_calls:
-                            msg = (
-                                f"[ws:sim][MD] steps=1 "
-                                f"T={state.params.temperature} "
-                                f"dt={state.params.timestep_fs} "
-                                f"friction={state.params.friction} "
-                                f"natoms={len(state.atomic_numbers)}"
+                            print(
+                                (
+                                    f"[ws:sim][MD] steps=1 "
+                                    f"T={state.params.temperature} "
+                                    f"dt={state.params.timestep_fs} "
+                                    f"friction={state.params.friction} "
+                                    f"natoms={len(state.atomic_numbers)}"
+                                ),
+                                flush=True,
                             )
-                            print(msg, flush=True)
                         fut = worker.run_md.remote(
                             atomic_numbers=state.atomic_numbers,
                             positions=state.positions,
@@ -317,14 +320,16 @@ class WSIngress:
                         )
                     elif state.sim_type == "relax":
                         if self._log_calls:
-                            msg = (
-                                f"[ws:sim][RELAX] steps=1 "
-                                f"fmax={state.params.fmax} "
-                                f"max_step={state.params.max_step} "
-                                f"calc={state.params.calculator} "
-                                f"natoms={len(state.atomic_numbers)}"
+                            print(
+                                (
+                                    f"[ws:sim][RELAX] steps=1 "
+                                    f"fmax={state.params.fmax} "
+                                    f"max_step={state.params.max_step} "
+                                    f"calc={state.params.calculator} "
+                                    f"natoms={len(state.atomic_numbers)}"
+                                ),
+                                flush=True,
                             )
-                            print(msg, flush=True)
                         fut = worker.run_relax.remote(
                             atomic_numbers=state.atomic_numbers,
                             positions=state.positions,
@@ -371,7 +376,7 @@ class WSIngress:
                         cell=state.cell,
                         energy=energy_out,
                     )
-                    if state.server_seq % 10 == 0:
+                    if state.server_seq % 10 == 0 and self._ws_debug:
                         print(
                             (
                                 f"[ws] sent frame seq={state.server_seq} "
@@ -399,22 +404,24 @@ class WSIngress:
                 a = int(getattr(msg, "ack", 0) or 0)
                 if a:
                     state.client_ack = max(state.client_ack, a)
-            if state.client_ack and state.client_ack > prev_ack:
-                delta = state.server_seq - state.client_ack
-                print(
-                    (
-                        "[ws] ACK recv "
-                        f"client_ack={state.client_ack} "
-                        f"server_seq={state.server_seq} "
-                        f"delta={delta}"
-                    ),
-                    flush=True,
-                )
-            elif self._ws_debug and state.client_ack:
-                print(
-                    f"[ws:rx][ack] client_ack={state.client_ack}",
-                    flush=True,
-                )
+            if self._ws_debug:
+                if state.client_ack and state.client_ack > prev_ack:
+                    delta = state.server_seq - state.client_ack
+
+                    print(
+                        (
+                            "[ws] ACK recv "
+                            f"client_ack={state.client_ack} "
+                            f"server_seq={state.server_seq} "
+                            f"delta={delta}"
+                        ),
+                        flush=True,
+                    )
+                elif state.client_ack:
+                    print(
+                        f"[ws:rx][ack] client_ack={state.client_ack}",
+                        flush=True,
+                    )
 
         def _extract_correlation_fields(msg) -> Optional[int]:
             """Return uic_in_msg; also update UIC and sim_step."""
@@ -444,14 +451,15 @@ class WSIngress:
                 if state.user_input_positions is None
                 else int(state.user_input_positions.shape[0])
             )
-            print(
-                (
-                    f"[ws] USER_INTERACTION recv natoms={n} "
-                    "running="
-                    f"{'true' if state.running else 'false'}"
-                ),
-                flush=True,
-            )
+            if self._ws_debug:
+                print(
+                    (
+                        f"[ws] USER_INTERACTION recv natoms={n} "
+                        "running="
+                        f"{'true' if state.running else 'false'}"
+                    ),
+                    flush=True,
+                )
             if state.running:
                 # During run: drop forces so next produced frame recomputes
                 state.forces = None
@@ -560,7 +568,7 @@ class WSIngress:
                     optimizer=(sp.optimizer or "bfgs"),
                 )
             state.running = True
-            try:
+            if self._ws_debug:
                 print(
                     (
                         f"[ws] START_SIM type={state.sim_type} "
@@ -570,20 +578,14 @@ class WSIngress:
                     ),
                     flush=True,
                 )
-            except Exception:
-                pass
-            if self._ws_debug:
-                try:
-                    print(
-                        (
-                            f"[ws:state] counters uic="
-                            f"{state.user_interaction_count} "
-                            f"sim_step={state.sim_step}"
-                        ),
-                        flush=True,
-                    )
-                except Exception:
-                    pass
+                print(
+                    (
+                        f"[ws:state] counters uic="
+                        f"{state.user_interaction_count} "
+                        f"sim_step={state.sim_step}"
+                    ),
+                    flush=True,
+                )
 
         async def _handle_stop_simulation() -> None:
             state.running = False
@@ -610,14 +612,12 @@ class WSIngress:
                 pass
 
         def _handle_ping(msg) -> None:
-            try:
-                if hasattr(msg, "ack"):
-                    a = int(getattr(msg, "ack", 0) or 0)
-                    if a:
-                        state.client_ack = max(state.client_ack, a)
+            if hasattr(msg, "ack"):
+                a = int(getattr(msg, "ack", 0) or 0)
+                if a:
+                    state.client_ack = max(state.client_ack, a)
+                    if self._ws_debug:
                         print(f"[ws] ACK {a}", flush=True)
-            except Exception:
-                pass
 
         async def recv_loop():
             nonlocal last_ack
