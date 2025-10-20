@@ -235,6 +235,19 @@ class WSIngress:
             stall_notice_interval = 0.25  # seconds
             try:
                 while not stop_evt.is_set():
+                    if state.user_input_atomic_numbers is not None:
+                        state.atomic_numbers = state.user_input_atomic_numbers
+                        state.user_input_atomic_numbers = None
+                    if state.user_input_positions is not None:
+                        state.positions = state.user_input_positions
+                        state.user_input_positions = None
+                    if state.user_input_velocities is not None:
+                        state.velocities = state.user_input_velocities
+                        state.user_input_velocities = None
+                    if state.user_input_cell is not None:
+                        state.cell = state.user_input_cell
+                        state.user_input_cell = None
+
                     if not state.running or state.atomic_numbers == []:
                         await asyncio.sleep(0.02)
                         continue
@@ -278,7 +291,8 @@ class WSIngress:
                     # beginning of this simulation step. This value will be
                     # echoed on the produced frame even if newer interactions
                     # arrive before the step completes.
-                    uic_snapshot = state.user_interaction_count or None
+                    uic_snapshot = state.user_interaction_count
+
                     worker = self._pool.any()
                     if state.sim_type == "md":
                         if self._log_calls:
@@ -328,6 +342,7 @@ class WSIngress:
                     res = await asyncio.to_thread(ray.get, fut)
                     # Ray returns pydantic dict
                     state.positions = np.array(res["positions"], dtype=float)
+
                     v_out = res.get("velocities")
                     state.velocities = (
                         np.array(v_out, dtype=float)
@@ -416,16 +431,19 @@ class WSIngress:
             return uic_in_msg
 
         async def _handle_user_interaction(msg, uic_in_msg: Optional[int]) -> None:
-            if len(getattr(msg, "atomic_numbers", [])):
-                state.atomic_numbers = list(msg.atomic_numbers)
-            if len(getattr(msg, "positions", [])):
-                state.positions = _np_from_vec3_list(msg.positions)
-            if len(getattr(msg, "velocities", [])):
-                state.velocities = _np_from_vec3_list(msg.velocities)
+            if hasattr(msg, "atomic_numbers") and len(msg.atomic_numbers) > 0:
+                state.user_input_atomic_numbers = list(msg.atomic_numbers)
+            if hasattr(msg, "positions") and len(msg.positions) > 0:
+                state.user_input_positions = _np_from_vec3_list(msg.positions)
+            if hasattr(msg, "velocities") and len(msg.velocities) > 0:
+                state.user_input_velocities = _np_from_vec3_list(msg.velocities)
             if hasattr(msg, "cell"):
-                state.cell = _mat3_to_np(msg.cell)
-            print(f"Velocities are {state.velocities}", flush=True)
-            n = 0 if state.positions is None else int(state.positions.shape[0])
+                state.user_input_cell = _mat3_to_np(msg.cell)
+            n = (
+                0
+                if state.user_input_positions is None
+                else int(state.user_input_positions.shape[0])
+            )
             print(
                 (
                     f"[ws] USER_INTERACTION recv natoms={n} "
@@ -445,9 +463,21 @@ class WSIngress:
                 return
             # Idle compute and send (positions omitted)
             print("[ws] USER_INTERACTION idle -> compute", flush=True)
+            # copy over user input into the state
+            if state.user_input_atomic_numbers is not None:
+                state.atomic_numbers = list(state.user_input_atomic_numbers)
+                state.user_input_atomic_numbers = None
+                assert len(state.atomic_numbers) != 0
+            if state.user_input_positions is not None:
+                state.positions = np.array(state.user_input_positions, dtype=float)
+                state.user_input_positions = None
+            if state.user_input_velocities is not None:
+                state.velocities = np.array(state.user_input_velocities, dtype=float)
+                state.user_input_velocities = None
+            if state.user_input_cell is not None:
+                state.cell = np.array(state.user_input_cell, dtype=float)
+                state.user_input_cell = None
 
-            if state.atomic_numbers == [] or state.positions is None:
-                return
             worker = self._pool.any()
             try:
                 res = await asyncio.to_thread(
@@ -557,15 +587,9 @@ class WSIngress:
 
         async def _handle_stop_simulation() -> None:
             state.running = False
-            try:
-                print("[ws] STOP_SIM", flush=True)
-            except Exception:
-                pass
+            print("[ws] STOP_SIM", flush=True)
             if self._ws_debug:
-                try:
-                    print("[ws:state] running=false", flush=True)
-                except Exception:
-                    pass
+                print("[ws:state] running=false", flush=True)
             try:
                 state.server_seq += 1
                 await _send_result_bytes(

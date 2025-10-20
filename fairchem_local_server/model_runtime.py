@@ -97,11 +97,12 @@ class _PredictDeploy:  # runs on GPU replica
     @serve.batch(max_batch_size=MAX_BATCH, batch_wait_timeout_s=WAIT_S)
     async def predict(self, payloads: List[Tuple[tuple, dict]]):
         # Preserve order; return one result per payload.
-        print(
-            "[UMA] predict called on device %s size=%d" % (self.DEVICE, len(payloads)),
-            flush=True,
-        )
-        time.sleep(0.2)
+        if self._geom_debug:
+            print(
+                "[UMA] predict called on device %s size=%d"
+                % (self.DEVICE, len(payloads)),
+                flush=True,
+            )
         # Optional geometry debug logging
         if self._geom_debug:
             singles = [p[0][0] for p in payloads] if payloads else []
@@ -109,62 +110,14 @@ class _PredictDeploy:  # runs on GPU replica
                 pos = getattr(item, "pos", None)
                 cell = getattr(item, "cell", None)
                 ds = getattr(item, "dataset", None)
-                # atomic numbers field can be named differently;
-                # try common ones
-                zs = (
-                    getattr(item, "atomic_numbers", None)
-                    if hasattr(item, "atomic_numbers")
-                    else (
-                        getattr(item, "z", None)
-                        if hasattr(item, "z")
-                        else (
-                            getattr(item, "numbers", None)
-                            if hasattr(item, "numbers")
-                            else None
-                        )
-                    )
+                zs = getattr(item, "atomic_numbers", None)
+                n = pos.shape[0]
+                print(
+                    f"[UMA][geom] item={idx} natoms={n} "
+                    f"pos={pos} cell={cell} "
+                    f"Z={zs} dataset={ds}",
+                    flush=True,
                 )
-                try:
-                    pos_l = _to_list3(pos) if pos is not None else None
-                    cell_l = _to_list3(cell) if cell is not None else None
-                    zs_l = _to_list_int(zs) if zs is not None else None
-                    # Reject invalid atom types (<=0) explicitly to avoid
-                    # ambiguous runs with missing species
-                    try:
-                        has_bad = False
-                        if isinstance(zs_l, list):
-                            for _z in zs_l:
-                                try:
-                                    if int(_z) <= 0:
-                                        has_bad = True
-                                        break
-                                except Exception:
-                                    has_bad = True
-                                    break
-                        if has_bad:
-                            raise ValueError(
-                                (
-                                    "[INVALID_ATOM_Z] atomic_numbers must "
-                                    "be positive integers; received "
-                                )
-                                + str(zs_l)
-                            )
-                    except Exception:
-                        raise
-                    n = len(pos_l) if isinstance(pos_l, list) else "na"
-                    ds_s = _short(ds)
-                    print(
-                        f"[UMA][geom] item={idx} natoms={n} "
-                        f"pos={pos_l} cell={cell_l} "
-                        f"Z={zs_l} dataset={ds_s}",
-                        flush=True,
-                    )
-                except Exception as _e:
-                    print(
-                        f"[UMA][geom] item={idx} "
-                        f"<failed to format positions/cell>: {_e}",
-                        flush=True,
-                    )
         t0 = time.perf_counter()
         try:
             # update simple metrics
@@ -180,18 +133,19 @@ class _PredictDeploy:  # runs on GPU replica
                     e0 = res[0].get("energy")
                     f0 = res[0].get("forces")
                     print(
-                        "[UMA][geom][out] item=0 E=" + str(e0) + " forces=" + str(f0),
+                        "[UMA][geom][out] item=0 E=" + str(e0),
                         flush=True,
                     )
                 dt = time.perf_counter() - t0
-                print(
-                    (
-                        "[UMA] predict finished size=1 "
-                        f"wall={dt:.4f}s "
-                        f"ms/item={(dt * 1000.0):.2f}"
-                    ),
-                    flush=True,
-                )
+                if self._geom_debug:
+                    print(
+                        (
+                            "[UMA] predict finished size=1 "
+                            f"wall={dt:.4f}s "
+                            f"ms/item={(dt * 1000.0):.2f}"
+                        ),
+                        flush=True,
+                    )
                 return res
             else:
                 # warmup
@@ -217,22 +171,20 @@ class _PredictDeploy:  # runs on GPU replica
                         e0 = it.get("energy")
                         f0 = it.get("forces")
                         print(
-                            f"[UMA][geom][out] item={idx} E="
-                            + str(e0)
-                            + " forces="
-                            + str(f0),
+                            f"[UMA][geom][out] item={idx} E=" + str(e0),
                             flush=True,
                         )
             dt = time.perf_counter() - t0
             size = len(payloads)
-            print(
-                (
-                    f"[UMA] predict finished size={size} "
-                    f"wall={dt:.4f}s "
-                    f"ms/item={(dt * 1000.0 / max(1, size)):.2f}"
-                ),
-                flush=True,
-            )
+            if self._geom_debug:
+                print(
+                    (
+                        f"[UMA] predict finished size={size} "
+                        f"wall={dt:.4f}s "
+                        f"ms/item={(dt * 1000.0 / max(1, size)):.2f}"
+                    ),
+                    flush=True,
+                )
             return out
         except Exception as e:
             print("Unexpected error in UMA predictor: %s" % e)
@@ -283,14 +235,14 @@ class BatchedPredictUnit:
         )
 
     def predict(self, *args, **kwargs):
-        print("[UMA-client] calling remote predict", flush=True)
+        # print("[UMA-client] calling remote predict", flush=True)
         t0 = time.perf_counter()
         # NOTE: Called from sync code (e.g., FastAPI handler in a thread pool).
         # DeploymentResponse.result() is safe in that context.
         resp = self._handle.predict.remote((args, kwargs))  # type: ignore
         r = resp.result()
         dt = time.perf_counter() - t0
-        print(f"[UMA-client] predict wall={dt:.4f}s", flush=True)
+        # print(f"[UMA-client] predict wall={dt:.4f}s", flush=True)
         # Serve batched methods always return a list of results with the same
         # length as the input batch. For our client wrapper, unwrap a single
         # element list to a dict for downstream FAIRChemCalculator.

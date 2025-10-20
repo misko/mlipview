@@ -33,10 +33,20 @@ def build_atoms(
     except Exception:
         MAX_ATOMS_PER_REQUEST = 170  # safe fallback
 
+    if len(coords) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No atoms provided (empty coordinates)",
+        )
+    if len(numbers) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No atoms provided (empty atomic_numbers)",
+        )
     if len(numbers) != len(coords):
         raise HTTPException(
             status_code=400,
-            detail="Length mismatch atomic_numbers vs coordinates",
+            detail=f"Length mismatch atomic_numbers vs coordinates {len(numbers), len(coords)}",
         )
     if len(numbers) > int(MAX_ATOMS_PER_REQUEST):
         raise HTTPException(

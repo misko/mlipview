@@ -85,6 +85,13 @@ class SessionState(BaseModel):
     forces: List[List[float]] = None
     cell: Optional[List[List[float]]] = None
 
+    # User input state
+    user_input_atomic_numbers: List[int] = None
+    user_input_positions: List[List[float]] = None
+    user_input_velocities: List[List[float]] = None
+    user_input_forces: List[List[float]] = None
+    user_input_cell: Optional[List[List[float]]] = None
+
     running: bool = False
     sim_type: Optional[SimType] = None
     params: SimulationParams = SimulationParams()
