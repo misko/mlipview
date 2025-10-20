@@ -24,6 +24,12 @@ function __wsDebugOn(){
 			} catch {}
 			// localStorage key 'mlip.wsDebug' toggles
 			try { if (window.localStorage && window.localStorage.getItem('mlip.wsDebug') === '1') window.__MLIPVIEW_DEBUG_WS = true; } catch {}
+			// Expose a global toggle for convenience
+			try {
+				if (typeof window.__WS_DEBUG_ENABLE__ !== 'function') {
+					window.__WS_DEBUG_ENABLE__ = (on)=>{ try { window.__MLIPVIEW_DEBUG_WS = !!on; if (on && window.localStorage) window.localStorage.setItem('mlip.wsDebug','1'); else if (window.localStorage) window.localStorage.removeItem('mlip.wsDebug'); console.log('[WS] debug set to', !!on); } catch {} };
+				}
+			} catch {}
 			return !!(window.__MLIPVIEW_DEBUG_WS || window.__MLIPVIEW_DEBUG_API);
 		}
 	} catch {}
@@ -51,6 +57,8 @@ export function createFairchemWS(){
 	let clientAck = 0;
 	let lastCounters = { userInteractionCount: 0, simStep: 0 };
 	let dragLock = null; // { index, pos }
+	// Optional per-instance test hook; prefer this over any global fallbacks
+	let __testHook = null;
 	const listeners = new Set();
 	function onFrame(fn){ listeners.add(fn); return ()=>listeners.delete(fn); }
 
@@ -90,6 +98,7 @@ export function createFairchemWS(){
 														if (Array.isArray(obj.forces)) out.forces = obj.forces;
 														if (Array.isArray(obj.velocities)) out.velocities = obj.velocities;
 														if (Array.isArray(obj.cell)) out.cell = obj.cell;
+														if (Array.isArray(obj.stress)) out.stress = obj.stress;
 														__wsLog('[WS][rx]', { seq: out.seq, client_seq: out.client_seq, uic: out.userInteractionCount, simStep: out.simStep, have: { pos: !!out.positions, forces: !!out.forces, vel: !!out.velocities, cell: !!out.cell, energy: typeof out.energy==='number' }, message: out.message });
 														try { if (out && out.message === 'WAITING_FOR_ACK') __wsWarn('[WS][rx][WAITING_FOR_ACK]', { seq: out.seq, clientAck }); } catch {}
 														for(const fn of listeners){ try { fn(out, lastCounters); } catch{} }
@@ -156,6 +165,10 @@ export function createFairchemWS(){
 										const m = r.cell.m;
 										if (m.length===9) out.cell = [ [m[0],m[1],m[2]],[m[3],m[4],m[5]],[m[6],m[7],m[8]] ];
 									}
+									if (r.stress && Array.isArray(r.stress.m)){
+										const m = r.stress.m;
+										if (m.length===9) out.stress = [ [m[0],m[1],m[2]],[m[3],m[4],m[5]],[m[6],m[7],m[8]] ];
+									}
 									__wsLog('[WS][rx]', { seq: out.seq, client_seq: out.client_seq, uic: out.userInteractionCount, simStep: out.simStep, have: { pos: !!out.positions, forces: !!out.forces, vel: !!out.velocities, cell: !!out.cell, energy: typeof out.energy==='number' } });
 									for(const fn of listeners){ try { fn(out, lastCounters); } catch{} }
 								} catch (e) {
@@ -175,10 +188,8 @@ export function createFairchemWS(){
 						if (!res || typeof res !== 'object') return;
 						const energy = (res.energy!=null ? res.energy : undefined);
 						const forces = Array.isArray(res.forces)? res.forces : [];
-						// Only resolve when we have a real energy-bearing frame or an explicit simple_calculate message.
-						// This avoids prematurely resolving on INIT_SYSTEM 'initialized' frames that may carry zero forces.
-						const isSimple = (res && typeof res.message === 'string' && res.message.toLowerCase() === 'simple_calculate');
-						if (energy != null || isSimple) finish({ energy, forces, userInteractionCount: res.userInteractionCount|0, simStep: res.simStep|0 });
+						// Resolve on the first frame carrying energy (idle compute or simulation)
+						if (energy != null) { try { if (typeof res.seq === 'number') ack(res.seq); } catch {} finish({ energy, forces, userInteractionCount: res.userInteractionCount|0, simStep: res.simStep|0 }); }
 					} catch {}
 				});
 				to = setTimeout(()=> fail(new Error('waitForEnergy timeout')), timeoutMs|0);
@@ -191,16 +202,15 @@ export function createFairchemWS(){
 		if(Number.isFinite(simStep)) lastCounters.simStep = simStep|0;
 	}
 	function nextSeq(){ seq = (seq|0) + 1; return seq; }
-	// Test hook: if window.__WS_TEST_HOOK__ is a function, call with a shallow JSON of the outgoing message
+	// Test hook: prefer an instance-level hook set via setTestHook(fn),
+	// then fall back to a single global location on globalThis for legacy tests.
 	function __notifyTestHook(msg){
 		try {
-			const sink = (typeof window !== 'undefined' && typeof window.__WS_TEST_HOOK__ === 'function')
-				? window.__WS_TEST_HOOK__
+			const sink = (__testHook && typeof __testHook === 'function')
+				? __testHook
 				: (typeof globalThis !== 'undefined' && typeof globalThis.__WS_TEST_HOOK__ === 'function')
 					? globalThis.__WS_TEST_HOOK__
-					: (typeof global !== 'undefined' && typeof global.__WS_TEST_HOOK__ === 'function')
-						? global.__WS_TEST_HOOK__
-						: null;
+					: null;
 			if (!sink) return;
 			// Project a minimal JSON snapshot (type, simulation params, counters)
 			const out = {
@@ -226,6 +236,9 @@ export function createFairchemWS(){
 			sink(out);
 		} catch {}
 	}
+
+	// Allow tests to inject a hook without using globals
+	function setTestHook(fn){ try { __testHook = (typeof fn === 'function') ? fn : null; } catch { __testHook = null; } }
 	function setAck(s){ clientAck = Math.max(clientAck, s|0); }
 	function getState(){ return { seq, clientAck, ...lastCounters, connected: !!ws && ws.readyState===1 }; }
 		async function ensureConnected(){
@@ -243,7 +256,7 @@ export function createFairchemWS(){
 
 				// USER_INTERACTION: allow partial state updates (positions, velocities, or cell)
 				function userInteraction({ atomic_numbers, positions, velocities, cell, dragLockIndex } = {}){
-			const out = { seq: nextSeq(), type: ClientAction_Type.USER_INTERACTION };
+				const out = { seq: nextSeq(), type: ClientAction_Type.USER_INTERACTION };
 			if (Array.isArray(atomic_numbers)) out.atomicNumbers = atomic_numbers.map(z=> z|0);
 			if (Array.isArray(positions)) out.positions = positions.map(p=> create(Vec3Schema, { v: [+p[0],+p[1],+p[2]] }));
 			if (Array.isArray(velocities)) out.velocities = velocities.map(p=> create(Vec3Schema, { v: [+p[0],+p[1],+p[2]] }));
@@ -252,6 +265,11 @@ export function createFairchemWS(){
 				+cell[1][0], +cell[1][1], +cell[1][2],
 				+cell[2][0], +cell[2][1], +cell[2][2],
 			] });
+				// Attach counters per protocol so server can echo in idle responses
+				try {
+					if (Number.isFinite(lastCounters.userInteractionCount)) out.userInteractionCount = lastCounters.userInteractionCount|0;
+					if (Number.isFinite(lastCounters.simStep)) out.simStep = lastCounters.simStep|0;
+				} catch {}
 			const msg = create(ClientActionSchema, out);
 			__notifyTestHook(msg);
 			try { __wsLog('[WS][tx][USER_INTERACTION]', { seq: msg.seq|0, atoms: msg.atomicNumbers?.length|0, positions: msg.positions?.length|0, velocities: msg.velocities?.length|0, hasCell: !!msg.cell }); } catch {}
@@ -325,61 +343,24 @@ export function createFairchemWS(){
 						setAck(seqNum|0);
 					} catch (e) { try { console.error('[WS][ack-error]', e?.message||e); } catch {} }
 				}
-		// High-level helper: request one-shot simple calculation via WS.
-			// Encodes a ClientAction SIMPLE_CALCULATE referencing current session state.
-			// Decodes first matching ServerResult with energy/forces and resolves.
-			// Returns { energy, forces, userInteractionCount, simStep } so caller can gate staleness.
-			async function requestSimpleCalculate(){
-			if(!ws || ws.readyState!==1) { __wsWarn('[WS][simple][not-connected]'); throw new Error('ws not connected'); }
-			return new Promise((resolve, reject)=>{
-				let off = null; let to=null;
-				const done = (v)=>{ try{ off && off(); }catch{} if(to) try{ clearTimeout(to); }catch{} resolve(v); };
-				const fail = (e)=>{ try{ off && off(); }catch{} if(to) try{ clearTimeout(to); }catch{} reject(e); };
-				off = onFrame((res)=>{
-					try {
-						if (!res || typeof res !== 'object') return;
-						const energy = (res.energy!=null ? res.energy : undefined);
-						const forces = Array.isArray(res.forces)? res.forces : [];
-						const isSimple = (res && typeof res.message === 'string' && res.message.toLowerCase() === 'simple_calculate');
-						if (energy != null || isSimple) done({ energy, forces, userInteractionCount: res.userInteractionCount|0, simStep: res.simStep|0 });
-					} catch(e){ /* ignore non-matching frames */ }
-				});
-					try {
-						const msg = create(ClientActionSchema, {
-							seq: nextSeq(),
-							ack: clientAck||undefined,
-							type: ClientAction_Type.SIMPLE_CALCULATE,
-							userInteractionCount: lastCounters.userInteractionCount|0,
-							simStep: lastCounters.simStep|0,
-						});
-						__notifyTestHook(msg);
-						try { __wsLog('[WS][tx][SIMPLE_CALCULATE]', { seq: msg.seq|0, uic: msg.userInteractionCount|0, simStep: msg.simStep|0, ack: msg.ack? (msg.ack|0) : undefined, state: getState() }); } catch {}
-						const buf = toBinary(ClientActionSchema, msg); sendBytes(buf);
-					} catch(e){ fail(e); }
-				// optional timeout
-				to = setTimeout(()=> { __wsWarn('[WS][simple][timeout] after 5s'); fail(new Error('simple_calculate timeout')); }, 5000);
-			});
-		}
 
 		// One-shot request for a single simulation step (md or relax). Starts, waits 1 frame, stops, resolves.
 		async function requestSingleStep({ type, params }){
 			if(!ws || ws.readyState!==1) { __wsWarn('[WS][single-step][not-connected]'); throw new Error('ws not connected'); }
 			return new Promise((resolve, reject)=>{
 				let off = null; let doneCalled=false;
-				function done(v){ if(doneCalled) return; doneCalled=true; try{ off && off(); }catch{} try{ stopSimulation(); }catch{} resolve(v); }
-				off = onFrame((res)=>{ try { if(res && typeof res==='object'){ __wsLog('[WS][rx][single-step]', { hasPos: !!res.positions, hasForces: !!res.forces, energy: res.energy }); done(res); } } catch{} });
+					function done(v){ if(doneCalled) return; doneCalled=true; try{ off && off(); }catch{} try{ stopSimulation(); }catch{} resolve(v); }
+					off = onFrame((res)=>{ try { if(res && typeof res==='object'){ __wsLog('[WS][rx][single-step]', { hasPos: !!res.positions, hasForces: !!res.forces, energy: res.energy }); try { if (typeof res.seq === 'number') ack(res.seq); } catch {} done(res); } } catch{} });
 				try { startSimulation({ type, params }); } catch(e){ try{ off&&off(); }catch{} reject(e); }
 				setTimeout(()=>{ if(!doneCalled) { __wsWarn('[WS][single-step][timeout] after 5s'); try{ off&&off(); }catch{} reject(new Error('single_step timeout')); } }, 5000);
 			});
 		}
-		    	const api = { connect, ensureConnected, sendBytes, close, onFrame, onResult, setCounters, nextSeq, setAck, ack, getState, requestSimpleCalculate, requestSingleStep, waitForEnergy, initSystem, userInteraction, beginDrag, endDrag, startSimulation, stopSimulation };
+			    // Allow tests to inject decoded frames directly into listeners, avoiding globals
+			    function injectTestResult(obj){ try { for(const fn of listeners){ try { fn(obj, lastCounters); } catch{} } } catch{} }
+			    const api = { connect, ensureConnected, sendBytes, close, onFrame, onResult, setCounters, nextSeq, setAck, ack, getState, requestSingleStep, waitForEnergy, initSystem, userInteraction, beginDrag, endDrag, startSimulation, stopSimulation, setTestHook, injectTestResult };
 		            try {
 				    if (typeof window !== 'undefined') {
 		            window.__fairchem_ws__ = api;
-		            // Test bridge: allow tests to inject decoded frames without protobuf by calling window.__ON_WS_RESULT__(obj)
-		            if (typeof window.__ON_WS_RESULT__ !== 'function') {
-		              window.__ON_WS_RESULT__ = (obj)=>{ try { for(const fn of listeners){ try { fn(obj, lastCounters); } catch{} } } catch{} };
-		            }
 		            // Toggle WS debug at runtime from tests or devtools
 		            if (typeof window.__WS_DEBUG_ENABLE__ !== 'function') {
 		              window.__WS_DEBUG_ENABLE__ = (on)=>{ try { window.__MLIPVIEW_DEBUG_WS = !!on; if (on && window.localStorage) window.localStorage.setItem('mlip.wsDebug','1'); else if (window.localStorage) window.localStorage.removeItem('mlip.wsDebug'); console.log('[WS] debug set to', !!on); } catch {} };
@@ -387,18 +368,12 @@ export function createFairchemWS(){
 		          }
 		          // Also expose test hook in Node/Jest environments without window
 		          try {
-		            if (typeof globalThis !== 'undefined') {
-		              globalThis.__fairchem_ws__ = globalThis.__fairchem_ws__ || api;
-		              if (typeof globalThis.__ON_WS_RESULT__ !== 'function') {
-		                globalThis.__ON_WS_RESULT__ = (obj)=>{ try { for(const fn of listeners){ try { fn(obj, lastCounters); } catch{} } } catch{} };
-		              }
-		            }
-		            if (typeof global !== 'undefined') {
-		              global.__fairchem_ws__ = global.__fairchem_ws__ || api;
-		              if (typeof global.__ON_WS_RESULT__ !== 'function') {
-		                global.__ON_WS_RESULT__ = (obj)=>{ try { for(const fn of listeners){ try { fn(obj, lastCounters); } catch{} } } catch{} };
-		              }
-		            }
+			            if (typeof globalThis !== 'undefined') {
+			              globalThis.__fairchem_ws__ = globalThis.__fairchem_ws__ || api;
+			              if (typeof globalThis.__ON_WS_RESULT__ !== 'function') {
+			                globalThis.__ON_WS_RESULT__ = (obj)=>{ try { for(const fn of listeners){ try { fn(obj, lastCounters); } catch{} } } catch{} };
+			              }
+			            }
 		          } catch {}
 		          } catch {}
 		            return api;

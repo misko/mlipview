@@ -11,10 +11,10 @@ from fairchem_local_server2 import session_pb2 as pb
 async def _recv_one(uri: str):
     async with websockets.connect(uri) as ws:
         seq = 1
-        # init with two atoms
+        # Init with two atoms via USER_INTERACTION
         init = pb.ClientAction()
         init.seq = seq
-        init.type = pb.ClientAction.Type.INIT_SYSTEM
+        init.type = pb.ClientAction.Type.USER_INTERACTION
         init.atomic_numbers.extend([1, 1])
         for p in ([0.0, 0.0, 0.0], [0.9, 0.0, 0.0]):
             v = pb.Vec3()
@@ -35,14 +35,16 @@ async def _recv_one(uri: str):
             setattr(start, "sim_step", 42)
         await ws.send(start.SerializeToString())
 
-        # receive first produced frame (skip possible seq==0 init echo)
+        # receive first produced simulation frame
         while True:
             data = await asyncio.wait_for(ws.recv(), timeout=15.0)
             if not isinstance(data, (bytes, bytearray)):
                 continue
             res = pb.ServerResult()
             res.ParseFromString(data)
-            if res.seq == 0:
+            # Skip initialization echo and idle-compute frames
+            # (idle frames omit positions per protocol)
+            if res.seq == 0 or len(res.positions) == 0:
                 continue
             return res
 
@@ -50,7 +52,7 @@ async def _recv_one(uri: str):
 @pytest.mark.timeout(30)
 def test_ws_optional_counters_present_or_skipped(ws_base_url: str):
     res = asyncio.run(_recv_one(ws_base_url))
-    # If sim_step exists in compiled schema, expect >= 1
+    # If sim_step exists in compiled schema, expect >= 1 for simulation frames
     if hasattr(res, "sim_step"):
         assert int(getattr(res, "sim_step", 0)) >= 1
     # If user_interaction_count exists, expect echo >= 0

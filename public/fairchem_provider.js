@@ -1,6 +1,6 @@
 // HTTP provider removed. All force/energy retrieval must use WebSocket protobuf API.
 export async function fairchemCalculate() {
-  throw new Error('[REST removed] fairchemCalculate via HTTP removed. Use getWS().requestSimpleCalculate() after initSystem().');
+  throw new Error('[REST removed] fairchemCalculate via HTTP removed. Use getWS().userInteraction() + getWS().waitForEnergy() after initSystem().');
 }
 
 export function createFairChemForcefield() {

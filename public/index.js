@@ -122,7 +122,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const __origMarkPositionsChanged = state.markPositionsChanged ? state.markPositionsChanged.bind(state) : null;
   const bondService = createBondService(state);
   const selection = createSelectionService(state);
-  // Remote UMA force provider via /simple_calculate
+  // Remote UMA force provider via WS idle compute (USER_INTERACTION -> energy/forces)
   let lastForceResult = { energy: NaN, forces: [] };
   let inFlight = false;
   // WS session sync state (single socket): re-init when atom count or cell changes
@@ -295,15 +295,14 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const ws = getWS();
   await __wsEnsureInit();
   const positions = state.positions.map(p=>[p.x,p.y,p.z]);
-  // Send a USER_INTERACTION with current positions to trigger a simple_calculate on idle server
+  // Send a USER_INTERACTION with current positions to trigger an idle compute on the server
   try { if (window.__MLIPVIEW_DEBUG_API) console.log('[WS][simple] USER_INTERACTION', { n: positions.length, uic: userInteractionVersion }); } catch {}
   try { ws.userInteraction({ positions }); } catch {}
   // Provide current user interaction count for correlation
   try { ws.setCounters({ userInteractionCount: userInteractionVersion }); } catch {}
   const t0 = performance.now();
-  // Request an explicit one-shot simple_calculate to ensure a result even if the server
-  // does not auto-run simple on idle USER_INTERACTION.
-  const { energy, forces, userInteractionCount: uicFromServer } = await ws.requestSimpleCalculate();
+  // Wait for first energy-bearing frame from idle compute
+  const { energy, forces, userInteractionCount: uicFromServer } = await ws.waitForEnergy({ timeoutMs: 5000 });
         const timingMs = Math.round((performance.now()-t0)*100)/100;
         noteLatency('simple','ws',{ ms: timingMs });
         try { if (window.__MLIPVIEW_DEBUG_API) console.log('[WS][simple][recv]', { energy, forcesLen: Array.isArray(forces)? forces.length: 0, uicFromServer, currentUIC: userInteractionVersion, timingMs }); } catch {}
@@ -329,7 +328,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
     return lastForceResult;
   }
   const ff = { computeForces: ({ sync }={})=>{ if(sync) return fetchRemoteForces({ awaitResult:true }); fetchRemoteForces(); return lastForceResult; } };
-  // Deterministic one-shot: sends USER_INTERACTION and then explicitly requests SIMPLE_CALCULATE, returning the updated energy length
+  // Deterministic one-shot: sends USER_INTERACTION and waits for idle compute, returning the updated energy length
   async function requestSimpleCalculateNow(){
     try {
       const ws = getWS();
@@ -337,7 +336,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
       const positions = state.positions.map(p=>[p.x,p.y,p.z]);
       try { ws.userInteraction({ positions }); } catch{}
       try { ws.setCounters({ userInteractionCount: userInteractionVersion }); } catch{}
-      const { energy, forces } = await ws.requestSimpleCalculate();
+      const { energy, forces } = await ws.waitForEnergy({ timeoutMs: 5000 });
       if (typeof energy === 'number') {
         state.dynamics = state.dynamics || {}; state.dynamics.energy = energy;
         if (Array.isArray(forces) && forces.length) {
@@ -470,8 +469,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds } ) {
   const picking = (__pickingRef = createPickingService(scene, view, selection, {
     manipulation: new Proxy({}, { get: (_, k) => wrappedManipulationRef?.[k] }),
     camera,
-    // Do not trigger a standalone simple_calculate while a simulation is running;
-    // wait for the next MD/relax response to update forces and energy.
+  // Do not trigger a standalone idle compute while a simulation is running;
+  // wait for the next MD/relax response to update forces and energy.
     energyHook: ({ kind }) => {
       try {
         if (!running.kind) ff.computeForces();

@@ -290,3 +290,267 @@ Allowed transitions among connected states
 - All tests pass  
 
 ---
+
+## 11. Implementation TODOs and Task Breakdown
+
+This section enumerates concrete engineering tasks to deliver the proposed design. Grouped by area with suggested file paths and acceptance checks.
+
+### 11.1 Protocol and Protobuf
+
+- Remove legacy action from protocol
+  - [ ] Remove `SIMPLE_CALCULATE` from `ClientAction.Type` in `fairchem_local_server2/session.proto`
+  - [ ] Ensure comment states: “INIT_SYSTEM and SIMPLE_CALCULATE removed; use USER_INTERACTION for init and idle compute”
+- Add stress output
+  - [ ] Add `optional Mat3 stress = 15;` to `ServerResult` (3x3, row-major)
+  - [ ] Document omission rules: positions omitted on idle responses; stress included when `cell` present or when available
+- Regenerate stubs
+  - [ ] Regenerate Python stubs used by backend
+  - [ ] Regenerate JS/TS stubs used by frontend (Buf.build or protoc pipeline used by `public/`)
+  - [ ] Update any import paths in `public/fairchem_ws_client.js` and `fairchem_local_server2/*.py`
+- Contract validation
+  - [ ] Verify binary WS frames only; text frames rejected with clear error
+  - [ ] Versioning note: bump minor schema version in comments
+
+Acceptance: repo builds, unit tests compile with new stubs, no references to `SIMPLE_CALCULATE` remain.
+
+### 11.2 Backend (Python, `fairchem_local_server2/`)
+
+- Unify init/update under `USER_INTERACTION`
+  - [ ] In `ws_app.py` recv loop, treat `atomic_numbers + positions` as init
+  - [ ] When `running == false`, compute one-shot forces/energy (and stress) and emit an idle frame with positions omitted
+  - [ ] When `running == true`, update state only; no immediate extra frame
+- Remove SIMPLE_CALCULATE
+  - [ ] Delete/disable any `SIMPLE_CALCULATE` handling paths
+  - [ ] Ensure idle `USER_INTERACTION` covers the previous one-shot behavior
+- Counters and echoing
+  - [ ] Capture and echo the exact `user_interaction_count` from the triggering action in idle responses
+  - [ ] For simulation frames, echo the snapshot UIC captured at step start
+  - [ ] Maintain and emit server-side `sim_step` (monotonic per stream)
+- Backpressure
+  - [ ] Keep `max_unacked` threshold; on exceed, pause stepping and emit light `WAITING_FOR_ACK` frames (message + counters only)
+  - [ ] Resume when `ack` advances
+- Validation and error handling
+  - [ ] Validate array sizes (N atoms across all vectors), matrix size (3x3), finite values
+  - [ ] Return error via `ServerResult.message` and do not crash the connection
+- UMA/LJ compute
+  - [ ] Ensure `run_simple` returns forces, energy, and stress (when feasible) consistently for idle responses
+  - [ ] Ensure `run_md`/`run_relax` return positions, velocities?, forces, energy, stress?
+- Logging/metrics
+  - [ ] Structured logs for connect/disconnect, start/stop, backpressure, errors
+
+Files: `fairchem_local_server2/ws_app.py`, `worker_pool.py`, `session_models.py`, `services.py`, `models.py`.
+
+Acceptance: manual smoke via local run; unit tests (Python and JS) pass; Playwright e2e init/sim flows green.
+
+### 11.3 Frontend (JS, `public/`)
+
+- WS client API cleanup (`public/fairchem_ws_client.js`)
+  - [ ] Remove `requestSimpleCalculate()` and references
+  - [ ] Ensure `userInteraction()` handles both init and updates
+  - [ ] ACK loop: send `PING(ack=seq)` for every frame; ensure `WAITING_FOR_ACK` frames trigger ACK loop if needed
+  - [ ] Decode idle frames: positions omitted; forces/energy (and stress) present
+  - [ ] Expose `onResult(cb)` semantics unchanged
+- Viewer orchestration (`public/index.js` and related services)
+  - [ ] Switch initialization to a single `USER_INTERACTION` and wait for idle compute
+  - [ ] Remove any REST remnants and guards
+  - [ ] Per-atom gating only: do not discard entire frames solely due to lower global UIC; instead gate per-atom by `last_user_interaction[i]`
+  - [ ] While dragging, suppress position application for edited atoms on sim frames; merge forces appropriately on idle frames
+  - [ ] Handle optional `stress` (store/update; UI may ignore or display in dev panel)
+- Cleanups
+  - [ ] Remove dead code for `INIT_SYSTEM`/`SIMPLE_CALCULATE` and REST
+  - [ ] Update energy plotting and any consumers for idle frame semantics
+
+Files: `public/index.js`, `public/fairchem_ws_client.js`, `public/fairchem_provider.js`, `public/core/*` (where state apply lives), selection/interaction services.
+
+Acceptance: existing UI interactions work; energy updates appear after init and edits; MD/Relax run and stop as expected.
+
+### 11.4 Tests and Tooling
+
+- Lint/type/test harness
+  - [ ] Ensure ESLint/Prettier pass
+  - [ ] Verify Jest config runs in jsdom and Node where needed
+  - [ ] Playwright config runs headed/headless
+- CI
+  - [ ] Add jobs for unit + e2e (optional if using local scripts initially)
+
+Acceptance: CI green or local equivalent run green.
+
+### 11.5 Migration and Cleanup
+
+- [ ] Delete REST-only code paths and deprecated flags
+- [ ] Update README and internal docs where protocol is described
+- [ ] Remove any remaining references to `SIMPLE_CALCULATE`/`INIT_SYSTEM`
+
+Acceptance: workspace grep returns zero matches for removed verbs.
+
+---
+
+## 12. Test Plan (Jest mock browser + Playwright)
+
+The following specifies concrete tests to implement. File paths are suggestions aligned with repo structure.
+
+### 12.1 Unit Tests (Jest, jsdom + Node)
+
+Mocking strategy
+- Use jsdom for DOM-dependent modules (viewer integration)
+- Mock WebSocket at the transport layer to inject binary protobuf frames
+- Use lightweight fake clock where timing matters
+
+Proposed test files (create under `tests/`)
+- `tests/wsProtocol.initIdleCompute.spec.js`
+  - Should send `USER_INTERACTION` with atoms+positions, receive idle frame without positions, with forces/energy (stress when cell present)
+  - Should increment and echo `user_interaction_count`
+- `tests/wsProtocol.noSimpleCalculate.spec.js`
+  - Ensure client does not call any removed `requestSimpleCalculate()` and that init/update flows still yield forces/energy
+- `tests/wsFrameGating.perAtom.spec.js`
+  - Given per-atom `last_user_interaction` map, apply simulation frames and verify only non-active atoms update positions
+  - Ensure scalar `energy` updates regardless of per-atom gating
+- `tests/wsCounters.echoSemantics.spec.js`
+  - Idle responses echo exact UIC of triggering action
+  - Simulation frames echo UIC snapshot captured at step start
+- `tests/wsBackpressure.ackLoop.spec.js`
+  - Simulate server sending frames; verify client sends ACK promptly
+  - Simulate `WAITING_FOR_ACK`; verify client resumes ACK and frames apply
+- `tests/wsIdleUpdate.positionsOmitted.spec.js`
+  - Verify that idle responses do not contain positions and client does not try to apply any
+- `tests/wsCellAndStress.spec.js`
+  - When cell is present, verify stress parsed and stored; absence tolerated
+- `tests/wsValidation.errors.spec.js`
+  - Malformed incoming frames (missing required fields) do not crash; error message surfaced/logged
+
+Notes
+- Provide binary payloads via small helper encoders using generated JS protobufs so tests remain schema-stable.
+
+### 12.2 Node Integration Tests (optional, fast WS loop)
+
+If practical, add a thin fake WS server:
+- `tests/wsFakeServer.integration.spec.js`
+  - Spins up a minimal WS endpoint that echoes protobuf `ServerResult`
+  - Verifies end-to-end encoding/decoding and ACK loop without launching Python backend
+
+### 12.3 Playwright E2E Scenarios (under `tests-e2e/`)
+
+- `tests-e2e/ws.init-and-idle.spec.ts`
+  - Load app, connect to WS (mock or local server), send initial `USER_INTERACTION`
+  - Expect energy number appears; ensure no positions jump until simulation starts
+- `tests-e2e/ws.start-md-stream.spec.ts`
+  - Start MD; verify positions update over multiple frames; ACKs sent (instrumented via test hook or server logs)
+- `tests-e2e/ws.drag-gating.spec.ts`
+  - Begin MD; start dragging one atom; verify dragged atom position is not overwritten by incoming frames while others update
+- `tests-e2e/ws.stop-simulation.spec.ts`
+  - Start then stop; positions stop advancing; idle user interaction still returns forces without positions
+- `tests-e2e/ws.backpressure.spec.ts`
+  - Simulate client not ACKing, server emits `WAITING_FOR_ACK`; after resuming ACKs, frames continue
+- `tests-e2e/ws.cell-stress.spec.ts`
+  - Load system with cell; verify stress read and optionally displayed/logged
+- `tests-e2e/ws.reconnect.spec.ts`
+  - Force server disconnect; client reconnects and re-initializes via `USER_INTERACTION`
+
+Implementation hints
+- Prefer Playwright’s request interception or a test-dedicated backend profile to simulate backpressure and inject messages deterministically.
+
+### 12.4 Coverage Matrix
+
+- Protocol
+  - No references to removed verbs; idle frames omit positions
+  - Counters echo semantics covered (idle and sim)
+- Frontend
+  - Per-atom gating validated; no frame-wide discards
+  - ACK loop resiliency
+- Backend
+  - Backpressure path and error validation (covered via Playwright where feasible)
+
+---
+
+## 13. Milestones and Ownership
+
+1) Protocol update and stub regen (Day 0-1)
+- Owner: Backend + Frontend shared
+- Output: Updated `session.proto`, regenerated stubs, zero references to removed verbs
+
+2) Backend refactor (Day 2-4)
+- Owner: Backend
+- Output: Unified `USER_INTERACTION`, idle compute semantics, backpressure tidy
+
+3) Frontend refactor (Day 2-5)
+- Owner: Frontend
+- Output: API cleanup, init flow, per-atom gating finalized, UI uses idle compute
+
+4) Tests (Day 3-6)
+- Owner: QA/Dev
+- Output: Jest unit tests + Playwright scenarios implemented and passing
+
+5) Polish and cleanup (Day 6-7)
+- Owner: Shared
+- Output: Docs updated, CI green, release candidate tag
+
+---
+
+## 14. Risks and Mitigations
+
+- Schema regen drift across FE/BE
+  - Mitigation: commit generated artifacts or lock versions; add a script and document steps
+- Per-atom gating inconsistencies
+  - Mitigation: centralize gating in a single function with unit tests; use golden-frame fixtures
+- Backpressure deadlocks
+  - Mitigation: watchdog ACK loop; Playwright test to simulate and recover
+- UMA stress availability
+  - Mitigation: treat stress as optional; provide LJ fallback or omit with a clear message
+
+---
+
+## 15. Progress Log (2025-10-19)
+
+- Protocol
+  - Updated `fairchem_local_server2/session.proto`:
+    - Removed `SIMPLE_CALCULATE` from `ClientAction.Type`
+    - Added zero-valued `TYPE_UNSPECIFIED = 0` (proto3 requirement)
+    - Added optional `stress` to `ServerResult`
+    - Clarified idle compute semantics in comments
+  - Regenerated JS ESM stubs via npm script. Python `session_pb2.py` regenerated via `protoc --python_out`.
+  - Issue: `protoc` initially failed due to non-zero first enum; fixed by adding `TYPE_UNSPECIFIED`.
+
+- Frontend
+  - `public/fairchem_ws_client.js`:
+    - Removed `requestSimpleCalculate()` API and all SIMPLE_CALCULATE usage
+    - Decode optional `stress` from ServerResult
+    - `waitForEnergy()` now resolves on energy-bearing frames only
+  - `public/index.js`:
+    - Replaced explicit one-shot SIMPLE_CALCULATE calls with `USER_INTERACTION` + `waitForEnergy()`
+  - `public/fairchem_provider.js`: error guidance updated to recommend `userInteraction + waitForEnergy`
+
+- Backend (in-progress)
+  - Updating `ws_app.py` to remove SIMPLE_CALCULATE handling and unify idle compute under USER_INTERACTION
+  - Added optional `stress` plumb in `_send_result_bytes`
+  - Issues encountered:
+    - Syntax errors during large refactor (stray else/elif, malformed f-strings)
+    - Fixed major structural issues; remaining lint warnings about long lines will be cleaned in follow-up pass
+
+Next steps
+- Finish ws_app.py cleanup: remove legacy comments, shorten lines, ensure idle compute emits positions omitted and message unset
+- Run unit tests and quick smoke to validate WS path
+
+- Tests (Python)
+  - Migrated remaining WS tests to USER_INTERACTION for initialization:
+    - Updated `test_ws_md_0k.py`, `test_ws_md_parity.py`, `test_ws_roy_benchmark.py`
+    - Replaced `INIT_SYSTEM` with `USER_INTERACTION` and adjusted comments
+  - Fixed style/lint issues: long lines, slice spacing, and unused variables
+  - Verified no syntax errors remain in the updated tests
+
+- Additional updates
+  - Stubs
+    - Regenerated Python protobuf stubs via `protoc --python_out` (successful)
+    - JS ESM stubs already regenerated and integrated in the frontend
+  - Backend
+    - `ws_app.py`: idle compute frames increment `server_seq` and include optional `stress` when available; backpressure/ACK semantics unchanged
+  - Documentation
+    - Added `testing.md` with updated WS testing patterns (waitForEnergy, requestSingleStep, setTestHook, injectTestResult)
+    - Created `test-results/test_inventory.md` with a one-line-per-test inventory grouped by folder
+  - Tests (Python)
+    - Migrated `test_ws_simple_calc.py` and `test_ws_counters_optional.py` to USER_INTERACTION init
+    - Confirmed lint/style pass after edits
+
+Next steps (delta)
+- Add a short “Test inventory” reference in `testing.md` pointing to `test-results/test_inventory.md`
+- Continue migrating any JS/Playwright specs that still reference INIT_SYSTEM/SIMPLE_CALCULATE
+- Optional cleanup: remove legacy generated artifacts (e.g., old JS proto `clientaction.js`, nested outdated `session_pb2.py`), and wrap remaining long lines in `ws_app.py`

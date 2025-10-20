@@ -37,7 +37,14 @@ class WSIngress:
             install_predict_handle(predict_handle)
         self._uma_handle = predict_handle
         self._pool = WorkerPool(size=pool_size, uma_handle=self._uma_handle)
+        # Debug flags
         self._ws_debug = os.environ.get("WS_DEBUG", "0") in (
+            "1",
+            "true",
+            "TRUE",
+            "True",
+        )
+        self._log_calls = os.environ.get("WS_LOG_CALLS", "0") in (
             "1",
             "true",
             "TRUE",
@@ -88,6 +95,9 @@ class WSIngress:
         max_unacked = 10
         last_ack = 0
         pending = 0
+        # Position logging guards to avoid excessive spam
+        logged_init_positions = False
+        logged_first_sim_positions = False
         # JSON fallback removed: protobuf-only WS
 
         # Concurrency: producer (simulation loop) and consumer (message loop)
@@ -137,20 +147,19 @@ class WSIngress:
             cell: Optional[np.ndarray],
             message: Optional[str] = None,
             energy: Optional[float] = None,
+            stress: Optional[np.ndarray] = None,
         ):
             if self._ws_debug:
                 try:
                     print(
-                        (
-                            f"[ws:tx] seq={seq} client_seq={client_seq} "
-                            f"uic={user_interaction_count} step={sim_step} "
-                            f"has={{pos:{positions is not None}, "
-                            f"vel:{velocities is not None}, "
-                            f"forces:{forces is not None}, "
-                            f"cell:{cell is not None}}} "
-                            f"energy={energy if energy is not None else 'na'} "
-                            f"msg={message or ''}"
-                        ),
+                        f"[ws:tx] seq={seq} client_seq={client_seq} "
+                        f"uic={user_interaction_count} step={sim_step} "
+                        f"has={{pos:{positions is not None}, "
+                        f"vel:{velocities is not None}, "
+                        f"forces:{forces is not None}, "
+                        f"cell:{cell is not None}}} "
+                        f"energy={energy if energy is not None else 'na'} "
+                        f"msg={message or ''}",
                         flush=True,
                     )
                 except Exception:
@@ -185,6 +194,25 @@ class WSIngress:
                 ]
                 m.m.extend(flat)
                 msg.cell.CopyFrom(m)
+            if stress is not None:
+                try:
+                    if isinstance(stress, np.ndarray) and stress.shape == (3, 3):
+                        sm = pb.Mat3()
+                        sflat = [
+                            float(stress[0, 0]),
+                            float(stress[0, 1]),
+                            float(stress[0, 2]),
+                            float(stress[1, 0]),
+                            float(stress[1, 1]),
+                            float(stress[1, 2]),
+                            float(stress[2, 0]),
+                            float(stress[2, 1]),
+                            float(stress[2, 2]),
+                        ]
+                        sm.m.extend(sflat)
+                        msg.stress.CopyFrom(sm)
+                except Exception:
+                    pass
             if message:
                 msg.message = message
             # optional energy field
@@ -197,6 +225,7 @@ class WSIngress:
 
         async def sim_loop():
             nonlocal pending
+            nonlocal logged_first_sim_positions
             import time
 
             stall_notice_last = 0.0
@@ -255,6 +284,18 @@ class WSIngress:
                     uic_snapshot = state.user_interaction_count or None
                     worker = self._pool.any()
                     if state.sim_type == "md":
+                        if self._log_calls:
+                            try:
+                                msg = (
+                                    f"[ws:sim][MD] steps=1 "
+                                    f"T={state.params.temperature} "
+                                    f"dt={state.params.timestep_fs} "
+                                    f"friction={state.params.friction} "
+                                    f"natoms={len(state.atomic_numbers)}"
+                                )
+                                print(msg, flush=True)
+                            except Exception:
+                                pass
                         v_in = (
                             state.velocities if state.velocities is not None else None
                         )
@@ -270,6 +311,18 @@ class WSIngress:
                             calculator=state.params.calculator,
                         )
                     elif state.sim_type == "relax":
+                        if self._log_calls:
+                            try:
+                                msg = (
+                                    f"[ws:sim][RELAX] steps=1 "
+                                    f"fmax={state.params.fmax} "
+                                    f"max_step={state.params.max_step} "
+                                    f"calc={state.params.calculator} "
+                                    f"natoms={len(state.atomic_numbers)}"
+                                )
+                                print(msg, flush=True)
+                            except Exception:
+                                pass
                         fut = worker.run_relax.remote(
                             atomic_numbers=state.atomic_numbers,
                             positions=state.positions,
@@ -323,6 +376,28 @@ class WSIngress:
                         cell=state.cell,
                         energy=energy_out,
                     )
+                    # Log first simulation frame positions once
+                    try:
+                        if (
+                            not logged_first_sim_positions
+                            and state.positions is not None
+                        ):
+                            logged_first_sim_positions = True
+                            try:
+                                pos_list = (
+                                    state.positions.tolist()
+                                    if hasattr(state.positions, 'tolist')
+                                    else state.positions
+                                )
+                                print(
+                                    "[ws][SIM_POS][step=1] positions=",
+                                    pos_list,
+                                    flush=True,
+                                )
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                     try:
                         if state.server_seq % 10 == 0:
                             print(
@@ -345,6 +420,7 @@ class WSIngress:
 
         async def recv_loop():
             nonlocal last_ack
+            nonlocal logged_init_positions
             try:
                 while True:
                     # Accept binary (protobuf only)
@@ -384,7 +460,9 @@ class WSIngress:
                     try:
                         prev_ack = int(state.client_ack)
                         if hasattr(msg, "HasField") and msg.HasField("ack"):
-                            state.client_ack = max(state.client_ack, int(msg.ack))
+                            state.client_ack = max(
+                                state.client_ack, int(msg.ack)
+                            )
                         else:
                             a = int(getattr(msg, "ack", 0) or 0)
                             if a:
@@ -406,7 +484,10 @@ class WSIngress:
                                 pass
                         elif self._ws_debug and state.client_ack:
                             try:
-                                txt = f"[ws:rx][ack] client_ack=" f"{state.client_ack}"
+                                txt = (
+                                    f"[ws:rx][ack] client_ack="
+                                    f"{state.client_ack}"
+                                )
                                 print(txt, flush=True)
                             except Exception:
                                 pass
@@ -440,7 +521,9 @@ class WSIngress:
                         # Legacy JSON/string compatibility: treat as
                         # USER_INTERACTION init
                         try:
-                            if len(msg.atomic_numbers) == 0 or len(msg.positions) == 0:
+                            if len(msg.atomic_numbers) == 0 or (
+                                len(msg.positions) == 0
+                            ):
                                 continue
                         except Exception:
                             pass
@@ -461,107 +544,119 @@ class WSIngress:
                                 (
                                     "[ws] INIT (compat) natoms="
                                     f"{len(state.atomic_numbers)} "
-                                    f"cell={cs}"
+                                    f"cell={cs} -> idle compute"
                                 ),
                                 flush=True,
                             )
                         except Exception:
                             pass
-                        await _send_result_bytes(
-                            seq=state.server_seq,
-                            client_seq=state.client_seq,
-                            user_interaction_count=(
-                                int(uic_in_msg) if uic_in_msg else None
-                            ),
-                            sim_step=(state.sim_step or None),
-                            positions=state.positions,
-                            velocities=(
-                                state.velocities
-                                if state.velocities is not None
-                                else None
-                            ),
-                            forces=None,
-                            cell=state.cell,
-                            message="initialized",
-                        )
-                    elif (
-                        hasattr(pb.ClientAction.Type, "SIMPLE_CALCULATE")
-                        and getattr(msg, "type", None)
-                        == pb.ClientAction.Type.SIMPLE_CALCULATE
-                    ) or getattr(msg, "type", None) == "simple_calculate":
-                        # one-shot energy/forces; use current state
-                        if state.atomic_numbers == [] or state.positions is None:
-                            continue
+                        # Log initial positions once at init
                         try:
-                            worker = self._pool.any()
-                            try:
-                                res = await asyncio.to_thread(
-                                    ray.get,
-                                    worker.run_simple.remote(
-                                        atomic_numbers=state.atomic_numbers,
-                                        positions=state.positions,
-                                        cell=state.cell,
-                                        properties=["energy", "forces"],
-                                        calculator=state.params.calculator,
-                                    ),
+                            if (
+                                not logged_init_positions
+                                and state.positions is not None
+                            ):
+                                logged_init_positions = True
+                                pos_list = (
+                                    state.positions.tolist()
+                                    if hasattr(state.positions, 'tolist')
+                                    else state.positions
                                 )
-                            except Exception as e:
-                                # Fallback to LJ if UMA path is unavailable
-                                try:
-                                    print(
-                                        (
-                                            "[ws] SIMPLE_CALCULATE failed "
-                                            f"with '"
-                                            f"{state.params.calculator}"
-                                            f"', "
-                                            "retrying with 'lj': "
-                                            f"{e}"
-                                        ),
-                                        flush=True,
-                                    )
-                                except Exception:
-                                    pass
-                                res = await asyncio.to_thread(
-                                    ray.get,
-                                    worker.run_simple.remote(
-                                        atomic_numbers=state.atomic_numbers,
-                                        positions=state.positions,
-                                        cell=state.cell,
-                                        properties=["energy", "forces"],
-                                        calculator="lj",
-                                    ),
-                                )
-                            results = res.get("results", {})
-                            E = results.get("energy")
-                            F = results.get("forces")
-                            if F is not None:
-                                F_np = np.array(F, dtype=float)
-                            else:
-                                F_np = None
-                            # server_seq unchanged for one-shot; echo fields
-                            await _send_result_bytes(
-                                seq=state.server_seq,
-                                client_seq=state.client_seq,
-                                user_interaction_count=(
-                                    int(uic_in_msg) if uic_in_msg else None
-                                ),
-                                sim_step=(state.sim_step or None),
-                                positions=None,
-                                velocities=None,
-                                forces=F_np,
-                                cell=None,
-                                energy=(float(E) if E is not None else None),
-                                message="simple_calculate",
-                            )
-                        except Exception as e:
-                            # swallow to keep session alive, but log
-                            try:
                                 print(
-                                    f"[ws] SIMPLE_CALCULATE exception: {e}",
+                                    "[ws][INIT_POS] positions=",
+                                    pos_list,
                                     flush=True,
                                 )
-                            except Exception:
-                                pass
+                        except Exception:
+                            pass
+                        # After init, perform idle compute (forces/energy,
+                        # positions omitted)
+                        try:
+                            if (
+                                state.atomic_numbers != []
+                                and state.positions is not None
+                            ):
+                                worker = self._pool.any()
+                                try:
+                                    res = await asyncio.to_thread(
+                                        ray.get,
+                                        worker.run_simple.remote(
+                                            atomic_numbers=
+                                            state.atomic_numbers,
+                                            positions=state.positions,
+                                            cell=state.cell,
+                                            properties=["energy", "forces"],
+                                            calculator=state.params.calculator,
+                                        ),
+                                    )
+                                except Exception as e:
+                                    try:
+                                        print(
+                                            (
+                                                (
+                                                    "[ws] INIT idle compute failed with '"
+                                                    f"{state.params.calculator}'"
+                                                    ", retrying with 'lj': "
+                                                    f"{e}"
+                                                )
+                                            ),
+                                            flush=True,
+                                        )
+                                    except Exception:
+                                        pass
+                                    res = await asyncio.to_thread(
+                                        ray.get,
+                                        worker.run_simple.remote(
+                                            atomic_numbers=
+                                            state.atomic_numbers,
+                                            positions=state.positions,
+                                            cell=state.cell,
+                                            properties=["energy", "forces"],
+                                            calculator="lj",
+                                        ),
+                                    )
+                                results = res.get("results", {})
+                                E = results.get("energy")
+                                F = results.get("forces")
+                                F_np = (
+                                    np.array(F, dtype=float)
+                                    if F is not None
+                                    else None
+                                )
+                                # Optional stress support if provided as 3x3
+                                S = (
+                                    results.get("stress")
+                                    if isinstance(results, dict)
+                                    else None
+                                )
+                                S_np = None
+                                try:
+                                    if S is not None:
+                                        S_np_arr = np.asarray(S, dtype=float)
+                                        if S_np_arr.shape == (3, 3):
+                                            S_np = S_np_arr
+                                except Exception:
+                                    S_np = None
+                                # Advance seq for this idle frame
+                                state.server_seq += 1
+                                await _send_result_bytes(
+                                    seq=state.server_seq,
+                                    client_seq=state.client_seq,
+                                    user_interaction_count=(
+                                        int(uic_in_msg) if uic_in_msg else None
+                                    ),
+                                    sim_step=(state.sim_step or None),
+                                    positions=None,
+                                    velocities=None,
+                                    forces=F_np,
+                                    cell=None,
+                                    energy=(
+                                        float(E) if E is not None else None
+                                    ),
+                                    stress=S_np,
+                                )
+                        except Exception:
+                            pass
                     elif (
                         hasattr(pb.ClientAction.Type, "USER_INTERACTION")
                         and getattr(msg, "type", None)
@@ -576,7 +671,9 @@ class WSIngress:
                                 getattr(msg, "positions", [])
                             ):
                                 state.atomic_numbers = list(msg.atomic_numbers)
-                                state.positions = _np_from_vec3_list(msg.positions)
+                                state.positions = _np_from_vec3_list(
+                                    msg.positions
+                                )
                                 v_in = _np_from_vec3_list(msg.velocities)
                                 state.velocities = v_in
                                 state.cell = _mat3_to_np(
@@ -584,7 +681,9 @@ class WSIngress:
                                 )
                                 state.forces = None
                                 try:
-                                    cs = "on" if state.cell is not None else "off"
+                                    cs = (
+                                        "on" if state.cell is not None else "off"
+                                    )
                                     msg_txt = (
                                         "[ws] USER_INTERACTION init "
                                         + "natoms="
@@ -594,39 +693,21 @@ class WSIngress:
                                     print(msg_txt, flush=True)
                                 except Exception:
                                     pass
-                                # On init, send immediate echo with positions
-                                # and zero forces/vel if absent
-                                await _send_result_bytes(
-                                    seq=state.server_seq,
-                                    client_seq=state.client_seq,
-                                    user_interaction_count=(
-                                        int(uic_in_msg) if uic_in_msg else None
-                                    ),
-                                    sim_step=(state.sim_step or None),
-                                    positions=state.positions,
-                                    velocities=(
-                                        state.velocities
-                                        if state.velocities is not None
-                                        else None
-                                    ),
-                                    forces=None,
-                                    cell=state.cell,
-                                    message="initialized",
-                                )
-                                # Do not fall through to simple calculate here;
-                                # the client may request it explicitly. The
-                                # client may request SIMPLE_CALCULATE
-                                # explicitly.
-                                continue
+                                # Do not send an echo frame with positions;
+                                # fall through to idle compute
                         except Exception:
                             pass
                         updated = False
                         try:
                             if len(getattr(msg, "positions", [])):
-                                state.positions = _np_from_vec3_list(msg.positions)
+                                state.positions = _np_from_vec3_list(
+                                    msg.positions
+                                )
                                 updated = True
                             if len(getattr(msg, "velocities", [])):
-                                state.velocities = _np_from_vec3_list(msg.velocities)
+                                state.velocities = _np_from_vec3_list(
+                                    msg.velocities
+                                )
                                 updated = True
                             if hasattr(msg, "cell") and msg.HasField("cell"):
                                 state.cell = _mat3_to_np(msg.cell)
@@ -652,6 +733,26 @@ class WSIngress:
                             )
                         except Exception:
                             pass
+                        # Log positions on USER_INTERACTION updates as well
+                        # (first only)
+                        try:
+                            if (
+                                not logged_init_positions
+                                and state.positions is not None
+                            ):
+                                logged_init_positions = True
+                                pos_list = (
+                                    state.positions.tolist()
+                                    if hasattr(state.positions, 'tolist')
+                                    else state.positions
+                                )
+                                print(
+                                    "[ws][INIT_POS] positions=",
+                                    pos_list,
+                                    flush=True,
+                                )
+                        except Exception:
+                            pass
                         # If a simulation is running, continue running with
                         # updated state
                         if state.running:
@@ -671,14 +772,14 @@ class WSIngress:
                                 except Exception:
                                     pass
                         else:
-                            # Idle: run one-shot simple calculate and send
-                            # result
+                            # Idle: run one-shot compute and send result
+                            # (positions omitted)
                             try:
                                 try:
                                     print(
                                         (
                                             "[ws] USER_INTERACTION idle -> "
-                                            "simple_calculate"
+                                            "compute"
                                         ),
                                         flush=True,
                                     )
@@ -694,7 +795,9 @@ class WSIngress:
                                     res = await asyncio.to_thread(
                                         ray.get,
                                         worker.run_simple.remote(
-                                            atomic_numbers=(state.atomic_numbers),
+                                            atomic_numbers=(
+                                                state.atomic_numbers
+                                            ),
                                             positions=state.positions,
                                             cell=state.cell,
                                             properties=["energy", "forces"],
@@ -706,13 +809,13 @@ class WSIngress:
                                     try:
                                         print(
                                             (
-                                                "[ws] USER_INTERACTION simple "
-                                                "failed with "
-                                                f"'"
-                                                f"{state.params.calculator}"
-                                                f"', "
-                                                "retrying with 'lj': "
-                                                f"{e}"
+                                                (
+                                                    "[ws] USER_INTERACTION"
+                                                    " compute failed with '"
+                                                    f"{state.params.calculator}'"
+                                                    ", retrying with 'lj': "
+                                                    f"{e}"
+                                                )
                                             ),
                                             flush=True,
                                         )
@@ -734,6 +837,22 @@ class WSIngress:
                                 F_np = (
                                     np.array(F, dtype=float) if F is not None else None
                                 )
+                                # Optional stress if provided as 3x3
+                                S = (
+                                    results.get("stress")
+                                    if isinstance(results, dict)
+                                    else None
+                                )
+                                S_np = None
+                                try:
+                                    if S is not None:
+                                        S_np_arr = np.asarray(S, dtype=float)
+                                        if S_np_arr.shape == (3, 3):
+                                            S_np = S_np_arr
+                                except Exception:
+                                    S_np = None
+                                # Advance seq for this idle frame
+                                state.server_seq += 1
                                 await _send_result_bytes(
                                     seq=state.server_seq,
                                     client_seq=state.client_seq,
@@ -746,16 +865,12 @@ class WSIngress:
                                     forces=F_np,
                                     cell=None,
                                     energy=(float(E) if E is not None else None),
-                                    message="simple_calculate",
+                                    stress=S_np,
                                 )
                             except Exception as e:
                                 try:
                                     print(
-                                        (
-                                            "[ws] USER_INTERACTION "
-                                            "simple_calculate exception: "
-                                            f"{e}"
-                                        ),
+                                        f"[ws] USER_INTERACTION compute exception: {e}",
                                         flush=True,
                                     )
                                 except Exception:

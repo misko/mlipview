@@ -24,12 +24,12 @@ message ClientAction {
     // Clients MUST use this for initial system setup by providing atomic_numbers and positions,
     // and MAY include velocities and/or cell. Any subsequent interaction can provide any subset
     // of positions, velocities, and/or cell; omitted fields are left unchanged on the server.
-    // Note: INIT_SYSTEM has been removed; use USER_INTERACTION for init and updates.
-    USER_INTERACTION = 1; // was UPDATE_POSITIONS (INIT_SYSTEM removed)
+    // Note: INIT_SYSTEM and SIMPLE_CALCULATE have been removed; use USER_INTERACTION for init and updates.
+    TYPE_UNSPECIFIED = 0; // proto3 requires first enum value to be zero
+    USER_INTERACTION = 1; // was UPDATE_POSITIONS (legacy INIT_SYSTEM removed)
     START_SIMULATION = 2;
     STOP_SIMULATION = 3;
     PING = 4;
-    SIMPLE_CALCULATE = 5; // one-shot energy/forces request
   }
   Type type = 3;
   // system
@@ -60,6 +60,8 @@ message ServerResult {
   optional Mat3 cell = 13;
   // Optional total energy for simple calculate or summary frames
   optional float energy = 14;
+  // Optional stress tensor (3x3, row-major). Present when available and when cell is defined.
+  optional Mat3 stress = 15;
   optional string message = 20;
 
   // Echo/correlation fields for frontend state
@@ -68,7 +70,7 @@ message ServerResult {
   optional uint64 sim_step = 31;
   // Notes:
   // - When the server is idle (no active simulation), positions are not
-  //   updated by simple_calculate responses; only forces and energy are sent.
+  //   updated by idle USER_INTERACTION responses; only forces and energy (and stress when available) are sent.
   // - During an active simulation, positions/velocities are provided each
   //   frame. The frontend may partially apply them to respect user edits.
 }

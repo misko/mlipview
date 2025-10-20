@@ -15,10 +15,10 @@ async def _ws_simple_once(
 ) -> dict:
     async with websockets.connect(uri) as ws:
         seq = 1
-        # INIT_SYSTEM with atoms and positions
+        # Init via USER_INTERACTION with atoms + positions (and optional cell)
         init = pb.ClientAction()
         init.seq = seq
-        init.type = pb.ClientAction.Type.INIT_SYSTEM
+        init.type = pb.ClientAction.Type.USER_INTERACTION
         init.atomic_numbers.extend(int(z) for z in Z)
         for p in R:
             v = pb.Vec3()
@@ -30,21 +30,20 @@ async def _ws_simple_once(
             init.cell.CopyFrom(m)
         await ws.send(init.SerializeToString())
 
-        # Send SIMPLE_CALCULATE
+        # Trigger idle compute by sending USER_INTERACTION with positions only
         seq += 1
         req = pb.ClientAction()
         req.seq = seq
-        # Optional counters (ignored if schema missing in compiled pb2)
+        req.type = pb.ClientAction.Type.USER_INTERACTION
+        for p in R:
+            v = pb.Vec3()
+            v.v.extend([float(p[0]), float(p[1]), float(p[2])])
+            req.positions.append(v)
+        # Attach optional counters if fields exist
         if hasattr(req, "user_interaction_count"):
             setattr(req, "user_interaction_count", 0)
         if hasattr(req, "sim_step"):
             setattr(req, "sim_step", 0)
-        # Type SIMPLE_CALCULATE may not exist if proto not rebuilt
-        if hasattr(pb.ClientAction.Type, "SIMPLE_CALCULATE"):
-            req.type = pb.ClientAction.Type.SIMPLE_CALCULATE
-        else:
-            # Fallback: do nothing (will likely make test fail fast)
-            req.type = pb.ClientAction.Type.PING
         await ws.send(req.SerializeToString())
 
         # Receive frames until a ServerResult carries energy or forces
@@ -62,11 +61,11 @@ async def _ws_simple_once(
                 energy = getattr(res, "energy", None)
                 forces = np.array([[v.v[0], v.v[1], v.v[2]] for v in res.forces])
                 return {"energy": energy, "forces": forces}
-        raise AssertionError("No simple_calculate result received")
+    raise AssertionError("No idle compute result received")
 
 
 @pytest.mark.timeout(60)
-def test_ws_simple_calculate_returns_finite(ws_base_url: str):
+def test_ws_idle_compute_returns_finite(ws_base_url: str):
     # simple H2-like system
     Z = [1, 1]
     R = [[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]]

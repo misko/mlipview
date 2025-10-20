@@ -63,7 +63,11 @@ def _load_xyz(path: Path) -> Tuple[List[int], List[List[float]]]:
 
 
 async def _run_md_0k(
-    uri: str, Z: List[int], xyz: List[List[float]], frames: int, calculator: str
+    uri: str,
+    Z: List[int],
+    xyz: List[List[float]],
+    frames: int,
+    calculator: str,
 ) -> int:
     """Run MD at 0K for `frames` steps using protobuf-only messages."""
     async with websockets.connect(uri) as ws:
@@ -71,7 +75,8 @@ async def _run_md_0k(
         # INIT: include zero velocities to avoid MB initialization
         init = pb.ClientAction()
         init.seq = seq
-        init.type = pb.ClientAction.Type.INIT_SYSTEM
+        # Init via USER_INTERACTION (INIT_SYSTEM removed)
+        init.type = pb.ClientAction.Type.USER_INTERACTION
         init.atomic_numbers.extend(int(z) for z in Z)
         for p in xyz:
             v = pb.Vec3()
@@ -104,6 +109,9 @@ async def _run_md_0k(
             assert isinstance(data, (bytes, bytearray))
             res = pb.ServerResult()
             res.ParseFromString(data)
+            # Skip non-simulation frames (e.g., idle compute without positions)
+            if len(res.positions) == 0:
+                continue
             # basic sanity: lengths match and numbers are finite
             n = len(Z)
             assert len(res.positions) == n

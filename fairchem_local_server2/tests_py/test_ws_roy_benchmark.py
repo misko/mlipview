@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import pytest
 import websockets
@@ -90,16 +90,22 @@ def _load_xyz(path: Path) -> Tuple[List[int], List[List[float]]]:
 
 
 async def _run_ws_md_frames(
-    uri: str, Z: List[int], xyz: List[List[float]], n: int, calculator: str
+    uri: str,
+    Z: List[int],
+    xyz: List[List[float]],
+    n: int,
+    calculator: str,
 ) -> int:
-    """Connect to websocket, init system, start MD (LJ), ack, and receive n frames."""
+    """
+    Connect to websocket, initialize, start MD, ACK, and receive n frames.
+    """
     frames = 0
     async with websockets.connect(uri) as ws:
-        # INIT_SYSTEM
+        # Init via USER_INTERACTION (INIT_SYSTEM removed)
         seq = 1
         init = pb.ClientAction()
         init.seq = seq
-        init.type = pb.ClientAction.Type.INIT_SYSTEM
+        init.type = pb.ClientAction.Type.USER_INTERACTION
         init.atomic_numbers.extend([int(z) for z in Z])
         for p in xyz:
             v = pb.Vec3()

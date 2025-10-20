@@ -70,6 +70,14 @@ class _PredictDeploy:  # runs on GPU replica
         # Simple in-replica metrics for observability
         self._predict_calls = 0  # number of predict() invocations (batches)
         self._predict_items = 0  # total items processed across all batches
+        # Geometry debug toggle: when enabled, log positions and cell
+        # for each predict call
+        self._geom_debug = os.getenv("UMA_GEOM_DEBUG", "0") in (
+            "1",
+            "true",
+            "TRUE",
+            "True",
+        )
         self._unit = pretrained_mlip.get_predict_unit(
             model_name,
             device=self.DEVICE,
@@ -91,6 +99,131 @@ class _PredictDeploy:  # runs on GPU replica
             "[UMA] predict called on device %s size=%d" % (self.DEVICE, len(payloads)),
             flush=True,
         )
+        # Optional geometry debug logging
+        if self._geom_debug:
+            try:
+
+                def _to_list3(x):
+                    try:
+                        if hasattr(x, "detach") and callable(x.detach):
+                            x = x.detach()
+                        if hasattr(x, "cpu") and callable(getattr(x, "cpu")):
+                            x = x.cpu()
+                        if hasattr(x, "numpy") and callable(getattr(x, "numpy")):
+                            x = x.numpy()
+                    except Exception:
+                        pass
+                    try:
+                        import numpy as _np  # type: ignore
+
+                        arr = _np.asarray(x, dtype=float)
+                        return arr.tolist()
+                    except Exception:
+                        # best effort for lists
+                        return x
+
+                def _to_list_int(x):
+                    """
+                    Convert tensor/array/list of ints to plain Python
+                    list[int].
+                    """
+                    try:
+                        if hasattr(x, "detach") and callable(x.detach):
+                            x = x.detach()
+                        if hasattr(x, "cpu") and callable(getattr(x, "cpu")):
+                            x = x.cpu()
+                        if hasattr(x, "numpy") and callable(getattr(x, "numpy")):
+                            x = x.numpy()
+                    except Exception:
+                        pass
+                    try:
+                        import numpy as _np  # type: ignore
+
+                        arr = _np.asarray(x, dtype=int)
+                        return arr.tolist()
+                    except Exception:
+                        # best effort for lists
+                        return x
+
+                def _short(x, limit: int = 400):
+                    try:
+                        s = str(x)
+                    except Exception:
+                        try:
+                            s = repr(x)
+                        except Exception:
+                            s = f"<unprintable:{type(x).__name__}>"
+                    if len(s) <= limit:
+                        return s
+                    return s[:limit] + "...(truncated)"
+
+                singles = [p[0][0] for p in payloads] if payloads else []
+                for idx, item in enumerate(singles):
+                    pos = getattr(item, "pos", None)
+                    cell = getattr(item, "cell", None)
+                    ds = getattr(item, "dataset", None)
+                    # atomic numbers field can be named differently;
+                    # try common ones
+                    zs = (
+                        getattr(item, "atomic_numbers", None)
+                        if hasattr(item, "atomic_numbers")
+                        else (
+                            getattr(item, "z", None)
+                            if hasattr(item, "z")
+                            else (
+                                getattr(item, "numbers", None)
+                                if hasattr(item, "numbers")
+                                else None
+                            )
+                        )
+                    )
+                    try:
+                        pos_l = _to_list3(pos) if pos is not None else None
+                        cell_l = _to_list3(cell) if cell is not None else None
+                        zs_l = _to_list_int(zs) if zs is not None else None
+                        # Reject invalid atom types (<=0) explicitly to avoid
+                        # ambiguous runs with missing species
+                        try:
+                            has_bad = False
+                            if isinstance(zs_l, list):
+                                for _z in zs_l:
+                                    try:
+                                        if int(_z) <= 0:
+                                            has_bad = True
+                                            break
+                                    except Exception:
+                                        has_bad = True
+                                        break
+                            if has_bad:
+                                raise ValueError(
+                                    (
+                                        "[INVALID_ATOM_Z] atomic_numbers must "
+                                        "be positive integers; received "
+                                    )
+                                    + str(zs_l)
+                                )
+                        except Exception:
+                            raise
+                        n = len(pos_l) if isinstance(pos_l, list) else "na"
+                        ds_s = _short(ds)
+                        print(
+                            f"[UMA][geom] item={idx} natoms={n} "
+                            f"pos={pos_l} cell={cell_l} "
+                            f"Z={zs_l} dataset={ds_s}",
+                            flush=True,
+                        )
+                    except Exception as _e:
+                        try:
+                            print(
+                                f"[UMA][geom] item={idx} "
+                                f"<failed to format positions/cell>: {_e}",
+                                flush=True,
+                            )
+                        except Exception:
+                            pass
+            except Exception:
+                # Do not block predict on debug failures
+                pass
         t0 = time.perf_counter()
         try:
             # update simple metrics
@@ -101,6 +234,32 @@ class _PredictDeploy:  # runs on GPU replica
                 single = payloads[0][0][0]
                 pred = self._unit.predict(single)
                 res = [{k: v.detach().cpu() for k, v in pred.items()}]
+                # Geometry debug: log outputs (energy, forces)
+                if self._geom_debug:
+                    try:
+                        e0 = res[0].get("energy")
+                        f0 = res[0].get("forces")
+                        try:
+                            import numpy as _np  # type: ignore
+
+                            e_list = (
+                                _np.asarray(e0).tolist() if e0 is not None else None
+                            )
+                            f_list = (
+                                _np.asarray(f0).tolist() if f0 is not None else None
+                            )
+                        except Exception:
+                            e_list = e0
+                            f_list = f0
+                        print(
+                            "[UMA][geom][out] item=0 E="
+                            + str(e_list)
+                            + " forces="
+                            + str(f_list),
+                            flush=True,
+                        )
+                    except Exception:
+                        pass
                 dt = time.perf_counter() - t0
                 print(
                     (
@@ -129,6 +288,33 @@ class _PredictDeploy:  # runs on GPU replica
                         all_outputs["stress"].split(1),
                     )
                 ]
+                # Geometry debug: log outputs (energy, forces) for each item
+                if self._geom_debug:
+                    try:
+                        import numpy as _np  # type: ignore
+
+                        for idx, it in enumerate(out):
+                            e0 = it.get("energy")
+                            f0 = it.get("forces")
+                            try:
+                                e_list = (
+                                    _np.asarray(e0).tolist() if e0 is not None else None
+                                )
+                                f_list = (
+                                    _np.asarray(f0).tolist() if f0 is not None else None
+                                )
+                            except Exception:
+                                e_list = e0
+                                f_list = f0
+                            print(
+                                f"[UMA][geom][out] item={idx} E="
+                                + str(e_list)
+                                + " forces="
+                                + str(f_list),
+                                flush=True,
+                            )
+                    except Exception:
+                        pass
             dt = time.perf_counter() - t0
             size = len(payloads)
             print(
@@ -180,7 +366,8 @@ class BatchedPredictUnit:
 
         self.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
         print(
-            f"[model_runtime] torch_version={getattr(torch, '__version__', None)} "
+            f"[model_runtime] torch_version="
+            f"{getattr(torch, '__version__', None)} "
             f"torch_cuda_version={getattr(torch.version, 'cuda', None)} "
             f"cuda_available={torch.cuda.is_available()} "
             f"device={self.DEVICE}",

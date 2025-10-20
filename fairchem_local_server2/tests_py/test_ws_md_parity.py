@@ -20,7 +20,8 @@ async def _ws_nth_md_step(
         seq = 1
         init = pb.ClientAction()
         init.seq = seq
-        init.type = pb.ClientAction.Type.INIT_SYSTEM
+        # Init via USER_INTERACTION (INIT_SYSTEM removed in new protocol)
+        init.type = pb.ClientAction.Type.USER_INTERACTION
         init.atomic_numbers.extend(int(z) for z in Z)
         for p in R:
             v = pb.Vec3()
@@ -55,8 +56,9 @@ async def _ws_nth_md_step(
             assert isinstance(data, (bytes, bytearray))
             res = pb.ServerResult()
             res.ParseFromString(data)
-            if res.seq == 0:
-                continue  # initialization snapshot
+            # Skip initialization snapshot and idle frames without positions
+            if res.seq == 0 or len(res.positions) == 0:
+                continue
             # sanity
             m = len(Z)
             assert len(res.positions) == m
@@ -106,7 +108,7 @@ def test_ws_vs_direct_md_second_step_0k(ws_base_url: str):
         velocities_in=V0,
     ).dict()
     atoms2 = build_atoms(Z, d1["positions"], cell=None)
-    d2 = _md_run(
+    _ = _md_run(
         atoms2,
         steps=1,
         temperature=0.0,

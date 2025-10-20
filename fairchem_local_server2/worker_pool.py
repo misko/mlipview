@@ -13,6 +13,16 @@ from fairchem_local_server.services import _md_run, _relax_run
 from fairchem_local_server.services import simple_calculate as _simple_calculate
 
 
+def _validate_atomic_numbers_or_raise(atomic_numbers: List[int]) -> None:
+    bad_idx = [i for i, z in enumerate(atomic_numbers) if int(z) <= 0]
+    if bad_idx:
+        bad_vals = [int(atomic_numbers[i]) for i in bad_idx]
+        raise ValueError(
+            ("[INVALID_ATOM_Z] atomic_numbers must be positive " "integers; ")
+            + f"got invalid values at indices {bad_idx}: {bad_vals}"
+        )
+
+
 @ray.remote(num_cpus=1)
 class ASEWorker:
     """CPU worker for MD/Relax using UMA-backed calculator.
@@ -46,6 +56,7 @@ class ASEWorker:
     ) -> Dict[str, Any]:
         t0 = time.perf_counter()
         calc_enum = RelaxCalculatorName(calculator)
+        _validate_atomic_numbers_or_raise(atomic_numbers)
         atoms = build_atoms(atomic_numbers, positions, cell=cell)
         atoms.calc = get_calculator() if calc_enum == RelaxCalculatorName.uma else None
         md_res = _md_run(
@@ -83,6 +94,7 @@ class ASEWorker:
     ) -> Dict[str, Any]:
         t0 = time.perf_counter()
         calc_enum = RelaxCalculatorName(calculator)
+        _validate_atomic_numbers_or_raise(atomic_numbers)
         atoms = build_atoms(atomic_numbers, positions, cell=cell)
         atoms.calc = get_calculator() if calc_enum == RelaxCalculatorName.uma else None
         rx = _relax_run(
@@ -116,6 +128,7 @@ class ASEWorker:
         from fairchem_local_server.models import SimpleIn
 
         t0 = time.perf_counter()
+        _validate_atomic_numbers_or_raise(atomic_numbers)
         try:
             inp = SimpleIn(
                 atomic_numbers=list(map(int, atomic_numbers)),
