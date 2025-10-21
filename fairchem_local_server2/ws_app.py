@@ -289,7 +289,7 @@ class WSIngress:
                     fr.stress.CopyFrom(stress_pb)
                 if energy is not None:
                     fr.energy = float(energy)
-                print(f"[ws] sending frame {fr}", flush=True)
+                # print(f"[ws] sending frame {fr}", flush=True)
                 msg.frame.CopyFrom(fr)
             else:
                 no = pb.ServerResult.Notice()
@@ -298,7 +298,7 @@ class WSIngress:
                 if simulation_stopped is True:
                     no.simulation_stopped = True
                 msg.notice.CopyFrom(no)
-                print(f"[ws] sending notice {no}", flush=True)
+                # print(f"[ws] sending notice {no}", flush=True)
 
             msg.schema_version = 1
 
