@@ -18,47 +18,56 @@ async def _ws_simple_once(
         # Init via USER_INTERACTION with atoms + positions (and optional cell)
         init = pb.ClientAction()
         init.seq = seq
-        init.type = pb.ClientAction.Type.USER_INTERACTION
-        init.atomic_numbers.extend(int(z) for z in Z)
+        init.schema_version = 1
+        ui = pb.ClientAction.UserInteraction()
+        ui.atomic_numbers.extend(int(z) for z in Z)
         for p in R:
-            v = pb.Vec3()
-            v.v.extend([float(p[0]), float(p[1]), float(p[2])])
-            init.positions.append(v)
+            ui.positions.extend([float(p[0]), float(p[1]), float(p[2])])
         if cell is not None:
             m = pb.Mat3()
             m.m.extend(list(map(float, cell)))
-            init.cell.CopyFrom(m)
+            ui.cell.CopyFrom(m)
+        init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
 
         # Trigger idle compute by sending USER_INTERACTION with positions only
         seq += 1
         req = pb.ClientAction()
         req.seq = seq
-        req.type = pb.ClientAction.Type.USER_INTERACTION
+        req.schema_version = 1
+        ui2 = pb.ClientAction.UserInteraction()
         for p in R:
-            v = pb.Vec3()
-            v.v.extend([float(p[0]), float(p[1]), float(p[2])])
-            req.positions.append(v)
-        # Set counters; new schema guarantees these fields
-        req.user_interaction_count = 0
-        req.sim_step = 0
+            ui2.positions.extend([float(p[0]), float(p[1]), float(p[2])])
+        req.user_interaction.CopyFrom(ui2)
+        # Attach optional counters if fields exist
+        if hasattr(req, "user_interaction_count"):
+            setattr(req, "user_interaction_count", 0)
+        if hasattr(req, "sim_step"):
+            setattr(req, "sim_step", 0)
         await ws.send(req.SerializeToString())
 
         # Receive frames until a ServerResult carries energy or forces
         for _ in range(10):
             data = await asyncio.wait_for(ws.recv(), timeout=5.0)
-            # Protocol is protobuf-only; enforce binary frames
             assert isinstance(data, (bytes, bytearray))
             res = pb.ServerResult()
             res.ParseFromString(data)
-            # Accept any frame that includes at least energy or forces
-            has_energy = res.HasField("energy")
-            if has_energy or (len(res.forces) > 0):
-                energy = getattr(res, "energy", None)
-                forces = np.array(
-                    [[v.v[0], v.v[1], v.v[2]] for v in res.forces]
-                )
-                return {"energy": energy, "forces": forces}
+            if res.WhichOneof("payload") != "frame":
+                continue
+            fr = res.frame
+            has_energy_field = hasattr(fr, "energy")
+            energy_present = (
+                hasattr(fr, "HasField") and fr.HasField("energy")
+            ) or getattr(fr, "energy", None) is not None
+            got_energy = has_energy_field and energy_present
+            if got_energy or (len(fr.forces) > 0):
+                energy = getattr(fr, "energy", None)
+                f = np.fromiter(fr.forces, dtype=np.float64)
+                if f.size % 3 == 0:
+                    F = f.reshape(-1, 3)
+                else:
+                    F = np.empty((0, 3))
+                return {"energy": energy, "forces": F}
     raise AssertionError("No idle compute result received")
 
 

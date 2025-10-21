@@ -24,25 +24,51 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\rsession.proto\x12\x10\x66\x61irchem.session\"\x11\n\x04Vec3\x12\t\n\x01v\x18\x01 \x03(\x01\"\x11\n\x04Mat3\x12\t\n\x01m\x18\x01 \x03(\x01\"\x95\x01\n\x10SimulationParams\x12\x12\n\ncalculator\x18\x01 \x01(\t\x12\x13\n\x0btemperature\x18\x02 \x01(\x02\x12\x13\n\x0btimestep_fs\x18\x03 \x01(\x02\x12\x10\n\x08\x66riction\x18\x04 \x01(\x02\x12\x0c\n\x04\x66max\x18\x05 \x01(\x02\x12\x10\n\x08max_step\x18\x06 \x01(\x02\x12\x11\n\toptimizer\x18\x07 \x01(\t\"\xaa\x05\n\x0c\x43lientAction\x12\x0b\n\x03seq\x18\x01 \x01(\x04\x12\x10\n\x03\x61\x63k\x18\x02 \x01(\x04H\x00\x88\x01\x01\x12\x31\n\x04type\x18\x03 \x01(\x0e\x32#.fairchem.session.ClientAction.Type\x12\x16\n\x0e\x61tomic_numbers\x18\n \x03(\x05\x12)\n\tpositions\x18\x0b \x03(\x0b\x32\x16.fairchem.session.Vec3\x12*\n\nvelocities\x18\x0c \x03(\x0b\x32\x16.fairchem.session.Vec3\x12)\n\x04\x63\x65ll\x18\r \x01(\x0b\x32\x16.fairchem.session.Mat3H\x01\x88\x01\x01\x12\x44\n\x0fsimulation_type\x18\x14 \x01(\x0e\x32&.fairchem.session.ClientAction.SimTypeH\x02\x88\x01\x01\x12\x42\n\x11simulation_params\x18\x15 \x01(\x0b\x32\".fairchem.session.SimulationParamsH\x03\x88\x01\x01\x12#\n\x16user_interaction_count\x18\x1e \x01(\x04H\x04\x88\x01\x01\x12\x15\n\x08sim_step\x18\x1f \x01(\x04H\x05\x88\x01\x01\"g\n\x04Type\x12\x14\n\x10TYPE_UNSPECIFIED\x10\x00\x12\x14\n\x10USER_INTERACTION\x10\x01\x12\x14\n\x10START_SIMULATION\x10\x02\x12\x13\n\x0fSTOP_SIMULATION\x10\x03\x12\x08\n\x04PING\x10\x04\"\x1c\n\x07SimType\x12\x06\n\x02MD\x10\x00\x12\t\n\x05RELAX\x10\x01\x42\x06\n\x04_ackB\x07\n\x05_cellB\x12\n\x10_simulation_typeB\x14\n\x12_simulation_paramsB\x19\n\x17_user_interaction_countB\x0b\n\t_sim_step\"\x8c\x04\n\x0cServerResult\x12\x0b\n\x03seq\x18\x01 \x01(\x04\x12\x17\n\nclient_seq\x18\x02 \x01(\x04H\x00\x88\x01\x01\x12)\n\tpositions\x18\n \x03(\x0b\x32\x16.fairchem.session.Vec3\x12&\n\x06\x66orces\x18\x0b \x03(\x0b\x32\x16.fairchem.session.Vec3\x12*\n\nvelocities\x18\x0c \x03(\x0b\x32\x16.fairchem.session.Vec3\x12)\n\x04\x63\x65ll\x18\r \x01(\x0b\x32\x16.fairchem.session.Mat3H\x01\x88\x01\x01\x12\x13\n\x06\x65nergy\x18\x0e \x01(\x02H\x02\x88\x01\x01\x12+\n\x06stress\x18\x0f \x01(\x0b\x32\x16.fairchem.session.Mat3H\x03\x88\x01\x01\x12\x1f\n\x12simulation_stopped\x18\x10 \x01(\x08H\x04\x88\x01\x01\x12\x14\n\x07message\x18\x14 \x01(\tH\x05\x88\x01\x01\x12#\n\x16user_interaction_count\x18\x1e \x01(\x04H\x06\x88\x01\x01\x12\x15\n\x08sim_step\x18\x1f \x01(\x04H\x07\x88\x01\x01\x42\r\n\x0b_client_seqB\x07\n\x05_cellB\t\n\x07_energyB\t\n\x07_stressB\x15\n\x13_simulation_stoppedB\n\n\x08_messageB\x19\n\x17_user_interaction_countB\x0b\n\t_sim_stepb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\rsession.proto\x12\x10\x66\x61irchem.session\"\x11\n\x04Mat3\x12\t\n\x01m\x18\x01 \x03(\x01\"\x95\x01\n\x10SimulationParams\x12\x12\n\ncalculator\x18\x01 \x01(\t\x12\x13\n\x0btemperature\x18\x02 \x01(\x01\x12\x13\n\x0btimestep_fs\x18\x03 \x01(\x01\x12\x10\n\x08\x66riction\x18\x04 \x01(\x01\x12\x0c\n\x04\x66max\x18\x05 \x01(\x01\x12\x10\n\x08max_step\x18\x06 \x01(\x01\x12\x11\n\toptimizer\x18\x07 \x01(\t\"Q\n\x0cSystemArrays\x12\x15\n\tpositions\x18\x01 \x03(\x01\x42\x02\x10\x01\x12\x16\n\nvelocities\x18\x02 \x03(\x01\x42\x02\x10\x01\x12\x12\n\x06\x66orces\x18\x03 \x03(\x01\x42\x02\x10\x01\"\xf6\x05\n\x0c\x43lientAction\x12\x0b\n\x03seq\x18\x01 \x01(\x04\x12\x10\n\x03\x61\x63k\x18\x02 \x01(\x04H\x01\x88\x01\x01\x12#\n\x16user_interaction_count\x18\x1e \x01(\x04H\x02\x88\x01\x01\x12\x15\n\x08sim_step\x18\x1f \x01(\x04H\x03\x88\x01\x01\x12J\n\x10user_interaction\x18\n \x01(\x0b\x32..fairchem.session.ClientAction.UserInteractionH\x00\x12\x35\n\x05start\x18\x0b \x01(\x0b\x32$.fairchem.session.ClientAction.StartH\x00\x12\x33\n\x04stop\x18\x0c \x01(\x0b\x32#.fairchem.session.ClientAction.StopH\x00\x12\x33\n\x04ping\x18\r \x01(\x0b\x32#.fairchem.session.ClientAction.PingH\x00\x12\x16\n\x0eschema_version\x18\x64 \x01(\r\x1a\x8c\x01\n\x0fUserInteraction\x12\x16\n\x0e\x61tomic_numbers\x18\x01 \x03(\x05\x12\x15\n\tpositions\x18\x02 \x03(\x01\x42\x02\x10\x01\x12\x16\n\nvelocities\x18\x03 \x03(\x01\x42\x02\x10\x01\x12)\n\x04\x63\x65ll\x18\x04 \x01(\x0b\x32\x16.fairchem.session.Mat3H\x00\x88\x01\x01\x42\x07\n\x05_cell\x1a\xab\x01\n\x05Start\x12\x45\n\x0fsimulation_type\x18\x01 \x01(\x0e\x32,.fairchem.session.ClientAction.Start.SimType\x12=\n\x11simulation_params\x18\x02 \x01(\x0b\x32\".fairchem.session.SimulationParams\"\x1c\n\x07SimType\x12\x06\n\x02MD\x10\x00\x12\t\n\x05RELAX\x10\x01\x1a\x06\n\x04Stop\x1a\x06\n\x04PingB\t\n\x07payloadB\x06\n\x04_ackB\x19\n\x17_user_interaction_countB\x0b\n\t_sim_step\"\xf7\x04\n\x0cServerResult\x12\x0b\n\x03seq\x18\x01 \x01(\x04\x12\x17\n\nclient_seq\x18\x02 \x01(\x04H\x01\x88\x01\x01\x12#\n\x16user_interaction_count\x18\x1e \x01(\x04H\x02\x88\x01\x01\x12\x15\n\x08sim_step\x18\x1f \x01(\x04H\x03\x88\x01\x01\x12\x35\n\x05\x66rame\x18\n \x01(\x0b\x32$.fairchem.session.ServerResult.FrameH\x00\x12\x37\n\x06notice\x18\x0b \x01(\x0b\x32%.fairchem.session.ServerResult.NoticeH\x00\x12\x16\n\x0eschema_version\x18\x64 \x01(\r\x1a\xd6\x01\n\x05\x46rame\x12\x15\n\tpositions\x18\x01 \x03(\x01\x42\x02\x10\x01\x12\x16\n\nvelocities\x18\x02 \x03(\x01\x42\x02\x10\x01\x12\x12\n\x06\x66orces\x18\x03 \x03(\x01\x42\x02\x10\x01\x12)\n\x04\x63\x65ll\x18\x04 \x01(\x0b\x32\x16.fairchem.session.Mat3H\x00\x88\x01\x01\x12+\n\x06stress\x18\x05 \x01(\x0b\x32\x16.fairchem.session.Mat3H\x01\x88\x01\x01\x12\x13\n\x06\x65nergy\x18\x06 \x01(\x01H\x02\x88\x01\x01\x42\x07\n\x05_cellB\t\n\x07_stressB\t\n\x07_energy\x1a\x62\n\x06Notice\x12\x14\n\x07message\x18\x01 \x01(\tH\x00\x88\x01\x01\x12\x1f\n\x12simulation_stopped\x18\x02 \x01(\x08H\x01\x88\x01\x01\x42\n\n\x08_messageB\x15\n\x13_simulation_stoppedB\t\n\x07payloadB\r\n\x0b_client_seqB\x19\n\x17_user_interaction_countB\x0b\n\t_sim_stepb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'session_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_VEC3']._serialized_start=35
-  _globals['_VEC3']._serialized_end=52
-  _globals['_MAT3']._serialized_start=54
-  _globals['_MAT3']._serialized_end=71
-  _globals['_SIMULATIONPARAMS']._serialized_start=74
-  _globals['_SIMULATIONPARAMS']._serialized_end=223
-  _globals['_CLIENTACTION']._serialized_start=226
-  _globals['_CLIENTACTION']._serialized_end=908
-  _globals['_CLIENTACTION_TYPE']._serialized_start=676
-  _globals['_CLIENTACTION_TYPE']._serialized_end=779
-  _globals['_CLIENTACTION_SIMTYPE']._serialized_start=781
-  _globals['_CLIENTACTION_SIMTYPE']._serialized_end=809
-  _globals['_SERVERRESULT']._serialized_start=911
-  _globals['_SERVERRESULT']._serialized_end=1435
+  _globals['_SYSTEMARRAYS'].fields_by_name['positions']._loaded_options = None
+  _globals['_SYSTEMARRAYS'].fields_by_name['positions']._serialized_options = b'\020\001'
+  _globals['_SYSTEMARRAYS'].fields_by_name['velocities']._loaded_options = None
+  _globals['_SYSTEMARRAYS'].fields_by_name['velocities']._serialized_options = b'\020\001'
+  _globals['_SYSTEMARRAYS'].fields_by_name['forces']._loaded_options = None
+  _globals['_SYSTEMARRAYS'].fields_by_name['forces']._serialized_options = b'\020\001'
+  _globals['_CLIENTACTION_USERINTERACTION'].fields_by_name['positions']._loaded_options = None
+  _globals['_CLIENTACTION_USERINTERACTION'].fields_by_name['positions']._serialized_options = b'\020\001'
+  _globals['_CLIENTACTION_USERINTERACTION'].fields_by_name['velocities']._loaded_options = None
+  _globals['_CLIENTACTION_USERINTERACTION'].fields_by_name['velocities']._serialized_options = b'\020\001'
+  _globals['_SERVERRESULT_FRAME'].fields_by_name['positions']._loaded_options = None
+  _globals['_SERVERRESULT_FRAME'].fields_by_name['positions']._serialized_options = b'\020\001'
+  _globals['_SERVERRESULT_FRAME'].fields_by_name['velocities']._loaded_options = None
+  _globals['_SERVERRESULT_FRAME'].fields_by_name['velocities']._serialized_options = b'\020\001'
+  _globals['_SERVERRESULT_FRAME'].fields_by_name['forces']._loaded_options = None
+  _globals['_SERVERRESULT_FRAME'].fields_by_name['forces']._serialized_options = b'\020\001'
+  _globals['_MAT3']._serialized_start=35
+  _globals['_MAT3']._serialized_end=52
+  _globals['_SIMULATIONPARAMS']._serialized_start=55
+  _globals['_SIMULATIONPARAMS']._serialized_end=204
+  _globals['_SYSTEMARRAYS']._serialized_start=206
+  _globals['_SYSTEMARRAYS']._serialized_end=287
+  _globals['_CLIENTACTION']._serialized_start=290
+  _globals['_CLIENTACTION']._serialized_end=1048
+  _globals['_CLIENTACTION_USERINTERACTION']._serialized_start=659
+  _globals['_CLIENTACTION_USERINTERACTION']._serialized_end=799
+  _globals['_CLIENTACTION_START']._serialized_start=802
+  _globals['_CLIENTACTION_START']._serialized_end=973
+  _globals['_CLIENTACTION_START_SIMTYPE']._serialized_start=945
+  _globals['_CLIENTACTION_START_SIMTYPE']._serialized_end=973
+  _globals['_CLIENTACTION_STOP']._serialized_start=975
+  _globals['_CLIENTACTION_STOP']._serialized_end=981
+  _globals['_CLIENTACTION_PING']._serialized_start=983
+  _globals['_CLIENTACTION_PING']._serialized_end=989
+  _globals['_SERVERRESULT']._serialized_start=1051
+  _globals['_SERVERRESULT']._serialized_end=1682
+  _globals['_SERVERRESULT_FRAME']._serialized_start=1302
+  _globals['_SERVERRESULT_FRAME']._serialized_end=1516
+  _globals['_SERVERRESULT_NOTICE']._serialized_start=1518
+  _globals['_SERVERRESULT_NOTICE']._serialized_end=1616
 # @@protoc_insertion_point(module_scope)

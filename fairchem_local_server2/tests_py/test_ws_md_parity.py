@@ -20,32 +20,30 @@ async def _ws_nth_md_step(
         seq = 1
         init = pb.ClientAction()
         init.seq = seq
-        # Init via USER_INTERACTION (INIT_SYSTEM removed in new protocol)
-        init.type = pb.ClientAction.Type.USER_INTERACTION
-        init.atomic_numbers.extend(int(z) for z in Z)
+        init.schema_version = 1
+        ui = pb.ClientAction.UserInteraction()
+        ui.atomic_numbers.extend(int(z) for z in Z)
         for p in R:
-            v = pb.Vec3()
-            v.v.extend([float(p[0]), float(p[1]), float(p[2])])
-            init.positions.append(v)
-        # zero velocities to enforce 0K
+            ui.positions.extend([float(p[0]), float(p[1]), float(p[2])])
         for _ in Z:
-            v = pb.Vec3()
-            v.v.extend([0.0, 0.0, 0.0])
-            init.velocities.append(v)
+            ui.velocities.extend([0.0, 0.0, 0.0])
+        init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
 
         # Start MD at 0 K
         seq += 1
         start = pb.ClientAction()
         start.seq = seq
-        start.type = pb.ClientAction.Type.START_SIMULATION
-        start.simulation_type = pb.ClientAction.SimType.MD
+        start.schema_version = 1
+        st = pb.ClientAction.Start()
+        st.simulation_type = pb.ClientAction.Start.SimType.MD
         sp = pb.SimulationParams()
         sp.calculator = calculator
         sp.temperature = 0.0
         sp.timestep_fs = 1.0
         sp.friction = 0.02
-        start.simulation_params.CopyFrom(sp)
+        st.simulation_params.CopyFrom(sp)
+        start.start.CopyFrom(st)
         await ws.send(start.SerializeToString())
 
         # Receive frames: skip 'initialized' (seq==0), then take nth MD frame
@@ -53,28 +51,27 @@ async def _ws_nth_md_step(
         last = None
         while taken < int(max(1, n)):
             data = await asyncio.wait_for(ws.recv(), timeout=5.0)
-            # Protocol is protobuf-only; enforce binary frames
             assert isinstance(data, (bytes, bytearray))
             res = pb.ServerResult()
             res.ParseFromString(data)
-            # Skip initialization snapshot and idle frames without positions
-            if res.seq == 0 or len(res.positions) == 0:
+            if res.WhichOneof("payload") != "frame":
+                continue
+            fr = res.frame
+            if res.seq == 0 or len(fr.positions) == 0:
                 continue
             # sanity
             m = len(Z)
-            assert len(res.positions) == m
-            assert len(res.velocities) == m
-            assert len(res.forces) == m
-            P = np.array([[v.v[0], v.v[1], v.v[2]] for v in res.positions])
-            V = np.array([[v.v[0], v.v[1], v.v[2]] for v in res.velocities])
-            F = np.array([[v.v[0], v.v[1], v.v[2]] for v in res.forces])
+            P = np.fromiter(fr.positions, dtype=np.float64).reshape(-1, 3)
+            V = np.fromiter(fr.velocities, dtype=np.float64).reshape(-1, 3)
+            F = np.fromiter(fr.forces, dtype=np.float64).reshape(-1, 3)
+            assert P.shape[0] == m and V.shape[0] == m and F.shape[0] == m
             last = {"positions": P, "velocities": V, "forces": F}
             # ACK to advance window
             seq += 1
             ack = pb.ClientAction()
             ack.seq = seq
-            ack.type = pb.ClientAction.Type.PING
             ack.ack = int(res.seq)
+            ack.ping.CopyFrom(pb.ClientAction.Ping())
             await ws.send(ack.SerializeToString())
             taken += 1
 
@@ -82,7 +79,7 @@ async def _ws_nth_md_step(
         seq += 1
         stop = pb.ClientAction()
         stop.seq = seq
-        stop.type = pb.ClientAction.Type.STOP_SIMULATION
+        stop.stop.CopyFrom(pb.ClientAction.Stop())
         await ws.send(stop.SerializeToString())
 
         assert last is not None

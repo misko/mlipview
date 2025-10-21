@@ -86,7 +86,7 @@ def _load_xyz(path: Path) -> Tuple[List[int], List[List[float]]]:
             x, y, z = map(float, parts[1:4])
             Z.append(PT[sym])
             pos.append([x, y, z])
-        return Z, pos
+    return Z, pos
 
 
 async def _run_ws_md_frames(
@@ -105,26 +105,28 @@ async def _run_ws_md_frames(
         seq = 1
         init = pb.ClientAction()
         init.seq = seq
-        init.type = pb.ClientAction.Type.USER_INTERACTION
-        init.atomic_numbers.extend([int(z) for z in Z])
+        init.schema_version = 1
+        ui = pb.ClientAction.UserInteraction()
+        ui.atomic_numbers.extend([int(z) for z in Z])
         for p in xyz:
-            v = pb.Vec3()
-            v.v.extend([float(p[0]), float(p[1]), float(p[2])])
-            init.positions.append(v)
+            ui.positions.extend([float(p[0]), float(p[1]), float(p[2])])
+        init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
 
         # START_SIMULATION (MD, LJ)
         seq += 1
         start = pb.ClientAction()
         start.seq = seq
-        start.type = pb.ClientAction.Type.START_SIMULATION
-        start.simulation_type = pb.ClientAction.SimType.MD
+        start.schema_version = 1
+        st = pb.ClientAction.Start()
+        st.simulation_type = pb.ClientAction.Start.SimType.MD
         sp = pb.SimulationParams()
         sp.calculator = calculator
         sp.temperature = 0.0
         sp.timestep_fs = 1.0
         sp.friction = 0.02
-        start.simulation_params.CopyFrom(sp)
+        st.simulation_params.CopyFrom(sp)
+        start.start.CopyFrom(st)
         await ws.send(start.SerializeToString())
 
         last_seq = 0
@@ -132,7 +134,7 @@ async def _run_ws_md_frames(
             # Receive binary protobuf result
             data = await asyncio.wait_for(ws.recv(), timeout=5.0)
             if not isinstance(data, (bytes, bytearray)):
-                # Protocol is protobuf-only; ignore non-bytes (defensive)
+                # Server is protobuf-only; ignore non-bytes
                 continue
             res = pb.ServerResult()
             res.ParseFromString(data)
@@ -142,15 +144,15 @@ async def _run_ws_md_frames(
             seq += 1
             ack = pb.ClientAction()
             ack.seq = seq
-            ack.type = pb.ClientAction.Type.PING
             ack.ack = last_seq
+            ack.ping.CopyFrom(pb.ClientAction.Ping())
             await ws.send(ack.SerializeToString())
 
         # STOP_SIMULATION
         seq += 1
         stop = pb.ClientAction()
         stop.seq = seq
-        stop.type = pb.ClientAction.Type.STOP_SIMULATION
+        stop.stop.CopyFrom(pb.ClientAction.Stop())
         await ws.send(stop.SerializeToString())
 
     return frames

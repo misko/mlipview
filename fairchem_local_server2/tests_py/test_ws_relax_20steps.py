@@ -34,19 +34,15 @@ def _load_water_xyz(path: str) -> tuple[List[int], List[List[float]]]:
     return zs, pos
 
 
-def _make_vec3(arr):
-    v = pb.Vec3()
-    v.v.extend([float(arr[0]), float(arr[1]), float(arr[2])])
-    return v
-
-
 async def _recv_server_result(ws):
-    # Receive a single binary ServerResult (protobuf-only protocol)
+    # Receive a single binary ServerResult
     msg = await ws.recv()
-    assert isinstance(msg, (bytes, bytearray))
-    r = pb.ServerResult()
-    r.ParseFromString(msg)
-    return r
+    if isinstance(msg, (bytes, bytearray)):
+        r = pb.ServerResult()
+        r.ParseFromString(msg)
+        return r
+    # Text fallback: allow JSON logs to be interspersed (ignore)
+    return None
 
 
 async def run_relax_20(ws_url: str, xyz_path: str):
@@ -58,10 +54,12 @@ async def run_relax_20(ws_url: str, xyz_path: str):
         init = pb.ClientAction()
         client_seq += 1
         init.seq = client_seq
-        init.type = pb.ClientAction.Type.USER_INTERACTION
-        init.atomic_numbers.extend(zs)
+        init.schema_version = 1
+        ui = pb.ClientAction.UserInteraction()
+        ui.atomic_numbers.extend(int(z) for z in zs)
         for p in pos:
-            init.positions.append(_make_vec3(p))
+            ui.positions.extend([float(p[0]), float(p[1]), float(p[2])])
+        init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
 
         # Wait for idle energy frame (positions omitted per protocol)
@@ -69,16 +67,20 @@ async def run_relax_20(ws_url: str, xyz_path: str):
             r = await _recv_server_result(ws)
             if r is None:
                 continue
-            if r.HasField("energy"):
-                energies.append(float(r.energy))
-                # ACK idle energy frame to advance server window
-                client_seq += 1
-                ack = pb.ClientAction()
-                ack.seq = client_seq
-                ack.type = pb.ClientAction.Type.PING
-                ack.ack = int(getattr(r, "seq", 0))
-                await ws.send(ack.SerializeToString())
-                break
+            if r.WhichOneof("payload") == "frame":
+                fr = r.frame
+                # idle frame has no positions but includes energy
+                has_energy = getattr(fr, "energy", None) is not None
+                if has_energy and len(fr.positions) == 0:
+                    energies.append(float(fr.energy))
+                    # ACK idle energy frame to advance server window
+                    client_seq += 1
+                    ack = pb.ClientAction()
+                    ack.seq = client_seq
+                    ack.ack = int(getattr(r, "seq", 0))
+                    ack.ping.CopyFrom(pb.ClientAction.Ping())
+                    await ws.send(ack.SerializeToString())
+                    break
 
         # Perform 20 relax steps: START_SIMULATION RELAX,
         # then read 1 frame and STOP
@@ -86,14 +88,16 @@ async def run_relax_20(ws_url: str, xyz_path: str):
             start = pb.ClientAction()
             client_seq += 1
             start.seq = client_seq
-            start.type = pb.ClientAction.Type.START_SIMULATION
-            start.simulation_type = pb.ClientAction.SimType.RELAX
+            start.schema_version = 1
+            st = pb.ClientAction.Start()
+            st.simulation_type = pb.ClientAction.Start.SimType.RELAX
             sp = pb.SimulationParams()
             sp.calculator = "uma"
             sp.fmax = 0.05
             sp.max_step = 0.2
             sp.optimizer = "bfgs"
-            start.simulation_params.CopyFrom(sp)
+            st.simulation_params.CopyFrom(sp)
+            start.start.CopyFrom(st)
             await ws.send(start.SerializeToString())
 
             # Expect one sim frame with positions/forces/energy
@@ -102,21 +106,25 @@ async def run_relax_20(ws_url: str, xyz_path: str):
                 r = await _recv_server_result(ws)
                 if r is None:
                     continue
-                if r.HasField("energy") and len(r.positions) == len(zs):
-                    energies.append(float(r.energy))
-                    # ACK simulation frame so server can progress
-                    client_seq += 1
-                    ack = pb.ClientAction()
-                    ack.seq = client_seq
-                    ack.type = pb.ClientAction.Type.PING
-                    ack.ack = int(getattr(r, "seq", 0))
-                    await ws.send(ack.SerializeToString())
-                    break
+                if r.WhichOneof("payload") == "frame":
+                    fr = r.frame
+                    if len(fr.positions) >= 3 * len(zs):
+                        # capture energy for this relax step
+                        if getattr(fr, "energy", None) is not None:
+                            energies.append(float(fr.energy))
+                        client_seq += 1
+                        ack = pb.ClientAction()
+                        ack.seq = client_seq
+                        ack.ack = int(getattr(r, "seq", 0))
+                        ack.ping.CopyFrom(pb.ClientAction.Ping())
+                        await ws.send(ack.SerializeToString())
+                        break
 
+            # request stop to ensure single-step behavior
             stop = pb.ClientAction()
             client_seq += 1
             stop.seq = client_seq
-            stop.type = pb.ClientAction.Type.STOP_SIMULATION
+            stop.stop.CopyFrom(pb.ClientAction.Stop())
             await ws.send(stop.SerializeToString())
 
     return energies
@@ -126,16 +134,12 @@ def _uma_direct_reference(xyz_path: str) -> Tuple[float, float]:
     """Compute UMA reference energies directly (no WS/server) on GPU.
 
     Uses ASE BFGS optimizer with the same params as our WS relax steps:
-    - optimizer: BFGS
     - fmax: 0.05
     - max_step: 0.2
     - steps: 20
     """
     try:
-        from fairchem.core import (  # type: ignore
-            FAIRChemCalculator,
-            pretrained_mlip,
-        )
+        from fairchem.core import FAIRChemCalculator, pretrained_mlip  # type: ignore
     except Exception as e:  # pragma: no cover
         pytest.skip(f"fairchem not available: {e}")
 
@@ -144,7 +148,7 @@ def _uma_direct_reference(xyz_path: str) -> Tuple[float, float]:
         if not isinstance(atoms, Atoms):
             raise ValueError("ase_read did not return Atoms")
     except Exception:
-        # Fallback to minimal loader + Atoms(numbers=..., positions=...)
+        # Fallback to water loader
         zs, pos = _load_water_xyz(xyz_path)
         atoms = Atoms(numbers=zs, positions=pos)
 
@@ -174,10 +178,7 @@ def _uma_reference_trace(
     - Convergence criterion: fmax=0.05 (but capped at 'steps')
     """
     try:
-        from fairchem.core import (  # type: ignore
-            FAIRChemCalculator,
-            pretrained_mlip,
-        )
+        from fairchem.core import FAIRChemCalculator, pretrained_mlip  # type: ignore
     except Exception as e:  # pragma: no cover
         pytest.skip(f"fairchem not available: {e}")
 

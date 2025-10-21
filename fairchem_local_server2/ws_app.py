@@ -25,57 +25,31 @@ from fairchem_local_server.model_runtime import (
 
 app = FastAPI(title="UMA Serve WS API", debug=False)
 
-# ---- helpers: protobuf <-> numpy -------------------------------------------
+# ---- helpers: protobuf <-> numpy (flat packed arrays) -----------------------
 
 
-def _type_name(m) -> str:
-    """Return upper-case enum name if available, else stringified type."""
-    t = getattr(m, "type", None)
-    enum_type = getattr(getattr(m, "__class__", None), "Type", None)
-    if enum_type is not None and isinstance(t, int):
-        try:
-            return enum_type.Name(t)
-        except Exception:
-            pass
-    return str(t or "").upper()
-
-
-def _is_user_interaction(m) -> bool:
-    return _type_name(m) == "USER_INTERACTION"
-
-
-def _pb_vec3s_to_np(vecs) -> np.ndarray:
-    """Vec3 { repeated double v } -> (N,3) float64 array with validation."""
-    if not vecs:
+def _flat3_to_np(a) -> np.ndarray:
+    arr = np.fromiter(a, dtype=np.float64)
+    if arr.size == 0:
         return np.empty((0, 3), dtype=np.float64)
-    # Validate and copy
-    out = np.empty((len(vecs), 3), dtype=np.float64)
-    for i, v in enumerate(vecs):
-        # v.v is a RepeatedScalarContainer; ensure length 3
-        if len(v.v) != 3:
-            raise ValueError(f"Vec3.v must have length 3, got {len(v.v)} at index {i}")
-        out[i, 0] = float(v.v[0])
-        out[i, 1] = float(v.v[1])
-        out[i, 2] = float(v.v[2])
-    return out
+    if arr.size % 3 != 0:
+        raise ValueError("flat (N*3,) array length must be divisible by 3")
+    return arr.reshape(-1, 3)
 
 
-def _np_to_pb_vec3s(arr: Optional[np.ndarray], dest_repeated) -> None:
-    """Fill a repeated Vec3 (with 'v' of length 3) from a (N,3) array. Clears dest first."""
-    del dest_repeated[:]
+def _np_to_flat3(arr: Optional[np.ndarray], out) -> None:
+    del out[:]
     if arr is None:
         return
     a = np.asarray(arr, dtype=np.float64)
-    if a.ndim == 1:
+    if a.ndim == 2 and a.shape[1] == 3:
+        a = a.reshape(-1)
+    elif a.ndim == 1:
         if a.size % 3 != 0:
-            raise ValueError("Vec3 array length must be divisible by 3")
-        a = a.reshape(-1, 3)
-    if a.ndim != 2 or a.shape[1] != 3:
-        raise ValueError("Vec3 array must have shape (N, 3)")
-    for x, y, z in a:
-        v = pb.Vec3()
-        v.v.extend((float(x), float(y), float(z)))
-        dest_repeated.append(v)
+            raise ValueError("flat vec3 list length must be divisible by 3")
+    else:
+        raise ValueError("expected (N,3) or flat length divisible by 3")
+    out.extend(map(float, a.tolist()))
 
 
 def _np_to_mat3(arr: Optional[np.ndarray]) -> Optional["pb.Mat3"]:
@@ -103,16 +77,17 @@ def _mat3_to_np(m: "pb.Mat3") -> np.ndarray:
 def _coalesce_user_interactions(msg_buf: "deque[pb.ClientAction]") -> "pb.ClientAction":
     """Consume consecutive USER_INTERACTION messages and merge with 'last write wins'."""
     uis: list[pb.ClientAction] = []
-    while msg_buf and _is_user_interaction(msg_buf[0]):
+
+    # Peek messages with payload user_interaction
+    def _is_ui(m: pb.ClientAction) -> bool:
+        return m.WhichOneof("payload") == "user_interaction"
+
+    while msg_buf and _is_ui(msg_buf[0]):
         uis.append(msg_buf.popleft())
 
     merged = pb.ClientAction()
-    if hasattr(pb.ClientAction, "Type") and hasattr(
-        pb.ClientAction.Type, "USER_INTERACTION"
-    ):
-        merged.type = pb.ClientAction.Type.USER_INTERACTION
-    else:
-        merged.type = "user_interaction"  # type: ignore[assignment]
+    merged.schema_version = 1  # protocol versioning (bump as needed)
+    merged.user_interaction.CopyFrom(pb.ClientAction.UserInteraction())
 
     # Accumulators
     latest_atomic_numbers: Optional[list[int]] = None
@@ -139,16 +114,17 @@ def _coalesce_user_interactions(msg_buf: "deque[pb.ClientAction]") -> "pb.Client
         if st is not None:
             latest_sim_step = st
 
-        an = list(getattr(m, "atomic_numbers", []) or [])
+        ui = getattr(m, "user_interaction", None)
+        an = list(getattr(ui, "atomic_numbers", []) or []) if ui is not None else []
         if an:
             latest_atomic_numbers = [int(z) for z in an]
 
-        if getattr(m, "positions", None) and len(m.positions) > 0:
-            latest_positions = _pb_vec3s_to_np(m.positions)
-        if getattr(m, "velocities", None) and len(m.velocities) > 0:
-            latest_velocities = _pb_vec3s_to_np(m.velocities)
-        if getattr(m, "HasField", None) and m.HasField("cell"):
-            latest_cell = _mat3_to_np(m.cell)
+        if ui is not None and hasattr(ui, "positions") and len(ui.positions) > 0:
+            latest_positions = _flat3_to_np(ui.positions)
+        if ui is not None and hasattr(ui, "velocities") and len(ui.velocities) > 0:
+            latest_velocities = _flat3_to_np(ui.velocities)
+        if ui is not None and getattr(ui, "HasField", None) and ui.HasField("cell"):
+            latest_cell = _mat3_to_np(ui.cell)
 
     if latest_seq is not None:
         merged.seq = int(latest_seq)
@@ -159,16 +135,16 @@ def _coalesce_user_interactions(msg_buf: "deque[pb.ClientAction]") -> "pb.Client
     if latest_sim_step is not None:
         merged.sim_step = int(latest_sim_step)
 
-    del merged.atomic_numbers[:]
+    # Fill merged.user_interaction
+    ui = merged.user_interaction
+    del ui.atomic_numbers[:]
     if latest_atomic_numbers is not None:
-        merged.atomic_numbers.extend(int(z) for z in latest_atomic_numbers)
-
-    _np_to_pb_vec3s(latest_positions, merged.positions)
-    _np_to_pb_vec3s(latest_velocities, merged.velocities)
-
+        ui.atomic_numbers.extend(int(z) for z in latest_atomic_numbers)
+    _np_to_flat3(latest_positions, ui.positions)
+    _np_to_flat3(latest_velocities, ui.velocities)
     cell_pb = _np_to_mat3(latest_cell)
     if cell_pb is not None:
-        merged.cell.CopyFrom(cell_pb)
+        ui.cell.CopyFrom(cell_pb)
 
     return merged
 
@@ -291,28 +267,41 @@ class WSIngress:
             if sim_step is not None:
                 msg.sim_step = int(sim_step)
 
-            # Vec3 arrays
-            _np_to_pb_vec3s(positions, msg.positions)
-            _np_to_pb_vec3s(velocities, msg.velocities)
-            _np_to_pb_vec3s(forces, msg.forces)
+            # oneof payload: either frame or notice
+            if (
+                (
+                    positions is not None
+                    or velocities is not None
+                    or forces is not None
+                    or cell is not None
+                    or stress is not None
+                    or energy is not None
+                )
+                and not message
+                and not simulation_stopped
+            ):
+                fr = pb.ServerResult.Frame()
+                _np_to_flat3(positions, fr.positions)
+                _np_to_flat3(velocities, fr.velocities)
+                _np_to_flat3(forces, fr.forces)
+                cell_pb = _np_to_mat3(cell)
+                if cell_pb is not None:
+                    fr.cell.CopyFrom(cell_pb)
+                stress_pb = _np_to_mat3(stress)
+                if stress_pb is not None:
+                    fr.stress.CopyFrom(stress_pb)
+                if energy is not None:
+                    fr.energy = float(energy)
+                msg.frame.CopyFrom(fr)
+            else:
+                no = pb.ServerResult.Notice()
+                if message:
+                    no.message = str(message)
+                if simulation_stopped is True:
+                    no.simulation_stopped = True
+                msg.notice.CopyFrom(no)
 
-            # Cell / Stress (3x3)
-            cell_pb = _np_to_mat3(cell)
-            if cell_pb is not None:
-                msg.cell.CopyFrom(cell_pb)
-
-            stress_pb = _np_to_mat3(stress)
-            if stress_pb is not None:
-                msg.stress.CopyFrom(stress_pb)
-
-            if message:
-                msg.message = str(message)
-
-            if simulation_stopped is True:
-                msg.simulation_stopped = True
-
-            if energy is not None:
-                msg.energy = float(energy)
+            msg.schema_version = 1
 
             # ---- send ----
             await ws.send_bytes(msg.SerializeToString())
@@ -509,20 +498,21 @@ class WSIngress:
 
         async def _handle_user_interaction(msg, uic_in_msg: Optional[int]) -> None:
             # Stage incoming deltas into the "user_input_*" slots
-            if getattr(msg, "atomic_numbers", None):
-                if len(msg.atomic_numbers) > 0:
+            ui = getattr(msg, "user_interaction", None)
+            if ui is not None:
+                if getattr(ui, "atomic_numbers", None) and len(ui.atomic_numbers) > 0:
                     state.user_input_atomic_numbers = [
-                        int(z) for z in msg.atomic_numbers
+                        int(z) for z in ui.atomic_numbers
                     ]
 
-            if getattr(msg, "positions", None) and len(msg.positions) > 0:
-                state.user_input_positions = _pb_vec3s_to_np(msg.positions)
+                if getattr(ui, "positions", None) and len(ui.positions) > 0:
+                    state.user_input_positions = _flat3_to_np(ui.positions)
 
-            if getattr(msg, "velocities", None) and len(msg.velocities) > 0:
-                state.user_input_velocities = _pb_vec3s_to_np(msg.velocities)
+                if getattr(ui, "velocities", None) and len(ui.velocities) > 0:
+                    state.user_input_velocities = _flat3_to_np(ui.velocities)
 
-            if getattr(msg, "HasField", None) and msg.HasField("cell"):
-                state.user_input_cell = _mat3_to_np(msg.cell)
+                if getattr(ui, "HasField", None) and ui.HasField("cell"):
+                    state.user_input_cell = _mat3_to_np(ui.cell)
 
             n = (
                 0
@@ -654,13 +644,16 @@ class WSIngress:
             )
 
         def _handle_start_simulation(msg) -> None:
-            if not msg.HasField("simulation_type"):
+            st = getattr(msg, "start", None)
+            if st is None:
                 return
             state.sim_type = (
-                "md" if (msg.simulation_type == pb.ClientAction.SimType.MD) else "relax"
+                "md"
+                if (st.simulation_type == pb.ClientAction.Start.SimType.MD)
+                else "relax"
             )
-            if msg.HasField("simulation_params"):
-                sp = msg.simulation_params
+            if getattr(st, "HasField", None) and st.HasField("simulation_params"):
+                sp = st.simulation_params
                 state.params = SimulationParams(
                     calculator=sp.calculator or "uma",
                     temperature=float(sp.temperature),
@@ -765,7 +758,7 @@ class WSIngress:
                 while True:
                     if msg_buf:
                         head = msg_buf[0]
-                        if _is_user_interaction(head):
+                        if head.WhichOneof("payload") == "user_interaction":
                             msg = _coalesce_user_interactions(msg_buf)
                         else:
                             msg = msg_buf.popleft()
@@ -794,15 +787,15 @@ class WSIngress:
                     _handle_ack_and_client_seq(msg)
                     uic_in_msg = _extract_correlation_fields(msg)
 
-                    # dispatch
-                    tname = _type_name(msg)
-                    if tname == "USER_INTERACTION":
+                    # dispatch by oneof
+                    which = msg.WhichOneof("payload")
+                    if which == "user_interaction":
                         await _handle_user_interaction(msg, uic_in_msg)
-                    elif tname == "START_SIMULATION":
+                    elif which == "start":
                         _handle_start_simulation(msg)
-                    elif tname == "STOP_SIMULATION":
+                    elif which == "stop":
                         await _handle_stop_simulation()
-                    elif tname == "PING":
+                    elif which == "ping":
                         _handle_ping(msg)
                     else:
                         continue
@@ -810,7 +803,11 @@ class WSIngress:
                 stop_evt.set()
 
         # Run concurrently until either loop exits
-        await asyncio.gather(sim_loop(), _reader(), recv_loop())
+        await asyncio.gather(
+            sim_loop(),
+            _reader(),
+            recv_loop(),
+        )
 
 
 def _detect_default_ngpus() -> int:

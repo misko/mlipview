@@ -75,68 +75,68 @@ async def _run_md_0k(
         # INIT: include zero velocities to avoid MB initialization
         init = pb.ClientAction()
         init.seq = seq
-        # Init via USER_INTERACTION (INIT_SYSTEM removed)
-        init.type = pb.ClientAction.Type.USER_INTERACTION
-        init.atomic_numbers.extend(int(z) for z in Z)
+        init.schema_version = 1
+        ui = pb.ClientAction.UserInteraction()
+        ui.atomic_numbers.extend(int(z) for z in Z)
         for p in xyz:
-            v = pb.Vec3()
-            v.v.extend([float(p[0]), float(p[1]), float(p[2])])
-            init.positions.append(v)
+            ui.positions.extend([float(p[0]), float(p[1]), float(p[2])])
         for _ in Z:
-            v = pb.Vec3()
-            v.v.extend([0.0, 0.0, 0.0])
-            init.velocities.append(v)
+            ui.velocities.extend([0.0, 0.0, 0.0])
+        init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
 
         # START MD with temperature 0.0
         seq += 1
         start = pb.ClientAction()
         start.seq = seq
-        start.type = pb.ClientAction.Type.START_SIMULATION
-        start.simulation_type = pb.ClientAction.SimType.MD
+        start.schema_version = 1
+        st = pb.ClientAction.Start()
+        st.simulation_type = pb.ClientAction.Start.SimType.MD
         sp = pb.SimulationParams()
         sp.calculator = calculator
         sp.temperature = 0.0
         sp.timestep_fs = 1.0
         sp.friction = 0.02
-        start.simulation_params.CopyFrom(sp)
+        st.simulation_params.CopyFrom(sp)
+        start.start.CopyFrom(st)
         await ws.send(start.SerializeToString())
 
         last_seq = 0
         got = 0
         while got < int(frames):
             data = await asyncio.wait_for(ws.recv(), timeout=5.0)
-            # Protocol is protobuf-only; enforce binary frames
             assert isinstance(data, (bytes, bytearray))
             res = pb.ServerResult()
             res.ParseFromString(data)
-            # Skip non-simulation frames (e.g., idle compute without positions)
-            if len(res.positions) == 0:
+            if res.WhichOneof("payload") != "frame":
+                continue
+            fr = res.frame
+            if len(fr.positions) == 0:
                 continue
             # basic sanity: lengths match and numbers are finite
             n = len(Z)
-            assert len(res.positions) == n
-            assert len(res.velocities) == n
-            assert len(res.forces) == n
-            for vecs in (res.positions, res.velocities, res.forces):
-                for v in vecs:
-                    assert len(v.v) == 3
-                    assert np.isfinite(v.v).all()
+            P = np.fromiter(fr.positions, dtype=np.float64)
+            V = np.fromiter(fr.velocities, dtype=np.float64)
+            F = np.fromiter(fr.forces, dtype=np.float64)
+            assert P.size % 3 == 0 and V.size % 3 == 0 and F.size % 3 == 0
+            assert P.reshape(-1, 3).shape[0] == n
+            assert V.reshape(-1, 3).shape[0] == n
+            assert F.reshape(-1, 3).shape[0] == n
             last_seq = int(res.seq)
             got += 1
             # ACK
             seq += 1
             ack = pb.ClientAction()
             ack.seq = seq
-            ack.type = pb.ClientAction.Type.PING
             ack.ack = last_seq
+            ack.ping.CopyFrom(pb.ClientAction.Ping())
             await ws.send(ack.SerializeToString())
 
         # STOP
         seq += 1
         stop = pb.ClientAction()
         stop.seq = seq
-        stop.type = pb.ClientAction.Type.STOP_SIMULATION
+        stop.stop.CopyFrom(pb.ClientAction.Stop())
         await ws.send(stop.SerializeToString())
 
         return got
@@ -147,7 +147,5 @@ def test_ws_md_runs_at_0k(ws_base_url: str):
     # UMA-only server provided by session fixture
     xyz_path = _find_xyz()
     Z, xyz = _load_xyz(xyz_path)
-    nframes = asyncio.run(
-        _run_md_0k(ws_base_url, Z, xyz, frames=10, calculator="uma")
-    )
+    nframes = asyncio.run(_run_md_0k(ws_base_url, Z, xyz, frames=10, calculator="uma"))
     assert nframes >= 10

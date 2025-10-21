@@ -1,79 +1,103 @@
 syntax = "proto3";
 package fairchem.session;
 
-message Vec3 { repeated double v = 1; } // length 3
+// 3x3 matrix, row-major order (m[0..8] = rows concatenated)
 message Mat3 { repeated double m = 1; } // length 9, row-major
 
+// Simulation parameters (all numeric fields are double for consistency)
 message SimulationParams {
   string calculator = 1; // "uma" or "lj"
   // MD
-  float temperature = 2;
-  float timestep_fs = 3;
-  float friction = 4;
+  double temperature = 2;
+  double timestep_fs = 3;
+  double friction = 4;
   // Relax
-  float fmax = 5;
-  float max_step = 6;
+  double fmax = 5;
+  double max_step = 6;
   string optimizer = 7;
 }
 
+// Optional wrapper for flat arrays (row-major and packed)
+message SystemArrays {
+  // Each array represents shape (N,3), row-major flattened.
+  repeated double positions = 1 [packed = true];
+  repeated double velocities = 2 [packed = true];
+  repeated double forces = 3 [packed = true];
+}
+
 message ClientAction {
+  // Required transport sequencing
   uint64 seq = 1;
   optional uint64 ack = 2;
-  enum Type {
-    // USER_INTERACTION: frontend-origin state change and initialization.
-    // Clients MUST use this for initial system setup by providing atomic_numbers and positions,
-    // and MAY include velocities and/or cell. Any subsequent interaction can provide any subset
-    // of positions, velocities, and/or cell; omitted fields are left unchanged on the server.
-    // Note: INIT_SYSTEM and SIMPLE_CALCULATE have been removed; use USER_INTERACTION for init and updates.
-    TYPE_UNSPECIFIED = 0; // proto3 requires first enum value to be zero
-    USER_INTERACTION = 1; // was UPDATE_POSITIONS (legacy INIT_SYSTEM removed)
-    START_SIMULATION = 2;
-    STOP_SIMULATION = 3;
-    PING = 4;
-  }
-  Type type = 3;
-  // system
-  repeated int32 atomic_numbers = 10;
-  repeated Vec3 positions = 11;
-  repeated Vec3 velocities = 12;
-  optional Mat3 cell = 13;
-  // start
-  enum SimType { MD = 0; RELAX = 1; }
-  optional SimType simulation_type = 20;
-  optional SimulationParams simulation_params = 21;
 
   // Frontend state correlation
-  // user_interaction_count: monotonically increasing counter representing number of
-  // user edits (drag, bond rotate, etc.) observed by the client when sending this action.
-  // sim_step: a client-origin step counter for UI synchronization; the server may echo
-  // it back untouched. The server also maintains its own step counter internally.
   optional uint64 user_interaction_count = 30;
   optional uint64 sim_step = 31;
+
+  // Oneof payload for action type
+  oneof payload {
+    // Frontend-origin state change / initialization
+    UserInteraction user_interaction = 10;
+    // Start a simulation (MD/RELAX)
+    Start start = 11;
+    // Stop the running simulation
+    Stop stop = 12;
+    // Ping / ACK only
+    Ping ping = 13;
+  }
+
+  // Incremented when protocol changes; allows client/server gating
+  uint32 schema_version = 100;
+
+  message UserInteraction {
+    repeated int32 atomic_numbers = 1;
+    // Flat packed arrays, shape (N,3)
+    repeated double positions = 2 [packed = true];
+    repeated double velocities = 3 [packed = true];
+    optional Mat3 cell = 4; // 3x3, row-major
+  }
+
+  message Start {
+    enum SimType { MD = 0; RELAX = 1; }
+    SimType simulation_type = 1;
+    SimulationParams simulation_params = 2;
+  }
+
+  message Stop {}
+  message Ping {}
 }
 
 message ServerResult {
+  // Increasing sequence from server
   uint64 seq = 1;
+  // Mirror last seen client seq
   optional uint64 client_seq = 2;
-  repeated Vec3 positions = 10;
-  repeated Vec3 forces = 11;
-  repeated Vec3 velocities = 12;
-  optional Mat3 cell = 13;
-  // Optional total energy for simple calculate or summary frames
-  optional float energy = 14;
-  // Optional stress tensor (3x3, row-major). Present when available and when cell is defined.
-  optional Mat3 stress = 15;
-  // Special flag indicating the server has stopped the active simulation in response to STOP_SIMULATION
-  // or an internal condition; clients may use this to update UI state deterministically.
-  optional bool simulation_stopped = 16;
-  optional string message = 20;
 
   // Echo/correlation fields for frontend state
   optional uint64 user_interaction_count = 30;
-  // Server-side step index for the current running simulation (increments per produced frame)
-  optional uint64 sim_step = 31;
-  // Notes:
-  // - When the server is idle (no active simulation), positions are not
-  //   updated by idle USER_INTERACTION responses; only forces and energy (and stress when available) are sent.
-  // - During an active simulation, positions/velocities are provided each
-  //   frame. The frontend may partially apply them to respect user edits.
+  optional uint64 sim_step = 31; // increments per produced frame
+
+  // Oneof payload for server message
+  oneof payload {
+    Frame frame = 10;   // Simulation data frame
+    Notice notice = 11; // Text/flags-only
+  }
+
+  // Incremented when protocol changes; allows client/server gating
+  uint32 schema_version = 100;
+
+  message Frame {
+    // Flat packed arrays, shape (N,3)
+    repeated double positions = 1 [packed = true];
+    repeated double velocities = 2 [packed = true];
+    repeated double forces = 3 [packed = true];
+    optional Mat3 cell = 4;
+    optional Mat3 stress = 5; // 3x3, row-major
+    optional double energy = 6;
+  }
+
+  message Notice {
+    optional string message = 1;
+    optional bool simulation_stopped = 2;
+  }
 }
