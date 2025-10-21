@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections import deque
 from typing import Optional
 
 import numpy as np
@@ -99,6 +100,11 @@ class WSIngress:
 
         # Concurrency: producer (simulation loop) and consumer (message loop)
         stop_evt = asyncio.Event()
+
+        # ---- minimal raw-frame queue you can peek into ----
+        msg_buf: deque[pb.ClientAction] = deque()
+        buf_has_data = asyncio.Event()
+        reader_done = False
 
         def _np_from_vec3_list(vecs):
             if not vecs:
@@ -619,39 +625,73 @@ class WSIngress:
                     if self._ws_debug:
                         print(f"[ws] ACK {a}", flush=True)
 
-        async def recv_loop():
-            nonlocal last_ack
+        async def _reader():
+            nonlocal reader_done
             try:
                 while True:
-                    msg = None
                     try:
                         data = await ws.receive()
                     except WebSocketDisconnect:
                         break
+
                     evtype = data.get("type")
                     if evtype == "websocket.disconnect":
                         break
-                    if evtype == "websocket.receive":
-                        if "bytes" in data and data["bytes"] is not None:
-                            try:
-                                m = pb.ClientAction()
-                                # type: ignore[arg-type]
-                                m.ParseFromString(data["bytes"])
-                                msg = m
-                            except Exception:
-                                msg = None
-                        elif "text" in data and data["text"] is not None:
-                            # protobuf-only server; ignore text (allow optional
-                            # client health pings)
-                            continue
-                    if msg is None:
+                    if evtype != "websocket.receive":
                         continue
+
+                    b = data.get("bytes")
+                    if b is None:
+                        # Ignore text frames for this protobuf-only server
+                        continue
+
+                    # Parse now (protobuf-only server)
+                    try:
+                        m = pb.ClientAction()
+                        m.ParseFromString(b)  # type: ignore[arg-type]
+                    except Exception:
+                        # bad frame; skip
+                        continue
+
+                    msg_buf.append(m)
+                    buf_has_data.set()
+            except WebSocketDisconnect:
+                pass
+            except RuntimeError:
+                pass
+            finally:
+                reader_done = True
+                buf_has_data.set()  # wake any waiters
+                stop_evt.set()
+
+        async def recv_loop():
+            nonlocal last_ack
+            try:
+                while True:
+                    if not msg_buf:
+                        if reader_done:
+                            break
+                        try:
+                            await asyncio.wait_for(buf_has_data.wait(), timeout=0.05)
+                        except asyncio.TimeoutError:
+                            continue
+                        finally:
+                            if not msg_buf:
+                                buf_has_data.clear()
+                        continue
+
+                    # Optional PEEK without consuming:
+                    # peek_msg: pb.ClientAction = msg_buf[0]
+
+                    msg: pb.ClientAction = msg_buf.popleft()
+                    if not msg_buf:
+                        buf_has_data.clear()
 
                     # shared header handling
                     _handle_ack_and_client_seq(msg)
                     uic_in_msg = _extract_correlation_fields(msg)
 
-                    # dispatch by message type
+                    # dispatch
                     mtype = getattr(msg, "type", None)
                     if (
                         hasattr(pb.ClientAction.Type, "USER_INTERACTION")
@@ -674,18 +714,12 @@ class WSIngress:
                     ) or mtype == "ping":
                         _handle_ping(msg)
                     else:
-                        # Unknown/ignored message types are safely skipped
                         continue
-            except WebSocketDisconnect:
-                pass
-            except RuntimeError:
-                # e.g., "Cannot call receive once a disconnect message..."
-                pass
             finally:
                 stop_evt.set()
 
         # Run concurrently until either loop exits
-        await asyncio.gather(sim_loop(), recv_loop())
+        await asyncio.gather(sim_loop(), _reader(), recv_loop())
 
 
 def _detect_default_ngpus() -> int:
