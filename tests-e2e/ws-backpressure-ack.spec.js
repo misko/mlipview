@@ -7,7 +7,7 @@
 //   WS_DEBUG=1 WS_LOG_CALLS=1 UMA_GEOM_DEBUG=1 \
 //   npm run -s test:e2e -- tests-e2e/ws-backpressure-ack.spec.js
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 test.describe('WS protocol: backpressure and ACK', () => {
   test('WAITING_FOR_ACK appears and then clears after ack', async ({ page, baseURL }) => {

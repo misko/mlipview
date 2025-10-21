@@ -1,7 +1,7 @@
 // Purpose: End-to-end: when a cell is present, idle frames include energy and may include stress.
 // Note: Server includes stress only if calculator provides it; this test asserts presence OR graceful absence.
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 test.describe('WS protocol: cell and optional stress', () => {
   test('idle compute with cell includes energy and may include stress', async ({

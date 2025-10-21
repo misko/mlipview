@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 // Page load with MD auto-run enabled (default). Verifies running state toggles and energy grows.
 

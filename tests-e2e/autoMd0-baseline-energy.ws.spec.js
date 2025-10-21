@@ -1,7 +1,7 @@
 // Playwright e2e: real WS backend, index.html?autoMD=0
 // Verifies that after INIT_SYSTEM the frontend sends USER_INTERACTION and a baseline energy arrives.
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 test.describe('autoMD=0 baseline simple_calculate over real WS', () => {
   test('USER_INTERACTION sent and first energy plotted', async ({ page, baseURL }) => {

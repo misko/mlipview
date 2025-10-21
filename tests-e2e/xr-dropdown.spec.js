@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 test.describe('XR dropdown presence', () => {
   test('XR mode select exists with expected options', async ({ page }) => {

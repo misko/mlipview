@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 // Page load without MD; perform a simple atom drag and request idle compute. Assert position changed
 // and a WS energy-bearing frame eventually arrives (best-effort with generous timeout).

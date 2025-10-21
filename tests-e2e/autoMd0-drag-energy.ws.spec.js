@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 // Helper to poll a function in the browser
 async function waitFor(page, fn, { timeout = 8000, interval = 100 } = {}) {

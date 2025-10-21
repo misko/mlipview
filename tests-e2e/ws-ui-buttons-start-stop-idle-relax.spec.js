@@ -1,5 +1,5 @@
 // Purpose: End-to-end UI control test using buttons to start/stop MD and RELAX under WS-only backend.
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 // Uses UI toggles (visible buttons) instead of direct API calls:
 // - Auto MD runs on page load (do not enable test mode)

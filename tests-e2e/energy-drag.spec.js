@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 // Deterministic energy-step increment test.
 // Rationale: Pointer-based drag in headless browsers can be flaky due to lack of real

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 test('Relax: drag carbon at 12th frame is latched on next frame', async ({ page, baseURL }) => {
   test.setTimeout(60_000);

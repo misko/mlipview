@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 // Repro for: idle responses have lower UIC than current drag UIC; energy plot should still tick for each response.
 test('Idle drag: accept lower-UIC energy frames and tick plot', async ({ page, baseURL }) => {

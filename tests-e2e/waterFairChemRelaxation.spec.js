@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 import fs from 'fs';
 
 const REF_PATH = 'public/reference/water_fairchem_bfgs_trace.json';

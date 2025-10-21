@@ -1,7 +1,7 @@
 // E2E test: open app, open molecules selector, choose benzene, ensure no oversized stray highlight sphere at center.
 // Assumptions: server serves / (legacy UI) with a Molecules button (#btnMolecules) that when clicked shows a selector.
 // If the selector is not yet implemented in DOM, we fallback: ensure initial default (roy) then trigger benzene load via /api/molecules selection UI if available.
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 // Helper: compute approximate ring centroid from visible atom div overlays if any (fallback not used here)
 

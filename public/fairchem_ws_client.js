@@ -597,7 +597,7 @@ export function createFairchemWS() {
         : ClientAction_Start_SimType.RELAX;
     const sp = params
       ? {
-        calculator: params.calculator || '',
+        calculator: params.calculator || 'uma',
         temperature: typeof params.temperature === 'number' ? +params.temperature : undefined,
         timestepFs: typeof params.timestep_fs === 'number' ? +params.timestep_fs : undefined,
         friction: typeof params.friction === 'number' ? +params.friction : undefined,

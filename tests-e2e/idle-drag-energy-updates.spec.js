@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 test('Idle drag sends USER_INTERACTION and updates forces/energy', async ({ page, baseURL }) => {
   test.setTimeout(60_000);

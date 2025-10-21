@@ -1,7 +1,7 @@
 // Purpose: Validate that on page load with ?autoMD=0 the client
 // sends an initial USER_INTERACTION and the server responds with
 // an idle energy frame.
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 async function waitForEnergy(page, timeoutMs = 12000) {
     return await page.evaluate(

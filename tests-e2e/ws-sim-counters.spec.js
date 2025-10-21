@@ -1,7 +1,7 @@
 // Playwright e2e: verify simulation frames snapshot UIC from start and simStep increments
 // Uses real WS backend started by global-setup.
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 test.describe('WS protocol: simulation counters', () => {
   test('sim frames echo UIC snapshot and increment simStep', async ({ page, baseURL }) => {

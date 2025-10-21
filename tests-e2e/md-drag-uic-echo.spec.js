@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 test('MD: after drag, server frames echo non-zero UIC', async ({ page, baseURL }) => {
   test.setTimeout(60_000);

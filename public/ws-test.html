@@ -25,7 +25,7 @@
     ws.onResult((r) => { window.__WS_EVENTS__.push(r); try { if (r && r.seq) ws.ack(r.seq | 0); } catch { } });
     if (useSim) {
       // Start an explicit MD stream to produce frames
-      ws.startSimulation({ type: 'md', params: { calculator: 'lj', temperature: 500, timestep_fs: 1.0, friction: 0.02 } });
+      ws.startSimulation({ type: 'md', params: { calculator: 'uma', temperature: 500, timestep_fs: 1.0, friction: 0.02 } });
     }
     window.__WS_READY__ = true;
     window.__WS_API__ = ws;

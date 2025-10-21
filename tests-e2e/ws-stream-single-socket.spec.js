@@ -10,7 +10,7 @@
 // that specific benign console error if it appears; client should ideally not log it
 // as an error, but we keep the filter to avoid flakes across versions.
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 // Helper to wait for a predicate with timeout
 async function waitFor(pred, { timeout = 8000, interval = 50 } = {}) {

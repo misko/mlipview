@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 // Basic page load smoke: ensure canvas and panel render, default molecule loads, and idle energy appears.
 // Uses real WS backend started by global-setup.

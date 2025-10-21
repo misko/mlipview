@@ -1,6 +1,6 @@
 // Purpose: End-to-end: an idle USER_INTERACTION echoes the frontend-provided
 // user_interaction_count (UIC) in the server result, validating coalescing.
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 // Verify user_interaction_count (UIC) is echoed by the server in idle computes
 // when the client sends USER_INTERACTION with setCounters.

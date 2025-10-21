@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 test('Drag updates are throttled to ~100ms and final emit occurs on endDrag', async ({ page, baseURL }) => {
   test.setTimeout(60_000);

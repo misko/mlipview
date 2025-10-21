@@ -1,5 +1,5 @@
 // Purpose: End-to-end flow across MD start/stop, idle drag computes, RELAX start/stop over WS-only protocol.
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 test('autoMD → stop → idle drag → relax → stop (WS)', async ({ page, baseURL }) => {
   test.setTimeout(60_000);

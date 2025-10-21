@@ -23,7 +23,7 @@
 // Minimal Playwright test to load ws-test.html with a mocked WebSocket
 // Ensures google-protobuf and session_pb.js initialize without errors
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 test.describe('WS mock page load', () => {
   test('loads ws-test.html without protobuf init errors', async ({ page, baseURL }) => {

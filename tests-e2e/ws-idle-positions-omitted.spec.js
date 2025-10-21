@@ -1,7 +1,7 @@
 // Purpose: End-to-end verification that idle computes (no simulation running)
 // produce frames with energy (and possibly forces) but omit positions as per
 // protobuf_migration.md protocol guidance.
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures.js';
 
 // Verify that during idle (no simulation running), idle compute frames omit positions
 // and include energy (and likely forces). We hook the client WS decoded frames.

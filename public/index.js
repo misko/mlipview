@@ -17,6 +17,63 @@ import { getWS } from './fairchem_ws_client.js';
 import { SYMBOL_TO_Z } from './data/periodicTable.js';
 
 /* ──────────────────────────────────────────────────────────────────────────
+   Tunables & Defaults — centralized (override via window.__MLIP_CONFIG)
+   --------------------------------------------------------------------------
+   Why this block?
+   - Puts *all* tweakable timings in one place (no buried magic numbers).
+   - Keeps defaults safe; allows runtime overrides (tests/devtools).
+   - Uses getters so changes to window.__MLIP_CONFIG are read live.
+   -------------------------------------------------------------------------- */
+
+const DEFAULTS = {
+  DRAG_THROTTLE_MS: 25,       // how often we emit USER_INTERACTION during drag
+  POS_ENERGY_DEBOUNCE_MS: 50,  // debounce between positionsChanged and recompute-forces
+  LATCH_AFTER_DRAG_MS: 600,    // latch the last-dragged atom (mouse/touch)
+  LATCH_AFTER_VR_MS: 800,      // latch the last-dragged atom (VR source)
+  RPS_WINDOW_MS: 2000,         // rolling window (ms) for RPS calculation
+};
+
+function cfgNumber(v, fallback) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// Read-anytime getters so runtime can tweak window.__MLIP_CONFIG on the fly
+const TUNABLES = {
+  get DRAG_THROTTLE_MS() {
+    if (typeof window === 'undefined') return DEFAULTS.DRAG_THROTTLE_MS;
+    return cfgNumber(window.__MLIP_CONFIG?.dragThrottleMs, DEFAULTS.DRAG_THROTTLE_MS);
+  },
+  get POS_ENERGY_DEBOUNCE_MS() {
+    if (typeof window === 'undefined') return DEFAULTS.POS_ENERGY_DEBOUNCE_MS;
+    return cfgNumber(window.__MLIP_CONFIG?.posEnergyDebounceMs, DEFAULTS.POS_ENERGY_DEBOUNCE_MS);
+  },
+  get LATCH_AFTER_DRAG_MS() {
+    if (typeof window === 'undefined') return DEFAULTS.LATCH_AFTER_DRAG_MS;
+    return cfgNumber(window.__MLIP_CONFIG?.latchAfterDragMs, DEFAULTS.LATCH_AFTER_DRAG_MS);
+  },
+  get LATCH_AFTER_VR_MS() {
+    if (typeof window === 'undefined') return DEFAULTS.LATCH_AFTER_VR_MS;
+    return cfgNumber(window.__MLIP_CONFIG?.latchAfterVrMs, DEFAULTS.LATCH_AFTER_VR_MS);
+  },
+  get RPS_WINDOW_MS() {
+    if (typeof window === 'undefined') return DEFAULTS.RPS_WINDOW_MS;
+    return cfgNumber(window.__MLIP_CONFIG?.rpsWindowMs, DEFAULTS.RPS_WINDOW_MS);
+  },
+};
+
+// (Optional) Log effective tunables on boot for quick visibility in dev/test
+try {
+  console.log('[config:tunables]', {
+    dragThrottleMs: TUNABLES.DRAG_THROTTLE_MS,
+    posEnergyDebounceMs: TUNABLES.POS_ENERGY_DEBOUNCE_MS,
+    latchAfterDragMs: TUNABLES.LATCH_AFTER_DRAG_MS,
+    latchAfterVrMs: TUNABLES.LATCH_AFTER_VR_MS,
+    rpsWindowMs: TUNABLES.RPS_WINDOW_MS,
+  });
+} catch { }
+
+/* ──────────────────────────────────────────────────────────────────────────
    Small utilities (logging, query flags, throttling, transforms, cache ops)
    ────────────────────────────────────────────────────────────────────────── */
 
@@ -81,6 +138,9 @@ const onWin = (fn) => { try { if (typeof window !== 'undefined') fn(window); } c
 
 /* ──────────────────────────────────────────────────────────────────────────
    Runtime config (min step interval, MD friction) — centralized & clamped
+   --------------------------------------------------------------------------
+   Also place our tunables into window.__MLIP_CONFIG with defaults so
+   they can be overridden by tests/devtools at runtime.
    ────────────────────────────────────────────────────────────────────────── */
 
 if (typeof window !== 'undefined') {
@@ -89,6 +149,18 @@ if (typeof window !== 'undefined') {
     window.__MLIP_CONFIG.minStepIntervalMs = DEFAULT_MIN_STEP_INTERVAL_MS;
   if (!Number.isFinite(window.__MLIP_CONFIG.mdFriction))
     window.__MLIP_CONFIG.mdFriction = DEFAULT_MD_FRICTION;
+
+  // Tunables defaulting (leave if already set)
+  if (!Number.isFinite(window.__MLIP_CONFIG.dragThrottleMs))
+    window.__MLIP_CONFIG.dragThrottleMs = DEFAULTS.DRAG_THROTTLE_MS;
+  if (!Number.isFinite(window.__MLIP_CONFIG.posEnergyDebounceMs))
+    window.__MLIP_CONFIG.posEnergyDebounceMs = DEFAULTS.POS_ENERGY_DEBOUNCE_MS;
+  if (!Number.isFinite(window.__MLIP_CONFIG.latchAfterDragMs))
+    window.__MLIP_CONFIG.latchAfterDragMs = DEFAULTS.LATCH_AFTER_DRAG_MS;
+  if (!Number.isFinite(window.__MLIP_CONFIG.latchAfterVrMs))
+    window.__MLIP_CONFIG.latchAfterVrMs = DEFAULTS.LATCH_AFTER_VR_MS;
+  if (!Number.isFinite(window.__MLIP_CONFIG.rpsWindowMs))
+    window.__MLIP_CONFIG.rpsWindowMs = DEFAULTS.RPS_WINDOW_MS;
 
   // Optional toggles via query params
   const autoMD = new URLSearchParams(window.location?.search || '').get('autoMD');
@@ -226,7 +298,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   const modifiedByVersion = new Map(); // v -> Set(indices)
   const draggingAtoms = new Set();
   const latchedUntil = new Map(); // idx -> ts
-  const latchAtom = (i, ms = 600) => {
+  const latchAtom = (i, ms = TUNABLES.LATCH_AFTER_DRAG_MS) => {
     const now = (performance?.now?.() ?? Date.now());
     latchedUntil.set(i, now + ms);
   };
@@ -409,14 +481,14 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     }
   };
 
-  // Drag emission (throttled)
+  // Drag emission (throttled) — emits positions while dragging at a tunable rate
   const emitDuringDrag = throttle(() => {
     try {
       const ws = getWS();
       ws.setCounters?.({ userInteractionCount: userInteractionVersion });
       ws.userInteraction?.({ positions: posToTriples(state) });
     } catch { }
-  }, 25);
+  }, TUNABLES.DRAG_THROTTLE_MS);
 
   // Wrapped manipulation to track edits
   function selectedAtomIndex() {
@@ -451,7 +523,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
           modifiedByVersion.get(userInteractionVersion) || modifiedByVersion.set(userInteractionVersion, new Set());
           modifiedByVersion.get(userInteractionVersion).add(idx);
           draggingAtoms.delete(idx);
-          if (dragSource === 'vr') latchAtom(idx, 800);
+          if (dragSource === 'vr') latchAtom(idx, TUNABLES.LATCH_AFTER_VR_MS);
         }
         try { const ws = getWS(); ws.setCounters?.({ userInteractionCount: userInteractionVersion }); ws.userInteraction?.({ positions: posToTriples(state) }); } catch { }
         currentDraggedAtom.idx = null;
@@ -558,17 +630,17 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       if (skipFirstPosChangeForVersion) { skipFirstPosChangeForVersion = false; if (!running.kind) ff.computeForces(); return; }
       if (!running.kind) ff.computeForces();
       bumpUser('posChange'); recordInteraction('posChange');
-    }, 50);
+    }, TUNABLES.POS_ENERGY_DEBOUNCE_MS);
   });
 
   // RPS counter (UI label optional)
-  const rps = { samples: [], windowMs: 2000, value: 0 };
+  const rps = { samples: [], windowMs: TUNABLES.RPS_WINDOW_MS, value: 0 };
   const resetRPS = () => { rps.samples.length = 0; rps.value = 0; setText('rpsLabel', 'RPS: --'); };
   const noteReqDone = () => {
     const now = (performance?.now?.() ?? Date.now());
     rps.samples.push(now);
     while (rps.samples.length && now - rps.samples[0] > rps.windowMs) rps.samples.shift();
-    rps.value = (rps.samples.length >= 2) ? ((rps.samples.length - 1) * 1000) / (rps.samples[rps.samples.length - 1] - rps.samples[0]) : 0;
+    rps.value = (rps.samples.length >= 2) ? ((rps.samples.length - 1)) * 1000 / (rps.samples[rps.samples.length - 1] - rps.samples[0]) : 0;
     setText('rpsLabel', 'RPS: ' + rps.value.toFixed(1));
   };
 
@@ -865,7 +937,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(rafLoop);
   }
 
-  // Cleanup for Jest/teardown
+  // Cleanup for Jest/teardown + small debug helpers
   onWin(w => {
     w.__MLIPVIEW_CLEANUP ||= [];
     w.__MLIPVIEW_CLEANUP.push(() => {
@@ -873,6 +945,18 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       try { scene?.dispose?.(); } catch { }
     });
     w.__MLIPVIEW_API_ENABLE = (on) => { w.__MLIPVIEW_DEBUG_API = !!on; dbg.log('[API] debug set to', w.__MLIPVIEW_DEBUG_API); };
+
+    // Expose tunable setters for quick dev/testing without build
+    w.setDragThrottleMs = (ms) => {
+      w.__MLIP_CONFIG.dragThrottleMs = Number(ms) || DEFAULTS.DRAG_THROTTLE_MS;
+      dbg.log('[config] dragThrottleMs =', w.__MLIP_CONFIG.dragThrottleMs);
+      return w.__MLIP_CONFIG.dragThrottleMs;
+    };
+    w.setPosEnergyDebounceMs = (ms) => {
+      w.__MLIP_CONFIG.posEnergyDebounceMs = Number(ms) || DEFAULTS.POS_ENERGY_DEBOUNCE_MS;
+      dbg.log('[config] posEnergyDebounceMs =', w.__MLIP_CONFIG.posEnergyDebounceMs);
+      return w.__MLIP_CONFIG.posEnergyDebounceMs;
+    };
   });
 
   function setForceProvider() { return 'uma'; }
