@@ -1,28 +1,18 @@
 // Thin WebSocket client for fairchem_local_server2 /ws protobuf stream
-// Import modern ESM protobuf stubs directly
-import { __count } from './util/funcCount.js';
+// Protobuf (Buf) runtime
 import { create, toBinary, fromBinary } from '@bufbuild/protobuf';
+// Generated schemas (Buf JS)
 import {
-  // Core messages (oneof + flat arrays)
   ClientActionSchema,
-  ClientAction_UserInteractionSchema,
-  ClientAction_StartSchema,
-  ClientAction_Start_SimType,
-  ClientAction_StopSchema,
-  ClientAction_PingSchema,
   ServerResultSchema,
-  // Supporting messages
-  Mat3Schema,
-  SimulationParamsSchema,
+  ClientAction_Start_SimType,
 } from '/proto/fairchem_local_server2/session_pb.js';
-const __hasPB = !!ClientActionSchema && !!ServerResultSchema;
-async function __ensurePB() {
-  if (!__hasPB) throw new Error('[WS][protobuf-missing] ESM stubs not found');
-  return true;
-}
+
+// ---- small utilities --------------------------------------------------------
 function __n(v) {
   return typeof v === 'bigint' ? Number(v) : typeof v === 'number' ? v : 0;
 }
+
 // Flatten [[x,y,z], ...] -> [x0,y0,z0, x1,y1,z1, ...]
 function __triplesToFlat3(triples) {
   try {
@@ -40,6 +30,7 @@ function __triplesToFlat3(triples) {
     return undefined;
   }
 }
+
 // Expand flat [x0,y0,z0, ...] -> [[x,y,z], ...]
 function __flat3ToTriples(arr) {
   try {
@@ -52,10 +43,11 @@ function __flat3ToTriples(arr) {
     return undefined;
   }
 }
+
+// Debug toggles
 function __wsDebugOn() {
   try {
     if (typeof window !== 'undefined') {
-      // URL param wsDebug=1|true toggles
       try {
         const q = new URLSearchParams(window.location.search || '');
         if (
@@ -66,12 +58,10 @@ function __wsDebugOn() {
         )
           window.__MLIPVIEW_DEBUG_WS = true;
       } catch { }
-      // localStorage key 'mlip.wsDebug' toggles
       try {
         if (window.localStorage && window.localStorage.getItem('mlip.wsDebug') === '1')
           window.__MLIPVIEW_DEBUG_WS = true;
       } catch { }
-      // Expose a global toggle for convenience
       try {
         if (typeof window.__WS_DEBUG_ENABLE__ !== 'function') {
           window.__WS_DEBUG_ENABLE__ = (on) => {
@@ -92,21 +82,21 @@ function __wsDebugOn() {
   } catch { }
   return false;
 }
-function __wsLog(...a) {
+const __wsLog = (...a) => {
   try {
     if (__wsDebugOn()) console.log(...a);
   } catch { }
-}
-function __wsWarn(...a) {
+};
+const __wsWarn = (...a) => {
   try {
     if (__wsDebugOn()) console.warn(...a);
   } catch { }
-}
-function __wsErr(...a) {
+};
+const __wsErr = (...a) => {
   try {
     console.error(...a);
   } catch { }
-}
+};
 
 function resolveWsBase() {
   if (typeof window === 'undefined') return 'ws://127.0.0.1:8000';
@@ -117,31 +107,34 @@ function resolveWsBase() {
   return `${proto}//${host}`;
 }
 
+// ---- singleton management ---------------------------------------------------
 let __singleton = null;
-let __connectPromise = null; // guard parallel connects
+let __connectPromise = null;
 
+// ---- main factory -----------------------------------------------------------
 export function createFairchemWS() {
-  __count('ws#createFairchemWS');
   let ws = null;
   let seq = 0;
   let clientAck = 0;
   let lastCounters = { userInteractionCount: 0, simStep: 0 };
   let dragLock = null; // { index, pos }
-  // Optional per-instance test hook; prefer this over any global fallbacks
   let __testHook = null;
   const listeners = new Set();
-  function onFrame(fn) {
-    listeners.add(fn);
-    return () => listeners.delete(fn);
-  }
+
+  const onFrame = (fn) => (listeners.add(fn), () => listeners.delete(fn));
+
   async function connect() {
-    await __ensurePB();
+    if (!ClientActionSchema || !ServerResultSchema) {
+      throw new Error('[WS][protobuf-missing] ESM stubs not found');
+    }
     const base = resolveWsBase();
     const url = base.replace(/\/$/, '') + '/ws';
     __wsLog('[WS][connect]', url);
     ws = new WebSocket(url);
+
     return new Promise((resolve, reject) => {
       ws.binaryType = 'arraybuffer';
+
       ws.onopen = () => {
         __wsLog('[WS][open]', { readyState: ws?.readyState });
         try {
@@ -150,6 +143,7 @@ export function createFairchemWS() {
         } catch { }
         resolve(true);
       };
+
       ws.onerror = (e) => {
         __wsErr('[WS][error]', e?.message || e);
         try {
@@ -158,6 +152,7 @@ export function createFairchemWS() {
         } catch { }
         reject(e);
       };
+
       ws.onclose = (ev) => {
         __wsWarn('[WS][close]', { code: ev?.code, reason: ev?.reason });
         try {
@@ -166,7 +161,7 @@ export function createFairchemWS() {
         } catch { }
       };
 
-      // --- small local helpers for this connect() scope ---
+      // local helpers
       const __bytesFromWSData = (data) => {
         if (data instanceof ArrayBuffer) return new Uint8Array(data);
         if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(data)) {
@@ -183,6 +178,7 @@ export function createFairchemWS() {
         const t = data && data.constructor && data.constructor.name ? data.constructor.name : typeof data;
         throw new Error('[WS] Expected binary protobuf frame, got: ' + t);
       };
+
       const __mat3ToRows = (m) =>
         Array.isArray(m) && m.length === 9
           ? [
@@ -193,19 +189,21 @@ export function createFairchemWS() {
           : undefined;
 
       ws.onmessage = async (ev) => {
-        // Protobuf-only decode (but tolerate Blob and JSON-delivered-as-binary)
+        // Protobuf-only decode (tolerate Blob / Buffer / TypedArray)
         try {
           const maybeBytes = __bytesFromWSData(ev.data);
           const bytes = maybeBytes instanceof Promise ? await maybeBytes : maybeBytes;
 
-          // Guard: some stacks send JSON as Buffer/Uint8Array
+          // Guard: accidental JSON-as-binary
           try {
-            let i = 0;
-            while (i < bytes.length && bytes[i] <= 32) i++;
-            const b0 = bytes[i];
-            if (b0 === 123 /*'{'*/ || b0 === 91 /*'['*/) {
-              __wsErr('[WS] Received JSON text in binary path; ignoring frame.');
-              return;
+            if (bytes && bytes.length) {
+              let i = 0;
+              while (i < bytes.length && bytes[i] <= 32) i++;
+              const b0 = bytes[i];
+              if (b0 === 123 /*'{'*/ || b0 === 91 /*'['*/) {
+                __wsErr('[WS] Received JSON text in binary path; ignoring frame.');
+                return;
+              }
             }
           } catch { }
 
@@ -229,7 +227,7 @@ export function createFairchemWS() {
             if (fr.cell && Array.isArray(fr.cell.m)) out.cell = __mat3ToRows(fr.cell.m);
             if (fr.stress && Array.isArray(fr.stress.m)) out.stress = __mat3ToRows(fr.stress.m);
 
-            // Apply drag-lock override for the currently dragged atom, if any
+            // Apply dragLock override for the dragged atom if present
             try {
               if (dragLock && out.positions && out.positions[dragLock.index]) {
                 out.positions[dragLock.index] = dragLock.pos || out.positions[dragLock.index];
@@ -240,7 +238,7 @@ export function createFairchemWS() {
             if (typeof n.message === 'string') out.message = n.message;
             if (typeof n.simulationStopped === 'boolean') out.simulationStopped = !!n.simulationStopped;
           } else {
-            // Unknown payload -> ignore
+            // unknown payload -> ignore
             return;
           }
 
@@ -267,10 +265,14 @@ export function createFairchemWS() {
           } catch { }
 
           for (const fn of listeners) {
-            try { fn(out, lastCounters); } catch { }
+            try {
+              fn(out, lastCounters);
+            } catch { }
           }
         } catch (e) {
-          try { __wsErr('[WS][decode-error]', e?.message || e); } catch { }
+          try {
+            __wsErr('[WS][decode-error]', e?.message || e);
+          } catch { }
         }
       };
     });
@@ -281,36 +283,33 @@ export function createFairchemWS() {
       let off = null;
       let done = false;
       let to = null;
-      function finish(v) {
+      const finish = (v) => {
         if (done) return;
         done = true;
         try {
           off && off();
         } catch { }
-        if (to)
-          try {
-            clearTimeout(to);
-          } catch { }
+        try {
+          to && clearTimeout(to);
+        } catch { }
         resolve(v);
-      }
-      function fail(e) {
+      };
+      const fail = (e) => {
         if (done) return;
         done = true;
         try {
           off && off();
         } catch { }
-        if (to)
-          try {
-            clearTimeout(to);
-          } catch { }
+        try {
+          to && clearTimeout(to);
+        } catch { }
         reject(e);
-      }
+      };
       off = onFrame((res) => {
         try {
           if (!res || typeof res !== 'object') return;
           const energy = res.energy != null ? res.energy : undefined;
           const forces = Array.isArray(res.forces) ? res.forces : [];
-          // Resolve on the first frame carrying energy (idle compute or simulation)
           if (energy != null) {
             try {
               if (typeof res.seq === 'number') ack(res.seq);
@@ -327,6 +326,7 @@ export function createFairchemWS() {
       to = setTimeout(() => fail(new Error('waitForEnergy timeout')), timeoutMs | 0);
     });
   }
+
   function sendBytes(buf) {
     if (ws && ws.readyState === 1) {
       try {
@@ -341,22 +341,29 @@ export function createFairchemWS() {
       __wsWarn('[WS][send-skipped:not-open]', { readyState: ws?.readyState });
     }
   }
-  function close() {
+
+  const close = () => {
     try {
       ws && ws.close();
     } catch { }
-  }
-  function setCounters({ userInteractionCount, simStep }) {
+  };
+
+  const setCounters = ({ userInteractionCount, simStep }) => {
     if (Number.isFinite(userInteractionCount))
       lastCounters.userInteractionCount = userInteractionCount | 0;
     if (Number.isFinite(simStep)) lastCounters.simStep = simStep | 0;
-  }
-  function nextSeq() {
+  };
+
+  const nextSeq = () => {
     seq = (seq | 0) + 1;
     return seq;
-  }
-  // Test hook: prefer an instance-level hook set via setTestHook(fn),
-  // then fall back to a single global location on globalThis for legacy tests.
+  };
+
+  const setAck = (s) => {
+    clientAck = Math.max(clientAck, s | 0);
+  };
+
+  // Test hook fan-out (reads oneof correctly)
   function __notifyTestHook(msg, explicitKind, meta) {
     try {
       const sinks = [];
@@ -364,10 +371,7 @@ export function createFairchemWS() {
         if (__testHook && typeof __testHook === 'function') sinks.push(__testHook);
       } catch { }
       try {
-        if (
-          typeof globalThis !== 'undefined' &&
-          typeof globalThis.__WS_TEST_HOOK__ === 'function'
-        )
+        if (typeof globalThis !== 'undefined' && typeof globalThis.__WS_TEST_HOOK__ === 'function')
           sinks.push(globalThis.__WS_TEST_HOOK__);
       } catch { }
       try {
@@ -375,55 +379,47 @@ export function createFairchemWS() {
           sinks.push(window.__WS_TEST_HOOK__);
       } catch { }
       if (!sinks.length) return;
-      // Project a minimal JSON snapshot (type, simulation params, counters)
-      const kind =
-        explicitKind ||
-        (msg && msg.userInteraction
-          ? 'USER_INTERACTION'
-          : msg && msg.start
-            ? 'START_SIMULATION'
-            : msg && msg.stop
-              ? 'STOP_SIMULATION'
-              : msg && msg.ping
-                ? 'PING'
-                : undefined);
+
+      const which = msg?.payload?.case;
+      const kind = explicitKind || (which ? which.toUpperCase() : undefined);
+      const startV = which === 'start' ? msg.payload.value : undefined;
+      const uiV = which === 'userInteraction' ? msg.payload.value : undefined;
+
       const out = {
         seq: msg.seq | 0,
         type: kind,
         userInteractionCount: msg.userInteractionCount | 0,
         simStep: msg.simStep | 0,
-        // Include simulation params when present
-        simulationType: meta?.simulationType ?? msg.start?.simulationType,
+        simulationType: meta?.simulationType ?? startV?.simulationType,
         simulationParams:
           meta?.simulationParams ??
-          (msg.start?.simulationParams
+          (startV?.simulationParams
             ? {
-              calculator: msg.start.simulationParams.calculator || '',
-              temperature: msg.start.simulationParams.temperature,
-              timestepFs: msg.start.simulationParams.timestepFs,
-              friction: msg.start.simulationParams.friction,
-              fmax: msg.start.simulationParams.fmax,
-              maxStep: msg.start.simulationParams.maxStep,
-              optimizer: msg.start.simulationParams.optimizer || undefined,
+              calculator: startV.simulationParams.calculator || '',
+              temperature: startV.simulationParams.temperature,
+              timestepFs: startV.simulationParams.timestepFs,
+              friction: startV.simulationParams.friction,
+              fmax: startV.simulationParams.fmax,
+              maxStep: startV.simulationParams.maxStep,
+              optimizer: startV.simulationParams.optimizer || undefined,
             }
             : undefined),
         positionsCount:
           meta?.positionsLenTriples ??
-          (Array.isArray(msg.userInteraction?.positions)
-            ? Math.floor(msg.userInteraction.positions.length / 3)
-            : undefined),
+          (Array.isArray(uiV?.positions) ? Math.floor(uiV.positions.length / 3) : undefined),
         velocitiesCount:
           meta?.velocitiesLenTriples ??
-          (Array.isArray(msg.userInteraction?.velocities)
-            ? Math.floor(msg.userInteraction.velocities.length / 3)
-            : undefined),
-        hasCell: meta?.hasCell ?? !!msg.userInteraction?.cell,
+          (Array.isArray(uiV?.velocities) ? Math.floor(uiV.velocities.length / 3) : undefined),
+        hasCell: meta?.hasCell ?? !!uiV?.cell,
       };
+
       try {
-        const dbg = (typeof process !== 'undefined' && process.env && process.env.JEST_WORKER_ID) ||
+        const dbg =
+          (typeof process !== 'undefined' && process.env && process.env.JEST_WORKER_ID) ||
           (typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_WS);
         if (dbg) console.log('[WS][TEST_HOOK]', out);
       } catch { }
+
       for (const fn of sinks) {
         try {
           fn(out);
@@ -432,20 +428,22 @@ export function createFairchemWS() {
     } catch { }
   }
 
-  // Allow tests to inject a hook without using globals
-  function setTestHook(fn) {
+  // Allow tests to inject a hook without globals
+  const setTestHook = (fn) => {
     try {
       __testHook = typeof fn === 'function' ? fn : null;
     } catch {
       __testHook = null;
     }
-  }
-  function setAck(s) {
-    clientAck = Math.max(clientAck, s | 0);
-  }
-  function getState() {
-    return { seq, clientAck, ...lastCounters, connected: !!ws && ws.readyState === 1 };
-  }
+  };
+
+  const getState = () => ({
+    seq,
+    clientAck,
+    ...lastCounters,
+    connected: !!ws && ws.readyState === 1,
+  });
+
   async function ensureConnected() {
     if (ws && ws.readyState === 1) return true;
     if (__connectPromise) {
@@ -463,19 +461,20 @@ export function createFairchemWS() {
     return true;
   }
 
+  // ---- public API ops -------------------------------------------------------
+
   // INIT removed: delegate to USER_INTERACTION for initialization.
   function initSystem({ atomic_numbers, positions, velocities, cell }) {
     __wsWarn('[WS] initSystem deprecated; sending USER_INTERACTION for init');
     return userInteraction({ atomic_numbers, positions, velocities, cell });
   }
 
-  // USER_INTERACTION: allow partial state updates (positions, velocities, or cell)
   function userInteraction({ atomic_numbers, positions, velocities, cell, dragLockIndex } = {}) {
     const payload = {};
     if (Array.isArray(atomic_numbers)) payload.atomicNumbers = atomic_numbers.map((z) => z | 0);
     if (Array.isArray(positions)) payload.positions = __triplesToFlat3(positions);
     if (Array.isArray(velocities)) payload.velocities = __triplesToFlat3(velocities);
-    if (cell && Array.isArray(cell) && cell.length === 3)
+    if (cell && Array.isArray(cell) && cell.length === 3) {
       payload.cell = {
         m: [
           +cell[0][0],
@@ -489,7 +488,8 @@ export function createFairchemWS() {
           +cell[2][2],
         ],
       };
-    // Build message with counters set at creation time to ensure encoder includes them
+    }
+
     const msg = create(ClientActionSchema, {
       seq: nextSeq(),
       schemaVersion: 1,
@@ -499,11 +499,13 @@ export function createFairchemWS() {
       simStep: Number.isFinite(lastCounters.simStep) ? (lastCounters.simStep | 0) : undefined,
       payload: { case: 'userInteraction', value: payload },
     });
+
     __notifyTestHook(msg, 'USER_INTERACTION', {
       positionsLenTriples: Array.isArray(positions) ? positions.length : undefined,
       velocitiesLenTriples: Array.isArray(velocities) ? velocities.length : undefined,
       hasCell: !!payload.cell,
     });
+
     try {
       __wsLog('[WS][tx][USER_INTERACTION]', {
         seq: msg.seq | 0,
@@ -511,20 +513,21 @@ export function createFairchemWS() {
         atoms: Array.isArray(payload.atomicNumbers) ? payload.atomicNumbers.length : 0,
         positions: Array.isArray(payload.positions) ? payload.positions.length : 0,
         velocities: Array.isArray(payload.velocities) ? payload.velocities.length : 0,
-        hasCell: !!msg.userInteraction?.cell,
+        hasCell: !!payload.cell,
       });
-      // When debug is enabled via ?debug=1 or wsDebug=1, print the positions being sent
-      try {
-        const dbgApi = typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_API;
-        if ((dbgApi || __wsDebugOn()) && Array.isArray(positions)) {
-          console.log('[WS][tx][USER_INTERACTION][positions]', positions);
-          console.log('[WS][tx][USER_INTERACTION][flat3.len]',
-            Array.isArray(payload.positions) ? payload.positions.length : -1);
-        }
-      } catch { }
+      const dbgApi = typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_API;
+      if ((dbgApi || __wsDebugOn()) && Array.isArray(positions)) {
+        console.log('[WS][tx][USER_INTERACTION][positions]', positions);
+        console.log(
+          '[WS][tx][USER_INTERACTION][flat3.len]',
+          Array.isArray(payload.positions) ? payload.positions.length : -1,
+        );
+      }
     } catch { }
+
     const buf = toBinary(ClientActionSchema, msg);
     sendBytes(buf);
+
     try {
       if (Number.isInteger(dragLockIndex) && Array.isArray(positions)) {
         dragLock = { index: dragLockIndex | 0, pos: positions[dragLockIndex | 0] };
@@ -543,11 +546,8 @@ export function createFairchemWS() {
     } catch { }
   }
 
-  // Subscribe to decoded ServerResult frames (convenience over raw onFrame)
+  // Convenience subscription wrapper
   function onResult(fn) {
-    // Directly invoke the provided callback with decoded frames.
-    // Do NOT re-broadcast via window.__ON_WS_RESULT__ here to avoid recursion,
-    // since window.__ON_WS_RESULT__ itself fans out to these listeners in tests.
     return onFrame((decoded) => {
       try {
         if (!decoded || typeof decoded !== 'object') return;
@@ -556,12 +556,13 @@ export function createFairchemWS() {
     });
   }
 
-  // Start simulation (md or relax) with SimulationParams
+  // Start simulation
   function startSimulation({ type, params }) {
     const t =
       String(type || 'md').toLowerCase() === 'md'
         ? ClientAction_Start_SimType.MD
         : ClientAction_Start_SimType.RELAX;
+
     const sp = params
       ? {
         calculator: params.calculator || '',
@@ -573,6 +574,7 @@ export function createFairchemWS() {
         optimizer: params.optimizer || undefined,
       }
       : undefined;
+
     const msg = create(ClientActionSchema, {
       seq: nextSeq(),
       schemaVersion: 1,
@@ -586,6 +588,7 @@ export function createFairchemWS() {
       userInteractionCount: lastCounters.userInteractionCount | 0,
       simStep: lastCounters.simStep | 0,
     });
+
     __notifyTestHook(msg, 'START_SIMULATION', {
       simulationType: t,
       simulationParams: sp
@@ -600,6 +603,7 @@ export function createFairchemWS() {
         }
         : undefined,
     });
+
     try {
       __wsLog('[WS][tx][START_SIMULATION]', {
         seq: msg.seq | 0,
@@ -617,6 +621,7 @@ export function createFairchemWS() {
         },
       });
     } catch { }
+
     const buf = toBinary(ClientActionSchema, msg);
     sendBytes(buf);
   }
@@ -655,7 +660,7 @@ export function createFairchemWS() {
     }
   }
 
-  // One-shot request for a single simulation step (md or relax). Starts, waits 1 frame, stops, resolves.
+  // One-shot request for a single simulation step
   async function requestSingleStep({ type, params }) {
     if (!ws || ws.readyState !== 1) {
       __wsWarn('[WS][single-step][not-connected]');
@@ -664,7 +669,7 @@ export function createFairchemWS() {
     return new Promise((resolve, reject) => {
       let off = null;
       let doneCalled = false;
-      function done(v) {
+      const done = (v) => {
         if (doneCalled) return;
         doneCalled = true;
         try {
@@ -674,7 +679,7 @@ export function createFairchemWS() {
           stopSimulation();
         } catch { }
         resolve(v);
-      }
+      };
       off = onFrame((res) => {
         try {
           if (res && typeof res === 'object') {
@@ -709,7 +714,8 @@ export function createFairchemWS() {
       }, 15000);
     });
   }
-  // Allow tests to inject decoded frames directly into listeners, avoiding globals
+
+  // Inject decoded frames directly (tests)
   function injectTestResult(obj) {
     try {
       for (const fn of listeners) {
@@ -719,33 +725,39 @@ export function createFairchemWS() {
       }
     } catch { }
   }
+
   const api = {
+    // connection
     connect,
     ensureConnected,
-    sendBytes,
     close,
+    // tx/rx
+    sendBytes,
     onFrame,
-    onResult,
+    onResult: (fn) => onFrame((d) => { try { if (d && typeof d === 'object') fn(d); } catch { } }),
+    // state/counters
     setCounters,
     nextSeq,
     setAck,
     ack,
     getState,
-    requestSingleStep,
+    // high-level ops
     waitForEnergy,
+    requestSingleStep,
     initSystem,
     userInteraction,
     beginDrag,
     endDrag,
     startSimulation,
     stopSimulation,
+    // testing
     setTestHook,
     injectTestResult,
   };
+
   try {
     if (typeof window !== 'undefined') {
       window.__fairchem_ws__ = api;
-      // Toggle WS debug at runtime from tests or devtools
       if (typeof window.__WS_DEBUG_ENABLE__ !== 'function') {
         window.__WS_DEBUG_ENABLE__ = (on) => {
           try {
@@ -756,7 +768,6 @@ export function createFairchemWS() {
           } catch { }
         };
       }
-      // Provide a fan-out for tests running in jsdom that call window.__ON_WS_RESULT__
       if (typeof window.__ON_WS_RESULT__ !== 'function') {
         window.__ON_WS_RESULT__ = (obj) => {
           try {
@@ -769,27 +780,26 @@ export function createFairchemWS() {
         };
       }
     }
-    // Also expose test hook in Node/Jest environments without window
-    try {
-      if (typeof globalThis !== 'undefined') {
-        globalThis.__fairchem_ws__ = globalThis.__fairchem_ws__ || api;
-        if (typeof globalThis.__ON_WS_RESULT__ !== 'function') {
-          globalThis.__ON_WS_RESULT__ = (obj) => {
-            try {
-              for (const fn of listeners) {
-                try {
-                  fn(obj, lastCounters);
-                } catch { }
-              }
-            } catch { }
-          };
-        }
+    if (typeof globalThis !== 'undefined') {
+      globalThis.__fairchem_ws__ = globalThis.__fairchem_ws__ || api;
+      if (typeof globalThis.__ON_WS_RESULT__ !== 'function') {
+        globalThis.__ON_WS_RESULT__ = (obj) => {
+          try {
+            for (const fn of listeners) {
+              try {
+                fn(obj, lastCounters);
+              } catch { }
+            }
+          } catch { }
+        };
       }
-    } catch { }
+    }
   } catch { }
+
   return api;
 }
 
+// exported singleton getter
 export function getWS() {
   if (!__singleton) __singleton = createFairchemWS();
   return __singleton;
