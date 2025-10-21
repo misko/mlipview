@@ -416,7 +416,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       ws.setCounters?.({ userInteractionCount: userInteractionVersion });
       ws.userInteraction?.({ positions: posToTriples(state) });
     } catch { }
-  }, 100);
+  }, 25);
 
   // Wrapped manipulation to track edits
   function selectedAtomIndex() {
