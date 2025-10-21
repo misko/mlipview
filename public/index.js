@@ -1,8 +1,9 @@
+// index.js — streamlined viewer orchestration with WS/protobuf backend
+// Behavior-compatible refactor to reduce verbosity & duplication.
+
 import { createMoleculeState } from './domain/moleculeState.js';
-import { getEndpointSync } from './api_endpoints.js';
 import { createBondService } from './domain/bondService.js';
 import { createSelectionService } from './domain/selectionService.js';
-import { createFairChemForcefield } from './fairchem_provider.js';
 import { createScene } from './render/scene.js';
 import { createMoleculeView } from './render/moleculeView.js';
 import { createPickingService } from './core/pickingService.js';
@@ -13,511 +14,328 @@ import { createVRPicker } from './vr/vr-picker.js';
 import { __count } from './util/funcCount.js';
 import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS, MAX_STEP } from './util/constants.js';
 import { getWS } from './fairchem_ws_client.js';
+import { SYMBOL_TO_Z } from './data/periodicTable.js';
 
-// --- Runtime Config (pacing, etc.) ---
-if (typeof window !== 'undefined') {
-  // Seed config with centralized defaults
-  window.__MLIP_CONFIG = window.__MLIP_CONFIG || {
-    minStepIntervalMs: DEFAULT_MIN_STEP_INTERVAL_MS,
-    mdFriction: DEFAULT_MD_FRICTION,
-  };
-  if (window.__MLIP_CONFIG.minStepIntervalMs == null)
-    window.__MLIP_CONFIG.minStepIntervalMs = DEFAULT_MIN_STEP_INTERVAL_MS;
-  if (window.__MLIP_CONFIG.mdFriction == null)
-    window.__MLIP_CONFIG.mdFriction = DEFAULT_MD_FRICTION;
-  // Parse URL param to disable auto MD: ?autoMD=0 or ?autoMD=false
+/* ──────────────────────────────────────────────────────────────────────────
+   Small utilities (logging, query flags, throttling, transforms, cache ops)
+   ────────────────────────────────────────────────────────────────────────── */
+
+const dbg = {
+  apiOn: () => (typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_API),
+  log: (...a) => { try { console.log(...a); } catch { } },
+  warn: (...a) => { try { console.warn(...a); } catch { } },
+  err: (...a) => { try { console.error(...a); } catch { } },
+};
+
+const qbool = (key) => {
   try {
     const q = new URLSearchParams(window.location?.search || '');
-    const v = q.get('autoMD');
-    if (v === '0' || String(v).toLowerCase() === 'false') window.__MLIPVIEW_NO_AUTO_MD = true;
-  } catch { }
-}
-function getConfig() {
-  // Always return a valid config object with defaults; repair globals if missing
-  if (typeof window === 'undefined')
-    return { minStepIntervalMs: DEFAULT_MIN_STEP_INTERVAL_MS, mdFriction: DEFAULT_MD_FRICTION };
-  const cfg = window.__MLIP_CONFIG || {};
-  if (cfg.minStepIntervalMs == null || !Number.isFinite(cfg.minStepIntervalMs))
-    cfg.minStepIntervalMs = DEFAULT_MIN_STEP_INTERVAL_MS;
-  if (cfg.mdFriction == null || !Number.isFinite(cfg.mdFriction))
-    cfg.mdFriction = DEFAULT_MD_FRICTION;
-  window.__MLIP_CONFIG = cfg;
-  return cfg;
-}
-export function setMinStepInterval(ms) {
-  const v = Number(ms);
-  if (!Number.isFinite(v) || v < 0)
-    throw new Error('minStepIntervalMs must be non-negative number');
-  if (typeof window !== 'undefined') {
-    window.__MLIP_CONFIG.minStepIntervalMs = Math.max(1, Math.round(v));
-    console.log('[config] set minStepIntervalMs =', window.__MLIP_CONFIG.minStepIntervalMs);
-    return window.__MLIP_CONFIG.minStepIntervalMs;
+    const v = q.get(key);
+    return v === '1' || String(v).toLowerCase() === 'true';
+  } catch { return false; }
+};
+
+const throttle = (fn, ms) => {
+  let t = 0, id = null;
+  return (...a) => {
+    const now = (performance?.now?.() ?? Date.now());
+    const since = now - t;
+    if (id) return;
+    const delay = Math.max(0, ms - since);
+    id = setTimeout(() => { id = null; t = (performance?.now?.() ?? Date.now()); fn(...a); }, delay);
+  };
+};
+
+const zOf = (e) =>
+  (typeof e === 'number') ? e :
+    (typeof e === 'string') ? (SYMBOL_TO_Z[e] || 0) :
+      (e?.Z || e?.atomicNumber || e?.z ||
+        SYMBOL_TO_Z[e?.symbol] || SYMBOL_TO_Z[e?.sym] || SYMBOL_TO_Z[e?.S] || 0);
+
+const posToTriples = (state) => state.positions.map(p => [p.x, p.y, p.z]);
+
+const applyTriples = (state, triples, { exclude } = {}) => {
+  const N = Math.min(state.positions.length, triples?.length || 0);
+  if (!N) return;
+  if (exclude?.size) {
+    for (let i = 0; i < N; i++) {
+      if (exclude.has(i)) continue;
+      const [x, y, z] = triples[i]; const tp = state.positions[i]; tp.x = x; tp.y = y; tp.z = z;
+    }
+  } else {
+    for (let i = 0; i < N; i++) {
+      const [x, y, z] = triples[i]; const tp = state.positions[i]; tp.x = x; tp.y = y; tp.z = z;
+    }
   }
-  return Math.max(1, Math.round(v));
+};
+
+const stateCellToArray = (c) => (c && c.enabled) ? [
+  [c.a.x, c.a.y, c.a.z],
+  [c.b.x, c.b.y, c.b.z],
+  [c.c.x, c.c.y, c.c.z],
+] : null;
+
+const setText = (id, txt) => { try { const el = document.getElementById(id); if (el) el.textContent = txt; } catch { } };
+
+const onWin = (fn) => { try { if (typeof window !== 'undefined') fn(window); } catch { } };
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Runtime config (min step interval, MD friction) — centralized & clamped
+   ────────────────────────────────────────────────────────────────────────── */
+
+if (typeof window !== 'undefined') {
+  window.__MLIP_CONFIG ||= {};
+  if (!Number.isFinite(window.__MLIP_CONFIG.minStepIntervalMs))
+    window.__MLIP_CONFIG.minStepIntervalMs = DEFAULT_MIN_STEP_INTERVAL_MS;
+  if (!Number.isFinite(window.__MLIP_CONFIG.mdFriction))
+    window.__MLIP_CONFIG.mdFriction = DEFAULT_MD_FRICTION;
+
+  // Optional toggles via query params
+  const autoMD = new URLSearchParams(window.location?.search || '').get('autoMD');
+  if (autoMD === '0' || String(autoMD).toLowerCase() === 'false') window.__MLIPVIEW_NO_AUTO_MD = true;
+}
+
+const cfg = {
+  get minStepIntervalMs() {
+    return (typeof window !== 'undefined') ? window.__MLIP_CONFIG.minStepIntervalMs : DEFAULT_MIN_STEP_INTERVAL_MS;
+  },
+  set minStepIntervalMs(v) {
+    const n = Math.max(1, Math.round(Number(v) || 0));
+    if (typeof window !== 'undefined') window.__MLIP_CONFIG.minStepIntervalMs = n;
+  },
+  get mdFriction() {
+    return (typeof window !== 'undefined') ? window.__MLIP_CONFIG.mdFriction : DEFAULT_MD_FRICTION;
+  },
+  set mdFriction(v) {
+    const n = Math.max(0, Math.min(5, Number(v) || 0));
+    if (typeof window !== 'undefined') window.__MLIP_CONFIG.mdFriction = n;
+  },
+};
+
+export function setMinStepInterval(ms) {
+  cfg.minStepIntervalMs = ms;
+  onWin(w => dbg.log('[config] set minStepIntervalMs =', w.__MLIP_CONFIG.minStepIntervalMs));
+  return cfg.minStepIntervalMs;
 }
 export function setMdFriction(f) {
-  const v = Number(f);
-  if (!Number.isFinite(v) || v < 0) throw new Error('mdFriction must be a non-negative number');
-  const clamped = Math.max(0, Math.min(5, v)); // safety clamp: [0,5]
-  if (typeof window !== 'undefined') {
-    window.__MLIP_CONFIG.mdFriction = clamped;
-    console.log('[config] set mdFriction =', window.__MLIP_CONFIG.mdFriction);
-    return window.__MLIP_CONFIG.mdFriction;
-  }
-  return clamped;
+  cfg.mdFriction = f;
+  onWin(w => dbg.log('[config] set mdFriction =', w.__MLIP_CONFIG.mdFriction));
+  return cfg.mdFriction;
 }
 
-// Debug no-cache mode deprecated; server-side cache removed.
-function __noCacheMode() {
+/* ──────────────────────────────────────────────────────────────────────────
+   Feature flags (mutable at runtime)
+   ────────────────────────────────────────────────────────────────────────── */
+
+const FEATURES = (typeof window !== 'undefined' && (window.__MLIP_FEATURES ||= {
+  RELAX_LOOP: true,
+  MD_LOOP: true,
+  ENERGY_TRACE: true,
+  FORCE_VECTORS: true,
+})) || { RELAX_LOOP: true, MD_LOOP: true, ENERGY_TRACE: true, FORCE_VECTORS: true };
+
+function enableFeatureFlag(name, value = true) {
+  if (typeof window !== 'undefined') window.__MLIP_FEATURES[name] = value;
+  else FEATURES[name] = value;
   return true;
 }
 
-import { SYMBOL_TO_Z } from './data/periodicTable.js';
-function elementToZ(e) {
-  if (e == null) return 0;
-  if (typeof e === 'number') return e; // already Z
-  if (typeof e === 'string') return SYMBOL_TO_Z[e] || 0;
-  return (
-    e.Z ||
-    e.atomicNumber ||
-    e.z ||
-    SYMBOL_TO_Z[e.symbol] ||
-    SYMBOL_TO_Z[e.sym] ||
-    SYMBOL_TO_Z[e.S] ||
-    0 ||
-    0
-  );
-}
+/* ──────────────────────────────────────────────────────────────────────────
+   Energy plot (tiny inline module)
+   ────────────────────────────────────────────────────────────────────────── */
 
-// Resolve API base URL across browser + Jest (node) environments.
-function __resolveApiBase() {
-  // Browser environment: prefer explicit override, then same-origin, then test globals.
-  if (typeof window !== 'undefined') {
-    // 1. Explicit override (developer can set before viewer init): window.__MLIPVIEW_SERVER = 'https://host:port'
-    if (window.__MLIPVIEW_SERVER) return String(window.__MLIPVIEW_SERVER).replace(/\/$/, '');
-    // 2. If running in a real browser (or served via proxy) use same-origin so calls stay on the page host (avoids mixed-content & CORS).
-    try {
-      if (window.location && window.location.origin && window.location.origin !== 'null') {
-        // In jsdom this is usually 'http://localhost'. We still may want a better test base; handle below.
-        const origin = window.location.origin;
-        // If jsdom default AND a test global is provided, defer to test global.
-        if (
-          origin === 'http://localhost' &&
-          typeof global !== 'undefined' &&
-          global.__MLIP_API_URL
-        ) {
-          return global.__MLIP_API_URL.replace(/\/$/, '');
-        }
-        return origin.replace(/\/$/, '');
-      }
-    } catch {
-      /* ignore */
+const energyPlot = (() => {
+  let series = []; // {i,E,kind}
+  let last = undefined;
+  let ctx = null, canvas = null, label = null;
+
+  const init = () => {
+    if (canvas) return;
+    canvas = document.getElementById('energyCanvas');
+    if (!canvas) return;
+    ctx = canvas.getContext('2d');
+    label = document.getElementById('energyLabel');
+  };
+
+  const draw = () => {
+    init(); if (!ctx) return;
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    if (series.length === 0) return;
+    if (series.length === 1) {
+      const p = series[0]; ctx.fillStyle = '#6fc2ff'; ctx.beginPath();
+      ctx.arc(W / 2, H / 2, 3, 0, Math.PI * 2); ctx.fill();
+      if (label) label.textContent = 'E steps=1';
+      return;
     }
-    // 3. Fallback: if test harness placed API URL on global (jsdom env) use it.
-    if (typeof global !== 'undefined' && global.__MLIP_API_URL) {
-      return global.__MLIP_API_URL.replace(/\/$/, '');
+    let minE = Infinity, maxE = -Infinity;
+    for (const p of series) { if (p.E < minE) minE = p.E; if (p.E > maxE) maxE = p.E; }
+    if (maxE - minE < 1e-12) maxE = minE + 1e-12;
+    ctx.strokeStyle = '#6fc2ff'; ctx.lineWidth = 1; ctx.beginPath();
+    for (let k = 0; k < series.length; k++) {
+      const p = series[k];
+      const x = (k / (series.length - 1)) * (W - 4) + 2;
+      const y = H - 2 - ((p.E - minE) / (maxE - minE)) * (H - 4);
+      if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
-  }
-  // Node/Jest (no window) fallback: prefer globals or env vars injected by harness.
-  if (typeof global !== 'undefined') {
-    const g = global.__MLIP_API_URL || process.env.MLIP_API_URL || process.env.MLIPVIEW_SERVER;
-    if (g) return g.replace(/\/$/, '');
-  }
-  // Final hard-coded development fallback (direct Ray Serve default port)
-  return 'http://127.0.0.1:8000';
-}
+    ctx.stroke();
+    if (label) label.textContent = `E steps=${series.length} range=${(maxE - minE).toExponential(2)}`;
+  };
 
-// WS is mandatory: protobuf-only
-function __useWsSimple() {
-  return true;
-}
-function __useWsSim() {
-  return true;
-}
+  const push = (E, kind) => {
+    if (typeof E !== 'number' || !isFinite(E)) return;
+    if (E === last && !(typeof window !== 'undefined' && window.__ALLOW_DUPLICATE_ENERGY_TICKS)) return;
+    const i = series.length; series.push({ i, E, kind }); last = E;
+    if (typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_API) dbg.log('[energy] len=', series.length);
+    setText('instEnergy', `E: ${E.toFixed(2)}`);
+    draw();
+  };
+
+  const reset = () => { series = []; last = undefined; draw(); setText('instEnergy', 'E: —'); };
+  const length = () => series.length;
+
+  return { push, reset, length };
+})();
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Viewer initialization
+   ────────────────────────────────────────────────────────────────────────── */
 
 export async function initNewViewer(canvas, { elements, positions, bonds }) {
   __count('index#initNewViewer');
+
+  // Debug toggles from query-string
+  onWin(w => {
+    if (w.__MLIPVIEW_DEBUG_API == null) w.__MLIPVIEW_DEBUG_API = qbool('debug');
+    w.__MLIPVIEW_DEBUG_PICK = qbool('debugPick');
+    w.__MLIPVIEW_DEBUG_SELECT = qbool('debugSelect');
+    w.__MLIPVIEW_DEBUG_UI = qbool('debugUI');
+  });
+
   const state = createMoleculeState({ elements, positions, bonds });
-  // Cache the initial XYZ positions for VR/AR reset without page reload
-  try {
-    state.__initialPositions = (state.positions || []).map((p) => ({ x: p.x, y: p.y, z: p.z }));
-    if (state.__initialPositions.length === 0) {
-      // Will be populated by moleculeLoader.applyParsedToViewer after loadDefault.
-      try {
-        console.log('[init] initial positions pending; will cache on load');
-      } catch { }
-    } else {
-      try {
-        console.log('[init] cached initial positions', { count: state.__initialPositions.length });
-      } catch { }
+  // Cache initial positions for reset
+  try { state.__initialPositions = (state.positions || []).map(p => ({ x: p.x, y: p.y, z: p.z })); } catch { }
+
+  // Versioning & caches
+  state.forceCache = { version: 0, energy: NaN, forces: [], stress: null, stale: true };
+  let structureVersion = 0;
+  let resetEpoch = 0;
+  let userInteractionVersion = 0;
+  let totalInteractionVersion = 0;
+
+  const modifiedByVersion = new Map(); // v -> Set(indices)
+  const draggingAtoms = new Set();
+  const latchedUntil = new Map(); // idx -> ts
+  const latchAtom = (i, ms = 600) => {
+    const now = (performance?.now?.() ?? Date.now());
+    latchedUntil.set(i, now + ms);
+  };
+  const currentDraggedAtom = { idx: null };
+
+  const buildExcludeSet = () => {
+    const out = new Set(draggingAtoms);
+    const now = (performance?.now?.() ?? Date.now());
+    for (const [i, t] of latchedUntil) { if (t > now) out.add(i); else latchedUntil.delete(i); }
+    return out;
+  };
+
+  const bumpUser = (reason) => {
+    userInteractionVersion++; totalInteractionVersion++; structureVersion++;
+    if (state.forceCache) { state.forceCache.stale = true; state.forceCache.version = structureVersion; }
+    if (dbg.apiOn()) dbg.log('[version][user]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
+  };
+  const bumpSim = (reason) => {
+    totalInteractionVersion++;
+    if (dbg.apiOn()) dbg.log('[version][sim]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
+  };
+
+  const updateForces = (forces, { reason } = {}) => {
+    const DBG = (typeof window !== 'undefined') && (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search || ''));
+    if (Array.isArray(forces) && forces.length) {
+      state.forces = forces;
+      state.bus?.emit?.('forcesChanged');
+      if (DBG) dbg.log('[Forces][update]', reason || '?', 'len=', forces.length);
     }
-  } catch { }
-  // We'll wrap markPositionsChanged after bondService + view exist so we can recompute bonds centrally.
-  const __origMarkPositionsChanged = state.markPositionsChanged
-    ? state.markPositionsChanged.bind(state)
-    : null;
-  const bondService = createBondService(state);
-  const selection = createSelectionService(state);
-  // Remote UMA force provider via WS idle compute (USER_INTERACTION -> energy/forces)
-  let lastForceResult = { energy: NaN, forces: [] };
-  let inFlight = false;
-  // WS session sync state (single socket): re-init when atom count or cell changes
-  const __ws = { inited: false, lastAtomCount: 0, lastCellKey: null };
-  function __cellKey() {
+  };
+
+  const updateEnergyForces = ({ energy, forces, stress = null, reason }) => {
+    if (typeof energy === 'number') {
+      state.dynamics ||= {};
+      state.dynamics.energy = energy;
+    }
+    const effectiveForces = Array.isArray(forces) ? forces : (state.forces || []);
+    if (Array.isArray(forces)) updateForces(forces, { reason });
+    state.forceCache = { version: structureVersion, energy: state.dynamics?.energy, forces: effectiveForces, stress, stale: false };
+    if (dbg.apiOn()) dbg.log('[forces-cache]', reason, { n: effectiveForces.length, E: state.forceCache.energy });
+  };
+
+  const getVelocitiesIfFresh = () => {
+    const v = state.dynamics?.velocities;
+    if (!Array.isArray(v) || v.length !== state.elements.length) return null;
+    for (let i = 0; i < v.length; i++) {
+      const r = v[i]; if (!r || r.length !== 3) return null;
+      if (!Number.isFinite(r[0]) || !Number.isFinite(r[1]) || !Number.isFinite(r[2])) return null;
+    }
+    return v;
+  };
+
+  // WS session init guard
+  const __wsState = { inited: false, lastAtomCount: 0, lastCellKey: 'off' };
+  const cellKey = () => {
     try {
-      const c = state.cell;
-      const on = !!(state.showCell && c && c.enabled);
+      const c = state.cell; const on = !!(state.showCell && c && c.enabled);
       if (!on || !c) return 'off';
-      return [c.a.x, c.a.y, c.a.z, c.b.x, c.b.y, c.b.z, c.c.x, c.c.y, c.c.z]
-        .map((x) => Number(x) || 0)
-        .join(',');
-    } catch {
-      return 'off';
-    }
-  }
-  async function __wsEnsureInit() {
-    const useWs = __useWsSimple();
-    if (!useWs) return false;
+      return [c.a.x, c.a.y, c.a.z, c.b.x, c.b.y, c.b.z, c.c.x, c.c.y, c.c.z].map(Number).map(x => x || 0).join(',');
+    } catch { return 'off'; }
+  };
+  async function ensureWsInit() {
     const ws = getWS();
     await ws.ensureConnected();
     const nat = (state.elements || []).length;
-    const cellK = __cellKey();
-    const needInit = !__ws.inited || __ws.lastAtomCount !== nat || __ws.lastCellKey !== cellK;
-    if (needInit) {
-      try {
-        if (window.__MLIPVIEW_DEBUG_API)
-          console.log('[WS][ensureInit] init needed', {
-            inited: __ws.inited,
-            lastAtomCount: __ws.lastAtomCount,
-            nat,
-            lastCellKey: __ws.lastCellKey,
-            cellK,
-          });
-      } catch { }
-      const atomic_numbers = state.elements.map((e) => elementToZ(e));
-      const positions = state.positions.map((p) => [p.x, p.y, p.z]);
+    const ckey = cellKey();
+    const need = !__wsState.inited || __wsState.lastAtomCount !== nat || __wsState.lastCellKey !== ckey;
+    if (need) {
+      const atomic_numbers = state.elements.map(zOf);
+      const positionsTriples = posToTriples(state);
       const v = getVelocitiesIfFresh();
-      let cell = null;
-      try {
-        if (state.showCell && state.cell && state.cell.enabled) {
-          cell = [
-            [state.cell.a.x, state.cell.a.y, state.cell.a.z],
-            [state.cell.b.x, state.cell.b.y, state.cell.b.z],
-            [state.cell.c.x, state.cell.c.y, state.cell.c.z],
-          ];
-        }
-      } catch { }
-      // Initialization now uses USER_INTERACTION carrying atomic_numbers + positions (and optional velocities/cell)
-      ws.userInteraction({ atomic_numbers, positions, velocities: v || undefined, cell });
-      __ws.inited = true;
-      __ws.lastAtomCount = nat;
-      __ws.lastCellKey = cellK;
-      try {
-        if (window.__MLIPVIEW_DEBUG_API)
-          console.log('[WS][ensureInit][init]', {
-            atoms: atomic_numbers.length,
-            positions: positions.length,
-            velocities: Array.isArray(v) ? v.length : 0,
-            hasCell: !!cell,
-          });
-      } catch { }
+      const cell = stateCellToArray(state.cell);
+      ws.userInteraction({ atomic_numbers, positions: positionsTriples, velocities: v || undefined, cell });
+      __wsState.inited = true; __wsState.lastAtomCount = nat; __wsState.lastCellKey = ckey;
+      if (dbg.apiOn()) dbg.log('[WS][ensureInit]', { nat, v: !!v, hasCell: !!cell });
     }
     return true;
   }
-  // --- API debug instrumentation ---
-  if (typeof window !== 'undefined') {
-    if (window.__MLIPVIEW_DEBUG_API == null) {
-      // Default OFF; enable with ?debug=1 or ?debug=true
-      try {
-        const q = new URLSearchParams(window.location.search);
-        const dbg = q.get('debug');
-        window.__MLIPVIEW_DEBUG_API = dbg === '1' || dbg === 'true';
-      } catch {
-        window.__MLIPVIEW_DEBUG_API = false;
-      }
-    }
-  }
-  // Picking debug via ?debugPick=1
-  try {
-    if (typeof window !== 'undefined') {
-      const q = new URLSearchParams(window.location.search || '');
-      const dp = q.get('debugPick');
-      window.__MLIPVIEW_DEBUG_PICK = dp === '1' || dp === 'true';
-      if (window.__MLIPVIEW_DEBUG_PICK) console.log('[debug] pick logging enabled');
-      const ds = q.get('debugSelect');
-      window.__MLIPVIEW_DEBUG_SELECT = ds === '1' || ds === 'true';
-      if (window.__MLIPVIEW_DEBUG_SELECT) console.log('[debug] selection logging enabled');
-      const du = q.get('debugUI');
-      window.__MLIPVIEW_DEBUG_UI = du === '1' || du === 'true';
-      if (window.__MLIPVIEW_DEBUG_UI) console.log('[debug] UI logging enabled');
-    }
-  } catch { }
-  // Latency debugging gate comes from index.html ?debugLatency=1 wrapper
-  const __latencyOn = typeof window !== 'undefined' && !!window.__MLIP_DEBUG_LATENCY;
-  function noteLatency(kind, phase, meta) {
-    if (!__latencyOn) return;
-    try {
-      const s = new Date().toISOString();
-      console.log(`[latency:${kind}] ${phase} ${s}`, meta || {});
-    } catch { }
-  }
-  let __apiSeq = (typeof window !== 'undefined' && window.__MLIPVIEW_API_SEQ) || 0;
-  function debugApi(kind, phase, meta) {
-    __count('index#debugApi');
-    if (!(typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_API)) return;
-    try {
-      const stamp = new Date().toISOString();
-      // We copy a shallow subset to avoid huge spam (positions trimmed)
-      if (meta && meta.body && meta.body.coordinates && meta.body.coordinates.length > 30) {
-        meta = {
-          ...meta,
-          body: { ...meta.body, coordinates: `<${meta.body.coordinates.length} coords>` },
-        };
-      }
-      if (meta && meta.response && meta.response.positions && meta.response.positions.length > 30) {
-        meta = {
-          ...meta,
-          response: {
-            ...meta.response,
-            positions: `<${meta.response.positions.length} positions>`,
-          },
-        };
-      }
-      // Energy summary convenience
-      if (meta && meta.response && typeof meta.response.final_energy === 'number') {
-        meta.energy = meta.response.final_energy;
-      } else if (
-        meta &&
-        meta.response &&
-        meta.response.results &&
-        typeof meta.response.results.energy === 'number'
-      ) {
-        meta.energy = meta.response.results.energy;
-      }
-      console.log(
-        `[API][${kind}][${phase}]#${meta.seq} t=${meta.timingMs != null ? meta.timingMs + 'ms' : ''} ${stamp}`,
-        meta
-      );
-    } catch (e) {
-      /* ignore logging errors */
-    }
-  }
-  if (typeof window !== 'undefined') {
-    window.__MLIPVIEW_API_ENABLE = function (on) {
-      window.__MLIPVIEW_DEBUG_API = !!on;
-      console.log('[API] debug set to', window.__MLIPVIEW_DEBUG_API);
-    };
-    window.__MLIPVIEW_API_SEQ = __apiSeq;
-  }
 
-  // Versioned force cache: state.forceCache = { version, energy, forces, stress, stale }
-  state.forceCache = { version: 0, energy: NaN, forces: [], stress: null, stale: true };
-  let structureVersion = 0; // increments when positions (or elements) change
-  // Reset epoch: increments only on explicit resets to invalidate any in-flight API responses
-  let resetEpoch = 0;
-  // Server-side atoms cache removed: no cache key tracking
-  // Version counters:
-  // userInteractionVersion: increments ONLY on user geometry edits (drag, bond rotate, debounced posChange)
-  // totalInteractionVersion: increments on user edits AND accepted simulation (relax/md) steps.
-  let userInteractionVersion = 0;
-  let totalInteractionVersion = 0;
-  // Track which atoms were modified by each user interaction version increment.
-  // Map: version -> Set(atomIndices)
-  const __modifiedAtomsByVersion = new Map();
-  // Track atoms currently being dragged (by index). Only atom-drags are considered here.
-  const __draggingAtoms = new Set();
-  // Recently interacted atoms latch (atomIndex -> expiresAt ms). Prevents in-flight MD/relax from overriding
-  // the just-dragged atom if a response lands immediately after stick release.
-  const __latchedAtomsUntil = new Map();
-  function __latchAtom(i, ms = 600) {
-    try {
-      const now =
-        typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
-      __latchedAtomsUntil.set(i, now + ms);
-    } catch { }
-  }
-  let __currentDraggedAtomIndex = null;
-  // Throttle USER_INTERACTION emissions during drag
-  const __dragThrottleMs = 100; // emit at most once per 100ms
-  let __dragEmitTimer = null;
-  let __dragLastEmitAt = 0;
-  function __scheduleDragEmit() {
-    try {
-      const now = performance.now ? performance.now() : Date.now();
-      const since = now - (__dragLastEmitAt || 0);
-      if (__dragEmitTimer) return; // already scheduled
-      const delay = Math.max(0, __dragThrottleMs - since);
-      __dragEmitTimer = setTimeout(() => {
-        __dragEmitTimer = null;
-        __dragLastEmitAt = performance.now ? performance.now() : Date.now();
-        // If a simulation is running, push USER_INTERACTION so server captures UIC and positions.
-        if (running.kind) {
-          try {
-            const ws = getWS();
-            try { ws.setCounters({ userInteractionCount: userInteractionVersion }); } catch { }
-            const positions = state.positions.map((p) => [p.x, p.y, p.z]);
-            ws.userInteraction({ positions });
-          } catch { }
-        } else {
-          // Idle: request a deterministic compute that will send USER_INTERACTION and wait for energy
-          try {
-            ff.computeForces();
-          } catch { }
-        }
-      }, delay);
-    } catch { }
-  }
-  function __addModifiedAtoms(indices) {
-    if (!indices || !indices.length) return;
-    const v = userInteractionVersion;
-    let s = __modifiedAtomsByVersion.get(v);
-    if (!s) {
-      s = new Set();
-      __modifiedAtomsByVersion.set(v, s);
-    }
-    for (const i of indices) {
-      if (Number.isInteger(i) && i >= 0 && i < state.positions.length) s.add(i);
-    }
-  }
-  function __modifiedSetBetween(vFromExclusive, vToInclusive) {
-    const out = new Set();
-    for (let v = vFromExclusive + 1; v <= vToInclusive; v++) {
-      const s = __modifiedAtomsByVersion.get(v);
-      if (s) for (const i of s) out.add(i);
-    }
-    return out;
-  }
-  function bumpUserInteractionVersion(reason) {
-    userInteractionVersion++;
-    totalInteractionVersion++;
-    structureVersion++;
-    if (state.forceCache) state.forceCache.stale = true;
-    if (window.__MLIPVIEW_DEBUG_API)
-      console.debug('[version][user]', {
-        reason,
-        userInteractionVersion,
-        totalInteractionVersion,
-        structureVersion,
-      });
-  }
-  function bumpSimulationVersion(reason) {
-    // Simulation application affects totalInteractionVersion but structureVersion already bumped via markPositionsChanged.
-    totalInteractionVersion++;
-    if (window.__MLIPVIEW_DEBUG_API)
-      console.debug('[version][sim]', {
-        reason,
-        userInteractionVersion,
-        totalInteractionVersion,
-        structureVersion,
-      });
-  }
-  function __updateForces(forces, { reason } = {}) {
-    const DBG =
-      typeof window !== 'undefined' &&
-      (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search || ''));
-    try {
-      if (Array.isArray(forces) && forces.length) {
-        state.forces = forces;
-        if (DBG) console.log('[Forces][update]', reason || '?', 'len=', forces.length);
-        state.bus?.emit && state.bus.emit('forcesChanged');
-      } else if (DBG) {
-        console.warn('[Forces][update] empty set for reason', reason);
-      }
-    } catch (e) {
-      if (DBG) console.warn('[Forces][update] error', e);
-    }
-  }
+  // Simple force provider using WS idle compute
+  let lastForceResult = { energy: NaN, forces: [] };
+  let inFlight = false;
+
   async function fetchRemoteForces({ awaitResult = false } = {}) {
     __count('index#fetchRemoteForces');
     if (inFlight && !awaitResult) return;
-    while (inFlight && awaitResult) {
-      await new Promise((r) => setTimeout(r, 10));
-    }
+    while (inFlight && awaitResult) await new Promise(r => setTimeout(r, 10));
     inFlight = true;
     try {
-      // Skip remote call until we actually have atoms
-      if (!state.elements || state.elements.length === 0) {
-        return lastForceResult;
+      if (!state.elements?.length) return lastForceResult;
+      const ws = getWS();
+      await ensureWsInit();
+      const positions = posToTriples(state);
+      try { ws.setCounters({ userInteractionCount: userInteractionVersion }); } catch { }
+      if (dbg.apiOn()) dbg.log('[WS][simple] USER_INTERACTION', { n: positions.length, uic: userInteractionVersion });
+      ws.userInteraction({ positions });
+      const t0 = (performance?.now?.() ?? Date.now());
+      const { energy, forces, userInteractionCount: uicFromServer } = await ws.waitForEnergy({ timeoutMs: 5000 });
+      const timingMs = Math.round(((performance?.now?.() ?? Date.now()) - t0) * 100) / 100;
+      if (dbg.apiOn()) dbg.log('[WS][simple][recv]', { energy, forcesLen: forces?.length || 0, uicFromServer, currentUIC: userInteractionVersion, timingMs });
+      if (typeof energy === 'number') {
+        lastForceResult = { energy, forces: forces || [] };
+        updateEnergyForces({ energy, forces, reason: 'fetchRemoteForcesWS' });
+        energyPlot.push(energy, 'forces');
       }
-      const useWs = __useWsSimple();
-      if (useWs) {
-        const ws = getWS();
-        await __wsEnsureInit();
-        const positions = state.positions.map((p) => [p.x, p.y, p.z]);
-        // Provide current user interaction count for correlation BEFORE sending USER_INTERACTION
-        try {
-          ws.setCounters({ userInteractionCount: userInteractionVersion });
-        } catch { }
-        // Send a USER_INTERACTION with current positions to trigger an idle compute on the server
-        try {
-          if (window.__MLIPVIEW_DEBUG_API)
-            console.log('[WS][simple] USER_INTERACTION', {
-              n: positions.length,
-              uic: userInteractionVersion,
-            });
-        } catch { }
-        try {
-          ws.userInteraction({ positions });
-        } catch { }
-        const t0 = performance.now();
-        // Wait for first energy-bearing frame from idle compute
-        const {
-          energy,
-          forces,
-          userInteractionCount: uicFromServer,
-        } = await ws.waitForEnergy({ timeoutMs: 5000 });
-        const timingMs = Math.round((performance.now() - t0) * 100) / 100;
-        noteLatency('simple', 'ws', { ms: timingMs });
-        try {
-          if (window.__MLIPVIEW_DEBUG_API)
-            console.log('[WS][simple][recv]', {
-              energy,
-              forcesLen: Array.isArray(forces) ? forces.length : 0,
-              uicFromServer,
-              currentUIC: userInteractionVersion,
-              timingMs,
-            });
-        } catch { }
-        // Idle responses may echo an older userInteractionCount if the user keeps dragging rapidly.
-        // Since idle frames do NOT carry positions, we should NOT discard them.
-        // Accept energy and forces regardless of uicFromServer to keep energy plot and force vectors fresh.
-        if (
-          Number.isFinite(uicFromServer) &&
-          Number(uicFromServer) < Number(userInteractionVersion)
-        ) {
-          if (window.__MLIPVIEW_DEBUG_API)
-            console.debug('[simple][accept-stale-idle]', { uicFromServer, userInteractionVersion });
-          // continue to update energy/forces below; do not early-return
-        }
-        if (typeof energy === 'number') {
-          lastForceResult = { energy, forces: forces || [] };
-          state.dynamics = state.dynamics || {};
-          state.dynamics.energy = energy;
-          window.__RELAX_FORCES = forces || [];
-          state.forceCache = {
-            version: structureVersion,
-            energy,
-            forces: forces || [],
-            stress: null,
-            stale: false,
-          };
-          if (Array.isArray(forces) && forces.length) {
-            __updateForces(forces, { reason: 'fetchRemoteForcesWS' });
-          }
-          maybePlotEnergy('forces');
-        }
-      } else {
-        throw new Error(
-          '[REST removed] simple_calculate via HTTP was removed. Use WebSocket/protobuf via fairchem_ws_client.js'
-        );
-      }
-    } catch (_e) {
-      /* silent for now */
-    } finally {
-      inFlight = false;
-    }
+    } catch { } finally { inFlight = false; }
     return lastForceResult;
   }
+
   const ff = {
     computeForces: ({ sync } = {}) => {
       if (sync) return fetchRemoteForces({ awaitResult: true });
@@ -525,1140 +343,132 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       return lastForceResult;
     },
   };
-  // Deterministic one-shot: sends USER_INTERACTION and waits for idle compute, returning the updated energy length
+
   async function requestSimpleCalculateNow() {
     try {
-      const ws = getWS();
-      await __wsEnsureInit();
-      const positions = state.positions.map((p) => [p.x, p.y, p.z]);
-      try {
-        ws.setCounters({ userInteractionCount: userInteractionVersion });
-      } catch { }
-      try {
-        ws.userInteraction({ positions });
-      } catch { }
+      const ws = getWS(); await ensureWsInit();
+      ws.setCounters?.({ userInteractionCount: userInteractionVersion });
+      ws.userInteraction?.({ positions: posToTriples(state) });
       const { energy, forces } = await ws.waitForEnergy({ timeoutMs: 5000 });
       if (typeof energy === 'number') {
-        state.dynamics = state.dynamics || {};
-        state.dynamics.energy = energy;
-        if (Array.isArray(forces) && forces.length) {
-          __updateForces(forces, { reason: 'requestSimpleCalculateNow' });
-        }
-        maybePlotEnergy('forces');
+        updateEnergyForces({ energy, forces, reason: 'requestSimpleCalculateNow' });
+        energyPlot.push(energy, 'forces');
       }
-      return energySeries.length;
-    } catch {
-      return energySeries.length;
-    }
+      return energyPlot.length();
+    } catch { return energyPlot.length(); }
   }
 
-  // Helper: construct precomputed object if force cache is fresh and matches structure
-  function buildPrecomputedIfFresh() {
-    const fc = state.forceCache;
-    if (!fc || fc.stale) return null;
-    if (fc.version !== structureVersion) return null;
-    const n = state.elements.length;
-    if (!Array.isArray(fc.forces) || fc.forces.length !== n) return null;
-    if (!Number.isFinite(fc.energy)) return null;
-    const pre = { energy: fc.energy, forces: fc.forces };
-    if (fc.stress && Array.isArray(fc.stress) && fc.stress.length === 6) pre.stress = fc.stress;
-    return pre;
-  }
-
-  function getVelocitiesIfFresh() {
-    const dyn = state.dynamics || {};
-    const v = dyn.velocities;
-    if (!v) return null;
-    if (!Array.isArray(v) || v.length !== state.elements.length) return null;
-    // Basic finiteness check without allocating large arrays
-    for (let i = 0; i < v.length; i++) {
-      const row = v[i];
-      if (!row || row.length !== 3) return null;
-      for (let k = 0; k < 3; k++) {
-        if (!Number.isFinite(row[k])) return null;
-      }
-    }
-    return v;
-  }
-
-  const dynamics = {
-    stepMD: () => { },
-    stepRelax: ({ forceFn }) => {
-      forceFn();
-    },
-  };
-  // --- Requests-per-second (RPS) counter for MD/Relax runs ---
-  const __rps = { samples: [], windowMs: 2000, value: 0 };
-  function __resetRPS() {
-    __rps.samples.length = 0;
-    __rps.value = 0;
-    try {
-      const el = document.getElementById('rpsLabel');
-      if (el) el.textContent = 'RPS: --';
-    } catch { }
-  }
-  function __noteRequestCompleted() {
-    const now =
-      typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
-    __rps.samples.push(now);
-    // Drop samples outside the window
-    while (__rps.samples.length && now - __rps.samples[0] > __rps.windowMs) {
-      __rps.samples.shift();
-    }
-    if (__rps.samples.length >= 2) {
-      const dt = __rps.samples[__rps.samples.length - 1] - __rps.samples[0];
-      __rps.value = dt > 0 ? ((__rps.samples.length - 1) * 1000) / dt : 0;
-    } else {
-      __rps.value = 0;
-    }
-    try {
-      const el = document.getElementById('rpsLabel');
-      if (el) el.textContent = 'RPS: ' + __rps.value.toFixed(1);
-    } catch { }
-  }
-  // Remote relaxation: call backend /relax
-  async function callRelaxEndpoint(steps = 1) {
-    __count('index#callRelaxEndpoint');
-    const pos = state.positions.map((p) => [p.x, p.y, p.z]);
-    const atomic_numbers = state.elements.map((e) => elementToZ(e));
-    const body = { atomic_numbers, coordinates: pos, steps, calculator: 'uma', max_step: MAX_STEP };
-    try {
-      if (state.showCell && state.cell && state.cell.enabled) {
-        body.cell = [
-          [state.cell.a.x, state.cell.a.y, state.cell.a.z],
-          [state.cell.b.x, state.cell.b.y, state.cell.b.z],
-          [state.cell.c.x, state.cell.c.y, state.cell.c.z],
-        ];
-        body.pbc = [true, true, true];
-      }
-    } catch { }
-    const maybePre = buildPrecomputedIfFresh();
-    if (maybePre) {
-      body.precomputed = maybePre;
-      debugApi('relax', 'precomputed-attach', { seq: __apiSeq + 1, keys: Object.keys(maybePre) });
-    }
-    const uivAtSend = userInteractionVersion;
-    const tivAtSend = totalInteractionVersion;
-    const epochAtSend = resetEpoch;
-    const url = '[REST removed]/relax';
-    const payload = body;
-    const seq = ++__apiSeq;
-    if (typeof window !== 'undefined') window.__MLIPVIEW_API_SEQ = __apiSeq;
-    const build0 = performance.now();
-    const t0 = performance.now();
-    debugApi('relax', 'request', { seq, url, body: payload });
-    let resp, json;
-    try {
-      throw new Error(
-        '[REST removed] Relax endpoint removed. Replace with WS stream: ws.startSimulation({ type:"relax" ... })'
-      );
-    } catch (netErr) {
-      debugApi('relax', 'network-error', { seq, url, error: netErr?.message || String(netErr) });
-      throw netErr;
-    }
-    const t1 = performance.now();
-    const timingMs = Math.round((t1 - t0) * 100) / 100; // network time only
-    noteLatency('relax', 'network', { seq, ms: timingMs });
-    if (!resp.ok) {
-      const txt = await resp.text();
-      debugApi('relax', 'http-error', {
-        seq,
-        url,
-        timingMs,
-        status: resp.status,
-        statusText: resp.statusText,
-        bodyText: txt,
-      });
-      throw new Error('Relax request failed ' + resp.status + ': ' + txt);
-    }
-    let parseMs = 0;
-    try {
-      const p0 = performance.now();
-      json = await resp.json();
-      const p1 = performance.now();
-      parseMs = Math.round((p1 - p0) * 100) / 100;
-      noteLatency('relax', 'parse', { seq, ms: parseMs });
-    } catch (parseErr) {
-      debugApi('relax', 'parse-error', {
-        seq,
-        url,
-        timingMs,
-        error: parseErr?.message || String(parseErr),
-      });
-      throw parseErr;
-    }
-    debugApi('relax', 'response', { seq, url, timingMs, status: resp.status, response: json });
-    // no server cache key
-    return { data: json, uivAtSend, tivAtSend, epochAtSend, netMs: timingMs, parseMs };
-  }
-  const { engine, scene, camera } = await createScene(canvas);
-  // Enable verbose touch debug if requested
-  try {
-    if (typeof window !== 'undefined') {
-      window.__MLIPVIEW_DEBUG_TOUCH = !!window.__MLIPVIEW_DEBUG_TOUCH;
-      window.enableTouchDebug = (on) => {
-        window.__MLIPVIEW_DEBUG_TOUCH = !!on;
-        console.log('[touchDebug] set to', window.__MLIPVIEW_DEBUG_TOUCH);
-      };
-    }
-  } catch { }
-  const view = createMoleculeView(scene, state);
-  const manipulation = createManipulationService(state, { bondService });
-  // We'll define wrappedManipulation below; temporarily pass placeholder then rebind after definition
-  let wrappedManipulationRef = null;
-  // Install custom touch controls BEFORE picking service so it can skip binding its own touch handlers.
-  // Support ?noTouch=1 flag to disable touch installation for debugging bond selection issues.
-  // Pass a proxy that will read dragActive from the picking service once created.
-  let __pickingRef = null;
-  const __pickingProxy = {
-    _debug: {
-      get dragActive() {
-        try {
-          return !!(__pickingRef && __pickingRef._debug && __pickingRef._debug.dragActive);
-        } catch {
-          return false;
-        }
-      },
-    },
-  };
-  let __noTouch = false;
-  try {
-    const q = new URLSearchParams(window.location.search || '');
-    __noTouch = q.get('noTouch') === '1' || q.get('noTouch') === 'true';
-  } catch { }
-  try {
-    if (__noTouch) {
-      window.__MLIPVIEW_NO_TOUCH = true;
-      console.warn('[touchControls] skipped by ?noTouch=1');
-    } else {
-      installTouchControls({ canvas, scene, camera, picking: __pickingProxy });
-      console.log('[touchControls] installed');
-    }
-  } catch (e) {
-    console.warn('[touchControls] install failed', e?.message || e);
-  }
-
-  const picking = (__pickingRef = createPickingService(scene, view, selection, {
-    manipulation: new Proxy({}, { get: (_, k) => wrappedManipulationRef?.[k] }),
-    camera,
-    // Do not trigger a standalone idle compute while a simulation is running;
-    // wait for the next MD/relax response to update forces and energy.
-    energyHook: ({ kind }) => {
-      try {
-        // While dragging, use throttled emit instead of immediate compute
-        const dragging = __draggingAtoms.size > 0 || __currentDraggedAtomIndex != null;
-        if (!running.kind) {
-          if (dragging) __scheduleDragEmit();
-          else ff.computeForces();
-        }
-      } catch { }
-      recordInteraction(kind || 'drag');
-    },
-  }));
-  // Attach VR semantic picker (bond-first) so VR layer can use it without legacy imports
-  let vrPicker = null;
-  try {
-    vrPicker = createVRPicker({ scene, view });
-  } catch (e) {
-    console.warn('[VR] vrPicker init failed', e?.message || e);
-  }
-  function recomputeBonds(reason = 'manual') {
+  // Recompute bonds when positions change
+  const __origMarkPositionsChanged = state.markPositionsChanged?.bind(state) || null;
+  const bondService = createBondService(state);
+  const recomputeBonds = (reason = 'manual') => {
     __count('index#recomputeBonds');
     const bonds = bondService.recomputeAndStore();
-    try {
-      view.rebuildBonds(bonds);
-    } catch { }
-    // Avoid inflating energy step count for internal position change cascades. When
-    // markPositionsChanged fires (e.g., during a bond rotation or drag), we already
-    // log an interaction specific to the user action (bondRotate, dragMove/dragEnd, etc.).
-    // Logging an additional 'rebonds' event creates duplicate energy steps for a single
-    // conceptual action. We still log manual or external recomputes so they appear in the
-    // trace. If future workflows need explicit bond recompute steps, this guard can be
-    // refined (e.g., per-flag) but keeps default UX clean.
-    if (reason !== 'markPositionsChanged') {
-      recordInteraction('rebonds');
-    }
-    if (window.__MLIPVIEW_DEBUG_API)
-      console.log(`[bonds] recomputed after ${reason} (count=${bonds ? bonds.length : 0})`);
+    try { view.rebuildBonds(bonds); } catch { }
+    if (reason !== 'markPositionsChanged') recordInteraction('rebonds');
+    if (dbg.apiOn()) dbg.log(`[bonds] recomputed after ${reason} (count=${bonds ? bonds.length : 0})`);
     return bonds;
-  }
-  // Wrap markPositionsChanged now that bondService/view exist
+  };
   state.markPositionsChanged = (...a) => {
     structureVersion++;
-    if (state.forceCache) {
-      state.forceCache.stale = true;
-      // Reflect the new geometry version immediately; content will refresh on next compute
-      try {
-        state.forceCache.version = structureVersion;
-      } catch { }
-    }
+    if (state.forceCache) { state.forceCache.stale = true; state.forceCache.version = structureVersion; }
     const r = __origMarkPositionsChanged ? __origMarkPositionsChanged(...a) : undefined;
-    // Always recompute bonds when positions change
-    try {
-      recomputeBonds('markPositionsChanged');
-    } catch { }
+    try { recomputeBonds('markPositionsChanged'); } catch { }
     return r;
   };
-  // If no bonds yet, ensure at least a recompute so initial energy uses bond term if applicable
-  if (!state.bonds || state.bonds.length === 0) {
-    try {
-      recomputeBonds();
-    } catch { }
-  }
-  async function relaxStep() {
-    __count('index#relaxStep');
-    try {
-      const step0 = performance.now();
-      // WS one-shot: request a single relax step frame
-      if (__useWsSim()) {
-        const ws = getWS();
-        await __wsEnsureInit();
-        // Cancel any pending debounced position energy recompute to avoid late userInteraction bumps
-        try {
-          if (posEnergyTimer) {
-            clearTimeout(posEnergyTimer);
-            posEnergyTimer = null;
-          }
-          pendingPosEnergy = false;
-        } catch { }
-        try {
-          ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 });
-          if (window.__MLIPVIEW_DEBUG_API)
-            console.log('[relaxWS][setCounters][single]', { uic: userInteractionVersion });
-        } catch { }
-        // Proactively sync current positions (and velocities if available) before requesting the single step
-        try {
-          const positions = state.positions.map((p) => [p.x, p.y, p.z]);
-          const v = getVelocitiesIfFresh();
-          ws.userInteraction({ positions, velocities: v || undefined });
-        } catch { }
-        // prevent overlap with streaming handlers
-        const t_req0 = performance.now();
-        const r = await ws.requestSingleStep({
-          type: 'relax',
-          params: {
-            calculator: 'uma',
-            fmax: state?.optimizer?.fmax || 0.05,
-            max_step: MAX_STEP,
-            optimizer: 'bfgs',
-          },
-        });
-        const netMs = Math.round((performance.now() - t_req0) * 100) / 100;
-        const parseMs = 0;
-        const uivAtSend = userInteractionVersion;
-        const tivAtSend = totalInteractionVersion;
-        const epochAtSend = resetEpoch;
-        // Apply below using r as data
-        const data = {
-          positions: r.positions,
-          forces: r.forces,
-          final_energy: r.energy,
-          stress: r.stress,
-        };
-        // Continue with existing apply flow using data/versions
-        // Discard stale epoch (no epoch carried over WS one-shot; still keep this path consistent)
-        if (epochAtSend !== resetEpoch) {
-          if (window.__MLIPVIEW_DEBUG_API)
-            console.debug('[staleStep][relax] staleEpoch', { epochAtSend, resetEpoch });
-          return { stale: true, staleReason: 'staleEpoch', epochAtSend, resetEpoch };
-        }
-        const netDone = performance.now();
-        let partialApplied = false;
-        let modifiedDuring = null;
-        const userChangedDuringFlight = false; // single-shot immediate
-        const exclude = new Set();
-        if (__draggingAtoms.size) for (const i of __draggingAtoms) exclude.add(i);
-        try {
-          const now = performance.now();
-          for (const [i, t] of __latchedAtomsUntil) {
-            if (t > now) exclude.add(i);
-            else __latchedAtomsUntil.delete(i);
-          }
-        } catch { }
-        const { positions, forces, final_energy } = data;
-        if (Array.isArray(positions) && positions.length === state.positions.length) {
-          const N = positions.length;
-          const apply0 = performance.now();
-          if (exclude.size > 0) {
-            for (let i = 0; i < N; i++) {
-              if (exclude.has(i)) continue;
-              const p = positions[i];
-              const tp = state.positions[i];
-              tp.x = p[0];
-              tp.y = p[1];
-              tp.z = p[2];
-            }
-            partialApplied = true;
-          } else {
-            for (let i = 0; i < N; i++) {
-              const p = positions[i];
-              const tp = state.positions[i];
-              tp.x = p[0];
-              tp.y = p[1];
-              tp.z = p[2];
-            }
-          }
-          state.markPositionsChanged();
-          __suppressNextPosChange = true;
-          bumpSimulationVersion(partialApplied ? 'relaxStepApplyPartial' : 'relaxStepApply');
-          noteLatency('relax', 'apply', {
-            ms: Math.round((performance.now() - apply0) * 100) / 100,
-          });
-        }
-        window.__RELAX_FORCES = forces;
-        state.dynamics = state.dynamics || {};
-        state.dynamics.energy = final_energy;
-        if (forces && forces.length) {
-          let mergedForces = forces;
-          if (partialApplied && exclude.size > 0) {
-            const cur = Array.isArray(state.forces) ? state.forces : null;
-            mergedForces = forces.map((f, i) =>
-              exclude.has(i) ? (cur && cur[i] ? cur[i] : [0, 0, 0]) : f
-            );
-          }
-          lastForceResult = { energy: final_energy, forces: mergedForces };
-          state.forceCache = {
-            version: structureVersion,
-            energy: final_energy,
-            forces: mergedForces,
-            stress: data.stress || null,
-            stale: false,
-          };
-          try {
-            __updateForces(mergedForces, {
-              reason: partialApplied ? 'relaxStepPartial' : 'relaxStep',
-            });
-          } catch { }
-        }
-        const step1 = performance.now();
-        noteLatency('relax', 'step-total', { ms: Math.round((step1 - step0) * 100) / 100 });
-        if (partialApplied)
-          return {
-            applied: true,
-            partial: true,
-            energy: final_energy,
-            userInteractionVersion,
-            totalInteractionVersion,
-            stepType: 'relax',
-            netMs,
-            parseMs,
-          };
-        return {
-          applied: true,
-          energy: final_energy,
-          userInteractionVersion,
-          totalInteractionVersion,
-          stepType: 'relax',
-          netMs,
-          parseMs,
-        };
-      }
-      // Legacy (removed) fallback will throw inside callRelaxEndpoint
-      const { data, uivAtSend, tivAtSend, epochAtSend, netMs, parseMs } =
-        await callRelaxEndpoint(1);
-      // Discard responses from prior reset epoch entirely
-      if (epochAtSend !== resetEpoch) {
-        if (window.__MLIPVIEW_DEBUG_API)
-          console.debug('[staleStep][relax] staleEpoch', { epochAtSend, resetEpoch });
-        return { stale: true, staleReason: 'staleEpoch', epochAtSend, resetEpoch };
-      }
-      const netDone = performance.now();
-      // If user interactions occurred during in-flight relax, apply partial update:
-      // update only atoms NOT edited by user between send and receive.
-      let partialApplied = false;
-      let modifiedDuring = null;
-      const userChangedDuringFlight = uivAtSend !== userInteractionVersion;
-      if (userChangedDuringFlight) {
-        modifiedDuring = __modifiedSetBetween(uivAtSend, userInteractionVersion);
-      }
-      // Build exclusion set: union of modifiedDuring and currently dragged atoms
-      const exclude = new Set();
-      if (modifiedDuring) for (const i of modifiedDuring) exclude.add(i);
-      if (__draggingAtoms.size) for (const i of __draggingAtoms) exclude.add(i);
-      // Also exclude any latched atoms whose latch window has not expired
-      try {
-        const now =
-          typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
-        for (const [i, t] of __latchedAtomsUntil) {
-          if (t > now) exclude.add(i);
-          else __latchedAtomsUntil.delete(i);
-        }
-      } catch { }
-      // If a newer simulation result has already applied AND there were no user edits during flight,
-      // mark this response as superseded. If user edits happened, we'll attempt a partial apply below.
-      if (tivAtSend !== totalInteractionVersion && !userChangedDuringFlight) {
-        if (window.__MLIPVIEW_DEBUG_API)
-          console.debug('[staleStep][relax] supersededSimulation', {
-            uivAtSend,
-            userInteractionVersion,
-            tivAtSend,
-            totalInteractionVersion,
-          });
-        return {
-          stale: true,
-          staleReason: 'supersededSimulation',
-          userInteractionVersionAtSend: uivAtSend,
-          totalInteractionVersionAtSend: tivAtSend,
-          currentUserInteractionVersion: userInteractionVersion,
-          currentTotalInteractionVersion: totalInteractionVersion,
-        };
-      }
-      const { positions, forces, final_energy } = data;
-      if (Array.isArray(positions) && positions.length === state.positions.length) {
-        // If modifiedDuring is set, apply only for indices not in the set
-        const N = positions.length;
-        const apply0 = performance.now();
-        if (exclude && exclude.size > 0) {
-          for (let i = 0; i < N; i++) {
-            if (exclude.has(i)) continue; // keep user's current edit or drag
-            const p = positions[i];
-            const tp = state.positions[i];
-            tp.x = p[0];
-            tp.y = p[1];
-            tp.z = p[2];
-          }
-          partialApplied = true;
-        } else {
-          for (let i = 0; i < N; i++) {
-            const p = positions[i];
-            const tp = state.positions[i];
-            tp.x = p[0];
-            tp.y = p[1];
-            tp.z = p[2];
-          }
-        }
-        state.markPositionsChanged();
-        // Suppress the debounced generic posChange tick from counting as a user interaction
-        __suppressNextPosChange = true;
-        bumpSimulationVersion(partialApplied ? 'relaxStepApplyPartial' : 'relaxStepApply');
-        const apply1 = performance.now();
-        noteLatency('relax', 'apply', { ms: Math.round((apply1 - apply0) * 100) / 100 });
-      }
-      window.__RELAX_FORCES = forces;
-      state.dynamics = state.dynamics || {};
-      state.dynamics.energy = final_energy;
-      if (forces && forces.length) {
-        let mergedForces = forces;
-        if (partialApplied && exclude && exclude.size > 0) {
-          // Merge: keep current forces for user-edited atoms if available
-          const cur = Array.isArray(state.forces) ? state.forces : null;
-          mergedForces = forces.map((f, i) =>
-            exclude.has(i) ? (cur && cur[i] ? cur[i] : [0, 0, 0]) : f
-          );
-        }
-        lastForceResult = { energy: final_energy, forces: mergedForces };
-        state.forceCache = {
-          version: structureVersion,
-          energy: final_energy,
-          forces: mergedForces,
-          stress: data.stress || null,
-          stale: false,
-        };
-        try {
-          __updateForces(mergedForces, {
-            reason: partialApplied ? 'relaxStepPartial' : 'relaxStep',
-          });
-        } catch { }
-      }
-      if (partialApplied) {
-        const step1 = performance.now();
-        noteLatency('relax', 'step-total', { ms: Math.round((step1 - step0) * 100) / 100 });
-        return {
-          applied: true,
-          partial: true,
-          energy: final_energy,
-          userInteractionVersion,
-          totalInteractionVersion,
-          stepType: 'relax',
-          netMs,
-          parseMs,
-        };
-      }
-      {
-        const step1 = performance.now();
-        noteLatency('relax', 'step-total', { ms: Math.round((step1 - step0) * 100) / 100 });
-      }
-      return {
-        applied: true,
-        energy: final_energy,
-        userInteractionVersion,
-        totalInteractionVersion,
-        stepType: 'relax',
-        netMs,
-        parseMs,
-      };
-    } catch (e) {
-      console.warn('[relaxStep] failed', e);
-      return { error: e?.message || String(e) };
-    }
-  }
+  if (!state.bonds?.length) { try { recomputeBonds(); } catch { } }
 
-  // --- MD step (backend-only logic, but callable from UI) ---
-  // Track MD request ordering so concurrent responses can be resolved as latest-wins for application
-  let __mdReqCounter = 0;
-  let __mdLastApplied = 0;
-  async function callMDEndpoint({
-    steps = 1,
-    calculator = 'uma',
-    temperature = 1500,
-    timestep_fs = 1.0,
-    friction,
-  } = {}) {
-    __count('index#callMDEndpoint');
-    // If temperature not explicitly provided, use global target when available
-    try {
-      if (
-        (temperature == null || !Number.isFinite(temperature)) &&
-        typeof window !== 'undefined' &&
-        window.__MLIP_TARGET_TEMPERATURE != null
-      ) {
-        temperature = Number(window.__MLIP_TARGET_TEMPERATURE);
-      }
-    } catch { }
-    const pos = state.positions.map((p) => [p.x, p.y, p.z]);
-    const atomic_numbers = state.elements.map((e) => elementToZ(e));
-    const frictionFinal =
-      typeof friction === 'number' && Number.isFinite(friction)
-        ? friction
-        : (getConfig().mdFriction ?? DEFAULT_MD_FRICTION);
-    const body = {
-      atomic_numbers,
-      coordinates: pos,
-      steps,
-      temperature,
-      timestep_fs,
-      friction: frictionFinal,
-      calculator,
-    };
-    try {
-      if (typeof window !== 'undefined' && window.__MLIP_DEBUG_MD_TEMP) {
-        console.log('[MD][request] temperature', { T: temperature });
-      }
-    } catch { }
-    try {
-      if (state.showCell && state.cell && state.cell.enabled) {
-        body.cell = [
-          [state.cell.a.x, state.cell.a.y, state.cell.a.z],
-          [state.cell.b.x, state.cell.b.y, state.cell.b.z],
-          [state.cell.c.x, state.cell.c.y, state.cell.c.z],
-        ];
-        body.pbc = [true, true, true];
-      }
-    } catch { }
-    const maybePre = buildPrecomputedIfFresh();
-    if (maybePre) {
-      body.precomputed = maybePre;
-      debugApi('md', 'precomputed-attach', { seq: __apiSeq + 1, keys: Object.keys(maybePre) });
-    }
-    const maybeV = getVelocitiesIfFresh();
-    if (maybeV) {
-      body.velocities = maybeV;
-    }
-    const uivAtSend = userInteractionVersion;
-    const tivAtSend = totalInteractionVersion;
-    const epochAtSend = resetEpoch;
-    const url = '[REST removed]/md';
-    const payload = body;
-    const seq = ++__apiSeq;
-    if (typeof window !== 'undefined') window.__MLIPVIEW_API_SEQ = __apiSeq;
-    const build0 = performance.now();
-    const t0 = performance.now();
-    debugApi('md', 'request', { seq, url, body: payload });
-    // Legacy path removed. Handled by WS requestSingleStep in mdStep.
-    throw new Error('[REST removed] MD endpoint removed. Replace with WS requestSingleStep');
-  }
-  async function mdStep(opts = {}) {
-    __count('index#mdStep');
-    try {
-      const t0_step = performance.now();
-      const reqId = ++__mdReqCounter;
-      // Default temperature source: global target if not provided
-      let callOpts = { ...opts };
-      try {
-        if (
-          (callOpts.temperature == null || !Number.isFinite(callOpts.temperature)) &&
-          typeof window !== 'undefined' &&
-          window.__MLIP_TARGET_TEMPERATURE != null
-        ) {
-          callOpts.temperature = Number(window.__MLIP_TARGET_TEMPERATURE);
-        }
-      } catch { }
-      // WS one-shot MD
-      if (__useWsSim()) {
-        const ws = getWS();
-        await __wsEnsureInit();
-        try {
-          ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 });
-          if (window.__MLIPVIEW_DEBUG_API)
-            console.log('[mdWS][setCounters][single]', { uic: userInteractionVersion });
-        } catch { }
-        const t_req0 = performance.now();
-        const r = await ws.requestSingleStep({
-          type: 'md',
-          params: {
-            calculator: callOpts.calculator || 'uma',
-            temperature: callOpts.temperature,
-            timestep_fs: callOpts.timestep_fs,
-            friction:
-              typeof callOpts.friction === 'number' && Number.isFinite(callOpts.friction)
-                ? callOpts.friction
-                : (getConfig().mdFriction ?? DEFAULT_MD_FRICTION),
-          },
-        });
-        const netMs = Math.round((performance.now() - t_req0) * 100) / 100;
-        const parseMs = 0;
-        const uivAtSend = userInteractionVersion;
-        const tivAtSend = totalInteractionVersion;
-        const epochAtSend = resetEpoch;
-        const data = {
-          positions: r.positions,
-          forces: r.forces,
-          final_energy: r.energy,
-          velocities: r.velocities,
-          temperature: r.temperature,
-        };
-        if (epochAtSend !== resetEpoch) {
-          if (window.__MLIPVIEW_DEBUG_API)
-            console.debug('[staleStep][md] staleEpoch', { epochAtSend, resetEpoch });
-          return { stale: true, staleReason: 'staleEpoch', epochAtSend, resetEpoch };
-        }
-        // Apply full positions (no partial exclusions in single-step path)
-        const positions = data.positions,
-          forces = data.forces,
-          final_energy = data.final_energy,
-          velocities = data.velocities,
-          instT = data.temperature;
-        if (Array.isArray(positions) && positions.length === state.positions.length) {
-          const N = positions.length;
-          const apply0 = performance.now();
-          for (let i = 0; i < N; i++) {
-            const p = positions[i];
-            const tp = state.positions[i];
-            tp.x = p[0];
-            tp.y = p[1];
-            tp.z = p[2];
-          }
-          state.markPositionsChanged();
-          __suppressNextPosChange = true;
-          bumpSimulationVersion('mdStepApply');
-          noteLatency('md', 'apply', { ms: Math.round((performance.now() - apply0) * 100) / 100 });
-        }
-        window.__RELAX_FORCES = forces;
-        state.dynamics = state.dynamics || {};
-        state.dynamics.energy = final_energy;
-        if (typeof instT === 'number' && isFinite(instT)) {
-          state.dynamics.temperature = instT;
-          try {
-            const el = document.getElementById('instTemp');
-            if (el) el.textContent = 'T: ' + instT.toFixed(1) + ' K';
-          } catch { }
-        }
-        if (Array.isArray(velocities) && velocities.length === state.elements.length) {
-          state.dynamics.velocities = velocities;
-        }
-        if (forces && forces.length) {
-          let mergedForces = forces;
-          lastForceResult = { energy: final_energy, forces: mergedForces };
-          state.forceCache = {
-            version: structureVersion,
-            energy: final_energy,
-            forces: mergedForces,
-            stress: null,
-            stale: false,
-          };
-          __updateForces(mergedForces, { reason: 'mdStep' });
-        }
-        const stepRes = {
-          applied: true,
-          energy: final_energy,
-          userInteractionVersion,
-          totalInteractionVersion,
-          stepType: 'md',
-          netMs,
-          parseMs,
-        };
-        return stepRes;
-      }
-      const { data, uivAtSend, tivAtSend, epochAtSend, netMs, parseMs } = await callMDEndpoint({
-        steps: 1,
-        ...callOpts,
-      });
-      // Discard responses from prior reset epoch entirely
-      if (epochAtSend !== resetEpoch) {
-        if (window.__MLIPVIEW_DEBUG_API)
-          console.debug('[staleStep][md] staleEpoch', { epochAtSend, resetEpoch });
-        return { stale: true, staleReason: 'staleEpoch', epochAtSend, resetEpoch };
-      }
-      // If a newer MD result has already been applied, this one is stale regardless of other checks
-      if (reqId < __mdLastApplied) {
-        if (window.__MLIPVIEW_DEBUG_API)
-          console.debug('[staleStep][md] superseded by newer applied req', {
-            reqId,
-            lastApplied: __mdLastApplied,
-          });
-        return {
-          stale: true,
-          staleReason: 'supersededSimulation',
-          userInteractionVersionAtSend: uivAtSend,
-          totalInteractionVersionAtSend: tivAtSend,
-          currentUserInteractionVersion: userInteractionVersion,
-          currentTotalInteractionVersion: totalInteractionVersion,
-        };
-      }
-      // If user interactions occurred during in-flight MD, apply partial update for non-edited atoms.
-      let partialApplied = false;
-      let modifiedDuring = null;
-      if (uivAtSend !== userInteractionVersion) {
-        modifiedDuring = __modifiedSetBetween(uivAtSend, userInteractionVersion);
-      }
-      const exclude = new Set();
-      if (modifiedDuring) for (const i of modifiedDuring) exclude.add(i);
-      if (__draggingAtoms.size) for (const i of __draggingAtoms) exclude.add(i);
-      try {
-        const now =
-          typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
-        for (const [i, t] of __latchedAtomsUntil) {
-          if (t > now) exclude.add(i);
-          else __latchedAtomsUntil.delete(i);
-        }
-      } catch { }
-      const { positions, forces, final_energy, velocities, temperature: instT } = data;
-      if (Array.isArray(positions) && positions.length === state.positions.length) {
-        const N = positions.length;
-        const apply0 = performance.now();
-        if (exclude && exclude.size > 0) {
-          for (let i = 0; i < N; i++) {
-            if (exclude.has(i)) continue;
-            const p = positions[i];
-            const tp = state.positions[i];
-            tp.x = p[0];
-            tp.y = p[1];
-            tp.z = p[2];
-          }
-          partialApplied = true;
-        } else {
-          for (let i = 0; i < N; i++) {
-            const p = positions[i];
-            const tp = state.positions[i];
-            tp.x = p[0];
-            tp.y = p[1];
-            tp.z = p[2];
-          }
-        }
-        state.markPositionsChanged();
-        __suppressNextPosChange = true;
-        bumpSimulationVersion(partialApplied ? 'mdStepApplyPartial' : 'mdStepApply');
-        const apply1 = performance.now();
-        noteLatency('md', 'apply', { ms: Math.round((apply1 - apply0) * 100) / 100 });
-      }
-      window.__RELAX_FORCES = forces;
-      state.dynamics = state.dynamics || {};
-      state.dynamics.energy = final_energy;
-      if (typeof instT === 'number' && isFinite(instT)) {
-        state.dynamics.temperature = instT;
-        try {
-          const el = document.getElementById('instTemp');
-          if (el) el.textContent = 'T: ' + instT.toFixed(1) + ' K';
-        } catch { }
-      }
-      if (Array.isArray(velocities) && velocities.length === state.elements.length) {
-        // Shallow validate
-        let ok = true;
-        for (let i = 0; i < velocities.length && ok; i++) {
-          const r = velocities[i];
-          if (!r || r.length !== 3) ok = false;
-        }
-        if (ok) {
-          if (partialApplied && exclude && exclude.size > 0) {
-            const curV = Array.isArray(state.dynamics?.velocities)
-              ? state.dynamics.velocities
-              : null;
-            const mergedV = velocities.map((v, i) =>
-              exclude.has(i) ? (curV && curV[i] ? curV[i] : [0, 0, 0]) : v
-            );
-            state.dynamics.velocities = mergedV;
-          } else {
-            state.dynamics.velocities = velocities;
-          }
-        }
-      } else {
-        // Test-mode fallback: ensure shape exists for assertions even if backend omitted velocities
-        try {
-          const testMode = typeof window !== 'undefined' && !!window.__MLIPVIEW_TEST_MODE;
-          if (
-            testMode &&
-            Array.isArray(state.positions) &&
-            state.positions.length === state.elements.length
-          ) {
-            state.dynamics.velocities = state.positions.map(() => [0, 0, 0]);
-          }
-        } catch { }
-      }
-      if (forces && forces.length) {
-        let mergedForces = forces;
-        if (partialApplied && exclude && exclude.size > 0) {
-          const cur = Array.isArray(state.forces) ? state.forces : null;
-          mergedForces = forces.map((f, i) =>
-            exclude.has(i) ? (cur && cur[i] ? cur[i] : [0, 0, 0]) : f
-          );
-        }
-        lastForceResult = { energy: final_energy, forces: mergedForces };
-        state.forceCache = {
-          version: structureVersion,
-          energy: final_energy,
-          forces: mergedForces,
-          stress: null,
-          stale: false,
-        };
-        // Commit forces so visualization updates during MD sequences
-        try {
-          __updateForces(mergedForces, { reason: partialApplied ? 'mdStepPartial' : 'mdStep' });
-        } catch { }
-      }
-      // Mark this response as the latest applied
-      __mdLastApplied = Math.max(__mdLastApplied, reqId);
-      if (partialApplied) {
-        noteLatency('md', 'step-total', {
-          ms: Math.round((performance.now() - t0_step) * 100) / 100,
-        });
-        return {
-          applied: true,
-          partial: true,
-          energy: final_energy,
-          userInteractionVersion,
-          totalInteractionVersion,
-          stepType: 'md',
-          netMs,
-          parseMs,
-        };
-      }
-      noteLatency('md', 'step-total', {
-        ms: Math.round((performance.now() - t0_step) * 100) / 100,
-      });
-      return {
-        applied: true,
-        energy: final_energy,
-        userInteractionVersion,
-        totalInteractionVersion,
-        stepType: 'md',
-        netMs,
-        parseMs,
-      };
-    } catch (e) {
-      console.warn('[mdStep] failed', e);
-      return { error: e?.message || String(e) };
-    }
-  }
+  // Scene & view
+  const { engine, scene, camera } = await createScene(canvas);
+  onWin(w => {
+    w.__MLIPVIEW_DEBUG_TOUCH = !!w.__MLIPVIEW_DEBUG_TOUCH;
+    w.enableTouchDebug = (on) => { w.__MLIPVIEW_DEBUG_TOUCH = !!on; dbg.log('[touchDebug] set to', w.__MLIPVIEW_DEBUG_TOUCH); };
+  });
+  const view = createMoleculeView(scene, state);
+  const manipulation = createManipulationService(state, { bondService });
 
-  // Interaction & energy time series
+  // Picking & touch controls
+  let pickingRef = null;
+  const pickingProxy = { _debug: { get dragActive() { try { return !!(pickingRef?._debug?.dragActive); } catch { return false; } } } };
+  const NO_TOUCH = qbool('noTouch');
+  try {
+    if (NO_TOUCH) { onWin(w => { w.__MLIPVIEW_NO_TOUCH = true; dbg.warn('[touchControls] skipped by ?noTouch=1'); }); }
+    else { installTouchControls({ canvas, scene, camera, picking: pickingProxy }); dbg.log('[touchControls] installed'); }
+  } catch (e) { dbg.warn('[touchControls] install failed', e?.message || e); }
+
+  // Interaction bookkeeping
   const interactions = [];
-  const energySeries = []; // {i,E,kind}
-  // Debug: log energy series growth in browser console when enabled via ?debug=1
-  function __logEnergyTick() {
-    try {
-      if (window.__MLIPVIEW_DEBUG_API) console.log('[energy] len=', energySeries.length);
-    } catch { }
-  }
-  let lastPlottedEnergy = undefined;
-  function maybePlotEnergy(kind) {
-    try {
-      const E = state.dynamics?.energy;
-      // Update live metrics energy label (formatted E: %0.2f)
-      try {
-        const elE = document.getElementById('instEnergy');
-        if (elE && typeof E === 'number' && isFinite(E)) {
-          elE.textContent = 'E: ' + E.toFixed(2);
-        }
-      } catch { }
-      if (typeof E !== 'number' || !isFinite(E)) return;
-      try {
-        if (E === lastPlottedEnergy && !(window && window.__ALLOW_DUPLICATE_ENERGY_TICKS)) return; // skip duplicates unless explicitly allowed
-      } catch {
-        if (E === lastPlottedEnergy) return;
-      }
-      const idx = energySeries.length;
-      energySeries.push({ i: idx, E, kind });
-      __logEnergyTick();
-      lastPlottedEnergy = E;
-      window.__RELAX_TRACE = energySeries.map((e) => e.E);
-      drawEnergy();
-    } catch (_e) {
-      /* ignore plot errors */
-    }
-  }
-  // Suppress the very next debounced generic 'posChange' interaction if a higher-level
-  // action (e.g. bondRotate) already recorded an energy step in the same logical edit.
   let __suppressNextPosChange = false;
-  // recordInteraction: central funnel for adding user/system events that should reflect
-  // a (potential) energy change. Any geometry-changing action (drag move/end, bond rotate,
-  // relax step, MD step, provider recompute) should either call recordInteraction directly
-  // or be wrapped (see wrappers below). This keeps the energy sparkline in sync without
-  // scattering plotting logic across services. We seed an initial 'init' interaction after
-  // the first force compute so a single point is drawn (dot) before any steps.
-  function recordInteraction(kind) {
-    __count('index#recordInteraction');
-    const E = state.dynamics.energy ?? 0;
-    const idx = interactions.length;
-    interactions.push({ i: idx, kind, E });
-    // Energy plot no longer advances here; only API energy returns call maybePlotEnergy.
-    // Notify force visualization (now handled by moleculeView thin instances)
+  const recordInteraction = (kind) => {
+    const E = state.dynamics?.energy ?? 0;
+    const i = interactions.length; interactions.push({ i, kind, E });
     if (kind && kind !== 'dragMove') {
-      try {
-        if (state.bus.emit) {
-          const DBG =
-            typeof window !== 'undefined' &&
-            (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search || ''));
-          if (!state.forces && window.__RELAX_FORCES && window.__RELAX_FORCES.length) {
-            __updateForces(window.__RELAX_FORCES, { reason: 'lateAttachInteraction' });
-          }
-          if (DBG)
-            console.log(
-              '[Forces][emit] forcesChanged due to interaction kind=',
-              kind,
-              'haveForces=',
-              !!state.forces
-            );
-          state.bus.emit('forcesChanged');
-        }
-      } catch { }
+      if (!state.forces && Array.isArray(window?.__RELAX_FORCES) && window.__RELAX_FORCES.length)
+        updateForces(window.__RELAX_FORCES, { reason: 'lateAttachInteraction' });
+      state.bus?.emit?.('forcesChanged');
     }
-  }
-  async function baselineEnergy() {
-    __count('index#baselineEnergy');
-    interactions.length = 0;
-    energySeries.length = 0; // cleared; first API energy response will add first point
-    let res;
-    try {
-      res = await ff.computeForces({ sync: !!window.__FORCE_SYNC_REMOTE__ });
-      state.dynamics = state.dynamics || {};
-      state.dynamics.energy = res.energy;
-    } catch (e) {
-      res = { energy: NaN, forces: [] };
-    }
-    window.__RELAX_FORCES = res.forces || [];
-    if (res.forces && res.forces.length) {
-      __updateForces(res.forces, { reason: 'baselineEnergy' });
-    } else {
-      const DBG =
-        typeof window !== 'undefined' &&
-        (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search || ''));
-      if (DBG) {
-        const synth = state.positions.map((p) => {
-          const r = Math.hypot(p.x, p.y, p.z) || 1;
-          return [(p.x / r) * 0.3, (p.y / r) * 0.3, (p.z / r) * 0.3];
-        });
-        window.__RELAX_FORCES = synth;
-        __updateForces(synth, { reason: 'baselineEnergySynth' });
-      }
-    }
-    // Do not create an 'init' energy tick. First real API response will create the first point.
-  }
-  // Wrap atomic-changing operations (relax/MD steps already wrapped below)
-  const origRelaxStep = relaxStep;
-  relaxStep = async () => {
-    const r = await origRelaxStep();
-    if (r && r.applied) {
-      recordInteraction('relaxStep');
-      maybePlotEnergy('relax');
-    }
-    return r;
   };
-  const origMdStep = mdStep;
-  mdStep = async (o) => {
-    const r = await origMdStep(o);
-    if (r && r.applied) {
-      recordInteraction('mdStep');
-      maybePlotEnergy('md');
-    }
-    return r;
-  };
-  // Wrap manipulation (drag & bond rotation) so any geometry change recomputes energy and updates plot.
-  function __selectedAtomIndex() {
+
+  // Drag emission (throttled)
+  const emitDuringDrag = throttle(() => {
     try {
-      return state.selection && state.selection.kind === 'atom' ? state.selection.data.index : null;
-    } catch {
-      return null;
-    }
+      const ws = getWS();
+      ws.setCounters?.({ userInteractionCount: userInteractionVersion });
+      ws.userInteraction?.({ positions: posToTriples(state) });
+    } catch { }
+  }, 100);
+
+  // Wrapped manipulation to track edits
+  function selectedAtomIndex() {
+    try { return state.selection?.kind === 'atom' ? state.selection.data.index : null; }
+    catch { return null; }
   }
   const wrappedManipulation = {
     beginDrag: (...a) => {
-      const ok = manipulation.beginDrag(...a);
+      const ok = manipulation.beginDrag?.(...a);
       if (ok) {
-        const idx = __selectedAtomIndex();
-        if (idx != null) {
-          __currentDraggedAtomIndex = idx;
-          __draggingAtoms.add(idx);
-        }
+        const idx = selectedAtomIndex(); if (idx != null) { currentDraggedAtom.idx = idx; draggingAtoms.add(idx); }
       }
       return ok;
     },
     updateDrag: (...a) => {
-      const r = manipulation.updateDrag(...a);
+      const r = manipulation.updateDrag?.(...a);
       if (r) {
-        bumpUserInteractionVersion('dragMove');
-        const idx = __selectedAtomIndex();
-        if (idx != null) {
-          __addModifiedAtoms([idx]);
-          __currentDraggedAtomIndex = idx;
-          __draggingAtoms.add(idx);
-        }
-        // Throttled emit during drag (idle or running)
-        __scheduleDragEmit();
-        recordInteraction('dragMove');
+        bumpUser('dragMove');
+        const idx = selectedAtomIndex(); if (idx != null) { modifiedByVersion.get(userInteractionVersion) || modifiedByVersion.set(userInteractionVersion, new Set()); modifiedByVersion.get(userInteractionVersion).add(idx); currentDraggedAtom.idx = idx; draggingAtoms.add(idx); }
+        emitDuringDrag(); recordInteraction('dragMove');
       }
       return r;
     },
     endDrag: (...a) => {
-      const hadDrag = __currentDraggedAtomIndex != null || __draggingAtoms.size > 0;
-      // Capture drag source before underlying service clears its state
-      let dragSource = null;
-      try {
-        dragSource = manipulation._debug?.getDragState?.()?.source || null;
-      } catch { }
-      const r = manipulation.endDrag(...a);
-      if (hadDrag) {
-        bumpUserInteractionVersion('dragEnd');
-        const idx =
-          __currentDraggedAtomIndex != null ? __currentDraggedAtomIndex : __selectedAtomIndex();
+      const had = (currentDraggedAtom.idx != null) || draggingAtoms.size > 0;
+      let dragSource = null; try { dragSource = manipulation._debug?.getDragState?.()?.source || null; } catch { }
+      const r = manipulation.endDrag?.(...a);
+      if (had) {
+        bumpUser('dragEnd');
+        const idx = (currentDraggedAtom.idx != null) ? currentDraggedAtom.idx : selectedAtomIndex();
         if (idx != null) {
-          __addModifiedAtoms([idx]);
-          __draggingAtoms.delete(idx);
-          // Latch only for VR-origin drags to prevent immediate snapback from in-flight MD/relax
-          if (dragSource === 'vr') {
-            __latchAtom(idx, 800);
-          }
+          modifiedByVersion.get(userInteractionVersion) || modifiedByVersion.set(userInteractionVersion, new Set());
+          modifiedByVersion.get(userInteractionVersion).add(idx);
+          draggingAtoms.delete(idx);
+          if (dragSource === 'vr') latchAtom(idx, 800);
         }
-        // Final emit on drag end: cancel pending throttle and send immediately
-        try { if (__dragEmitTimer) { clearTimeout(__dragEmitTimer); __dragEmitTimer = null; } } catch { }
-        try { __dragLastEmitAt = 0; } catch { }
-        if (running.kind) {
-          try {
-            const ws = getWS();
-            try { ws.setCounters({ userInteractionCount: userInteractionVersion }); } catch { }
-            const positions = state.positions.map((p) => [p.x, p.y, p.z]);
-            ws.userInteraction({ positions });
-          } catch { }
-        } else {
-          try { ff.computeForces(); } catch { }
-        }
-        // Clear current pointer
-        __currentDraggedAtomIndex = null;
+        try { const ws = getWS(); ws.setCounters?.({ userInteractionCount: userInteractionVersion }); ws.userInteraction?.({ positions: posToTriples(state) }); } catch { }
+        currentDraggedAtom.idx = null;
       }
-      // No extra compute here; final emit handled above when hadDrag
       recordInteraction('dragEnd');
       return r;
     },
-    setDragPlane: (...a) => manipulation.setDragPlane(...a),
+    setDragPlane: (...a) => manipulation.setDragPlane?.(...a),
     rotateBond: (...a) => {
-      const r = manipulation.rotateBond(...a);
+      const r = manipulation.rotateBond?.(...a);
       if (r) {
-        // capture rotated side atoms via manipulation debug hook
-        let sideAtoms = null;
-        try {
-          sideAtoms = manipulation._debug?.getLastRotation?.()?.sideAtoms || null;
-        } catch { }
-        bumpUserInteractionVersion('bondRotate');
-        if (Array.isArray(sideAtoms) && sideAtoms.length) __addModifiedAtoms(sideAtoms);
+        let sideAtoms = null; try { sideAtoms = manipulation._debug?.getLastRotation?.()?.sideAtoms || null; } catch { }
+        bumpUser('bondRotate');
+        if (Array.isArray(sideAtoms) && sideAtoms.length) {
+          modifiedByVersion.get(userInteractionVersion) || modifiedByVersion.set(userInteractionVersion, new Set());
+          for (const i of sideAtoms) modifiedByVersion.get(userInteractionVersion).add(i);
+        }
         if (!running.kind) ff.computeForces();
         recordInteraction('bondRotate');
         __suppressNextPosChange = true;
@@ -1666,1123 +476,414 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       return r;
     },
   };
-  // Mark for debug/diagnostics so other subsystems (VR) can assert they received the wrapped instance
+  try { Object.defineProperty(wrappedManipulation, '__isWrappedManipulation', { value: true }); } catch { wrappedManipulation.__isWrappedManipulation = true; }
+
+  // Picking after wrappedManipulation available
+  const picking = (pickingRef = createPickingService(
+    scene,
+    view,
+    createSelectionService(state),
+    {
+      manipulation: new Proxy({}, { get: (_, k) => wrappedManipulation?.[k] }),
+      camera,
+      energyHook: ({ kind }) => {
+        const dragging = draggingAtoms.size > 0 || currentDraggedAtom.idx != null;
+        if (!running.kind) { if (dragging) emitDuringDrag(); else ff.computeForces(); }
+        recordInteraction(kind || 'drag');
+      },
+    },
+  ));
+
+  // VR setup
+  let vrPicker = null; try { vrPicker = createVRPicker({ scene, view }); } catch (e) { dbg.warn('[VR] vrPicker init failed', e?.message || e); }
+  const vr = createVRSupport(scene, {
+    picking: {
+      ...picking,
+      view,
+      vrPicker,
+      selectionService: picking.selectionService,
+      manipulation: new Proxy({}, { get: (_, k) => wrappedManipulation?.[k] }),
+      molState: state,
+    },
+  });
+  try { vr.init().then(res => dbg.log(res.supported ? '[VR] support initialized (auto)' : '[VR] not supported')); } catch (e) { dbg.warn('[VR] auto init failed', e?.message || e); }
+
+  // Baseline energy (seed forces/energy once)
+  async function baselineEnergy() {
+    __count('index#baselineEnergy');
+    interactions.length = 0; energyPlot.reset();
+    let res; try { res = await ff.computeForces({ sync: !!window?.__FORCE_SYNC_REMOTE__ }); state.dynamics ||= {}; state.dynamics.energy = res.energy; }
+    catch { res = { energy: NaN, forces: [] }; }
+    window.__RELAX_FORCES = res.forces || [];
+    if (res.forces?.length) updateForces(res.forces, { reason: 'baselineEnergy' });
+    // first energy point is added when API returns; keep baseline silent
+  }
+  try { await baselineEnergy(); } catch { }
+
+  // Seed initial positions if missing
   try {
-    Object.defineProperty(wrappedManipulation, '__isWrappedManipulation', {
-      value: true,
-      enumerable: false,
-    });
-  } catch {
-    wrappedManipulation.__isWrappedManipulation = true;
-  }
-  wrappedManipulationRef = wrappedManipulation;
+    const need = !state.__initialPositions?.length || state.__initialPositions.length !== (state.positions?.length || 0);
+    if (need && state.positions?.length) {
+      state.__initialPositions = state.positions.map(p => ({ x: p.x, y: p.y, z: p.z }));
+      dbg.log('[Reset] baseline seeded after baselineEnergy', { count: state.__initialPositions.length });
+    }
+  } catch { }
 
-  // Provide explicit cleanup to help Jest teardown
-  if (typeof window !== 'undefined') {
-    window.__MLIPVIEW_CLEANUP = window.__MLIPVIEW_CLEANUP || [];
-    window.__MLIPVIEW_CLEANUP.push(() => {
-      try {
-        engine && engine.stopRenderLoop && engine.stopRenderLoop();
-      } catch { }
-      try {
-        if (scene && scene.dispose) scene.dispose();
-      } catch { }
-    });
-  }
-  // Selection or manipulation events could be hooked similarly via bus later
+  // Capture initial cell snapshot for reset
+  try {
+    if (!state.__initialCellSnapshot && state.cell?.a && state.cell?.b && state.cell?.c) {
+      const c = state.cell;
+      state.__initialCellSnapshot = {
+        a: { x: c.a.x, y: c.a.y, z: c.a.z },
+        b: { x: c.b.x, y: c.b.y, z: c.b.z },
+        c: { x: c.c.x, y: c.c.y, z: c.c.z },
+        originOffset: c.originOffset ? { x: c.originOffset.x || 0, y: c.originOffset.y || 0, z: c.originOffset.z || 0 } : { x: 0, y: 0, z: 0 },
+        enabled: !!c.enabled,
+      };
+      dbg.log('[Reset] captured initial cell snapshot');
+    }
+  } catch { }
 
-  let energyCtx = null;
-  let energyCanvas = null;
-  let energyLabel = null;
-  function initEnergyCanvas() {
-    __count('index#initEnergyCanvas');
-    if (energyCanvas) return;
-    energyCanvas = document.getElementById('energyCanvas');
-    if (!energyCanvas) return;
-    energyCtx = energyCanvas.getContext('2d');
-    energyLabel = document.getElementById('energyLabel');
-  }
-  function drawEnergy() {
-    __count('index#drawEnergy');
-    initEnergyCanvas();
-    if (!energyCtx) return;
-    const W = energyCanvas.width,
-      H = energyCanvas.height;
-    energyCtx.clearRect(0, 0, W, H);
-    if (energySeries.length === 0) return;
-    if (energySeries.length === 1) {
-      const p = energySeries[0];
-      energyCtx.fillStyle = '#6fc2ff';
-      energyCtx.beginPath();
-      energyCtx.arc(W / 2, H / 2, 3, 0, Math.PI * 2);
-      energyCtx.fill();
-      if (energyLabel) energyLabel.textContent = 'E steps=1';
-      return;
-    }
-    let minE = Infinity,
-      maxE = -Infinity;
-    for (const p of energySeries) {
-      if (p.E < minE) minE = p.E;
-      if (p.E > maxE) maxE = p.E;
-    }
-    if (maxE - minE < 1e-12) {
-      maxE = minE + 1e-12;
-    }
-    energyCtx.strokeStyle = '#6fc2ff';
-    energyCtx.lineWidth = 1;
-    energyCtx.beginPath();
-    for (let k = 0; k < energySeries.length; k++) {
-      const p = energySeries[k];
-      const x = (k / (energySeries.length - 1)) * (W - 4) + 2;
-      const y = H - 2 - ((p.E - minE) / (maxE - minE)) * (H - 4);
-      if (k === 0) energyCtx.moveTo(x, y);
-      else energyCtx.lineTo(x, y);
-    }
-    energyCtx.stroke();
-    if (energyLabel)
-      energyLabel.textContent = `E steps=${energySeries.length} range=${(maxE - minE).toExponential(2)}`;
-  }
-
-  // Debounced auto energy update when any positionsChanged event fires (catch-all for drag paths)
-  let posEnergyTimer = null;
-  let pendingPosEnergy = false;
-  let __skipFirstPosChangeForVersion = true;
+  // positionsChanged debounce (avoid overwriting step forces)
+  let posEnergyTimer = null, pendingPosEnergy = false, skipFirstPosChangeForVersion = true;
   state.bus.on('positionsChanged', () => {
-    // If user is actively dragging, avoid the generic debounce compute and let
-    // the drag throttle scheduler handle emissions, to keep ~100ms cadence.
-    const dragging = __draggingAtoms.size > 0 || __currentDraggedAtomIndex != null;
-    if (dragging) {
-      try { __scheduleDragEmit(); } catch { }
-      return;
-    }
+    const dragging = draggingAtoms.size > 0 || currentDraggedAtom.idx != null;
+    if (dragging) { emitDuringDrag(); return; }
     pendingPosEnergy = true;
     if (posEnergyTimer) return;
     posEnergyTimer = setTimeout(() => {
       posEnergyTimer = null;
-      if (!pendingPosEnergy) return;
-      pendingPosEnergy = false;
-      // If this positionsChanged was triggered by applying a simulation step (relax/md),
-      // skip the immediate force recompute so we don't overwrite the step's returned forces.
-      if (__suppressNextPosChange) {
-        __suppressNextPosChange = false; // consume the suppression flag
-        // Intentionally do NOT call ff.computeForces or record an interaction here.
-        return;
-      }
-      // Skip bumping the interaction version on the very first positionsChanged
-      // which typically occurs during initial molecule load/apply.
-      if (__skipFirstPosChangeForVersion) {
-        __skipFirstPosChangeForVersion = false;
-        try {
-          if (!running.kind) ff.computeForces();
-        } catch { }
-        return;
-      }
-      try {
-        if (!running.kind) ff.computeForces();
-      } catch { }
-      bumpUserInteractionVersion('posChange');
-      recordInteraction('posChange');
-    }, 50); // slight debounce to batch rapid pointer move events
+      if (!pendingPosEnergy) return; pendingPosEnergy = false;
+      if (__suppressNextPosChange) { __suppressNextPosChange = false; return; }
+      if (skipFirstPosChangeForVersion) { skipFirstPosChangeForVersion = false; if (!running.kind) ff.computeForces(); return; }
+      if (!running.kind) ff.computeForces();
+      bumpUser('posChange'); recordInteraction('posChange');
+    }, 50);
   });
 
-  // --- Continuous simulation orchestration (relax / MD) ---
-  // Feature flags (can be toggled at build time via define plugin):
-  // Feature flags are now read dynamically each access so they can be enabled after init.
-  // Previous implementation captured a snapshot causing UI buttons to remain disabled if flags
-  // were set after viewer initialization. Use getter to always reflect current window.__MLIP_FEATURES.
-  function featureFlags() {
-    if (typeof window === 'undefined')
-      return { RELAX_LOOP: true, MD_LOOP: true, ENERGY_TRACE: true, FORCE_VECTORS: true };
-    if (!window.__MLIP_FEATURES)
-      window.__MLIP_FEATURES = {
-        RELAX_LOOP: true,
-        MD_LOOP: true,
-        ENERGY_TRACE: true,
-        FORCE_VECTORS: true,
-      };
-    return window.__MLIP_FEATURES;
-  }
-  function enableFeatureFlag(name, value = true) {
-    if (typeof window === 'undefined') return false;
-    if (!window.__MLIP_FEATURES) window.__MLIP_FEATURES = {};
-    window.__MLIP_FEATURES[name] = value;
-    return true;
-  }
-  let running = { kind: null, abort: null };
-  function setForceProvider() {
-    return 'uma';
-  }
-  // Continuous loops with request pacing and exponential backoff on server overload.
-  // Contract:
-  //  - Make at most one network step request per configured pacing interval (minStepIntervalMs, default 30ms) in normal operation.
-  //  - Adjustable at runtime via setMinStepInterval(ms).
-  //  - If a step returns an error (http or parse caught inside relaxStep/mdStep), apply
-  //    exponential backoff starting at 200ms (200,400,800,... up to 5s) before retrying next step.
-  //  - Abort if another simulation is already running or stopSimulation() called.
-  //  - For relax: attempt up to maxSteps (default 200) or until an error streak exceeds threshold.
-  //  - For md: run fixed number of steps unless aborted.
-  // Desktop focus helpers: only send relax/MD requests when window is focused (desktop mode)
-  function isAppFocused() {
+  // RPS counter (UI label optional)
+  const rps = { samples: [], windowMs: 2000, value: 0 };
+  const resetRPS = () => { rps.samples.length = 0; rps.value = 0; setText('rpsLabel', 'RPS: --'); };
+  const noteReqDone = () => {
+    const now = (performance?.now?.() ?? Date.now());
+    rps.samples.push(now);
+    while (rps.samples.length && now - rps.samples[0] > rps.windowMs) rps.samples.shift();
+    rps.value = (rps.samples.length >= 2) ? ((rps.samples.length - 1) * 1000) / (rps.samples[rps.samples.length - 1] - rps.samples[0]) : 0;
+    setText('rpsLabel', 'RPS: ' + rps.value.toFixed(1));
+  };
+
+  // Helpers for app focus (desktop)
+  const isAppFocused = () => {
     try {
-      if (typeof window === 'undefined' || typeof document === 'undefined') return true; // non-browser/test
-      if (window.__MLIPVIEW_TEST_MODE) return true; // do not gate tests
+      if (typeof window === 'undefined' || typeof document === 'undefined') return true;
+      if (window.__MLIPVIEW_TEST_MODE) return true;
       if (document.hidden) return false;
-      if (typeof document.hasFocus === 'function') return !!document.hasFocus();
-      return true;
-    } catch {
-      return true;
+      return typeof document.hasFocus === 'function' ? !!document.hasFocus() : true;
+    } catch { return true; }
+  };
+  const waitForFocus = () => new Promise(resolve => {
+    if (isAppFocused()) return resolve();
+    const cleanup = () => { try { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVis); } catch { } };
+    const onFocus = () => { cleanup(); resolve(); };
+    const onVis = () => { if (!document.hidden && isAppFocused()) { cleanup(); resolve(); } };
+    try { window.addEventListener('focus', onFocus); document.addEventListener('visibilitychange', onVis); } catch { resolve(); }
+  });
+
+  /* ────────────────────────────────────────────────────────────────────────
+     One-shot WS steps
+     ──────────────────────────────────────────────────────────────────────── */
+
+  async function doOneStepViaWS(kind, params) {
+    const ws = getWS(); await ensureWsInit();
+    try { ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 }); } catch { }
+    try {
+      const v = getVelocitiesIfFresh();
+      ws.userInteraction({ positions: posToTriples(state), velocities: v || undefined });
+    } catch { }
+    const r = await ws.requestSingleStep({ type: kind, params });
+    const epochAtSend = resetEpoch;
+    if (epochAtSend !== resetEpoch) return { stale: true, staleReason: 'staleEpoch', epochAtSend, resetEpoch };
+    if (Array.isArray(r.positions) && r.positions.length === state.positions.length) {
+      applyTriples(state, r.positions);
+      __suppressNextPosChange = true; state.markPositionsChanged(); bumpSim(kind === 'md' ? 'mdStepApply' : 'relaxStepApply');
     }
+    updateEnergyForces({ energy: r.energy, forces: r.forces, stress: r.stress || null, reason: kind });
+    if (kind === 'md') {
+      if (Array.isArray(r.velocities) && r.velocities.length === state.elements.length) {
+        state.dynamics ||= {}; state.dynamics.velocities = r.velocities;
+      }
+      if (typeof r.temperature === 'number' && isFinite(r.temperature)) {
+        state.dynamics ||= {}; state.dynamics.temperature = r.temperature;
+        setText('instTemp', 'T: ' + r.temperature.toFixed(1) + ' K');
+      }
+    }
+    return { applied: true, energy: r.energy, stepType: kind, netMs: 0, parseMs: 0 };
   }
-  function waitForFocus() {
-    return new Promise((resolve) => {
-      if (isAppFocused()) return resolve();
-      function cleanup() {
-        try {
-          window.removeEventListener('focus', onFocus);
-          document.removeEventListener('visibilitychange', onVis);
-        } catch { }
+
+  async function relaxStep() {
+    __count('index#relaxStep');
+    try {
+      const r = await doOneStepViaWS('relax', { calculator: 'uma', fmax: state?.optimizer?.fmax || 0.05, max_step: MAX_STEP, optimizer: 'bfgs' });
+      if (r?.applied) { recordInteraction('relaxStep'); energyPlot.push(state.dynamics?.energy, 'relax'); }
+      return r;
+    } catch (e) { dbg.warn('[relaxStep] failed', e); return { error: e?.message || String(e) }; }
+  }
+
+  async function mdStep(opts = {}) {
+    __count('index#mdStep');
+    try {
+      // live T override if present
+      let temperature = opts.temperature;
+      try { if ((temperature == null || !Number.isFinite(temperature)) && typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) temperature = Number(window.__MLIP_TARGET_TEMPERATURE); } catch { }
+      const r = await doOneStepViaWS('md', {
+        calculator: opts.calculator || 'uma',
+        temperature,
+        timestep_fs: opts.timestep_fs,
+        friction: (Number.isFinite(opts.friction) ? opts.friction : cfg.mdFriction),
+      });
+      if (r?.applied) { recordInteraction('mdStep'); energyPlot.push(state.dynamics?.energy, 'md'); }
+      return r;
+    } catch (e) { dbg.warn('[mdStep] failed', e); return { error: e?.message || String(e) }; }
+  }
+
+  /* ────────────────────────────────────────────────────────────────────────
+     Streaming WS loops
+     ──────────────────────────────────────────────────────────────────────── */
+
+  function handleStreamFrame(kind, ws, r) {
+    // discard stale UIC only if server echoes a positive lagging count
+    if (Number.isFinite(r.userInteractionCount) && r.userInteractionCount > 0 && r.userInteractionCount < userInteractionVersion) {
+      if (dbg.apiOn()) dbg.log(`[${kind}WS][discard-stale]`, { server: r.userInteractionCount, current: userInteractionVersion });
+      return;
+    }
+    try { const seq = Number(r.seq) || 0; if (seq > 0) ws.ack(seq); } catch { }
+
+    const exclude = buildExcludeSet();
+    if (Array.isArray(r.positions) && r.positions.length === state.positions.length) {
+      applyTriples(state, r.positions, { exclude });
+      __suppressNextPosChange = true; state.markPositionsChanged(); bumpSim(kind === 'md' ? 'mdWS' : 'relaxWS');
+    }
+    const E = (typeof r.energy === 'number') ? r.energy : state.dynamics?.energy;
+    updateEnergyForces({ energy: E, forces: r.forces?.length ? r.forces : undefined, reason: kind + 'WS' });
+    if (kind === 'md') {
+      if (Array.isArray(r.velocities) && r.velocities.length === state.elements.length) {
+        state.dynamics ||= {}; state.dynamics.velocities = r.velocities;
       }
-      function onFocus() {
-        cleanup();
-        resolve();
+      if (typeof r.temperature === 'number' && isFinite(r.temperature)) {
+        state.dynamics ||= {}; state.dynamics.temperature = r.temperature;
+        setText('instTemp', 'T: ' + r.temperature.toFixed(1) + ' K');
       }
-      function onVis() {
-        try {
-          if (!document.hidden && isAppFocused()) {
-            cleanup();
-            resolve();
-          }
-        } catch {
-          /* ignore */
-        }
-      }
+      // test-mode fallback: ensure velocities shape exists
       try {
-        window.addEventListener('focus', onFocus);
-        document.addEventListener('visibilitychange', onVis);
-      } catch {
-        resolve();
-      }
-    });
+        const tm = typeof window !== 'undefined' && !!window.__MLIPVIEW_TEST_MODE;
+        const haveV = Array.isArray(state.dynamics?.velocities) && state.dynamics.velocities.length === state.elements.length;
+        if (tm && !haveV && state.positions?.length === state.elements.length) {
+          state.dynamics ||= {}; state.dynamics.velocities = state.positions.map(() => [0, 0, 0]);
+        }
+      } catch { }
+    }
+    energyPlot.push(E, kind);
+    noteReqDone();
   }
+
+  let running = { kind: null, abort: null };
 
   async function startRelaxContinuous({ maxSteps = 1000 } = {}) {
-    if (!featureFlags().RELAX_LOOP) {
-      console.warn('[feature] RELAX_LOOP disabled');
-      return { disabled: true };
-    }
-    __count('index#startRelaxContinuous');
+    if (!FEATURES.RELAX_LOOP) { dbg.warn('[feature] RELAX_LOOP disabled'); return { disabled: true }; }
     if (running.kind) return { ignored: true };
     running.kind = 'relax';
-    if (__useWsSim()) {
-      // WS streaming mode
-      const ws = getWS();
-      await __wsEnsureInit();
-      // Cancel any pending debounced position energy recompute to avoid late userInteraction bumps
-      try {
-        if (posEnergyTimer) {
-          clearTimeout(posEnergyTimer);
-          posEnergyTimer = null;
-        }
-        pendingPosEnergy = false;
-      } catch { }
-      try {
-        ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 });
-        if (window.__MLIPVIEW_DEBUG_API)
-          console.log('[relaxWS][setCounters]', { uic: userInteractionVersion });
-      } catch { }
-      // Proactively sync current positions (and velocities if available) before starting
-      try {
-        const positions = state.positions.map((p) => [p.x, p.y, p.z]);
-        const v = getVelocitiesIfFresh();
-        ws.userInteraction({ positions, velocities: v || undefined });
-      } catch { }
-      __resetRPS();
-      let taken = 0;
-      let unsub = null;
-      let stopped = false;
-      const extraAllowance = 5;
-      // Track previous positions to approximate velocities if server omits them
-      let __prevPos = null;
-      unsub = ws.onResult((r) => {
-        if (stopped) return;
-        // only handle frames when relax is the running kind
-        if (running.kind !== 'relax') return;
-        // Discard stale frames only if server echoes a positive userInteractionCount that lags behind
-        if (
-          Number.isFinite(r.userInteractionCount) &&
-          Number(r.userInteractionCount) > 0 &&
-          Number(r.userInteractionCount) < Number(userInteractionVersion)
-        ) {
-          if (window.__MLIPVIEW_DEBUG_API)
-            console.debug('[relaxWS][discard-stale]', {
-              server: r.userInteractionCount,
-              current: userInteractionVersion,
-            });
-          return;
-        }
-        try {
-          if (window.__MLIPVIEW_DEBUG_API)
-            console.log('[relaxWS][frame]', {
-              seq: Number(r.seq) || 0,
-              uic: Number(r.userInteractionCount) || 0,
-              simStep: Number(r.simStep) || 0,
-              have: {
-                pos: !!r.positions,
-                forces: !!r.forces,
-                energy: typeof r.energy === 'number',
-              },
-            });
-        } catch { }
-        try {
-          const seq = Number(r.seq) || 0;
-          if (seq > 0) ws.ack(seq);
-        } catch { }
-        const positions = r.positions;
-        const forces = r.forces;
-        const energy = r.energy;
-        if (Array.isArray(positions) && positions.length === state.positions.length) {
-          // apply with same exclusion rules
-          const N = positions.length;
-          const exclude = new Set();
-          // modifiedDuring
-          // For WS streaming we use current userInteractionVersion to guard partial apply
-          // reuse existing drag/latch logic
-          if (__draggingAtoms.size) for (const i of __draggingAtoms) exclude.add(i);
-          try {
-            const now = performance.now();
-            for (const [i, t] of __latchedAtomsUntil) {
-              if (t > now) exclude.add(i);
-              else __latchedAtomsUntil.delete(i);
-            }
-          } catch { }
-          if (exclude.size > 0) {
-            for (let i = 0; i < N; i++) {
-              if (exclude.has(i)) continue;
-              const p = positions[i];
-              const tp = state.positions[i];
-              tp.x = p[0];
-              tp.y = p[1];
-              tp.z = p[2];
-            }
-            if (window.__MLIPVIEW_DEBUG_API)
-              console.log('[relaxWS][apply-partial]', { excluded: Array.from(exclude) });
-          } else {
-            for (let i = 0; i < N; i++) {
-              const p = positions[i];
-              const tp = state.positions[i];
-              tp.x = p[0];
-              tp.y = p[1];
-              tp.z = p[2];
-            }
-          }
-          __suppressNextPosChange = true;
-          state.markPositionsChanged();
-          bumpSimulationVersion('relaxWS');
-        }
-        // Update energy/force cache on any energy frame. Prefer incoming forces when provided.
-        if (typeof energy === 'number' || (Array.isArray(forces) && forces.length)) {
-          const E = typeof energy === 'number' ? energy : state.dynamics?.energy || NaN;
-          state.dynamics = state.dynamics || {};
-          if (typeof E === 'number') state.dynamics.energy = E;
-          const fcForces =
-            Array.isArray(forces) && forces.length
-              ? forces
-              : Array.isArray(state.forces)
-                ? state.forces
-                : [];
-          if (Array.isArray(forces) && forces.length) {
-            lastForceResult = { energy: E, forces };
-            __updateForces(forces, { reason: 'relaxWS' });
-          }
-          state.forceCache = {
-            version: structureVersion,
-            energy: state.dynamics.energy,
-            forces: fcForces,
-            stress: null,
-            stale: false,
-          };
-          maybePlotEnergy('relax');
-        }
-        taken++;
-        __noteRequestCompleted();
-        if (taken >= maxSteps) {
-          // auto stop
-          stopped = true;
-          try {
-            ws.stopSimulation();
-          } catch { }
-          try {
-            unsub && unsub();
-          } catch { }
-          running.kind = null;
-          __resetRPS();
-        }
-      });
-      // Start stream
-      ws.startSimulation({
-        type: 'relax',
-        params: {
-          calculator: 'uma',
-          fmax: state?.optimizer?.fmax || 0.05,
-          max_step: MAX_STEP,
-          optimizer: 'bfgs',
-        },
-      });
-      try {
-        if (window.__MLIPVIEW_DEBUG_API) console.log('[relaxWS][start]');
-      } catch { }
-      return { streaming: true };
-    }
-    __resetRPS();
-    const minInterval = getConfig().minStepIntervalMs; // ms pacing per API request (configurable)
-    let lastTime = 0; // retained for focus-wait reset only
-    let backoffMs = 0; // 0 means no backoff active
-    const baseBackoff = 200;
-    const maxBackoff = 5000;
-    let errorStreak = 0;
-    const maxErrorStreak = 10;
-    let stepsDone = 0;
-    let __relaxLastResponseAt = 0;
-    while (running.kind === 'relax' && stepsDone < maxSteps) {
-      // Pause if app not focused (desktop). Resume on focus.
-      if (!isAppFocused()) {
-        const f0 = performance.now();
-        await waitForFocus();
-        if (running.kind !== 'relax') break;
-        // reset pacing reference to avoid burst immediately after focus
-        lastTime = performance.now();
-        noteLatency('relax', 'focus-wait', { ms: Math.round((lastTime - f0) * 100) / 100 });
-        continue;
-      }
-      if (backoffMs > 0) {
-        const w0 = performance.now();
-        await new Promise((r) => setTimeout(r, backoffMs));
-        noteLatency('relax', 'wait-backoff', {
-          ms: Math.round((performance.now() - w0) * 100) / 100,
-          backoffMs,
-        });
-      }
-      if (running.kind !== 'relax') break;
-      const __beforeReq = performance.now();
-      const res = await relaxStep();
-      const __afterResp = performance.now();
-      if (res && res.applied) {
-        stepsDone++;
-        __noteRequestCompleted();
-      } // count only applied (non-stale) steps
-      // Between-requests: time from last response to next request send
-      if (__relaxLastResponseAt > 0) {
-        const gap = Math.round((__beforeReq - __relaxLastResponseAt) * 100) / 100;
-        noteLatency('relax', 'between-requests', { ms: gap });
-      }
-      __relaxLastResponseAt = __afterResp;
-      lastTime = performance.now();
-      // Post-request pacing: only wait if API network time was less than minInterval
-      if (!res?.error && backoffMs === 0) {
-        const net = Number(res?.netMs) || 0;
-        const need = Math.max(0, minInterval - net);
-        if (need > 0) {
-          const w0 = performance.now();
-          await new Promise((r) => setTimeout(r, need));
-          noteLatency('relax', 'wait-pacing', {
-            ms: Math.round((performance.now() - w0) * 100) / 100,
-            needed: Math.round(need),
-            netMs: net,
-          });
-        }
-      }
-      if (res && res.error) {
-        errorStreak++;
-        if (errorStreak >= maxErrorStreak) {
-          console.warn('[relaxRun] aborting due to error streak');
-          break;
-        }
-        backoffMs = backoffMs ? Math.min(backoffMs * 2, maxBackoff) : baseBackoff;
-      } else {
-        errorStreak = 0;
-        backoffMs = 0;
-      }
-    }
-    const converged = errorStreak === 0 && stepsDone >= maxSteps; // simplistic criterion
-    running.kind = null;
-    __resetRPS();
-    return { converged, steps: stepsDone };
+
+    const ws = getWS(); await ensureWsInit();
+    try { if (posEnergyTimer) { clearTimeout(posEnergyTimer); posEnergyTimer = null; } pendingPosEnergy = false; } catch { }
+    try { ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 }); } catch { }
+    try {
+      const v = getVelocitiesIfFresh();
+      ws.userInteraction({ positions: posToTriples(state), velocities: v || undefined });
+    } catch { }
+    resetRPS();
+
+    let taken = 0, unsub = null, stopped = false;
+    unsub = ws.onResult((r) => {
+      if (stopped || running.kind !== 'relax') return;
+      if (dbg.apiOn()) dbg.log('[relaxWS][frame]', { seq: Number(r.seq) || 0, uic: Number(r.userInteractionCount) || 0, simStep: Number(r.simStep) || 0, have: { pos: !!r.positions, forces: !!r.forces, energy: typeof r.energy === 'number' } });
+      handleStreamFrame('relax', ws, r);
+      if (++taken >= maxSteps) { stopped = true; try { ws.stopSimulation(); } catch { } try { unsub && unsub(); } catch { } running.kind = null; resetRPS(); }
+    });
+
+    ws.startSimulation({ type: 'relax', params: { calculator: 'uma', fmax: state?.optimizer?.fmax || 0.05, max_step: MAX_STEP, optimizer: 'bfgs' } });
+    if (dbg.apiOn()) dbg.log('[relaxWS][start]');
+    return { streaming: true };
   }
-  async function startMDContinuous({
-    steps = 1000,
-    calculator = 'uma',
-    temperature = 1500,
-    timestep_fs = 1.0,
-    friction,
-  } = {}) {
-    if (!featureFlags().MD_LOOP) {
-      console.warn('[feature] MD_LOOP disabled');
-      return { disabled: true };
-    }
+
+  async function startMDContinuous({ steps = 1000, calculator = 'uma', temperature = 1500, timestep_fs = 1.0, friction } = {}) {
+    if (!FEATURES.MD_LOOP) { dbg.warn('[feature] MD_LOOP disabled'); return { disabled: true }; }
     if (running.kind) return { ignored: true };
     running.kind = 'md';
-    if (__useWsSim()) {
-      const ws = getWS();
-      await __wsEnsureInit();
-      // Cancel any pending debounced position energy recompute to avoid late userInteraction bumps
-      try {
-        if (posEnergyTimer) {
-          clearTimeout(posEnergyTimer);
-          posEnergyTimer = null;
-        }
-        pendingPosEnergy = false;
-      } catch { }
-      try {
-        ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 });
-        if (window.__MLIPVIEW_DEBUG_API)
-          console.log('[mdWS][setCounters]', { uic: userInteractionVersion });
-      } catch { }
-      // Proactively sync current positions (and velocities if available) before starting
-      try {
-        const positions = state.positions.map((p) => [p.x, p.y, p.z]);
-        const v = getVelocitiesIfFresh();
-        ws.userInteraction({ positions, velocities: v || undefined });
-      } catch { }
-      // Test-mode: seed a zero-velocity array immediately so shape is present for assertions
-      try {
-        const testMode = typeof window !== 'undefined' && !!window.__MLIPVIEW_TEST_MODE;
-        if (
-          testMode &&
-          Array.isArray(state.positions) &&
-          state.positions.length === state.elements.length
-        ) {
-          state.dynamics = state.dynamics || {};
-          state.dynamics.velocities = state.positions.map(() => [0, 0, 0]);
-        }
-      } catch { }
-      __resetRPS();
-      let taken = 0;
-      let unsub = null;
-      let stopped = false;
-      unsub = ws.onResult((r) => {
-        if (stopped) return;
-        if (running.kind !== 'md') return;
-        // Discard stale frames only if server echoes a positive userInteractionCount that lags behind
-        if (
-          Number.isFinite(r.userInteractionCount) &&
-          Number(r.userInteractionCount) > 0 &&
-          Number(r.userInteractionCount) < Number(userInteractionVersion)
-        ) {
-          if (window.__MLIPVIEW_DEBUG_API)
-            console.debug('[mdWS][discard-stale]', {
-              server: r.userInteractionCount,
-              current: userInteractionVersion,
-            });
-          return;
-        }
-        try {
-          if (window.__MLIPVIEW_DEBUG_API)
-            console.log('[mdWS][frame]', {
-              seq: Number(r.seq) || 0,
-              uic: Number(r.userInteractionCount) || 0,
-              simStep: Number(r.simStep) || 0,
-              have: {
-                pos: !!r.positions,
-                forces: !!r.forces,
-                energy: typeof r.energy === 'number',
-                vel: !!r.velocities,
-              },
-            });
-        } catch { }
-        try {
-          const seq = Number(r.seq) || 0;
-          if (seq > 0) ws.ack(seq);
-        } catch { }
-        const positions = r.positions,
-          forces = r.forces,
-          energy = r.energy,
-          velocities = r.velocities,
-          instT = r?.temperature;
-        let updated = false;
-        if (Array.isArray(positions) && positions.length === state.positions.length) {
-          // Snapshot previous positions for velocity approximation
-          try {
-            __prevPos = state.positions.map((p) => [p.x, p.y, p.z]);
-          } catch { }
-          const N = positions.length;
-          const exclude = new Set();
-          if (__draggingAtoms.size) for (const i of __draggingAtoms) exclude.add(i);
-          try {
-            const now = performance.now();
-            for (const [i, t] of __latchedAtomsUntil) {
-              if (t > now) exclude.add(i);
-              else __latchedAtomsUntil.delete(i);
-            }
-          } catch { }
-          if (exclude.size > 0) {
-            for (let i = 0; i < N; i++) {
-              if (exclude.has(i)) continue;
-              const p = positions[i];
-              const tp = state.positions[i];
-              tp.x = p[0];
-              tp.y = p[1];
-              tp.z = p[2];
-            }
-            if (window.__MLIPVIEW_DEBUG_API)
-              console.log('[mdWS][apply-partial]', { excluded: Array.from(exclude) });
-          } else {
-            for (let i = 0; i < N; i++) {
-              const p = positions[i];
-              const tp = state.positions[i];
-              tp.x = p[0];
-              tp.y = p[1];
-              tp.z = p[2];
-            }
-          }
-          __suppressNextPosChange = true;
-          state.markPositionsChanged();
-          bumpSimulationVersion('mdWS');
-          updated = true;
-          // If server did not provide velocities, approximate from position delta / dt
-          try {
-            const dt = typeof timestep_fs === 'number' && isFinite(timestep_fs) ? timestep_fs : 1.0;
-            if (
-              (!Array.isArray(velocities) || velocities.length !== state.elements.length) &&
-              Array.isArray(__prevPos) &&
-              __prevPos.length === state.positions.length &&
-              dt > 0
-            ) {
-              const approx = state.positions.map((p, i) => [
-                (p.x - __prevPos[i][0]) / dt,
-                (p.y - __prevPos[i][1]) / dt,
-                (p.z - __prevPos[i][2]) / dt,
-              ]);
-              state.dynamics = state.dynamics || {};
-              state.dynamics.velocities = approx;
-            }
-          } catch { }
-        }
-        // Update energy/force cache on any energy frame. Prefer incoming forces when provided.
-        if (typeof energy === 'number' || (Array.isArray(forces) && forces.length)) {
-          const E = typeof energy === 'number' ? energy : state.dynamics?.energy || NaN;
-          state.dynamics = state.dynamics || {};
-          if (typeof E === 'number') state.dynamics.energy = E;
-          if (Array.isArray(velocities) && velocities.length === state.elements.length) {
-            state.dynamics.velocities = velocities;
-            updated = true;
-          }
-          const fcForces =
-            Array.isArray(forces) && forces.length
-              ? forces
-              : Array.isArray(state.forces)
-                ? state.forces
-                : [];
-          if (Array.isArray(forces) && forces.length) {
-            lastForceResult = { energy: E, forces };
-            __updateForces(forces, { reason: 'mdWS' });
-          }
-          state.forceCache = {
-            version: structureVersion,
-            energy: state.dynamics.energy,
-            forces: fcForces,
-            stress: null,
-            stale: false,
-          };
-          maybePlotEnergy('md');
-        }
-        if (typeof instT === 'number' && isFinite(instT)) {
-          state.dynamics.temperature = instT;
-          try {
-            const el = document.getElementById('instTemp');
-            if (el) el.textContent = 'T: ' + instT.toFixed(1) + ' K';
-          } catch { }
-        }
-        // Test mode fallback: if velocities are still missing, populate zeros-of-nat for assertion shape
-        try {
-          const testMode = typeof window !== 'undefined' && !!window.__MLIPVIEW_TEST_MODE;
-          const haveV =
-            Array.isArray(state.dynamics?.velocities) &&
-            state.dynamics.velocities.length === state.elements.length;
-          if (
-            testMode &&
-            !haveV &&
-            Array.isArray(state.positions) &&
-            state.positions.length === state.elements.length
-          ) {
-            state.dynamics = state.dynamics || {};
-            state.dynamics.velocities = state.positions.map(() => [0, 0, 0]);
-            updated = true;
-          }
-        } catch { }
-        // Also treat pure velocity frames as updates
-        if (!updated && Array.isArray(velocities) && velocities.length === state.elements.length) {
-          try {
-            state.dynamics = state.dynamics || {};
-            state.dynamics.velocities = velocities;
-            updated = true;
-          } catch { }
-        }
-        if (updated) {
-          taken++;
-          __noteRequestCompleted();
-        }
-        const haveV =
-          Array.isArray(state.dynamics?.velocities) &&
-          state.dynamics.velocities.length === state.elements.length;
-        if (taken >= steps && (haveV || taken - steps >= extraAllowance)) {
-          stopped = true;
-          try {
-            ws.stopSimulation();
-          } catch { }
-          try {
-            unsub && unsub();
-          } catch { }
-          running.kind = null;
-          __resetRPS();
-        }
-      });
-      ws.startSimulation({
-        type: 'md',
-        params: {
-          calculator,
-          temperature,
-          timestep_fs,
-          friction:
-            typeof friction === 'number' && Number.isFinite(friction)
-              ? friction
-              : (getConfig().mdFriction ?? DEFAULT_MD_FRICTION),
-        },
-      });
-      try {
-        if (window.__MLIPVIEW_DEBUG_API)
-          console.log('[mdWS][start]', {
-            temperature,
-            timestep_fs,
-            friction:
-              typeof friction === 'number' && Number.isFinite(friction)
-                ? friction
-                : (getConfig().mdFriction ?? DEFAULT_MD_FRICTION),
-          });
-      } catch { }
-      return { streaming: true };
-    }
-    __resetRPS();
-    const minInterval = getConfig().minStepIntervalMs;
-    let lastTime = 0; // retained for focus-wait reset only
-    let __mdLastResponseAt = 0;
-    let backoffMs = 0;
-    const baseBackoff = 200;
-    const maxBackoff = 5000;
-    let errorStreak = 0;
-    const maxErrorStreak = 10;
-    let i = 0;
-    while (i < steps && running.kind === 'md') {
-      if (!isAppFocused()) {
-        const f0 = performance.now();
-        await waitForFocus();
-        if (running.kind !== 'md') break;
-        lastTime = performance.now();
-        noteLatency('md', 'focus-wait', { ms: Math.round((lastTime - f0) * 100) / 100 });
-        continue;
+
+    const ws = getWS(); await ensureWsInit();
+    try { if (posEnergyTimer) { clearTimeout(posEnergyTimer); posEnergyTimer = null; } pendingPosEnergy = false; } catch { }
+    try { ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 }); } catch { }
+    try {
+      const v = getVelocitiesIfFresh();
+      ws.userInteraction({ positions: posToTriples(state), velocities: v || undefined });
+    } catch { }
+    // test-mode: seed zero velocities
+    try {
+      const tm = typeof window !== 'undefined' && !!window.__MLIPVIEW_TEST_MODE;
+      if (tm && state.positions?.length === state.elements.length) {
+        state.dynamics ||= {}; state.dynamics.velocities = state.positions.map(() => [0, 0, 0]);
       }
-      if (backoffMs > 0) {
-        const w0 = performance.now();
-        await new Promise((r) => setTimeout(r, backoffMs));
-        noteLatency('md', 'wait-backoff', {
-          ms: Math.round((performance.now() - w0) * 100) / 100,
-          backoffMs,
-        });
+    } catch { }
+    resetRPS();
+
+    let taken = 0, unsub = null, stopped = false;
+    unsub = ws.onResult((r) => {
+      if (stopped || running.kind !== 'md') return;
+      if (dbg.apiOn()) dbg.log('[mdWS][frame]', { seq: Number(r.seq) || 0, uic: Number(r.userInteractionCount) || 0, simStep: Number(r.simStep) || 0, have: { pos: !!r.positions, forces: !!r.forces, energy: typeof r.energy === 'number', vel: !!r.velocities } });
+      handleStreamFrame('md', ws, r);
+      const extraAllowance = 5;
+      const haveV = Array.isArray(state.dynamics?.velocities) && state.dynamics.velocities.length === state.elements.length;
+      if (++taken >= steps && (haveV || taken - steps >= extraAllowance)) {
+        stopped = true; try { ws.stopSimulation(); } catch { } try { unsub && unsub(); } catch { }
+        running.kind = null; resetRPS();
       }
-      if (running.kind !== 'md') break;
-      // Re-read target temperature dynamically to allow live slider adjustments mid-run.
-      let dynT = temperature; // fallback to initial argument
-      try {
-        if (typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) {
-          dynT = window.__MLIP_TARGET_TEMPERATURE;
-        }
-      } catch { }
-      // Clamp to configured slider bounds (0-3000 K)
-      if (!Number.isFinite(dynT)) dynT = temperature;
-      if (dynT < 0) dynT = 0;
-      else if (dynT > 3000) dynT = 3000;
-      const __beforeReq = performance.now();
-      const res = await mdStep({ calculator, temperature: dynT, timestep_fs, friction });
-      const __afterResp = performance.now();
-      try {
-        const el = document.getElementById('instTemp');
-        if (el && state.dynamics && typeof state.dynamics.temperature === 'number')
-          el.textContent = 'T: ' + state.dynamics.temperature.toFixed(1) + ' K';
-      } catch { }
-      if (__mdLastResponseAt > 0) {
-        const gap = Math.round((__beforeReq - __mdLastResponseAt) * 100) / 100;
-        noteLatency('md', 'between-requests', { ms: gap });
-      }
-      __mdLastResponseAt = __afterResp;
-      lastTime = performance.now();
-      // Post-request pacing: only wait if API network time was less than minInterval
-      if (!res?.error && backoffMs === 0) {
-        const net = Number(res?.netMs) || 0;
-        const need = Math.max(0, minInterval - net);
-        if (need > 0) {
-          const w0 = performance.now();
-          await new Promise((r) => setTimeout(r, need));
-          noteLatency('md', 'wait-pacing', {
-            ms: Math.round((performance.now() - w0) * 100) / 100,
-            needed: Math.round(need),
-            netMs: net,
-          });
-        }
-      }
-      if (res && res.error) {
-        errorStreak++;
-        if (errorStreak >= maxErrorStreak) {
-          console.warn('[mdRun] aborting due to error streak');
-          break;
-        }
-        backoffMs = backoffMs ? Math.min(backoffMs * 2, maxBackoff) : baseBackoff;
-      } else {
-        // Only advance step counter for applied (non-stale) MD results
-        if (res && res.applied) {
-          i++;
-          __noteRequestCompleted();
-        }
-        errorStreak = 0;
-        backoffMs = 0;
-      }
-    }
-    const completed = i >= steps && errorStreak === 0;
-    running.kind = null;
-    __resetRPS();
-    return { completed, steps: i };
+    });
+
+    // live temperature from global target if present
+    try { if (typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) temperature = Number(window.__MLIP_TARGET_TEMPERATURE); } catch { }
+    ws.startSimulation({
+      type: 'md',
+      params: {
+        calculator,
+        temperature,
+        timestep_fs,
+        friction: (Number.isFinite(friction) ? friction : cfg.mdFriction),
+      },
+    });
+    if (dbg.apiOn()) dbg.log('[mdWS][start]', { temperature, timestep_fs, friction: (Number.isFinite(friction) ? friction : cfg.mdFriction) });
+    return { streaming: true };
   }
+
   function stopSimulation() {
+    try { const ws = getWS(); ws.stopSimulation(); } catch { }
+    running.kind = null; resetRPS();
+  }
+
+  function setForceVectorsEnabled(on) {
     try {
-      if (__useWsSim()) {
-        const ws = getWS();
-        ws.stopSimulation();
-      }
+      if (typeof on === 'boolean') { if (!!state.showForces !== on) state.toggleForceVectorsVisibility(); }
+      else state.toggleForceVectorsVisibility();
     } catch { }
-    running.kind = null;
-    __resetRPS();
   }
 
-  const lastMetrics = { energy: null, maxForce: null, maxStress: null };
-  function getMetrics() {
-    __count('index#getMetrics');
-    return { energy: state.dynamics?.energy, running: running.kind };
-  }
+  function getMetrics() { __count('index#getMetrics'); return { energy: state.dynamics?.energy, running: running.kind }; }
+  function debugEnergySeriesLength() { return energyPlot.length(); }
+  function debugRecordInteraction(kind) { recordInteraction(kind || 'debug'); }
+  function getForceCacheVersion() { return state.forceCache?.version; }
+  function getVersionInfo() { return { userInteractionVersion, totalInteractionVersion, resetEpoch }; }
 
-  // Reset to initial positions (no page reload): stops any running sim, restores XYZ, recomputes bonds/forces
   async function resetToInitialPositions() {
-    const t0 =
-      typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+    const t0 = (performance?.now?.() ?? Date.now());
+    dbg.log('[Reset] begin VR/AR-safe reset', { when: new Date().toISOString() });
     try {
-      console.log('[Reset] begin VR/AR-safe reset', { when: new Date().toISOString() });
-    } catch { }
-    try {
-      // Stop any running loop (relax/md)
       stopSimulation();
-      // Bump reset epoch first so any responses in flight are invalidated
-      resetEpoch++;
-      // Invalidate any in-flight simulation responses by advancing interaction versions immediately.
-      // This ensures responses captured before reset won't apply (stale by version checks).
-      try {
-        bumpUserInteractionVersion('reset');
-      } catch { }
-      // Also prevent the debounced positionsChanged handler from counting this reset as a separate user edit
-      // after we restore positions and call markPositionsChanged below.
-      __suppressNextPosChange = true;
-      // Clear interaction log and energy time series before we restore positions
-      try {
-        interactions.length = 0;
-      } catch { }
-      try {
-        energySeries.length = 0;
-        lastPlottedEnergy = undefined;
-      } catch { }
-      try {
-        drawEnergy();
-      } catch { }
-      try {
-        const elE = document.getElementById('instEnergy');
-        if (elE) elE.textContent = 'E: —';
-      } catch { }
+      resetEpoch++; bumpUser('reset'); __suppressNextPosChange = true;
+      interactions.length = 0; energyPlot.reset();
+
       const init = Array.isArray(state.__initialPositions) ? state.__initialPositions : null;
-      if (!init || init.length !== state.positions.length) {
-        try {
-          console.warn('[Reset] missing or size-mismatch initial positions');
-        } catch { }
-        return false;
-      }
-      for (let i = 0; i < init.length; i++) {
-        const p = init[i];
-        const tp = state.positions[i];
-        tp.x = p.x;
-        tp.y = p.y;
-        tp.z = p.z;
-      }
+      if (!init || init.length !== state.positions.length) { dbg.warn('[Reset] missing or size-mismatch initial positions'); return false; }
+      for (let i = 0; i < init.length; i++) { const p = init[i], tp = state.positions[i]; tp.x = p.x; tp.y = p.y; tp.z = p.z; }
       state.markPositionsChanged();
-      // Clear velocities to avoid unexpected motion carry-over
+      try { if (state.dynamics) state.dynamics.velocities = []; } catch { }
+
       try {
-        if (state.dynamics) state.dynamics.velocities = [];
-      } catch { }
-      // Turn off PBC and restore initial cell snapshot (if any)
-      try {
-        // Always disable PBC visibility on reset
         state.showCell = false;
-        // Also hide ghost cells if shown
         if (state.showGhostCells) state.showGhostCells = false;
-        // Restore the initial cell geometry captured at load
         if (state.__initialCellSnapshot) {
           const c = state.__initialCellSnapshot;
           state.cell = {
             a: { x: c.a.x, y: c.a.y, z: c.a.z },
             b: { x: c.b.x, y: c.b.y, z: c.b.z },
             c: { x: c.c.x, y: c.c.y, z: c.c.z },
-            originOffset: c.originOffset
-              ? { x: c.originOffset.x || 0, y: c.originOffset.y || 0, z: c.originOffset.z || 0 }
-              : { x: 0, y: 0, z: 0 },
+            originOffset: c.originOffset ? { x: c.originOffset.x || 0, y: c.originOffset.y || 0, z: c.originOffset.z || 0 } : { x: 0, y: 0, z: 0 },
             enabled: !!c.enabled,
           };
         } else {
-          // If no initial cell, clear any active cell config
-          try {
-            state.cell = null;
-          } catch { }
+          state.cell = null;
         }
-        // Notify downstream listeners (UI, renderer) of cell change/reset
-        try {
-          state.markCellChanged && state.markCellChanged();
-        } catch { }
+        state.markCellChanged?.();
       } catch { }
-      // Force recompute (sync) so forces and energy reflect reset positions promptly
-      const f0 =
-        typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
-      try {
-        await ff.computeForces({ sync: true });
-      } catch (e) {
-        try {
-          console.warn('[Reset] computeForces failed', e?.message || e);
-        } catch { }
-      }
-      const f1 =
-        typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
-      // Ensure plot remains cleared after recompute
-      try {
-        energySeries.length = 0;
-        lastPlottedEnergy = undefined;
-        drawEnergy();
-      } catch { }
-      try {
-        const elE = document.getElementById('instEnergy');
-        if (elE) elE.textContent = 'E: —';
-      } catch { }
-      const t1 =
-        typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
-      try {
-        console.log('[Reset] done', {
-          totalMs: Math.round((t1 - t0) * 100) / 100,
-          recomputeMs: Math.round((f1 - f0) * 100) / 100,
-        });
-      } catch { }
+
+      const f0 = (performance?.now?.() ?? Date.now());
+      try { await ff.computeForces({ sync: true }); } catch (e) { dbg.warn('[Reset] computeForces failed', e?.message || e); }
+      const f1 = (performance?.now?.() ?? Date.now());
+      energyPlot.reset();
+
+      const t1 = (performance?.now?.() ?? Date.now());
+      dbg.log('[Reset] done', { totalMs: Math.round((t1 - t0) * 100) / 100, recomputeMs: Math.round((f1 - f0) * 100) / 100 });
       return true;
-    } catch (e) {
-      try {
-        console.warn('[Reset] exception', e?.message || e);
-      } catch { }
-      return false;
-    }
+    } catch (e) { dbg.warn('[Reset] exception', e?.message || e); return false; }
   }
 
-  // Initial energy baseline (compute once to seed plot so first interaction can draw a segment)
+  // Auto-start MD once (unless disabled or tests)
   try {
-    await baselineEnergy();
-  } catch (e) {
-    /* ignore */
-  }
-  // If baseline positions weren't cached by a loader yet, seed them now from the current state
-  try {
-    const need =
-      !state.__initialPositions ||
-      state.__initialPositions.length !== (state.positions?.length || 0) ||
-      state.__initialPositions.length === 0;
-    if (need && Array.isArray(state.positions) && state.positions.length > 0) {
-      state.__initialPositions = state.positions.map((p) => ({ x: p.x, y: p.y, z: p.z }));
-      try {
-        console.log('[Reset] baseline seeded after baselineEnergy', {
-          count: state.__initialPositions.length,
-        });
-      } catch { }
-    }
-  } catch { }
-
-  // Capture initial cell snapshot once (for reset): use loader-provided cell if present
-  try {
-    if (
-      !state.__initialCellSnapshot &&
-      state.cell &&
-      state.cell.a &&
-      state.cell.b &&
-      state.cell.c
-    ) {
-      const c = state.cell;
-      state.__initialCellSnapshot = {
-        a: { x: c.a.x, y: c.a.y, z: c.a.z },
-        b: { x: c.b.x, y: c.b.y, z: c.b.z },
-        c: { x: c.c.x, y: c.c.y, z: c.c.z },
-        originOffset: c.originOffset
-          ? { x: c.originOffset.x || 0, y: c.originOffset.y || 0, z: c.originOffset.z || 0 }
-          : { x: 0, y: 0, z: 0 },
-        enabled: !!c.enabled,
-      };
-      try {
-        console.log('[Reset] captured initial cell snapshot');
-      } catch { }
-    }
-  } catch { }
-
-  // --- Auto-start MD (optional) ---
-  // Requirement: Start continuous MD automatically after the very first successful energy/force
-  // acquisition (baselineEnergy above). We only run this in normal browser mode (not test mode)
-  // and allow users/tests to opt out via window.__MLIPVIEW_NO_AUTO_MD = true before init.
-  // We trigger via the public API so UI state (run/stop button text) can reflect the run.
-  try {
-    const autoOk =
-      typeof window !== 'undefined' &&
-      !window.__MLIPVIEW_TEST_MODE &&
-      !window.__MLIPVIEW_NO_AUTO_MD;
+    const autoOk = (typeof window !== 'undefined') && !window.__MLIPVIEW_TEST_MODE && !window.__MLIPVIEW_NO_AUTO_MD;
     if (autoOk) {
-      // Defer a tick to allow index.html script (buttons & handlers) to finish wiring viewerApi
       setTimeout(() => {
         try {
-          // Avoid starting if another loop already active
-          if (!window.viewerApi) return; // safety
-          const m = window.viewerApi.getMetrics();
-          if (m.running) return; // already running something
-          // Start MD with default parameters; UI interval/metrics loop will update status label.
+          if (!window.viewerApi) return;
+          const m = window.viewerApi.getMetrics(); if (m.running) return;
           window.viewerApi.startMDContinuous({}).then(() => {
-            try {
-              const btn = document.getElementById && document.getElementById('btnMDRun');
-              if (btn && btn.textContent === 'stop') btn.textContent = 'run';
-            } catch { }
-            if (window.__MLIPVIEW_DEBUG_API) console.log('[autoMD] completed initial MD run');
+            try { const btn = document.getElementById('btnMDRun'); if (btn && btn.textContent === 'stop') btn.textContent = 'run'; } catch { }
+            if (dbg.apiOn()) dbg.log('[autoMD] completed initial MD run');
           });
-          // Update button text immediately if present to mimic user click path.
-          try {
-            const btn = document.getElementById && document.getElementById('btnMDRun');
-            if (btn) {
-              btn.textContent = 'stop';
-            }
-          } catch { }
-        } catch (e) {
-          console.warn('[autoMD] start failed', e?.message || e);
-        }
+          try { const btn = document.getElementById('btnMDRun'); if (btn) btn.textContent = 'stop'; } catch { }
+        } catch (e) { dbg.warn('[autoMD] start failed', e?.message || e); }
       }, 0);
     }
-  } catch (_e) {
-    /* ignore auto start errors */
-  }
+  } catch { }
 
-  // --- Render loop (critical for Babylon WebXR) ---
-  // NOTE: WebXR integration in Babylon expects engine.runRenderLoop to own the frame pump so it can
-  // swap to XR's requestAnimationFrame internally. Replacing it with a raw requestAnimationFrame can
-  // cause enterXRAsync to hang or never resolve. Re-introduce runRenderLoop as default, keeping a
-  // test-mode fallback for environments (like unit tests / jsdom) that lack a proper RAF or canvas.
-  let __renderActive = true;
-  const __testMode = typeof window !== 'undefined' && !!window.__MLIPVIEW_TEST_MODE;
-  function __rafLoop() {
-    if (!__renderActive) return;
-    try {
-      scene.render();
-    } catch (e) {
-      console.warn('[Render][raf] render error', e);
-    }
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(__rafLoop);
-  }
+  // Render loop (XR-friendly)
+  let renderActive = true;
+  const testMode = (typeof window !== 'undefined') && !!window.__MLIPVIEW_TEST_MODE;
+  const rafLoop = () => {
+    if (!renderActive) return;
+    try { scene.render(); } catch (e) { dbg.warn('[Render][raf] render error', e); }
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(rafLoop);
+  };
   try {
-    if (!__testMode && engine?.runRenderLoop) {
-      console.log('[Render] starting engine.runRenderLoop (XR compatible)');
-      engine.runRenderLoop(() => {
-        if (!__renderActive) {
-          return;
-        }
-        try {
-          scene.render();
-        } catch (e) {
-          console.warn('[Render] loop error', e);
-        }
-      });
+    if (!testMode && engine?.runRenderLoop) {
+      dbg.log('[Render] starting engine.runRenderLoop (XR compatible)');
+      engine.runRenderLoop(() => { if (!renderActive) return; try { scene.render(); } catch (e) { dbg.warn('[Render] loop error', e); } });
     } else {
-      console.log('[Render] starting requestAnimationFrame loop (test mode fallback)');
-      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(__rafLoop);
-      else if (engine?.runRenderLoop) {
-        engine.runRenderLoop(() => {
-          if (!__renderActive) return;
-          scene.render();
-        });
-      }
+      dbg.log('[Render] starting requestAnimationFrame loop (test mode fallback)');
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(rafLoop);
+      else if (engine?.runRenderLoop) engine.runRenderLoop(() => { if (!renderActive) return; scene.render(); });
     }
   } catch (e) {
-    console.warn('[Render] primary loop init failed; falling back to rAF', e);
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(__rafLoop);
+    dbg.warn('[Render] primary loop init failed; falling back to rAF', e);
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(rafLoop);
   }
 
-  // Force vectors now rendered via moleculeView thin instances (see moleculeView.rebuildForces).
-  // Keep a small compatibility layer: setting true will ensure showForces=true, false hides; undefined toggles.
-  function setForceVectorsEnabled(on) {
-    try {
-      if (typeof on === 'boolean') {
-        if (!!state.showForces !== on) state.toggleForceVectorsVisibility();
-      } else {
-        state.toggleForceVectorsVisibility();
-      }
-    } catch { }
-  }
-
-  // VR support is lazy; user can call vr.init() explicitly later.
-  // IMPORTANT: Route VR interactions through the wrapped manipulation so dragged atoms are tracked
-  // and excluded from MD/relax position application while held.
-  const vr = createVRSupport(scene, {
-    picking: {
-      ...picking,
-      view,
-      vrPicker,
-      selectionService: selection,
-      manipulation: new Proxy({}, { get: (_, k) => wrappedManipulationRef?.[k] }),
-      molState: state,
-    },
-  });
-  // Auto-init VR support so controllers & debug logging are ready; actual immersive session still requires user gesture.
-  try {
-    vr.init().then((res) => {
-      if (res.supported) {
-        console.log('[VR] support initialized (auto)');
-      } else {
-        console.log('[VR] not supported');
-      }
+  // Cleanup for Jest/teardown
+  onWin(w => {
+    w.__MLIPVIEW_CLEANUP ||= [];
+    w.__MLIPVIEW_CLEANUP.push(() => {
+      try { engine?.stopRenderLoop?.(); } catch { }
+      try { scene?.dispose?.(); } catch { }
     });
-  } catch (e) {
-    console.warn('[VR] auto init failed', e);
-  }
-  function debugEnergySeriesLength() {
-    return energySeries.length;
-  }
-  function debugRecordInteraction(kind) {
-    recordInteraction(kind || 'debug');
-  }
-  function getForceCacheVersion() {
-    return state.forceCache?.version;
-  }
-  function getVersionInfo() {
-    return { userInteractionVersion, totalInteractionVersion, resetEpoch };
-  }
-  function shutdown() {
-    __renderActive = false;
-    try {
-      engine.stopRenderLoop && engine.stopRenderLoop();
-    } catch { }
-  }
+    w.__MLIPVIEW_API_ENABLE = (on) => { w.__MLIPVIEW_DEBUG_API = !!on; dbg.log('[API] debug set to', w.__MLIPVIEW_DEBUG_API); };
+  });
+
+  function setForceProvider() { return 'uma'; }
+  function shutdown() { renderActive = false; try { engine?.stopRenderLoop?.(); } catch { } }
+
   return {
     state,
     bondService,
-    selection,
+    selection: picking.selectionService,
     ff,
-    dynamics,
+    dynamics: { stepMD: () => { }, stepRelax: ({ forceFn }) => forceFn && forceFn() },
     view,
     picking,
     vr,
@@ -2812,62 +913,40 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   };
 }
 
-// Ensure global viewerApi for tests if not already set
-if (typeof window !== 'undefined') {
+/* ──────────────────────────────────────────────────────────────────────────
+   Global viewerApi bootstrap for tests / devtools
+   ────────────────────────────────────────────────────────────────────────── */
+
+onWin(w => {
   try {
-    if (!window.viewerApi && typeof initNewViewer === 'function') {
-      // Will be assigned after user calls initNewViewer; patch the function to set it.
-      const __origInit = initNewViewer;
-      // Redefine only once
-      Object.defineProperty(window, 'initNewViewer', {
+    if (!w.viewerApi && typeof initNewViewer === 'function') {
+      const __orig = initNewViewer;
+      Object.defineProperty(w, 'initNewViewer', {
         value: async function (...args) {
-          const api = await __origInit(...args);
-          window.viewerApi = api; // expose globally for tests & debug inspector
+          const api = await __orig(...args);
+          w.viewerApi = api;
           return api;
         },
         configurable: true,
       });
     }
-  } catch (_) {
-    /* ignore */
-  }
-}
-
-// Debug / test helpers injected after definition (non-enumerable minimal surface impact)
-try {
-  if (typeof window !== 'undefined') {
-    Object.defineProperty(window, '__dumpCurrentAtoms', {
+  } catch { }
+  // small debug helper
+  try {
+    Object.defineProperty(w, '__dumpCurrentAtoms', {
       value: function () {
         try {
-          if (!window.viewerApi) return null;
-          const st = window.viewerApi.state;
+          if (!w.viewerApi) return null;
+          const st = w.viewerApi.state;
           return {
-            elements: st.elements.map(
-              (e) => e.symbol || e.sym || e.S || e.Z || e.atomicNumber || '?'
-            ),
-            atomic_numbers: st.elements.map((e) =>
-              typeof e === 'string'
-                ? SYMBOL_TO_Z[e] || 0
-                : (e &&
-                  (e.Z ||
-                    e.atomicNumber ||
-                    e.z ||
-                    SYMBOL_TO_Z[e.symbol] ||
-                    SYMBOL_TO_Z[e.sym] ||
-                    SYMBOL_TO_Z[e.S] ||
-                    0)) ||
-                0
-            ),
-            positions: st.positions.map((p) => [p.x, p.y, p.z]),
+            elements: st.elements.map(e => e.symbol || e.sym || e.S || e.Z || e.atomicNumber || '?'),
+            atomic_numbers: st.elements.map(zOf),
+            positions: st.positions.map(p => [p.x, p.y, p.z]),
             energy: st.dynamics?.energy,
           };
-        } catch (e) {
-          return { error: e?.message || String(e) };
-        }
+        } catch (e) { return { error: e?.message || String(e) }; }
       },
       writable: false,
     });
-  }
-} catch (_) {
-  /* ignore non-browser env */
-}
+  } catch { }
+});
