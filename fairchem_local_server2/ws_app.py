@@ -12,7 +12,10 @@ from ray import serve
 from ray.serve.schema import LoggingConfig
 
 from fairchem_local_server2 import session_pb2 as pb
-from fairchem_local_server2.session_models import SessionState, SimulationParams
+from fairchem_local_server2.session_models import (
+    SessionState,
+    SimulationParams,
+)
 from fairchem_local_server2.worker_pool import WorkerPool
 from fairchem_local_server.model_runtime import (
     MODEL_NAME,
@@ -200,7 +203,10 @@ class WSIngress:
                 msg.cell.CopyFrom(m)
             if stress is not None:
                 try:
-                    if isinstance(stress, np.ndarray) and stress.shape == (3, 3):
+                    if (
+                        isinstance(stress, np.ndarray)
+                        and stress.shape == (3, 3)
+                    ):
                         sm = pb.Mat3()
                         sflat = [
                             float(stress[0, 0]),
@@ -398,7 +404,10 @@ class WSIngress:
         def _handle_ack_and_client_seq(msg) -> None:
             """Apply ACK/client_seq from incoming message with debug logs."""
             # client_seq
-            state.client_seq = max(state.client_seq, int(getattr(msg, "seq", 0) or 0))
+            state.client_seq = max(
+                state.client_seq,
+                int(getattr(msg, "seq", 0) or 0),
+            )
             # ack
             prev_ack = int(state.client_ack)
             if hasattr(msg, "HasField") and msg.HasField("ack"):
@@ -443,13 +452,17 @@ class WSIngress:
                     state.sim_step = s
             return uic_in_msg
 
-        async def _handle_user_interaction(msg, uic_in_msg: Optional[int]) -> None:
+        async def _handle_user_interaction(
+            msg, uic_in_msg: Optional[int]
+        ) -> None:
             if hasattr(msg, "atomic_numbers") and len(msg.atomic_numbers) > 0:
                 state.user_input_atomic_numbers = list(msg.atomic_numbers)
             if hasattr(msg, "positions") and len(msg.positions) > 0:
                 state.user_input_positions = _np_from_vec3_list(msg.positions)
             if hasattr(msg, "velocities") and len(msg.velocities) > 0:
-                state.user_input_velocities = _np_from_vec3_list(msg.velocities)
+                state.user_input_velocities = _np_from_vec3_list(
+                    msg.velocities
+                )
             if hasattr(msg, "cell"):
                 state.user_input_cell = _mat3_to_np(msg.cell)
             n = (
@@ -471,7 +484,10 @@ class WSIngress:
                 state.forces = None
                 if self._ws_debug:
                     print(
-                        ("[ws:state] applied USER_INTERACTION during " "running sim"),
+                        (
+                            "[ws:state] applied USER_INTERACTION during "
+                            "running sim"
+                        ),
                         flush=True,
                     )
                 return
@@ -483,10 +499,14 @@ class WSIngress:
                 state.user_input_atomic_numbers = None
                 assert len(state.atomic_numbers) != 0
             if state.user_input_positions is not None:
-                state.positions = np.array(state.user_input_positions, dtype=float)
+                state.positions = np.array(
+                    state.user_input_positions, dtype=float
+                )
                 state.user_input_positions = None
             if state.user_input_velocities is not None:
-                state.velocities = np.array(state.user_input_velocities, dtype=float)
+                state.velocities = np.array(
+                    state.user_input_velocities, dtype=float
+                )
                 state.user_input_velocities = None
             if state.user_input_cell is not None:
                 state.cell = np.array(state.user_input_cell, dtype=float)
@@ -518,7 +538,9 @@ class WSIngress:
                 await _send_result_bytes(
                     seq=state.server_seq,
                     client_seq=state.client_seq,
-                    user_interaction_count=(int(uic_in_msg) if uic_in_msg else None),
+                    user_interaction_count=(
+                        int(uic_in_msg) if uic_in_msg else None
+                    ),
                     sim_step=(state.sim_step or None),
                     positions=None,
                     velocities=None,
@@ -546,7 +568,9 @@ class WSIngress:
             await _send_result_bytes(
                 seq=state.server_seq,
                 client_seq=state.client_seq,
-                user_interaction_count=(int(uic_in_msg) if uic_in_msg else None),
+                user_interaction_count=(
+                    int(uic_in_msg) if uic_in_msg else None
+                ),
                 sim_step=(state.sim_step or None),
                 positions=None,
                 velocities=None,
@@ -560,7 +584,9 @@ class WSIngress:
             if not msg.HasField("simulation_type"):
                 return
             state.sim_type = (
-                "md" if (msg.simulation_type == pb.ClientAction.SimType.MD) else "relax"
+                "md"
+                if (msg.simulation_type == pb.ClientAction.SimType.MD)
+                else "relax"
             )
             if msg.HasField("simulation_params"):
                 sp = msg.simulation_params
@@ -603,7 +629,9 @@ class WSIngress:
                 await _send_result_bytes(
                     seq=state.server_seq,
                     client_seq=state.client_seq,
-                    user_interaction_count=(state.user_interaction_count or None),
+                    user_interaction_count=(
+                        state.user_interaction_count or None
+                    ),
                     sim_step=(state.sim_step or None),
                     positions=None,
                     velocities=None,
@@ -666,13 +694,36 @@ class WSIngress:
 
         async def recv_loop():
             nonlocal last_ack
-            try:
+            
+            def _is_user_interaction(m: pb.ClientAction) -> bool:
+                mt = getattr(m, "type", None)
+                return (
+                    (
+                        hasattr(pb.ClientAction.Type, "USER_INTERACTION")
+                        and mt == pb.ClientAction.Type.USER_INTERACTION
+                    )
+                    or mt == "user_interaction"
+                )
+
+            async def read_next_message_from_socket(
+                
+            ) -> Optional[pb.ClientAction]:
+                """
+                Coalesce consecutive USER_INTERACTION messages by merging
+                fields so that the latest values take precedence. If the
+                first message is non-USER_INTERACTION, return it as-is.
+                If no message is currently queued, block until one arrives
+                or the reader finishes. Returns None when reader is done
+                and no messages remain.
+                """
                 while True:
                     if not msg_buf:
                         if reader_done:
-                            break
+                            return None
                         try:
-                            await asyncio.wait_for(buf_has_data.wait(), timeout=0.05)
+                            await asyncio.wait_for(
+                                buf_has_data.wait(), timeout=0.05
+                            )
                         except asyncio.TimeoutError:
                             continue
                         finally:
@@ -680,12 +731,127 @@ class WSIngress:
                                 buf_has_data.clear()
                         continue
 
-                    # Optional PEEK without consuming:
-                    # peek_msg: pb.ClientAction = msg_buf[0]
+                    # Peek at the first message without consuming
+                    first: pb.ClientAction = msg_buf[0]
+                    if not _is_user_interaction(first):
+                        # return the first non-UI message
+                        msg: pb.ClientAction = msg_buf.popleft()
+                        if not msg_buf:
+                            buf_has_data.clear()
+                        return msg
 
-                    msg: pb.ClientAction = msg_buf.popleft()
+                    # First is USER_INTERACTION: consume and merge
+                    # consecutive USER_INTERACTION messages
+                    uis: list[pb.ClientAction] = []
+                    while msg_buf:
+                        peek = msg_buf[0]
+                        if not _is_user_interaction(peek):
+                            break
+                        uis.append(msg_buf.popleft())
                     if not msg_buf:
                         buf_has_data.clear()
+
+                    # Merge fields with newer messages taking precedence
+                    merged = pb.ClientAction()
+                    if hasattr(pb.ClientAction.Type, "USER_INTERACTION"):
+                        merged.type = pb.ClientAction.Type.USER_INTERACTION
+                    else:
+                        # type: ignore[attr-defined]
+                        merged.type = "user_interaction"
+
+                    # Accumulators (last non-empty wins)
+                    latest_atomic_numbers: Optional[list[int]] = None
+                    latest_positions: Optional[np.ndarray] = None
+                    latest_velocities: Optional[np.ndarray] = None
+                    latest_cell: Optional[np.ndarray] = None
+                    latest_seq: Optional[int] = None
+                    latest_ack: Optional[int] = None
+                    latest_uic: Optional[int] = None
+                    latest_sim_step: Optional[int] = None
+
+                    for m in uis:
+                        # scalars/counters (use last message values)
+                        s = int(getattr(m, "seq", 0) or 0)
+                        if s:
+                            latest_seq = s
+
+                        a = int(getattr(m, "ack", 0) or 0)
+                        if a:
+                            latest_ack = a
+
+                        u = int(getattr(m, "user_interaction_count", 0) or 0)
+                        if u:
+                            latest_uic = u
+
+                        st = int(getattr(m, "sim_step", 0) or 0)
+                        if st:
+                            latest_sim_step = st
+
+                        # atomic_numbers (non-empty wins)
+                        an = list(getattr(m, "atomic_numbers", []) or [])
+                        if an:
+                            latest_atomic_numbers = [int(z) for z in an]
+
+                        # positions / velocities / cell (non-empty wins)
+                        if hasattr(m, "positions") and len(m.positions) > 0:
+                            latest_positions = _np_from_vec3_list(m.positions)
+                        if hasattr(m, "velocities") and len(m.velocities) > 0:
+                            latest_velocities = _np_from_vec3_list(
+                                m.velocities
+                            )
+                        if hasattr(m, "HasField") and m.HasField("cell"):
+                            latest_cell = _mat3_to_np(m.cell)
+
+                    # Populate merged message
+                    if latest_seq is not None:
+                        merged.seq = int(latest_seq)
+                    if latest_ack is not None:
+                        merged.ack = int(latest_ack)
+                    if latest_uic is not None:
+                        merged.user_interaction_count = int(latest_uic)
+                    if latest_sim_step is not None:
+                        merged.sim_step = int(latest_sim_step)
+
+                    if latest_atomic_numbers is not None:
+                        del merged.atomic_numbers[:]
+                        merged.atomic_numbers.extend(
+                            [int(z) for z in latest_atomic_numbers]
+                        )
+
+                    # Clear and fill repeated Vec3 fields
+                    # positions
+                    del merged.positions[:]
+                    _fill_vec3_repeated(merged.positions, latest_positions)
+                    # velocities
+                    del merged.velocities[:]
+                    _fill_vec3_repeated(merged.velocities, latest_velocities)
+
+                    if (
+                        latest_cell is not None
+                        and isinstance(latest_cell, np.ndarray)
+                    ):
+                        m = pb.Mat3()
+                        flat = [
+                            float(latest_cell[0, 0]),
+                            float(latest_cell[0, 1]),
+                            float(latest_cell[0, 2]),
+                            float(latest_cell[1, 0]),
+                            float(latest_cell[1, 1]),
+                            float(latest_cell[1, 2]),
+                            float(latest_cell[2, 0]),
+                            float(latest_cell[2, 1]),
+                            float(latest_cell[2, 2]),
+                        ]
+                        m.m.extend(flat)
+                        merged.cell.CopyFrom(m)
+
+                    return merged
+
+            try:
+                while True:
+                    msg = await read_next_message_from_socket()
+                    if msg is None:
+                        break
 
                     # shared header handling
                     _handle_ack_and_client_seq(msg)
@@ -755,7 +921,9 @@ def deploy(
     - UMA predictor replicas: one per GPU
     - ASE worker pool size: ncpus (CPU-bound)
     """
-    replica_count = int(ngpus) if ngpus is not None else _detect_default_ngpus()
+    replica_count = (
+        int(ngpus) if ngpus is not None else _detect_default_ngpus()
+    )
     pool_size = int(ncpus) if ncpus is not None else _detect_default_ncpus()
     ingress_replicas = max(1, int(nhttp) if nhttp is not None else 1)
     dag = None
@@ -778,10 +946,14 @@ def deploy(
             num_replicas=int(replica_count),
             ray_actor_options={"num_gpus": 1},
         ).bind(MODEL_NAME, TASK_NAME)
-        dag = WSIngress.options(num_replicas=ingress_replicas).bind(uma, pool_size)
+        dag = WSIngress.options(num_replicas=ingress_replicas).bind(
+            uma, pool_size
+        )
     else:
         # LJ-only or client-provided calculator flows
-        dag = WSIngress.options(num_replicas=ingress_replicas).bind(None, pool_size)
+        dag = WSIngress.options(num_replicas=ingress_replicas).bind(
+            None, pool_size
+        )
     serve.run(
         dag,
         name="ws_app",
