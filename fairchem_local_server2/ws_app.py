@@ -71,6 +71,21 @@ def _mat3_to_np(m: "pb.Mat3") -> np.ndarray:
     return a.reshape(3, 3)
 
 
+# ---- UMA-only enforcement ---------------------------------------------------
+
+
+def _assert_uma(calculator: Optional[str]) -> None:
+    """
+    Enforce UMA-only operation. Raise a ValueError with a stable, testable message
+    if the requested calculator is not 'uma'.
+    """
+    c = (calculator or "").strip().lower()
+    if c != "uma":
+        raise ValueError(
+            "CALCULATOR_NOT_SUPPORTED: UMA_ONLY (requested: %r)" % (calculator,)
+        )
+
+
 # ---- message coalescer ------------------------------------------------------
 
 
@@ -366,6 +381,28 @@ class WSIngress:
                     # Snapshot UIC at the beginning of this step
                     uic_snapshot = state.user_interaction_count
 
+                    # --- UMA-only guard for streaming path ---
+                    try:
+                        _assert_uma(state.params.calculator)
+                    except ValueError as e:
+                        state.server_seq += 1
+                        await _send_result_bytes(
+                            seq=state.server_seq,
+                            client_seq=state.client_seq,
+                            user_interaction_count=(
+                                state.user_interaction_count or None
+                            ),
+                            sim_step=(state.sim_step or None),
+                            positions=state.positions,
+                            velocities=state.velocities,
+                            forces=state.forces,
+                            cell=None,
+                            energy=None,
+                            message=str(e),
+                        )
+                        await asyncio.sleep(0.2)
+                        continue
+
                     worker = self._pool.any()
                     if state.sim_type == "md":
                         if self._log_calls:
@@ -568,6 +605,28 @@ class WSIngress:
                 state.cell = np.asarray(state.user_input_cell, dtype=np.float64)
                 state.user_input_cell = None
 
+            # --- UMA-only guard for idle compute path ---
+            try:
+                _assert_uma(state.params.calculator)
+            except ValueError as e:
+                state.server_seq += 1
+                await _send_result_bytes(
+                    seq=state.server_seq,
+                    client_seq=state.client_seq,
+                    user_interaction_count=(
+                        int(uic_in_msg) if uic_in_msg is not None else None
+                    ),
+                    sim_step=(state.sim_step or None),
+                    positions=None,
+                    velocities=None,
+                    forces=None,
+                    cell=None,
+                    energy=None,
+                    stress=None,
+                    message=str(e),
+                )
+                return
+
             worker = self._pool.any()
             try:
                 res = await asyncio.to_thread(
@@ -670,11 +729,37 @@ class WSIngress:
                     max_step=float(sp.max_step),
                     optimizer=(sp.optimizer or "bfgs"),
                 )
-            state.running = True
+
+            # Enforce UMA-only at start; if invalid, notify and do not start.
+            async def _notify_bad_calc(err_msg: str) -> None:
+                state.server_seq += 1
+                await _send_result_bytes(
+                    seq=state.server_seq,
+                    client_seq=state.client_seq,
+                    user_interaction_count=(state.user_interaction_count or None),
+                    sim_step=(state.sim_step or None),
+                    positions=None,
+                    velocities=None,
+                    forces=None,
+                    cell=None,
+                    energy=None,
+                    message=err_msg,
+                    stress=None,
+                    simulation_stopped=True,
+                )
+
+            try:
+                _assert_uma(state.params.calculator)
+                state.running = True
+            except ValueError as e:
+                state.running = False
+                asyncio.create_task(_notify_bad_calc(str(e)))
+
             if self._ws_debug:
                 print(
-                    f"[ws] START_SIM type={state.sim_type} T={state.params.temperature} "
-                    f"dt={state.params.timestep_fs} friction={state.params.friction}",
+                    f"[ws] START_SIM type={state.sim_type} calc={state.params.calculator} "
+                    f"T={state.params.temperature} dt={state.params.timestep_fs} "
+                    f"friction={state.params.friction} running={state.running}",
                     flush=True,
                 )
                 print(

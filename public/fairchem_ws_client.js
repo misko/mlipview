@@ -196,7 +196,7 @@ export function createFairchemWS() {
       ws.onmessage = async (ev) => {
         // Protobuf-only decode (but tolerate Blob and JSON-delivered-as-binary)
         try {
-          // ✅ New: if the browser delivered a TEXT frame, ignore it explicitly.
+          // If the browser delivered a TEXT frame, ignore it explicitly.
           if (typeof ev.data === 'string') {
             __wsErr('[WS] Received TEXT frame; protobuf-only server. Ignoring.');
             return;
@@ -206,6 +206,17 @@ export function createFairchemWS() {
           const maybeBytes = __bytesFromWSData(ev.data);
           const bytes = maybeBytes instanceof Promise ? await maybeBytes : maybeBytes;
 
+          // Guard: some stacks send JSON as Buffer/Uint8Array; sniff first non-space byte.
+          try {
+            let i = 0;
+            // 0..32 = ASCII control/space; skip leading whitespace if any
+            while (i < bytes.length && bytes[i] <= 32) i++;
+            const b0 = bytes[i];
+            if (b0 === 123 /*'{'*/ || b0 === 91 /*'['*/) {
+              __wsErr('[WS] Received JSON text in binary path; ignoring frame.');
+              return;
+            }
+          } catch { }
 
           const r = fromBinary(ServerResultSchema, bytes);
           const out = {
@@ -216,6 +227,7 @@ export function createFairchemWS() {
           };
 
           const which = r.payload?.case;
+
           if (which === 'frame') {
             const fr = r.payload.value;
             if (fr.energy != null) out.energy = fr.energy;
@@ -233,14 +245,30 @@ export function createFairchemWS() {
                 out.positions[dragLock.index] = dragLock.pos || out.positions[dragLock.index];
               }
             } catch { }
+
           } else if (which === 'notice') {
             const n = r.payload.value;
+
             if (typeof n.message === 'string') {
               // Normalize variants like "WAITING_FOR_ACKS" or "WAITING_FOR_ACK seq=123"
-              const m = n.message.toUpperCase();
-              out.message = m.includes('WAITING_FOR_ACK') ? 'WAITING_FOR_ACK' : n.message;
+              const upper = n.message.toUpperCase();
+              out.message = upper.includes('WAITING_FOR_ACK') ? 'WAITING_FOR_ACK' : n.message;
             }
-            if (typeof n.simulationStopped === 'boolean') out.simulationStopped = !!n.simulationStopped;
+            if (typeof n.simulationStopped === 'boolean') {
+              out.simulationStopped = !!n.simulationStopped;
+            }
+
+            // Always log notices so they’re visible in CI logs
+            console.log('[WS][notice]', out.message || '(no message)', {
+              simulation_stopped: !!out.simulationStopped,
+              seq: out.seq,
+            });
+
+            // Promote UMA-only violations so tests/CI can catch them
+            if (out.message && /^CALCULATOR_NOT_SUPPORTED/.test(out.message)) {
+              console.error('[WS]', out.message);
+            }
+
           } else {
             // Unknown payload -> ignore
             return;
@@ -259,6 +287,7 @@ export function createFairchemWS() {
               energy: typeof out.energy === 'number',
             },
             simulationStopped: !!out.simulationStopped,
+            message: out.message || null,
           });
 
           try {
@@ -268,13 +297,15 @@ export function createFairchemWS() {
             }
           } catch { }
 
+          // Fan out to listeners
           for (const fn of listeners) {
             try { fn(out, lastCounters); } catch { }
           }
         } catch (e) {
-          try { __wsErr('[WS][decode-error]', e?.message || e); } catch { }
+          try { __wsErr('[WS] onmessage decode error: ' + (e?.message || String(e))); } catch { }
         }
       };
+
     });
   }
 
