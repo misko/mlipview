@@ -1,3 +1,25 @@
+/**
+ * E2E (browser-only): load ws-test.html with a mocked WebSocket and
+ * verify protobuf stubs initialize without errors.
+ *
+ * What this test covers
+ * - Boots the minimal harness (ws-test.html) under bundling.
+ * - Mocks window.WebSocket so the page can initialize the WS client
+ *   without a real backend connection.
+ * - Streams browser console output into the Playwright log and collects
+ *   console errors to assert against known protobuf init failures.
+ * - Asserts that the bundled client API initializes (window.__WS_API__)
+ *   and the page signals readiness (window.__WS_READY__).
+ *
+ * Expectations
+ * - No protobuf initialization errors in console (e.g., missing stubs,
+ *   google-protobuf issues, or goog exportSymbol errors).
+ * - Page reaches a ready state with the client API exposed.
+ *
+ * Why this exists
+ * - Provides a lightweight smoke test for the frontend protobuf wiring
+ *   and module loading, independent of the backend server.
+ */
 // Minimal Playwright test to load ws-test.html with a mocked WebSocket
 // Ensures google-protobuf and session_pb.js initialize without errors
 
@@ -47,7 +69,7 @@ test.describe('WS mock page load', () => {
             this.onopen && this.onopen({});
           }, 10);
         }
-        set binaryType(_) {}
+        set binaryType(_) { }
         send(_) {
           /* ignore */
         }
@@ -55,10 +77,10 @@ test.describe('WS mock page load', () => {
           this.readyState = 3;
           this.onclose && this.onclose({});
         }
-        onopen() {}
-        onmessage() {}
-        onerror() {}
-        onclose() {}
+        onopen() { }
+        onmessage() { }
+        onerror() { }
+        onclose() { }
       }
       window.WebSocket = MockWS;
     });

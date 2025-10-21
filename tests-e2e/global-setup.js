@@ -58,7 +58,7 @@ async function freePort(port, timeout = 10000) {
   for (const pid of pids) {
     try {
       process.kill(pid, 'SIGTERM');
-    } catch {}
+    } catch { }
   }
   const t0 = Date.now();
   while (Date.now() - t0 < timeout) {
@@ -70,7 +70,7 @@ async function freePort(port, timeout = 10000) {
   for (const pid of pids) {
     try {
       process.kill(pid, 'SIGKILL');
-    } catch {}
+    } catch { }
   }
   const t1 = Date.now();
   while (Date.now() - t1 < timeout) {
@@ -88,10 +88,12 @@ export default async function globalSetup() {
   const pyEnv = process.env.MLIPVIEW_PYTHON || process.cwd() + '/mlipview_venv/bin/python';
   const wsLog = fs.createWriteStream('./test-ws-e2e.log');
   // Ensure port 8000 is free before launching
-  await freePort(8000).catch(() => {});
+  await freePort(8000).catch(() => { });
   const port8000Busy = await isPortOpen(8000);
   if (!port8000Busy) {
     const env = { ...process.env };
+    // Enable backend WS debug to surface WAITING_FOR_ACK and frame logs during tests
+    env.WS_DEBUG = env.WS_DEBUG || '1';
     // Pass through UMA geom debug toggle to backend if set
     if (process.env.UMA_GEOM_DEBUG == null && process.env.BACKEND_DEBUG_GEOM) {
       env.UMA_GEOM_DEBUG = process.env.BACKEND_DEBUG_GEOM;
@@ -127,7 +129,7 @@ export default async function globalSetup() {
   });
 
   // 3) Serve dist/ with vite preview on 5174
-  await freePort(5174).catch(() => {});
+  await freePort(5174).catch(() => { });
   const port5174Busy = await isPortOpen(5174);
   if (!port5174Busy) {
     const preview = spawn(

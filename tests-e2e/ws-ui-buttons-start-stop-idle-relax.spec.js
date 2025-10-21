@@ -1,3 +1,4 @@
+// Purpose: End-to-end UI control test using buttons to start/stop MD and RELAX under WS-only backend.
 import { test, expect } from '@playwright/test';
 
 // Uses UI toggles (visible buttons) instead of direct API calls:
@@ -28,7 +29,7 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
     await ws.ensureConnected();
     try {
       await ws.waitForEnergy({ timeoutMs: 20000 });
-    } catch {}
+    } catch { }
   });
 
   // Expect auto MD to run and produce >= 12 frames
@@ -39,7 +40,7 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
     const off = ws.onResult((r) => {
       try {
         if (Array.isArray(r.positions) && r.positions.length === N) count++;
-      } catch {}
+      } catch { }
     });
     try {
       const t0 = Date.now();
@@ -63,7 +64,7 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
     const off = ws.onResult((r) => {
       try {
         if (r && (r.message === 'SIMULATION_STOPPED' || r.simulationStopped === true)) saw = true;
-      } catch {}
+      } catch { }
     });
     try {
       const t0 = Date.now();
@@ -84,14 +85,14 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
       try {
         if (r && typeof r.energy === 'number' && (!r.positions || r.positions.length !== N))
           count++;
-      } catch {}
+      } catch { }
     });
     try {
       const idx = 1; // hydrogen
       const start = window.viewerApi.state.positions[idx];
       try {
         window.viewerApi.selection.clickAtom(idx);
-      } catch {}
+      } catch { }
       const planePoint = { x: start.x, y: start.y, z: start.z };
       const planeNormal = { x: 1, y: 0, z: 0 };
       const intersector0 = () => ({ x: planePoint.x, y: planePoint.y, z: planePoint.z });
@@ -107,7 +108,7 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
         window.viewerApi.manipulation.updateDrag(intersector);
         try {
           await window.viewerApi.requestSimpleCalculateNow();
-        } catch {}
+        } catch { }
         await new Promise((r) => setTimeout(r, 50));
       }
       window.viewerApi.manipulation.endDrag();
@@ -132,7 +133,7 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
     const off = ws.onResult((r) => {
       try {
         if (Array.isArray(r.positions)) count++;
-      } catch {}
+      } catch { }
     });
     try {
       const t0 = Date.now();
@@ -155,7 +156,7 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
     const off = ws.onResult((r) => {
       try {
         if (r && (r.message === 'SIMULATION_STOPPED' || r.simulationStopped === true)) saw = true;
-      } catch {}
+      } catch { }
     });
     try {
       const t0 = Date.now();

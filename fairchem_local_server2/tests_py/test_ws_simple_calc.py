@@ -1,3 +1,26 @@
+"""
+End-to-end (WS): idle compute returns finite energy/forces.
+
+What this test covers
+- Protocol: protobuf over WebSocket with oneof payloads, flat arrays for
+    vectors, row‑major Mat3, schema_version=1.
+- Flow:
+    1) Send USER_INTERACTION to initialize a small system (atoms + positions,
+         optional cell).
+    2) Send another USER_INTERACTION with positions only to trigger an idle
+         compute (no simulation running).
+    3) Receive ServerResult frames until a Frame carries energy or forces, then
+         validate the payload.
+
+Expectations
+- If energy is present, it should be a finite number (calculator-dependent).
+- Forces must be present, have shape (N, 3), and be finite.
+
+Why this exists
+- Ensures the server’s idle compute path works with the new protobuf schema
+    (flat arrays and oneof), without requiring a simulation loop.
+"""
+
 from __future__ import annotations
 
 import asyncio

@@ -1,3 +1,5 @@
+// Purpose: End-to-end: an idle USER_INTERACTION echoes the frontend-provided
+// user_interaction_count (UIC) in the server result, validating coalescing.
 import { test, expect } from '@playwright/test';
 
 // Verify user_interaction_count (UIC) is echoed by the server in idle computes
@@ -13,14 +15,14 @@ async function onceEnergy(page, { timeout = 5000 } = {}) {
           if (r && typeof r.energy === 'number') {
             try {
               off && off();
-            } catch {}
+            } catch { }
             resolve(r);
           }
         });
         setTimeout(() => {
           try {
             off && off();
-          } catch {}
+          } catch { }
           reject(new Error('timeout'));
         }, timeout);
       });
@@ -35,7 +37,7 @@ test('idle compute echoes user_interaction_count', async ({ page, baseURL }) => 
     window.__MLIPVIEW_TEST_MODE = false;
     window.__MLIPVIEW_SERVER = 'http://127.0.0.1:8000';
   });
-  await page.goto(`${baseURL}/index.html?autoMD=0`);
+  await page.goto(`${baseURL}/index.html?autoMD=0&wsDebug=1&debug=1`);
   await page.waitForFunction(() => !!window.viewerApi && !!window.__MLIP_DEFAULT_LOADED, {
     timeout: 45000,
   });
@@ -52,7 +54,7 @@ test('idle compute echoes user_interaction_count', async ({ page, baseURL }) => 
         if (r && typeof r.energy === 'number' && (r.userInteractionCount | 0) === cur) {
           try {
             off && off();
-          } catch {}
+          } catch { }
           resolve({ uic: r.userInteractionCount | 0, ok: true });
         }
       });
@@ -63,7 +65,7 @@ test('idle compute echoes user_interaction_count', async ({ page, baseURL }) => 
       setTimeout(() => {
         try {
           off && off();
-        } catch {}
+        } catch { }
         resolve({ uic: -1, ok: false });
       }, 8000);
     });

@@ -1,3 +1,41 @@
+"""
+End-to-end (WS): verify optional counter fields are handled gracefully.
+
+What this test covers
+- Protocol: protobuf, oneof payloads, flat arrays, schema_version=1.
+- Client sends:
+    1) USER_INTERACTION as an initialization message (2 atoms, positions
+         as flat packed doubles).
+    2) START simulation (RELAX). If the compiled client schema exposes
+         the optional counter fields (user_interaction_count and sim_step),
+         set them on the message. Otherwise, skip them (schema
+         backward-compatibility).
+- Server behavior expectations:
+    - Produce simulation frames (one step at a time) as ServerResult.frame.
+    - If the ServerResult schema has the optional counters, populate them
+        with a non-negative value (>= 0). If the fields are absent in the
+        compiled schema, the test tolerates that by skipping the checks.
+
+Why this exists
+- Guards the optionality/compatibility contract around correlation
+    counters during schema migration. Different environments (or cached
+    stubs) might not compile the optional fields yet; the server must
+    still function, and the test should not fail solely due to missing
+    fields in the local stubs.
+
+Assertions
+- For ServerResult.frame received first:
+    - If res.sim_step exists: it should be >= 0 (simulation step counter).
+    - If res.user_interaction_count exists: it should be >= 0 (echo or
+        snapshot).
+
+Notes
+- Counters are treated as correlation/diagnostic metadata; they must
+    never break the transport when absent. This test intentionally does
+    not enforce exact values—only presence (when compiled) and
+    non-negativity.
+"""
+
 from __future__ import annotations
 
 import asyncio

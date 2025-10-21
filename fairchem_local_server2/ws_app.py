@@ -208,10 +208,7 @@ class WSIngress:
     @app.websocket("/ws")
     async def ws(self, ws: WebSocket):
         await ws.accept()
-        try:
-            print("[ws] accepted connection", flush=True)
-        except Exception:
-            pass
+        print("[ws] accepted connection", flush=True)
 
         state = SessionState()
         max_unacked = 10
@@ -292,6 +289,7 @@ class WSIngress:
                     fr.stress.CopyFrom(stress_pb)
                 if energy is not None:
                     fr.energy = float(energy)
+                print(f"[ws] sending frame {fr}", flush=True)
                 msg.frame.CopyFrom(fr)
             else:
                 no = pb.ServerResult.Notice()
@@ -300,6 +298,7 @@ class WSIngress:
                 if simulation_stopped is True:
                     no.simulation_stopped = True
                 msg.notice.CopyFrom(no)
+                print(f"[ws] sending notice {no}", flush=True)
 
             msg.schema_version = 1
 
@@ -494,6 +493,12 @@ class WSIngress:
                 s = int(getattr(msg, "sim_step", 0) or 0)
                 if not state.running and s > 0:
                     state.sim_step = s
+            if self._ws_debug:
+                print(
+                    f"[ws:rx][corr] uic_in_msg={uic_in_msg} state_uic={state.user_interaction_count} "
+                    f"sim_step_in_msg={int(getattr(msg, 'sim_step', 0) or 0)} state_sim_step={state.sim_step} running={state.running}",
+                    flush=True,
+                )
             return uic_in_msg
 
         async def _handle_user_interaction(msg, uic_in_msg: Optional[int]) -> None:
@@ -576,6 +581,7 @@ class WSIngress:
                     ),
                 )
             except Exception as e:
+                print("[ws] USER_INTERACTION compute failed")
                 print(
                     f"[ws] USER_INTERACTION compute failed with '{state.params.calculator}' (no fallback): {e}",
                     flush=True,
@@ -597,7 +603,7 @@ class WSIngress:
                     message=("COMPUTE_ERROR: " + str(e)),
                 )
                 return
-
+            print("[ws] USER_INTERACTION compute succeeded", flush=True)
             results = res.get("results", {}) if isinstance(res, dict) else {}
             E = results.get("energy")
             F = results.get("forces")
@@ -627,6 +633,7 @@ class WSIngress:
                 except Exception:
                     S_np = None
 
+            print(f"[ws] USER_INTERACTION sending result {E}", flush=True)
             state.server_seq += 1
             await _send_result_bytes(
                 seq=state.server_seq,
@@ -725,6 +732,7 @@ class WSIngress:
                     b = data.get("bytes")
                     if b is None:
                         # Ignore text frames for this protobuf-only server
+                        print(f"[ws] Failed to get bytes", flush=True)
                         continue
 
                     # Parse now (protobuf-only server)
@@ -733,13 +741,16 @@ class WSIngress:
                         m.ParseFromString(b)  # type: ignore[arg-type]
                     except Exception:
                         # bad frame; skip
+                        print(f"[ws] Failed to parse message", flush=True)
                         continue
 
                     msg_buf.append(m)
                     buf_has_data.set()
             except WebSocketDisconnect:
+                print(f"[ws] websocket disconnect", flush=True)
                 pass
             except RuntimeError:
+                print(f"[ws] Runtime error", flush=True)
                 pass
             finally:
                 reader_done = True

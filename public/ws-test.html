@@ -1,34 +1,35 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <meta charset="utf-8" />
-    <title>WS Test Harness</title>
-  </head>
-  <body>
-    <div id="log"></div>
-    <!-- Use modern ESM protobuf stubs directly -->
-    <script type="module">
-      import { getWS } from '/fairchem_ws_client.js';
-  import { Vec3Schema } from '/proto/fairchem_local_server2/session_pb.js';
-  console.log('Vec3Schema ESM?', !!Vec3Schema);
-      const params = new URLSearchParams(location.search||'');
-      const useSim = params.get('sim') === '1';
-      const ws = getWS();
-      window.__MLIPVIEW_TEST_MODE = true;
-      window.__MLIPVIEW_SERVER = window.__MLIPVIEW_SERVER || 'http://localhost:8000';
-      await ws.ensureConnected();
-      // init small water
-      const Z = [8,1,1];
-      const R = [[0,0,0],[0,0.757,0.586],[0,-0.757,0.586]];
-      ws.initSystem({ atomic_numbers: Z, positions: R });
-  window.__WS_EVENTS__ = [];
-  ws.onResult((r)=>{ window.__WS_EVENTS__.push(r); try { if (r && r.seq) ws.ack(r.seq|0); } catch{} });
-      if (useSim) {
-        // Start an explicit MD stream to produce frames
-        ws.startSimulation({ type: 'md', params: { calculator: 'lj', temperature: 500, timestep_fs: 1.0, friction: 0.02 } });
-      }
-      window.__WS_READY__ = true;
-      window.__WS_API__ = ws;
-    </script>
-  </body>
-  </html>
+
+<head>
+  <meta charset="utf-8" />
+  <title>WS Test Harness</title>
+</head>
+
+<body>
+  <div id="log"></div>
+  <!-- Use modern ESM protobuf stubs directly -->
+  <script type="module">
+    import { getWS } from '/fairchem_ws_client.js';
+    const params = new URLSearchParams(location.search || '');
+    const useSim = params.get('sim') === '1';
+    const ws = getWS();
+    window.__MLIPVIEW_TEST_MODE = true;
+    window.__MLIPVIEW_SERVER = window.__MLIPVIEW_SERVER || 'http://localhost:8000';
+    await ws.ensureConnected();
+    // init small water
+    const Z = [8, 1, 1];
+    const R = [[0, 0, 0], [0, 0.757, 0.586], [0, -0.757, 0.586]];
+    ws.initSystem({ atomic_numbers: Z, positions: R });
+    window.__WS_EVENTS__ = [];
+    ws.onResult((r) => { window.__WS_EVENTS__.push(r); try { if (r && r.seq) ws.ack(r.seq | 0); } catch { } });
+    if (useSim) {
+      // Start an explicit MD stream to produce frames
+      ws.startSimulation({ type: 'md', params: { calculator: 'lj', temperature: 500, timestep_fs: 1.0, friction: 0.02 } });
+    }
+    window.__WS_READY__ = true;
+    window.__WS_API__ = ws;
+  </script>
+</body>
+
+</html>

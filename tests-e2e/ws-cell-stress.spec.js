@@ -1,4 +1,4 @@
-// Playwright e2e: verify that when a cell is present, idle frames may include stress
+// Purpose: End-to-end: when a cell is present, idle frames include energy and may include stress.
 // Note: Server includes stress only if calculator provides it; this test asserts presence OR graceful absence.
 
 import { test, expect } from '@playwright/test';
@@ -9,7 +9,7 @@ test.describe('WS protocol: cell and optional stress', () => {
     baseURL,
   }) => {
     test.setTimeout(45_000);
-    await page.goto(`${baseURL || ''}/index.html?autoMD=0`);
+    await page.goto(`${baseURL || ''}/index.html?autoMD=0&wsDebug=1&debug=1`);
     await page.waitForFunction(() => !!window.viewerApi && !!window.__MLIP_DEFAULT_LOADED, {
       timeout: 45000,
     });
@@ -36,16 +36,16 @@ test.describe('WS protocol: cell and optional stress', () => {
               const out = { hasStress: Array.isArray(r.stress), hasPositions, energy: r.energy };
               try {
                 off && off();
-              } catch {}
+              } catch { }
               resolve(out);
             }
-          } catch {}
+          } catch { }
         });
         ws.userInteraction({ positions: pos, cell });
         setTimeout(() => {
           try {
             off && off();
-          } catch {}
+          } catch { }
           resolve(null);
         }, 30000);
       });

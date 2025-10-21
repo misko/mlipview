@@ -1,4 +1,7 @@
-// Playwright e2e: verify server backpressure emits WAITING_FOR_ACK and resumes after ack
+// Purpose: End-to-end validation of WS backpressure and ACK flow.
+// Ensures that when the client withholds ACKs during a running MD stream,
+// the server emits a notice message "WAITING_FOR_ACK" and that once the
+// client acknowledges a later seq, the notices stop and streaming resumes.
 import { test, expect } from '@playwright/test';
 
 test.describe('WS protocol: backpressure and ACK', () => {
@@ -35,10 +38,10 @@ test.describe('WS protocol: backpressure and ACK', () => {
               cleared = true;
               try {
                 off && off();
-              } catch {}
+              } catch { }
               resolve({ waitingSeen, cleared });
             }
-          } catch {}
+          } catch { }
         });
         ws.startSimulation({
           type: 'md',
@@ -47,7 +50,7 @@ test.describe('WS protocol: backpressure and ACK', () => {
         setTimeout(() => {
           try {
             off && off();
-          } catch {}
+          } catch { }
           resolve({ waitingSeen, cleared });
         }, 35000);
       });

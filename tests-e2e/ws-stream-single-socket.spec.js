@@ -1,7 +1,8 @@
-// Playwright test: validate single-socket invariant and streaming behavior
-// - Navigates with wsSim=1 to enable streaming over WebSocket
-// - Asserts exactly one WebSocket is opened from the page and reused
-// - Starts a short MD stream and verifies at least a few frames arrive with increasing seq
+// Purpose: Validate WS streaming behavior and single-socket invariant.
+// - Navigates to ws-test harness with sim=1 to produce a short MD stream.
+// - Asserts exactly one WebSocket is created and stays open.
+// - Observes protocol frames to ensure more than one incoming frame and
+//   monotonically increasing seq values.
 
 import { test, expect } from '@playwright/test';
 
@@ -60,7 +61,7 @@ test.describe('WS streaming single-socket', () => {
     });
 
     // Use a minimal WS test harness page
-    await page.goto(`${baseURL}/ws-test.html?sim=1`);
+    await page.goto(`${baseURL}/ws-test.html?sim=1&wsDebug=1&debug=1`);
     await page.waitForFunction(() => !!window.__WS_READY__, { timeout: 10000 });
 
     // Ensure WS API is present
@@ -94,7 +95,7 @@ test.describe('WS streaming single-socket', () => {
                   maxSeen = s;
                 }
               }
-            } catch {}
+            } catch { }
             if (Date.now() > stopAt) return resolve(unique);
             setTimeout(poll, 100);
           };

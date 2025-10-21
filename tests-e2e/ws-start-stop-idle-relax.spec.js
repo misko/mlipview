@@ -1,3 +1,4 @@
+// Purpose: End-to-end flow across MD start/stop, idle drag computes, RELAX start/stop over WS-only protocol.
 import { test, expect } from '@playwright/test';
 
 test('autoMD → stop → idle drag → relax → stop (WS)', async ({ page, baseURL }) => {
@@ -22,10 +23,10 @@ test('autoMD → stop → idle drag → relax → stop (WS)', async ({ page, bas
       await ws.ensureConnected();
       try {
         await window.viewerApi?.baselineEnergy?.();
-      } catch {}
+      } catch { }
       try {
         await ws.waitForEnergy({ timeoutMs: 20000 });
-      } catch {}
+      } catch { }
     } catch (e) {
       /* swallow errors in page to avoid throwing Event */
     }
@@ -39,7 +40,7 @@ test('autoMD → stop → idle drag → relax → stop (WS)', async ({ page, bas
     const off = ws.onResult((r) => {
       try {
         if (Array.isArray(r.positions) && r.positions.length === N) count++;
-      } catch {}
+      } catch { }
     });
     try {
       window.viewerApi.startMDContinuous({ steps: 100, temperature: 1200 });
@@ -59,7 +60,7 @@ test('autoMD → stop → idle drag → relax → stop (WS)', async ({ page, bas
     const off = ws.onResult((r) => {
       try {
         if (r && (r.message === 'SIMULATION_STOPPED' || r.simulationStopped === true)) saw = true;
-      } catch {}
+      } catch { }
     });
     try {
       window.viewerApi.stopSimulation();
@@ -81,7 +82,7 @@ test('autoMD → stop → idle drag → relax → stop (WS)', async ({ page, bas
       try {
         if (r && typeof r.energy === 'number' && (!r.positions || r.positions.length !== N))
           count++;
-      } catch {}
+      } catch { }
     });
     try {
       const idx = 1; // hydrogen
@@ -89,7 +90,7 @@ test('autoMD → stop → idle drag → relax → stop (WS)', async ({ page, bas
       // select the atom and perform a small drag oscillation via manipulation API
       try {
         window.viewerApi.selection.clickAtom(idx);
-      } catch {}
+      } catch { }
       // Begin drag on a plane perpendicular to X axis through current point
       const planePoint = { x: start.x, y: start.y, z: start.z };
       const planeNormal = { x: 1, y: 0, z: 0 };
@@ -108,7 +109,7 @@ test('autoMD → stop → idle drag → relax → stop (WS)', async ({ page, bas
         // deterministically trigger an idle compute frame and ack it
         try {
           await window.viewerApi.requestSimpleCalculateNow();
-        } catch {}
+        } catch { }
         await new Promise((r) => setTimeout(r, 50));
       }
       window.viewerApi.manipulation.endDrag();
@@ -128,7 +129,7 @@ test('autoMD → stop → idle drag → relax → stop (WS)', async ({ page, bas
     const off = ws.onResult((r) => {
       try {
         if (Array.isArray(r.positions)) count++;
-      } catch {}
+      } catch { }
     });
     try {
       await window.viewerApi.startRelaxContinuous({ maxSteps: 200 });
@@ -148,7 +149,7 @@ test('autoMD → stop → idle drag → relax → stop (WS)', async ({ page, bas
     const off = ws.onResult((r) => {
       try {
         if (r && (r.message === 'SIMULATION_STOPPED' || r.simulationStopped === true)) saw = true;
-      } catch {}
+      } catch { }
     });
     try {
       window.viewerApi.stopSimulation();

@@ -3,11 +3,15 @@
 import { __count } from './util/funcCount.js';
 import { create, toBinary, fromBinary } from '@bufbuild/protobuf';
 import {
+  // Core messages (oneof + flat arrays)
   ClientActionSchema,
-  ClientAction_Type,
-  ClientAction_SimType,
+  ClientAction_UserInteractionSchema,
+  ClientAction_StartSchema,
+  ClientAction_Start_SimType,
+  ClientAction_StopSchema,
+  ClientAction_PingSchema,
   ServerResultSchema,
-  Vec3Schema,
+  // Supporting messages
   Mat3Schema,
   SimulationParamsSchema,
 } from '/proto/fairchem_local_server2/session_pb.js';
@@ -19,13 +23,47 @@ async function __ensurePB() {
 function __n(v) {
   return typeof v === 'bigint' ? Number(v) : typeof v === 'number' ? v : 0;
 }
+// Flatten [[x,y,z], ...] -> [x0,y0,z0, x1,y1,z1, ...]
+function __triplesToFlat3(triples) {
+  try {
+    if (!Array.isArray(triples)) return undefined;
+    const out = new Array(triples.length * 3);
+    let j = 0;
+    for (let i = 0; i < triples.length; i++) {
+      const p = triples[i] || [0, 0, 0];
+      out[j++] = +p[0];
+      out[j++] = +p[1];
+      out[j++] = +p[2];
+    }
+    return out;
+  } catch {
+    return undefined;
+  }
+}
+// Expand flat [x0,y0,z0, ...] -> [[x,y,z], ...]
+function __flat3ToTriples(arr) {
+  try {
+    if (!Array.isArray(arr)) return undefined;
+    const n = Math.floor(arr.length / 3);
+    const out = new Array(n);
+    for (let i = 0, k = 0; i < n; i++) out[i] = [arr[k++], arr[k++], arr[k++]];
+    return out;
+  } catch {
+    return undefined;
+  }
+}
 function __wsDebugOn() {
   try {
     if (typeof window !== 'undefined') {
       // URL param wsDebug=1|true toggles
       try {
         const q = new URLSearchParams(window.location.search || '');
-        if (q.get('wsDebug') === '1' || q.get('wsDebug') === 'true')
+        if (
+          q.get('wsDebug') === '1' ||
+          q.get('wsDebug') === 'true' ||
+          q.get('debug') === '1' ||
+          q.get('debug') === 'true'
+        )
           window.__MLIPVIEW_DEBUG_WS = true;
       } catch { }
       // localStorage key 'mlip.wsDebug' toggles
@@ -96,7 +134,6 @@ export function createFairchemWS() {
     listeners.add(fn);
     return () => listeners.delete(fn);
   }
-
   async function connect() {
     await __ensurePB();
     const base = resolveWsBase();
@@ -128,175 +165,85 @@ export function createFairchemWS() {
             window.__WS_ON_STATE__({ type: 'close', code: ev?.code, reason: ev?.reason });
         } catch { }
       };
-      ws.onmessage = (ev) => {
-        // Decode protobuf ServerResult frames; also accept JSON
+
+      // --- small local helpers for this connect() scope ---
+      const __bytesFromWSData = (data) => {
+        if (data instanceof ArrayBuffer) return new Uint8Array(data);
+        if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(data)) {
+          return new Uint8Array(data.buffer, data.byteOffset || 0, data.byteLength || 0);
+        }
+        if (typeof Uint8Array !== 'undefined' && data instanceof Uint8Array) return data;
+        if (typeof Buffer !== 'undefined' && data && Buffer.isBuffer(data)) {
+          return new Uint8Array(data.buffer, data.byteOffset || 0, data.byteLength || data.length || 0);
+        }
+        if (data && typeof data.arrayBuffer === 'function') {
+          // Blob (browser)
+          return data.arrayBuffer().then((ab) => new Uint8Array(ab));
+        }
+        const t = data && data.constructor && data.constructor.name ? data.constructor.name : typeof data;
+        throw new Error('[WS] Expected binary protobuf frame, got: ' + t);
+      };
+      const __mat3ToRows = (m) =>
+        Array.isArray(m) && m.length === 9
+          ? [
+            [m[0], m[1], m[2]],
+            [m[3], m[4], m[5]],
+            [m[6], m[7], m[8]],
+          ]
+          : undefined;
+
+      ws.onmessage = async (ev) => {
+        // Protobuf-only decode (but tolerate Blob and JSON-delivered-as-binary)
         try {
-          // Text JSON path (handle primitive string and String object)
-          const isStringLike =
-            typeof ev.data === 'string' ||
-            (!!ev.data && ev.data.constructor && ev.data.constructor.name === 'String');
-          if (isStringLike) {
-            try {
-              const s = String(ev.data);
-              const obj = JSON.parse(s);
-              const out = {
-                seq: __n(obj.seq),
-                client_seq: __n(obj.client_seq || obj.clientSeq),
-                userInteractionCount: __n(obj.userInteractionCount || obj.user_interaction_count),
-                simStep: __n(obj.simStep || obj.sim_step),
-                message: obj.message,
-              };
-              try {
-                if (typeof obj.simulationStopped === 'boolean')
-                  out.simulationStopped = !!obj.simulationStopped;
-              } catch { }
-              if (typeof obj.energy === 'number') out.energy = obj.energy;
-              if (Array.isArray(obj.positions)) out.positions = obj.positions;
-              if (Array.isArray(obj.forces)) out.forces = obj.forces;
-              if (Array.isArray(obj.velocities)) out.velocities = obj.velocities;
-              if (Array.isArray(obj.cell)) out.cell = obj.cell;
-              if (Array.isArray(obj.stress)) out.stress = obj.stress;
-              __wsLog('[WS][rx]', {
-                seq: out.seq,
-                client_seq: out.client_seq,
-                uic: out.userInteractionCount,
-                simStep: out.simStep,
-                have: {
-                  pos: !!out.positions,
-                  forces: !!out.forces,
-                  vel: !!out.velocities,
-                  cell: !!out.cell,
-                  energy: typeof out.energy === 'number',
-                },
-                message: out.message,
-              });
-              try {
-                if (out && out.message === 'WAITING_FOR_ACK')
-                  __wsWarn('[WS][rx][WAITING_FOR_ACK]', { seq: out.seq, clientAck });
-              } catch { }
-              for (const fn of listeners) {
-                try {
-                  fn(out, lastCounters);
-                } catch { }
-              }
-              return;
-            } catch (_jerr) {
-              // Non-JSON string (e.g., 'pong') — ignore quietly
-              try {
-                const s = String(ev.data).trim();
-                if (s === 'pong') return;
-              } catch { }
-              // For any other text that isn't valid JSON, ignore and return (server may send metrics or keepalive)
-              return;
-            }
-          }
-          let bytes;
-          // Accept ArrayBuffer (browser)
-          if (ev.data instanceof ArrayBuffer) {
-            bytes = new Uint8Array(ev.data);
-            // Accept any ArrayBufferView (Uint8Array, DataView, Buffer-backed typed arrays)
-          } else if (
-            typeof ArrayBuffer !== 'undefined' &&
-            ArrayBuffer.isView &&
-            ArrayBuffer.isView(ev.data)
-          ) {
-            const v = ev.data;
-            bytes = new Uint8Array(v.buffer, v.byteOffset || 0, v.byteLength || 0);
-            // Accept Uint8Array explicitly (redundant with ArrayBufferView but safe)
-          } else if (typeof Uint8Array !== 'undefined' && ev.data instanceof Uint8Array) {
-            bytes = ev.data;
-            // Accept Node Buffer (ws)
-          } else if (typeof Buffer !== 'undefined' && ev.data && Buffer.isBuffer(ev.data)) {
-            bytes = new Uint8Array(
-              ev.data.buffer,
-              ev.data.byteOffset || 0,
-              ev.data.byteLength || ev.data.length || 0
-            );
-            // Blob fallback (browser)
-          } else if (ev.data && ev.data.arrayBuffer && typeof ev.data.arrayBuffer === 'function') {
-            return ev.data
-              .arrayBuffer()
-              .then((ab) => {
-                ws.onmessage({ data: ab });
-              })
-              .catch(() => { });
-          } else {
-            const t =
-              ev && ev.data
-                ? ev.data.constructor && ev.data.constructor.name
-                  ? ev.data.constructor.name
-                  : typeof ev.data
-                : String(ev && ev.data);
-            throw new Error(
-              '[WS] Expected binary protobuf frame, got unsupported message type: ' + t
-            );
-          }
-          // Some Node WS stacks deliver text frames as Buffer/Uint8Array; detect JSON and parse
+          const maybeBytes = __bytesFromWSData(ev.data);
+          const bytes = maybeBytes instanceof Promise ? await maybeBytes : maybeBytes;
+
+          // Guard: some stacks send JSON as Buffer/Uint8Array
           try {
-            if (bytes && bytes.length) {
-              let i = 0;
-              while (i < bytes.length && bytes[i] <= 32) i++;
-              const b0 = bytes[i];
-              if (b0 === 123 /*'{'*/ || b0 === 91 /*'['*/) {
-                const td = new TextDecoder('utf-8');
-                const s = td.decode(bytes);
-                // Re-dispatch to the JSON path
-                try {
-                  ws.onmessage({ data: s });
-                  return;
-                } catch { }
-              }
+            let i = 0;
+            while (i < bytes.length && bytes[i] <= 32) i++;
+            const b0 = bytes[i];
+            if (b0 === 123 /*'{'*/ || b0 === 91 /*'['*/) {
+              __wsErr('[WS] Received JSON text in binary path; ignoring frame.');
+              return;
             }
           } catch { }
+
           const r = fromBinary(ServerResultSchema, bytes);
           const out = {
             seq: __n(r.seq),
             client_seq: __n(r.clientSeq),
             userInteractionCount: __n(r.userInteractionCount),
             simStep: __n(r.simStep),
-            message: r.message,
           };
-          try {
-            if (typeof r.simulationStopped === 'boolean')
-              out.simulationStopped = !!r.simulationStopped;
-          } catch { }
-          if (r.energy != null) out.energy = r.energy;
-          if (Array.isArray(r.positions))
-            out.positions = r.positions
-              .map((v) => (v && Array.isArray(v.v) ? v.v : undefined))
-              .filter(Boolean);
-          // Apply dragLock override for the dragged atom if present
-          try {
-            if (dragLock && out.positions && out.positions[dragLock.index]) {
-              out.positions[dragLock.index] = dragLock.pos || out.positions[dragLock.index];
-            }
-          } catch { }
-          if (Array.isArray(r.forces))
-            out.forces = r.forces
-              .map((v) => (v && Array.isArray(v.v) ? v.v : undefined))
-              .filter(Boolean);
-          if (Array.isArray(r.velocities))
-            out.velocities = r.velocities
-              .map((v) => (v && Array.isArray(v.v) ? v.v : undefined))
-              .filter(Boolean);
-          if (r.cell && Array.isArray(r.cell.m)) {
-            const m = r.cell.m;
-            if (m.length === 9)
-              out.cell = [
-                [m[0], m[1], m[2]],
-                [m[3], m[4], m[5]],
-                [m[6], m[7], m[8]],
-              ];
+
+          const which = r.payload?.case;
+          if (which === 'frame') {
+            const fr = r.payload.value;
+            if (fr.energy != null) out.energy = fr.energy;
+
+            if (Array.isArray(fr.positions)) out.positions = __flat3ToTriples(fr.positions) || [];
+            if (Array.isArray(fr.forces)) out.forces = __flat3ToTriples(fr.forces) || [];
+            if (Array.isArray(fr.velocities)) out.velocities = __flat3ToTriples(fr.velocities) || [];
+
+            if (fr.cell && Array.isArray(fr.cell.m)) out.cell = __mat3ToRows(fr.cell.m);
+            if (fr.stress && Array.isArray(fr.stress.m)) out.stress = __mat3ToRows(fr.stress.m);
+
+            // Apply drag-lock override for the currently dragged atom, if any
+            try {
+              if (dragLock && out.positions && out.positions[dragLock.index]) {
+                out.positions[dragLock.index] = dragLock.pos || out.positions[dragLock.index];
+              }
+            } catch { }
+          } else if (which === 'notice') {
+            const n = r.payload.value;
+            if (typeof n.message === 'string') out.message = n.message;
+            if (typeof n.simulationStopped === 'boolean') out.simulationStopped = !!n.simulationStopped;
+          } else {
+            // Unknown payload -> ignore
+            return;
           }
-          if (r.stress && Array.isArray(r.stress.m)) {
-            const m = r.stress.m;
-            if (m.length === 9)
-              out.stress = [
-                [m[0], m[1], m[2]],
-                [m[3], m[4], m[5]],
-                [m[6], m[7], m[8]],
-              ];
-          }
+
           __wsLog('[WS][rx]', {
             seq: out.seq,
             client_seq: out.client_seq,
@@ -311,27 +258,24 @@ export function createFairchemWS() {
             },
             simulationStopped: !!out.simulationStopped,
           });
-          // Debug: print received positions if present (protobuf path)
+
           try {
             const dbgApi = typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_API;
             if ((dbgApi || __wsDebugOn()) && Array.isArray(out.positions)) {
               console.log('[WS][rx][positions]', out.positions);
             }
           } catch { }
+
           for (const fn of listeners) {
-            try {
-              fn(out, lastCounters);
-            } catch { }
+            try { fn(out, lastCounters); } catch { }
           }
         } catch (e) {
-          // Surface decode errors to console but do not crash the socket
-          try {
-            __wsErr('[WS][decode-error]', e?.message || e);
-          } catch { }
+          try { __wsErr('[WS][decode-error]', e?.message || e); } catch { }
         }
       };
     });
   }
+
   function waitForEnergy({ timeoutMs = 10000 } = {}) {
     return new Promise((resolve, reject) => {
       let off = null;
@@ -413,39 +357,78 @@ export function createFairchemWS() {
   }
   // Test hook: prefer an instance-level hook set via setTestHook(fn),
   // then fall back to a single global location on globalThis for legacy tests.
-  function __notifyTestHook(msg) {
+  function __notifyTestHook(msg, explicitKind, meta) {
     try {
-      const sink =
-        __testHook && typeof __testHook === 'function'
-          ? __testHook
-          : typeof globalThis !== 'undefined' && typeof globalThis.__WS_TEST_HOOK__ === 'function'
-            ? globalThis.__WS_TEST_HOOK__
-            : null;
-      if (!sink) return;
+      const sinks = [];
+      try {
+        if (__testHook && typeof __testHook === 'function') sinks.push(__testHook);
+      } catch { }
+      try {
+        if (
+          typeof globalThis !== 'undefined' &&
+          typeof globalThis.__WS_TEST_HOOK__ === 'function'
+        )
+          sinks.push(globalThis.__WS_TEST_HOOK__);
+      } catch { }
+      try {
+        if (typeof window !== 'undefined' && typeof window.__WS_TEST_HOOK__ === 'function')
+          sinks.push(window.__WS_TEST_HOOK__);
+      } catch { }
+      if (!sinks.length) return;
       // Project a minimal JSON snapshot (type, simulation params, counters)
+      const kind =
+        explicitKind ||
+        (msg && msg.userInteraction
+          ? 'USER_INTERACTION'
+          : msg && msg.start
+            ? 'START_SIMULATION'
+            : msg && msg.stop
+              ? 'STOP_SIMULATION'
+              : msg && msg.ping
+                ? 'PING'
+                : undefined);
       const out = {
         seq: msg.seq | 0,
-        type: msg.type,
+        type: kind,
         userInteractionCount: msg.userInteractionCount | 0,
         simStep: msg.simStep | 0,
         // Include simulation params when present
-        simulationType: msg.simulationType,
-        simulationParams: msg.simulationParams
-          ? {
-            calculator: msg.simulationParams.calculator || '',
-            temperature: msg.simulationParams.temperature,
-            timestepFs: msg.simulationParams.timestepFs,
-            friction: msg.simulationParams.friction,
-            fmax: msg.simulationParams.fmax,
-            maxStep: msg.simulationParams.maxStep,
-            optimizer: msg.simulationParams.optimizer || undefined,
-          }
-          : undefined,
-        positionsCount: Array.isArray(msg.positions) ? msg.positions.length : undefined,
-        velocitiesCount: Array.isArray(msg.velocities) ? msg.velocities.length : undefined,
-        hasCell: !!msg.cell,
+        simulationType: meta?.simulationType ?? msg.start?.simulationType,
+        simulationParams:
+          meta?.simulationParams ??
+          (msg.start?.simulationParams
+            ? {
+              calculator: msg.start.simulationParams.calculator || '',
+              temperature: msg.start.simulationParams.temperature,
+              timestepFs: msg.start.simulationParams.timestepFs,
+              friction: msg.start.simulationParams.friction,
+              fmax: msg.start.simulationParams.fmax,
+              maxStep: msg.start.simulationParams.maxStep,
+              optimizer: msg.start.simulationParams.optimizer || undefined,
+            }
+            : undefined),
+        positionsCount:
+          meta?.positionsLenTriples ??
+          (Array.isArray(msg.userInteraction?.positions)
+            ? Math.floor(msg.userInteraction.positions.length / 3)
+            : undefined),
+        velocitiesCount:
+          meta?.velocitiesLenTriples ??
+          (Array.isArray(msg.userInteraction?.velocities)
+            ? Math.floor(msg.userInteraction.velocities.length / 3)
+            : undefined),
+        hasCell: meta?.hasCell ?? !!msg.userInteraction?.cell,
       };
-      sink(out);
+      try {
+        const dbg = (typeof process !== 'undefined' && process.env && process.env.JEST_WORKER_ID) ||
+          (typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_WS);
+        if (dbg) console.log('[WS][TEST_HOOK]', out);
+      } catch { }
+      for (const fn of sinks) {
+        try {
+          fn(out);
+        } catch { }
+      }
     } catch { }
   }
 
@@ -488,14 +471,12 @@ export function createFairchemWS() {
 
   // USER_INTERACTION: allow partial state updates (positions, velocities, or cell)
   function userInteraction({ atomic_numbers, positions, velocities, cell, dragLockIndex } = {}) {
-    const out = { seq: nextSeq(), type: ClientAction_Type.USER_INTERACTION };
-    if (Array.isArray(atomic_numbers)) out.atomicNumbers = atomic_numbers.map((z) => z | 0);
-    if (Array.isArray(positions))
-      out.positions = positions.map((p) => create(Vec3Schema, { v: [+p[0], +p[1], +p[2]] }));
-    if (Array.isArray(velocities))
-      out.velocities = velocities.map((p) => create(Vec3Schema, { v: [+p[0], +p[1], +p[2]] }));
+    const payload = {};
+    if (Array.isArray(atomic_numbers)) payload.atomicNumbers = atomic_numbers.map((z) => z | 0);
+    if (Array.isArray(positions)) payload.positions = __triplesToFlat3(positions);
+    if (Array.isArray(velocities)) payload.velocities = __triplesToFlat3(velocities);
     if (cell && Array.isArray(cell) && cell.length === 3)
-      out.cell = create(Mat3Schema, {
+      payload.cell = {
         m: [
           +cell[0][0],
           +cell[0][1],
@@ -507,29 +488,38 @@ export function createFairchemWS() {
           +cell[2][1],
           +cell[2][2],
         ],
-      });
-    // Attach counters per protocol so server can echo in idle responses
-    try {
-      if (Number.isFinite(lastCounters.userInteractionCount))
-        out.userInteractionCount = lastCounters.userInteractionCount | 0;
-      if (Number.isFinite(lastCounters.simStep)) out.simStep = lastCounters.simStep | 0;
-    } catch { }
-    const msg = create(ClientActionSchema, out);
-    __notifyTestHook(msg);
+      };
+    // Build message with counters set at creation time to ensure encoder includes them
+    const msg = create(ClientActionSchema, {
+      seq: nextSeq(),
+      schemaVersion: 1,
+      userInteractionCount: Number.isFinite(lastCounters.userInteractionCount)
+        ? (lastCounters.userInteractionCount | 0)
+        : undefined,
+      simStep: Number.isFinite(lastCounters.simStep) ? (lastCounters.simStep | 0) : undefined,
+      payload: { case: 'userInteraction', value: payload },
+    });
+    __notifyTestHook(msg, 'USER_INTERACTION', {
+      positionsLenTriples: Array.isArray(positions) ? positions.length : undefined,
+      velocitiesLenTriples: Array.isArray(velocities) ? velocities.length : undefined,
+      hasCell: !!payload.cell,
+    });
     try {
       __wsLog('[WS][tx][USER_INTERACTION]', {
         seq: msg.seq | 0,
         uic: msg.userInteractionCount | 0,
-        atoms: msg.atomicNumbers?.length | 0,
-        positions: msg.positions?.length | 0,
-        velocities: msg.velocities?.length | 0,
-        hasCell: !!msg.cell,
+        atoms: Array.isArray(payload.atomicNumbers) ? payload.atomicNumbers.length : 0,
+        positions: Array.isArray(payload.positions) ? payload.positions.length : 0,
+        velocities: Array.isArray(payload.velocities) ? payload.velocities.length : 0,
+        hasCell: !!msg.userInteraction?.cell,
       });
       // When debug is enabled via ?debug=1 or wsDebug=1, print the positions being sent
       try {
         const dbgApi = typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_API;
         if ((dbgApi || __wsDebugOn()) && Array.isArray(positions)) {
           console.log('[WS][tx][USER_INTERACTION][positions]', positions);
+          console.log('[WS][tx][USER_INTERACTION][flat3.len]',
+            Array.isArray(payload.positions) ? payload.positions.length : -1);
         }
       } catch { }
     } catch { }
@@ -570,10 +560,10 @@ export function createFairchemWS() {
   function startSimulation({ type, params }) {
     const t =
       String(type || 'md').toLowerCase() === 'md'
-        ? ClientAction_SimType.MD
-        : ClientAction_SimType.RELAX;
+        ? ClientAction_Start_SimType.MD
+        : ClientAction_Start_SimType.RELAX;
     const sp = params
-      ? create(SimulationParamsSchema, {
+      ? {
         calculator: params.calculator || '',
         temperature: typeof params.temperature === 'number' ? +params.temperature : undefined,
         timestepFs: typeof params.timestep_fs === 'number' ? +params.timestep_fs : undefined,
@@ -581,21 +571,39 @@ export function createFairchemWS() {
         fmax: typeof params.fmax === 'number' ? +params.fmax : undefined,
         maxStep: typeof params.max_step === 'number' ? +params.max_step : undefined,
         optimizer: params.optimizer || undefined,
-      })
+      }
       : undefined;
     const msg = create(ClientActionSchema, {
       seq: nextSeq(),
-      type: ClientAction_Type.START_SIMULATION,
-      simulationType: t,
-      simulationParams: sp,
+      schemaVersion: 1,
+      payload: {
+        case: 'start',
+        value: {
+          simulationType: t,
+          simulationParams: sp,
+        },
+      },
       userInteractionCount: lastCounters.userInteractionCount | 0,
       simStep: lastCounters.simStep | 0,
     });
-    __notifyTestHook(msg);
+    __notifyTestHook(msg, 'START_SIMULATION', {
+      simulationType: t,
+      simulationParams: sp
+        ? {
+          calculator: sp.calculator || '',
+          temperature: sp.temperature,
+          timestepFs: sp.timestepFs,
+          friction: sp.friction,
+          fmax: sp.fmax,
+          maxStep: sp.maxStep,
+          optimizer: sp.optimizer || undefined,
+        }
+        : undefined,
+    });
     try {
       __wsLog('[WS][tx][START_SIMULATION]', {
         seq: msg.seq | 0,
-        simType: t === ClientAction_SimType.MD ? 'MD' : 'RELAX',
+        simType: t === ClientAction_Start_SimType.MD ? 'MD' : 'RELAX',
         uic: msg.userInteractionCount | 0,
         simStep: msg.simStep | 0,
         params: {
@@ -616,9 +624,10 @@ export function createFairchemWS() {
   function stopSimulation() {
     const msg = create(ClientActionSchema, {
       seq: nextSeq(),
-      type: ClientAction_Type.STOP_SIMULATION,
+      schemaVersion: 1,
+      payload: { case: 'stop', value: {} },
     });
-    __notifyTestHook(msg);
+    __notifyTestHook(msg, 'STOP_SIMULATION');
     try {
       __wsLog('[WS][tx][STOP_SIMULATION]', { seq: msg.seq | 0 });
     } catch { }
@@ -630,9 +639,11 @@ export function createFairchemWS() {
     try {
       const msg = create(ClientActionSchema, {
         seq: nextSeq(),
-        type: ClientAction_Type.PING,
+        schemaVersion: 1,
         ack: seqNum | 0,
+        payload: { case: 'ping', value: {} },
       });
+      __notifyTestHook(msg, 'PING');
       const buf = toBinary(ClientActionSchema, msg);
       sendBytes(buf);
       __wsLog('[WS][tx][ACK]', { seq: msg.seq | 0, ack: seqNum | 0 });
@@ -742,6 +753,18 @@ export function createFairchemWS() {
             if (on && window.localStorage) window.localStorage.setItem('mlip.wsDebug', '1');
             else if (window.localStorage) window.localStorage.removeItem('mlip.wsDebug');
             console.log('[WS] debug set to', !!on);
+          } catch { }
+        };
+      }
+      // Provide a fan-out for tests running in jsdom that call window.__ON_WS_RESULT__
+      if (typeof window.__ON_WS_RESULT__ !== 'function') {
+        window.__ON_WS_RESULT__ = (obj) => {
+          try {
+            for (const fn of listeners) {
+              try {
+                fn(obj, lastCounters);
+              } catch { }
+            }
           } catch { }
         };
       }
