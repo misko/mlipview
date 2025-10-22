@@ -294,6 +294,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   let resetEpoch = 0;
   let userInteractionVersion = 0;
   let totalInteractionVersion = 0;
+  let lastAppliedUIC = 0;
 
   const modifiedByVersion = new Map(); // v -> Set(indices)
   const draggingAtoms = new Set();
@@ -484,6 +485,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   // Drag emission (throttled) — emits positions while dragging at a tunable rate
   const emitDuringDrag = throttle(() => {
     try {
+      bumpUser('dragMove'); // bump only when we actually transmit
       const ws = getWS();
       ws.setCounters?.({ userInteractionCount: userInteractionVersion });
       ws.userInteraction?.({ positions: posToTriples(state) });
@@ -723,9 +725,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
      ──────────────────────────────────────────────────────────────────────── */
 
   function handleStreamFrame(kind, ws, r) {
-    // discard stale UIC only if server echoes a positive lagging count
-    if (Number.isFinite(r.userInteractionCount) && r.userInteractionCount > 0 && r.userInteractionCount < userInteractionVersion) {
-      if (dbg.apiOn()) dbg.log(`[${kind}WS][discard-stale]`, { server: r.userInteractionCount, current: userInteractionVersion });
+    // Discard only if older than what we've ALREADY APPLIED (not our local "future" counter).
+    const uic = Number.isFinite(r.userInteractionCount) ? (r.userInteractionCount | 0) : 0;
+    if (uic > 0 && uic < lastAppliedUIC) {
+      if (dbg.apiOn()) dbg.log(`[${kind}WS][discard-stale-applied]`, { server: uic, lastAppliedUIC });
       return;
     }
     try { const seq = Number(r.seq) || 0; if (seq > 0) ws.ack(seq); } catch { }
@@ -756,6 +759,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     }
     energyPlot.push(E, kind);
     noteReqDone();
+    if (uic > lastAppliedUIC) lastAppliedUIC = uic;
   }
 
   let running = { kind: null, abort: null };

@@ -94,6 +94,9 @@ message ServerResult {
     optional Mat3 cell = 4;
     optional Mat3 stress = 5; // 3x3, row-major
     optional double energy = 6;
+    // Optional instantaneous MD metrics (when applicable)
+    optional double temperature = 7; // K
+    optional double kinetic = 8;     // eV (kinetic energy)
   }
 
   message Notice {

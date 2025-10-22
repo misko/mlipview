@@ -268,6 +268,7 @@ def _md_run(
         forces=forces,
         steps_completed=int(steps),
         temperature=Tfinal,
+        kinetic=KE,
         energies=energies,
         calculator=calculator,
         precomputed_applied=(pre_applied if pre_applied else None),

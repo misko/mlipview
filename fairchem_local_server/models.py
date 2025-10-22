@@ -9,8 +9,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, root_validator, validator
 import numpy as _np
+from pydantic import BaseModel, root_validator, validator
 
 # Hard cap for number of atoms accepted by any request.
 # Enforced at the model layer so all ingress paths share the same check.
@@ -27,8 +27,7 @@ def _enforce_atom_limit(values: Dict[str, Any]) -> Dict[str, Any]:
     n = max(len(zs), len(coords))
     if n > MAX_ATOMS_PER_REQUEST:
         raise ValueError(
-            "Too many atoms: "
-            f"{n} > MAX_ATOMS_PER_REQUEST={MAX_ATOMS_PER_REQUEST}"
+            "Too many atoms: " f"{n} > MAX_ATOMS_PER_REQUEST={MAX_ATOMS_PER_REQUEST}"
         )
     return values
 
@@ -150,6 +149,7 @@ class MDResult(BaseModel):
     forces: List[List[float]]
     steps_completed: int
     temperature: float
+    kinetic: float
     energies: Optional[List[float]] = None
     calculator: RelaxCalculatorName
     precomputed_applied: Optional[List[str]] = None
@@ -178,16 +178,8 @@ class PrecomputedValues:
         stress: Optional[List[float] | _np.ndarray] = None,
     ) -> None:
         self.energy = float(energy) if energy is not None else None
-        self.forces = (
-            _np.asarray(forces, dtype=float)
-            if forces is not None
-            else None
-        )
-        self.stress = (
-            _np.asarray(stress, dtype=float)
-            if stress is not None
-            else None
-        )
+        self.forces = _np.asarray(forces, dtype=float) if forces is not None else None
+        self.stress = _np.asarray(stress, dtype=float) if stress is not None else None
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return (

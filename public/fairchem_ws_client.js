@@ -305,11 +305,15 @@ export function createFairchemWS() {
           if (which === 'frame') {
             const fr = r.payload.value;
             if (fr.energy != null) out.energy = fr.energy;
+            // Optional instantaneous temperature (K), if provided by server
+            if (typeof fr.temperature === 'number') out.temperature = fr.temperature;
+            if (typeof fr.kinetic === 'number') out.kinetic = fr.kinetic;
             if (Array.isArray(fr.positions)) out.positions = __flat3ToTriples(fr.positions) || [];
             if (Array.isArray(fr.forces)) out.forces = __flat3ToTriples(fr.forces) || [];
             if (Array.isArray(fr.velocities)) out.velocities = __flat3ToTriples(fr.velocities) || [];
             if (fr.cell && Array.isArray(fr.cell.m)) out.cell = __mat3ToRows(fr.cell.m);
             if (fr.stress && Array.isArray(fr.stress.m)) out.stress = __mat3ToRows(fr.stress.m);
+
 
             // drag-lock position override
             if (dragLock && out.positions && out.positions[dragLock.index]) {
@@ -358,10 +362,14 @@ export function createFairchemWS() {
             const dbgApi = typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_API;
             if ((dbgApi || __wsDebugOn()) && Array.isArray(out.positions)) {
               console.log('[WS][rx][positions]', out.positions);
+              console.log('[WS][rx][velocities]', out.velocities);
             }
           } catch { }
 
           fanout(out);
+          try {
+            if (typeof out.seq === 'number') ack(out.seq);
+          } catch { }
         } catch (e) {
           __wsErr('[WS] onmessage decode error:', e?.message || String(e));
         }

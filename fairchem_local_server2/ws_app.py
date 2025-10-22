@@ -256,6 +256,8 @@ class WSIngress:
             message: Optional[str] = None,
             energy: Optional[float] = None,
             stress: Optional[np.ndarray] = None,
+            temperature: Optional[float] = None,
+            kinetic: Optional[float] = None,
             simulation_stopped: Optional[bool] = None,
         ):
             # Debug log
@@ -311,6 +313,17 @@ class WSIngress:
                     fr.stress.CopyFrom(stress_pb)
                 if energy is not None:
                     fr.energy = float(energy)
+                # Optional MD metrics if schema supports them
+                try:
+                    if temperature is not None:
+                        fr.temperature = float(temperature)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                try:
+                    if kinetic is not None:
+                        fr.kinetic = float(kinetic)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
                 msg.frame.CopyFrom(fr)
             else:
                 no = pb.ServerResult.Notice()
@@ -502,6 +515,17 @@ class WSIngress:
                         forces=state.forces,
                         cell=state.cell,
                         energy=energy_out,
+                        temperature=(
+                            float(res.get("temperature"))
+                            if isinstance(res, dict)
+                            and res.get("temperature") is not None
+                            else None
+                        ),
+                        kinetic=(
+                            float(res.get("kinetic"))
+                            if isinstance(res, dict) and res.get("kinetic") is not None
+                            else None
+                        ),
                     )
             except Exception as e:
                 print(f"[ws:sim_loop:error] {e}", flush=True)
