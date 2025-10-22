@@ -427,7 +427,6 @@ class WSIngress:
                         continue
 
                     worker = self._pool.any()
-                    print(f"[wsprecomputed_hint] {precomputed_hint}", flush=True)
                     if state.sim_type == "md":
                         fut = worker.run_md.remote(
                             atomic_numbers=state.atomic_numbers,
