@@ -38,24 +38,10 @@ test.describe('WS streaming single-socket', () => {
     const sockEvents = [];
     const consoleErrors = [];
 
-    // Stream page console for debugging; collect only error-level for assertions
+    // Collect only error-level console messages for assertions (logging handled by fixtures)
     page.on('console', (msg) => {
       const text = msg.text();
       if (msg.type() === 'error') consoleErrors.push(text);
-      // eslint-disable-next-line no-console
-      console.log(`[browser:${msg.type()}] ${text}`);
-    });
-    page.on('pageerror', (err) => {
-      const text = (err && (err.message || String(err))) || 'unknown pageerror';
-      // eslint-disable-next-line no-console
-      console.log(`[pageerror] ${text}`);
-    });
-    page.on('requestfailed', (req) => {
-      const failure = (req.failure && req.failure()) || {};
-      // eslint-disable-next-line no-console
-      console.log(
-        `[requestfailed] ${req.method()} ${req.url()} -> ${failure.errorText || 'failed'}`
-      );
     });
 
     // Capture websocket lifecycle + frame types

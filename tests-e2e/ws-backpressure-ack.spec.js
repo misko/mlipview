@@ -55,24 +55,7 @@ test.describe('WS protocol: backpressure and ACK', () => {
       window.__MLIPVIEW_DEBUG_API = true;    // extra logs if client supports
     });
 
-    // --- Pipe browser logs to your terminal ---
-    const consoleErrors = [];
-    page.on('console', (msg) => {
-      const text = msg.text();
-      if (msg.type() === 'error') consoleErrors.push(text);
-      console.log(`[browser:${msg.type()}] ${text}`);
-    });
-    page.on('pageerror', (err) => {
-      const text = (err && (err.message || String(err))) || 'unknown pageerror';
-      console.log(`[pageerror] ${text}`);
-      consoleErrors.push(text);
-    });
-    page.on('requestfailed', (req) => {
-      const failure = (req.failure && req.failure()) || {};
-      console.log(
-        `[requestfailed] ${req.method()} ${req.url()} -> ${failure.errorText || 'failed'}`
-      );
-    });
+    // Console mirroring handled by fixtures; no per-test wiring needed
 
     // --- Load app and wait ready ---
     await page.goto(`${baseURL || ''}/index.html?autoMD=0&debug=1&wsDebug=1`);
@@ -153,7 +136,6 @@ test.describe('WS protocol: backpressure and ACK', () => {
 
     if (!outcome.waitingSeen || !outcome.cleared) {
       console.log('[e2e] outcome', outcome);
-      console.log('[e2e] consoleErrors:\n' + consoleErrors.join('\n'));
     }
 
     expect(outcome.waitingSeen).toBeTruthy();

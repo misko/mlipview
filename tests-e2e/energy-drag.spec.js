@@ -29,7 +29,7 @@ test.describe('Energy plot updates on atom drag (full page)', () => {
       // Select first atom using public selection service API if available
       try {
         v.selection.clickAtom?.(0);
-      } catch {}
+      } catch { }
       // Shift x coordinate slightly
       v.state.positions[0].x += 0.4;
       // Notify system of position change; energy debounced listener will fire

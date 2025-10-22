@@ -6,7 +6,7 @@ let REF = { energies: [] };
 if (fs.existsSync(REF_PATH)) {
   try {
     REF = JSON.parse(fs.readFileSync(REF_PATH, 'utf8'));
-  } catch {}
+  } catch { }
 }
 
 async function serverReachable(page) {
@@ -50,7 +50,7 @@ test('water FairChem BFGS 20-step first/last parity', async ({ page }) => {
     const first21 = energies.slice(0, 21);
     // Structured prefix for easy grep
     console.log('E2E_FAIRCHEM_ENERGIES', JSON.stringify(first21));
-  } catch (e) {}
+  } catch (e) { }
   expect(energies.length).toBeGreaterThanOrEqual(21);
   const firstEnergy = energies[0];
   const lastEnergy = energies[energies.length - 1];

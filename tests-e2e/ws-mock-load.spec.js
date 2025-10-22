@@ -29,29 +29,15 @@ test.describe('WS mock page load', () => {
   test('loads ws-test.html without protobuf init errors', async ({ page, baseURL }) => {
     test.setTimeout(20000);
 
-    // Stream full browser console to test output and collect errors for assertions
+    // Collect console errors for assertions (stdout mirroring handled by fixtures)
     const consoleErrors = [];
     page.on('console', (msg) => {
       const text = msg.text();
       if (msg.type() === 'error') consoleErrors.push(text);
-      // Always print to Playwright runner output for debugging
-      // Prefix with [browser:<type>] so it's easy to scan in CI logs
-      // Avoid awaiting msg.args()/jsonValue() to keep this fast
-      // eslint-disable-next-line no-console
-      console.log(`[browser:${msg.type()}] ${text}`);
     });
     page.on('pageerror', (err) => {
       const text = (err && (err.message || String(err))) || 'unknown pageerror';
       consoleErrors.push(text);
-      // eslint-disable-next-line no-console
-      console.log(`[pageerror] ${text}`);
-    });
-    page.on('requestfailed', (req) => {
-      const failure = (req.failure && req.failure()) || {};
-      // eslint-disable-next-line no-console
-      console.log(
-        `[requestfailed] ${req.method()} ${req.url()} -> ${failure.errorText || 'failed'}`
-      );
     });
 
     // Mock WebSocket so page can call ensureConnected/init without hitting a real backend

@@ -21,7 +21,7 @@ async function loadWater(page) {
       }
       await window.viewerApi?.baselineEnergy?.();
       window.viewerApi?.ff?.computeForces?.();
-    } catch {}
+    } catch { }
   });
   await page.waitForFunction(
     () =>

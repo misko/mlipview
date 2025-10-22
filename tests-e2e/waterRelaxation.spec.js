@@ -23,7 +23,7 @@ try {
   } else {
     REF = JSON.parse(fs.readFileSync(staticPath, 'utf8'));
   }
-} catch {}
+} catch { }
 
 test('water UMA BFGS 20-step first/last parity (WS)', async ({ page, baseURL }) => {
   test.setTimeout(45_000);
@@ -46,7 +46,7 @@ test('water UMA BFGS 20-step first/last parity (WS)', async ({ page, baseURL }) 
     await window.viewerApi?.baselineEnergy?.();
     try {
       await ws.waitForEnergy({ timeoutMs: 5000 });
-    } catch {}
+    } catch { }
     const E = window.viewerApi?.state?.dynamics?.energy;
     return typeof E === 'number' && isFinite(E);
   });
@@ -118,5 +118,5 @@ test('water UMA BFGS 20-step first/last parity (WS)', async ({ page, baseURL }) 
     const lines = text.trim().split(/\r?\n/);
     const tail = lines.slice(-200).join('\n');
     console.log('\n--- BACKEND LOG (tail) ---\n' + tail + '\n--------------------------\n');
-  } catch {}
+  } catch { }
 });

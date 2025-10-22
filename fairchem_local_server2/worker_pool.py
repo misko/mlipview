@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import ray
 from ase import units as _units
-from ase.calculators.lj import LennardJones
 from ase.md.langevin import Langevin
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.optimize import BFGS as _BFGS
@@ -18,7 +17,6 @@ from fairchem_local_server.atoms_utils import (
     center_and_return_shift,
     compute_properties,
 )
-from fairchem_local_server.log import log_event
 from fairchem_local_server.model_runtime import get_calculator, install_predict_handle
 from fairchem_local_server.models import (
     MDResult,
@@ -30,21 +28,23 @@ from fairchem_local_server.models import (
 
 
 def _validate_atomic_numbers_or_raise(atomic_numbers: List[int]) -> None:
+    """Ensure all atomic numbers are positive integers."""
     bad_idx = [i for i, z in enumerate(atomic_numbers) if int(z) <= 0]
     if bad_idx:
         bad_vals = [int(atomic_numbers[i]) for i in bad_idx]
         raise ValueError(
-            ("[INVALID_ATOM_Z] atomic_numbers must be positive " "integers; ")
-            + f"got invalid values at indices {bad_idx}: {bad_vals}"
+            "[INVALID_ATOM_Z] atomic_numbers must be positive integers; "
+            f"got invalid values at indices {bad_idx}: {bad_vals}"
         )
 
 
 @ray.remote(num_cpus=1)
 class ASEWorker:
-    """CPU worker for MD/Relax using UMA-backed calculator.
+    """
+    CPU worker for MD/Relax using UMA-backed calculator.
 
-    Each call is synchronous on the worker. Caller should use ray.get for
-    results.
+    Each call is synchronous on the worker process. The caller should await
+    via ray.get(ObjectRef).
     """
 
     def __init__(self, handle=None):
@@ -54,7 +54,7 @@ class ASEWorker:
             if handle is not None:
                 install_predict_handle(handle)
         except Exception:
-            # If Serve is not running (e.g., unit tests with LJ), ignore.
+            # If Serve is not running (e.g., unit tests), ignore.
             pass
 
     def run_md(
@@ -71,10 +71,15 @@ class ASEWorker:
         calculator: str = "uma",
     ) -> Dict[str, Any]:
         t0 = time.perf_counter()
+
         calc_enum = RelaxCalculatorName(calculator)
         _validate_atomic_numbers_or_raise(atomic_numbers)
+
         atoms = build_atoms(atomic_numbers, positions, cell=cell)
-        atoms.calc = get_calculator() if calc_enum == RelaxCalculatorName.uma else None
+
+        # Attach calculator (UMA-only; raises if not UMA)
+        _attach_calc(atoms, calc_enum)
+
         md_res = _md_run(
             atoms,
             steps=int(steps),
@@ -89,10 +94,8 @@ class ASEWorker:
         out = md_res.dict()
         dt = time.perf_counter() - t0
         print(
-            (
-                f"[timing] ASEWorker.run_md natoms={len(atomic_numbers)} "
-                f"calc={calc_enum.value} wall={dt:.4f}s"
-            ),
+            f"[timing] ASEWorker.run_md natoms={len(atomic_numbers)} "
+            f"calc={calc_enum.value} wall={dt:.4f}s",
             flush=True,
         )
         return out
@@ -109,10 +112,15 @@ class ASEWorker:
         calculator: str = "uma",
     ) -> Dict[str, Any]:
         t0 = time.perf_counter()
+
         calc_enum = RelaxCalculatorName(calculator)
         _validate_atomic_numbers_or_raise(atomic_numbers)
+
         atoms = build_atoms(atomic_numbers, positions, cell=cell)
-        atoms.calc = get_calculator() if calc_enum == RelaxCalculatorName.uma else None
+
+        # Attach calculator (UMA-only; raises if not UMA)
+        _attach_calc(atoms, calc_enum)
+
         rx = _relax_run(
             atoms,
             steps=int(steps),
@@ -123,10 +131,8 @@ class ASEWorker:
         out = rx.dict()
         dt = time.perf_counter() - t0
         print(
-            (
-                f"[timing] ASEWorker.run_relax natoms={len(atomic_numbers)} "
-                f"calc={calc_enum.value} wall={dt:.4f}s"
-            ),
+            f"[timing] ASEWorker.run_relax natoms={len(atomic_numbers)} "
+            f"calc={calc_enum.value} wall={dt:.4f}s",
             flush=True,
         )
         return out
@@ -140,11 +146,9 @@ class ASEWorker:
         properties: Optional[List[str]] = None,
         calculator: str = "uma",
     ) -> Dict[str, Any]:
-        from fairchem_local_server.models import SimpleIn
-
         t0 = time.perf_counter()
-        _validate_atomic_numbers_or_raise(atomic_numbers)
 
+        _validate_atomic_numbers_or_raise(atomic_numbers)
         inp = SimpleIn(
             atomic_numbers=list(map(int, atomic_numbers)),
             coordinates=positions,
@@ -152,28 +156,37 @@ class ASEWorker:
             properties=list(properties or ("energy", "forces")),
             calculator=RelaxCalculatorName(calculator),
         )
+
         res = _simple_calculate(inp)
-        out = res
         dt = time.perf_counter() - t0
         print(
-            (
-                f"[timing] ASEWorker.run_simple natoms="
-                f"{len(atomic_numbers)} calc={calculator} wall={dt:.4f}s"
-            ),
+            f"[timing] ASEWorker.run_simple natoms={len(atomic_numbers)} "
+            f"calc={calculator} wall={dt:.4f}s",
             flush=True,
         )
-        return out
+        return res
+
+
+# at top
+import threading
 
 
 class WorkerPool:
     def __init__(self, size: int, uma_handle=None):
         if not ray.is_initialized():
             ray.init(ignore_reinit_error=True)
-        self._actors = [ASEWorker.remote(uma_handle) for _ in range(max(1, int(size)))]
-        self._rr = itertools.cycle(self._actors)
+        n = max(1, int(size))
+        self._actors = [ASEWorker.remote(uma_handle) for _ in range(n)]
+        self._idx = 0
+        self._n = n
+        self._lock = threading.Lock()  # protects _idx
 
-    def any(self):  # choose a worker (round-robin)
-        return next(self._rr)
+    def any(self):
+        # round-robin selection, lock-protected
+        with self._lock:
+            a = self._actors[self._idx]
+            self._idx = (self._idx + 1) % self._n
+            return a
 
 
 def _md_run(
@@ -186,55 +199,46 @@ def _md_run(
     calculator: RelaxCalculatorName,
     return_trajectory: bool,
     precomputed: PrecomputedValues | None,
-    velocities_in,
+    velocities_in: Optional[List[List[float]]],
 ) -> MDResult:
     t_start = time.perf_counter()
+
     if len(atoms) == 0:
         raise HTTPException(status_code=400, detail="No atoms provided")
     if steps <= 0:
         raise HTTPException(status_code=400, detail="steps must be >0")
-    _attach_calc(atoms, calculator)
+
+    # Calculator is already attached by caller for clarity/consistency.
     shift = center_and_return_shift(atoms)
 
-    # If client supplied velocities, use them directly; else initialize from
-    # temperature.
-    if (atoms.get_velocities() > 0.0).any():
-        pass  # already has velocities on atoms
+    # ---- Velocities: use provided; else use existing; else initialize from T ----
+    v_existing = atoms.get_velocities()
+    if v_existing is not None and np.asarray(v_existing).shape == (len(atoms), 3):
+        # Keep existing velocities on the Atoms object.
+        pass
     elif velocities_in is not None:
-        import numpy as _np  # type: ignore
-
         try:
-            v = _np.array(velocities_in, dtype=float)
+            v = np.asarray(velocities_in, dtype=float)
         except Exception as ve:  # pragma: no cover - defensive
-            raise HTTPException(
-                status_code=400,
-                detail=f"invalid velocities: {ve}",
-            )
+            raise HTTPException(status_code=400, detail=f"invalid velocities: {ve}")
         if v.shape != (len(atoms), 3):
-            raise HTTPException(
-                status_code=400,
-                detail="velocities shape mismatch",
-            )
-        if not _np.all(_np.isfinite(v)):
-            raise HTTPException(
-                status_code=400,
-                detail="velocities contain non-finite",
-            )
+            raise HTTPException(status_code=400, detail="velocities shape mismatch")
+        if not np.all(np.isfinite(v)):
+            raise HTTPException(status_code=400, detail="velocities contain non-finite")
         atoms.set_velocities(v)
     else:
-        # print("MD: initializing velocities from temperature", temperature)
+        # Initialize from temperature (standard Langevin setup)
         MaxwellBoltzmannDistribution(atoms, temperature_K=temperature)
-        # MaxwellBoltzmannDistribution(atoms, temperature_K=0.0)
-        # print(atoms.get_velocities())
-    # velocities newly initialized from temperature
 
+    # Apply any precomputed values (if provided) before first energy access.
     pre_applied: list[str] = _maybe_apply_precomputed(atoms, precomputed, len(atoms))
 
     if "energy" in pre_applied:
-        initial_energy = float(atoms.calc.results["energy"])  # type: ignore
+        initial_energy = float(atoms.calc.results["energy"])  # type: ignore[attr-defined]
     else:
         initial_energy = float(atoms.get_potential_energy())
 
+    # Langevin MD
     dyn = Langevin(
         atoms,
         float(timestep_fs) * _units.fs,
@@ -252,11 +256,12 @@ def _md_run(
             energies.append(float(atoms.get_potential_energy()))
 
         new_pos = atoms.get_positions()
+        # Guard for instabilities (large single-step displacement)
         max_disp = float(np.sqrt(((new_pos - prev) ** 2).sum(axis=1)).max())
         if not np.isfinite(max_disp) or max_disp > 5.0:
             raise HTTPException(
                 status_code=500,
-                detail=(f"MD instability detected (max step disp {max_disp:.2f} Å)"),
+                detail=f"MD instability detected (max step disp {max_disp:.2f} Å)",
             )
         prev[:] = new_pos
 
@@ -266,19 +271,7 @@ def _md_run(
     KE = float(atoms.get_kinetic_energy())
     Tfinal = (2.0 * KE) / (3.0 * len(atoms) * _units.kB)
 
-    # log_event(
-    #     "md_done",
-    #     natoms=len(atoms),
-    #     steps=steps,
-    #     initial=initial_energy,
-    #     final=final_energy,
-    #     T=Tfinal,
-    #     calc=calculator,
-    #     precomputed=bool(pre_applied),
-    #     precomputed_keys=pre_applied,
-    #     reused_velocities=reused_velocities,
-    # )
-
+    # Undo centering shift to return caller-space coordinates
     if shift is not None:
         atoms.set_positions(atoms.get_positions() - shift)
         atoms.set_cell(None)
@@ -295,13 +288,10 @@ def _md_run(
         calculator=calculator,
         precomputed_applied=(pre_applied if pre_applied else None),
     )
+
     dt = time.perf_counter() - t_start
-    nat = len(atoms)
     print(
-        (
-            f"[timing] _md_run natoms={nat} steps={steps} "
-            f"calc={calculator} wall={dt:.4f}s"
-        ),
+        f"[timing] _md_run natoms={len(atoms)} steps={steps} calc={calculator} wall={dt:.4f}s",
         flush=True,
     )
     return res
@@ -315,12 +305,13 @@ def _relax_run(
     precomputed: PrecomputedValues | None,
 ) -> RelaxResult:
     t_start = time.perf_counter()
+
     if len(atoms) == 0:
         raise HTTPException(status_code=400, detail="No atoms provided")
     if steps <= 0:
         raise HTTPException(status_code=400, detail="steps must be >0")
-    _attach_calc(atoms, calculator)
 
+    # Calculator is already attached by caller for clarity/consistency.
     shift = center_and_return_shift(atoms)
 
     # Apply precomputed results (if any) before first energy access
@@ -328,9 +319,7 @@ def _relax_run(
 
     if "energy" in pre_applied:
         # Honor client-provided energy without triggering a recalculation
-        # that would overwrite calc.results. Forces may also be injected and
-        # should persist until first calculator call by optimizer.
-        initial_energy = float(atoms.calc.results["energy"])  # type: ignore
+        initial_energy = float(atoms.calc.results["energy"])  # type: ignore[attr-defined]
     else:
         # Warm first energy evaluation (some calculators may have lazy init)
         initial_energy = float(atoms.get_potential_energy())
@@ -338,9 +327,6 @@ def _relax_run(
     opt = _BFGS(atoms, logfile=None, maxstep=float(max_step))
 
     steps_completed = 0
-
-    # Execute the full requested number of BFGS steps.
-    # (Previously capped at 10 to limit runtime; parity tests need full count.)
     for _ in range(int(steps)):
         opt.step()
         steps_completed += 1
@@ -348,22 +334,11 @@ def _relax_run(
     final_energy = float(atoms.get_potential_energy())
     forces = atoms.get_forces().tolist()
     try:
-        stress = atoms.get_stress().tolist()  # type: ignore
+        stress = atoms.get_stress().tolist()  # type: ignore[attr-defined]
     except Exception:
         stress = None
 
-    # log_event(
-    #     "relax_done",
-    #     natoms=len(atoms),
-    #     steps=steps_completed,
-    #     initial=initial_energy,
-    #     final=final_energy,
-    #     trace_len=(len(trace) if trace_enabled else 0),
-    #     calc=calculator,
-    #     precomputed=bool(pre_applied),
-    #     precomputed_keys=pre_applied,
-    # )
-
+    # Undo centering shift to return caller-space coordinates
     if shift is not None:
         atoms.set_positions(atoms.get_positions() - shift)
         atoms.set_cell(None)
@@ -378,16 +353,16 @@ def _relax_run(
         calculator=calculator,
         precomputed_applied=(pre_applied if pre_applied else None),
     )
+
     dt = time.perf_counter() - t_start
-    nat = len(atoms)
     print(
-        f"[timing] _relax_run natoms={nat} steps={steps} wall={dt:.4f}s",
+        f"[timing] _relax_run natoms={len(atoms)} steps={steps} wall={dt:.4f}s",
         flush=True,
     )
     return res
 
 
-def _simple_calculate(inp: SimpleIn):
+def _simple_calculate(inp: SimpleIn) -> Dict[str, Any]:
     atoms = build_atoms(
         inp.atomic_numbers,
         inp.coordinates,
@@ -402,34 +377,44 @@ def _simple_calculate(inp: SimpleIn):
     )
 
 
-def _simple_run(atoms, properties: List[str], calculator: RelaxCalculatorName):
+def _simple_run(
+    atoms, properties: List[str], calculator: RelaxCalculatorName
+) -> Dict[str, Any]:
     if len(atoms) == 0:
         raise HTTPException(status_code=400, detail="No atoms provided")
+
+    # UMA-only; raise otherwise
     _attach_calc(atoms, calculator)
 
     shift = center_and_return_shift(atoms)
 
     props = tuple(properties or ("energy", "forces"))
     results = compute_properties(atoms, props)
+
+    # Undo centering shift to return caller-space coordinates
     if shift is not None:
         atoms.set_positions(atoms.get_positions() - shift)
         atoms.set_cell(None)
-    # log_event(
-    #     "simple_calc",
-    #     natoms=len(atoms),
-    #     props=list(props),
-    #     stress=bool(results.get("stress") is not None),
-    # )
+
     return {"results": results}
 
 
-def _attach_calc(atoms, which: RelaxCalculatorName):
+def _attach_calc(atoms, which: RelaxCalculatorName) -> None:
+    """
+    Attach the proper calculator to the Atoms instance.
+
+    UMA-only enforcement: anything else throws a clear, stable error string that
+    the frontend already knows how to surface.
+    """
     if which == RelaxCalculatorName.uma:
         atoms.calc = get_calculator()
-    elif which == RelaxCalculatorName.lj:
-        atoms.calc = LennardJones(rc=3.0)
-    else:  # pragma: no cover
-        raise HTTPException(status_code=400, detail="Unknown calculator")
+        return
+
+    # Explicit UMA-only guard (keeps workers aligned with WS ingress rules)
+    raise HTTPException(
+        status_code=400,
+        detail=f"CALCULATOR_NOT_SUPPORTED: UMA_ONLY (requested: {which.value!r})",
+    )
 
 
 def _maybe_apply_precomputed(
@@ -444,7 +429,6 @@ def _maybe_apply_precomputed(
     if pre is None:
         return []
     applied: list[str] = []
-    import numpy as np
 
     calc = getattr(atoms, "calc", None)
     if calc is None:
@@ -453,16 +437,13 @@ def _maybe_apply_precomputed(
     if pre.energy is not None:
         e = float(pre.energy)
         if not np.isfinite(e):
-            raise HTTPException(
-                status_code=400,
-                detail="precomputed.energy not finite",
-            )
+            raise HTTPException(status_code=400, detail="precomputed.energy not finite")
         calc.results["energy"] = e
         calc.results["free_energy"] = e
         applied.append("energy")
 
     if pre.forces is not None:
-        f = np.array(pre.forces, dtype=float)
+        f = np.asarray(pre.forces, dtype=float)
         if f.shape != (natoms, 3):
             raise HTTPException(
                 status_code=400, detail="precomputed.forces shape mismatch"
@@ -473,16 +454,17 @@ def _maybe_apply_precomputed(
             )
         calc.results["forces"] = f
         applied.append("forces")
+        # Some ASE calculators expect 'atoms' to match results to avoid reuse issues.
         calc.atoms = atoms.copy()
 
     if pre.stress is not None:
-        s = np.array(pre.stress, dtype=float)
+        s = np.asarray(pre.stress, dtype=float)
         if s.shape == (6,):
             pass  # already Voigt
         elif s.shape == (9,):
             m = s.reshape(3, 3)
             # ASE Voigt order: xx, yy, zz, yz, xz, xy
-            s = np.array(
+            s = np.asarray(
                 [m[0, 0], m[1, 1], m[2, 2], m[1, 2], m[0, 2], m[0, 1]],
                 dtype=float,
             )
@@ -493,9 +475,9 @@ def _maybe_apply_precomputed(
             )
         if not np.all(np.isfinite(s)):
             raise HTTPException(
-                status_code=400,
-                detail="precomputed.stress contain non-finite",
+                status_code=400, detail="precomputed.stress contain non-finite"
             )
         calc.results["stress"] = s
         applied.append("stress")
+
     return applied

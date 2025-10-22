@@ -40,7 +40,7 @@ async function ensureWater(page) {
       if (!have) {
         try {
           window.viewerApi?.ff?.computeForces?.({ sync: true });
-        } catch {}
+        } catch { }
       }
       return (
         typeof window.viewerApi?.state?.dynamics?.energy === 'number' &&

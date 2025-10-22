@@ -27,31 +27,31 @@ test.describe('WS protocol: simulation counters', () => {
         ws.userInteraction({ positions: pos });
         // Wait briefly to allow idle compute and counters update
         await new Promise((r) => setTimeout(r, 250));
-      } catch {}
+      } catch { }
 
       return await new Promise((resolve) => {
         const off = ws.onResult((r) => {
           try {
             if (r && r.seq) ws.ack(r.seq | 0); // keep server window advancing
-          } catch {}
+          } catch { }
           // Look for a simulation frame that matches our UIC snapshot
           if (r && Array.isArray(r.positions) && (r.userInteractionCount | 0) === UIC) {
             const out = { uic: r.userInteractionCount | 0, simStep: r.simStep | 0 };
             try {
               off && off();
-            } catch {}
+            } catch { }
             resolve(out);
           }
         });
         // Start a cheap MD simulation using LJ to avoid UMA dependency
         ws.startSimulation({
           type: 'md',
-          params: { calculator: 'lj', temperature: 300, timestep_fs: 1.0, friction: 0.01 },
+          params: { calculator: 'uma', temperature: 300, timestep_fs: 1.0, friction: 0.01 },
         });
         setTimeout(() => {
           try {
             off && off();
-          } catch {}
+          } catch { }
           resolve(null);
         }, 35000);
       });

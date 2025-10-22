@@ -54,7 +54,7 @@ async function buildReferenceTrace(page) {
       const off = ws.onResult((r) => {
         try {
           if (r && r.seq) ws.ack(r.seq | 0);
-        } catch {}
+        } catch { }
       });
       ws.startSimulation({ type: 'relax', params: { calculator: 'uma', max_step: 0.01 } });
       const t0 = Date.now();
@@ -72,10 +72,10 @@ async function buildReferenceTrace(page) {
       }
       try {
         off && off();
-      } catch {}
+      } catch { }
       try {
         ws.stopSimulation();
-      } catch {}
+      } catch { }
       return out.slice(0, steps + 1);
     },
     { atomic_numbers, coords, steps: STEPS }
@@ -93,7 +93,7 @@ async function ensureROY(page) {
     window.__MLIPVIEW_SERVER = 'http://localhost:8000';
     try {
       await window.viewerApi?.baselineEnergy?.();
-    } catch {}
+    } catch { }
   });
   // Poll energy to become finite
   await page.waitForFunction(

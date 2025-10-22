@@ -175,6 +175,7 @@ class WSIngress:
         if predict_handle is not None:
             install_predict_handle(predict_handle)
         self._uma_handle = predict_handle
+        print("worker pool size:", pool_size, flush=True)
         self._pool = WorkerPool(size=pool_size, uma_handle=self._uma_handle)
         # Debug flags
         self._ws_debug = os.environ.get("WS_DEBUG", "0") in (
@@ -921,8 +922,11 @@ def _detect_default_ncpus() -> int:
     try:
         import multiprocessing as mp
 
+        cpus = mp.cpu_count()
+        print(f"DETECTED {cpus} CPUS", flush=True)
         return max(1, mp.cpu_count())
     except Exception:
+        print("REFALLING BACK TO 8 CPUS", flush=True)
         return 8
 
 

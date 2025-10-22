@@ -31,7 +31,7 @@ test('page loads and default molecule initializes (idle, no MD)', async ({ page,
       try {
         const ws = window.__fairchem_ws__;
         ws && (await ws.ensureConnected());
-      } catch {}
+      } catch { }
     });
     await page.waitForTimeout(200);
     wsConnected = await page.evaluate(() => !!window.__fairchem_ws__?.getState?.().connected);

@@ -23,14 +23,14 @@ async function loadWaterAndEnergy(page) {
         }
       }
       await window.viewerApi?.baselineEnergy?.();
-    } catch (e) {}
+    } catch (e) { }
   });
   // Poll computeForces until energy numeric
   await page.evaluate(async () => {
     for (let i = 0; i < 30; i++) {
       try {
         window.viewerApi?.ff?.computeForces?.();
-      } catch {}
+      } catch { }
       if (
         typeof window.viewerApi?.state?.dynamics?.energy === 'number' &&
         isFinite(window.viewerApi.state.dynamics.energy)

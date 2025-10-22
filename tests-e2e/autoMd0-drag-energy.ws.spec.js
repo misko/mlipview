@@ -18,8 +18,6 @@ test.describe('autoMD=0 baseline and drag energy updates (real WS)', () => {
     page.on('console', (msg) => {
       const text = msg.text();
       if (msg.type() === 'error') consoleErrors.push(text);
-      // eslint-disable-next-line no-console
-      console.log(`[browser:${msg.type()}] ${text}`);
     });
     await page.addInitScript(() => {
       window.__MLIPVIEW_SERVER = 'http://localhost:8000';
@@ -32,13 +30,13 @@ test.describe('autoMD=0 baseline and drag energy updates (real WS)', () => {
         const log = (...a) => {
           try {
             console.log('[E2E][energy]', ...a);
-          } catch {}
+          } catch { }
         };
         Object.defineProperty(window, '__E2E_ENERGY_LOG__', { value: log });
         try {
           const __set = (len) => log('len', len);
           window.__ON_ENERGY_TICK__ = __set;
-        } catch {}
+        } catch { }
       })();
     });
 
@@ -88,7 +86,7 @@ test.describe('autoMD=0 baseline and drag energy updates (real WS)', () => {
       try {
         window.viewerApi.selection.clickAtom(0);
         await window.viewerApi.requestSimpleCalculateNow();
-      } catch {}
+      } catch { }
     });
     // No assertion yet; we'll assert cumulatively after second drag
     await page.waitForTimeout(200);
@@ -120,7 +118,7 @@ test.describe('autoMD=0 baseline and drag energy updates (real WS)', () => {
       try {
         window.viewerApi.selection.clickAtom(0);
         await window.viewerApi.requestSimpleCalculateNow();
-      } catch {}
+      } catch { }
     });
     await page.waitForTimeout(200);
     const after2 = await waitFor(

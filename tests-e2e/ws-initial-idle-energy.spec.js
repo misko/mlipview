@@ -24,26 +24,15 @@ async function waitForEnergy(page, timeoutMs = 12000) {
 
 test('initial load (autoMD=0) produces idle energy frame', async ({ page, baseURL }) => {
     test.setTimeout(45000);
-    // Stream console to runner for visibility
+    // Collect only error-level logs for assertions (stdout mirroring handled by fixtures)
     const consoleErrors = [];
     page.on('console', (msg) => {
         const text = msg.text();
         if (msg.type() === 'error') consoleErrors.push(text);
-        // eslint-disable-next-line no-console
-        console.log(`[browser:${msg.type()}] ${text}`);
     });
     page.on('pageerror', (err) => {
         const text = (err && (err.message || String(err))) || 'unknown pageerror';
         consoleErrors.push(text);
-        // eslint-disable-next-line no-console
-        console.log(`[pageerror] ${text}`);
-    });
-    page.on('requestfailed', (req) => {
-        const failure = (req.failure && req.failure()) || {};
-        // eslint-disable-next-line no-console
-        console.log(
-            `[requestfailed] ${req.method()} ${req.url()} -> ${failure.errorText || 'failed'}`
-        );
     });
 
     await page.addInitScript(() => {

@@ -48,7 +48,7 @@ test.describe('Benzene selection / highlight cleanliness', () => {
         await benzeneOption
           .first()
           .waitFor({ state: 'visible', timeout: 5000 })
-          .catch(() => {});
+          .catch(() => { });
       }
       if (await benzeneOption.count()) {
         await benzeneOption.first().click();

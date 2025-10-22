@@ -20,13 +20,10 @@ test.describe('autoMD=0 baseline simple_calculate over real WS', () => {
     page.on('console', (msg) => {
       const text = msg.text();
       if (msg.type() === 'error') consoleErrors.push(text);
-      // eslint-disable-next-line no-console
-      console.log(`[browser:${msg.type()}] ${text}`);
     });
     page.on('pageerror', (err) => {
       const text = (err && (err.message || String(err))) || 'unknown pageerror';
-      // eslint-disable-next-line no-console
-      console.log(`[pageerror] ${text}`);
+      consoleErrors.push(text);
     });
     page.on('websocket', (ws) => {
       wsEvents.push({ type: 'open', url: ws.url() });
@@ -104,7 +101,7 @@ test.describe('autoMD=0 baseline simple_calculate over real WS', () => {
                 // First point is added on energy reception; accept len >= 1
                 if (len >= 1) return resolve(len);
               }
-            } catch {}
+            } catch { }
             if (Date.now() > stopAt) return resolve(-1);
             setTimeout(poll, 100);
           };
