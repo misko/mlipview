@@ -29,6 +29,9 @@ export function initFrictionSlider({ hudEl }) {
   label.id = 'frictionLabel';
   label.style.fontSize = '11px';
   label.style.opacity = '0.85';
+  // Keep width stable when value length changes
+  label.style.whiteSpace = 'pre';
+  try { label.style.fontVariantNumeric = 'tabular-nums'; } catch {}
 
   const slider = document.createElement('input');
   slider.type = 'range';
@@ -39,7 +42,9 @@ export function initFrictionSlider({ hudEl }) {
   slider.style.width = '120px';
 
   function updateLabel(v) {
-    label.textContent = `ζ=${Number(v).toFixed(2)}`;
+    const z = Number(v).toFixed(2);
+    const zPadded = String(z).padStart(8, ' ');
+    label.textContent = `ζ=${zPadded}`;
   }
   function setFriction(v) {
     const num = Math.max(0, Math.min(5, Number(v)));

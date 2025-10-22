@@ -57,7 +57,10 @@ export function initTemperatureSlider({ hudEl, getViewer }) {
   label.id = 'tempLabel';
   label.style.fontSize = '11px';
   label.style.opacity = '0.85';
-  label.textContent = 'T=1500K';
+  // Keep width stable when value length changes
+  label.style.whiteSpace = 'pre';
+  try { label.style.fontVariantNumeric = 'tabular-nums'; } catch {}
+  label.textContent = 'T=    1500K';
 
   const slider = document.createElement('input');
   slider.type = 'range';
@@ -95,7 +98,9 @@ export function initTemperatureSlider({ hudEl, getViewer }) {
   function updateTarget(idx) {
     const T = getTempForIndex(idx);
     window.__MLIP_TARGET_TEMPERATURE = T;
-    label.textContent = `T=${T}K`;
+    // Pad numeric portion to fixed width (8 digits) so layout doesn't shift
+    const tStr = String(Math.round(T)).padStart(8, ' ');
+    label.textContent = `T=${tStr}K`;
     try {
       const v = getViewer && getViewer();
       if (v && v.state && v.state.dynamics) v.state.dynamics.targetTemperature = T;

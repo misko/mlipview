@@ -853,7 +853,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       const ws = getWS();
       // Read current targets from globals/config
       let T = 1500;
-      try { if (typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) T = Number(window.__MLIP_TARGET_TEMPERATURE) || 1500; } catch { }
+      try {
+        if (typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) {
+          const tRaw = Number(window.__MLIP_TARGET_TEMPERATURE);
+          if (Number.isFinite(tRaw)) T = tRaw; // allow 0K; avoid falsy fallback
+        }
+      } catch { }
       const fr = (typeof window !== 'undefined' && Number.isFinite(window.__MLIP_CONFIG?.mdFriction))
         ? Number(window.__MLIP_CONFIG.mdFriction) : DEFAULT_MD_FRICTION;
       const dt = 1.0; // keep current default timestep
