@@ -24,6 +24,7 @@ from fairchem_local_server.model_runtime import (
     health_snapshot,
     install_predict_handle,
 )
+from fairchem_local_server.models import PrecomputedValues
 
 app = FastAPI(title="UMA Serve WS API", debug=True)
 
@@ -231,6 +232,9 @@ class WSIngress:
         state = SessionState()
         max_unacked = 10
 
+        # Carry precomputed values (E/F/S) from the last step to the next
+        precomputed_hint: Optional[PrecomputedValues] = None
+
         # Concurrency: producer (simulation loop) and consumer (message loop)
         stop_evt = asyncio.Event()
 
@@ -307,7 +311,6 @@ class WSIngress:
                     fr.stress.CopyFrom(stress_pb)
                 if energy is not None:
                     fr.energy = float(energy)
-                # print(f"[ws] sending frame {fr}", flush=True)
                 msg.frame.CopyFrom(fr)
             else:
                 no = pb.ServerResult.Notice()
@@ -316,7 +319,6 @@ class WSIngress:
                 if simulation_stopped is True:
                     no.simulation_stopped = True
                 msg.notice.CopyFrom(no)
-                # print(f"[ws] sending notice {no}", flush=True)
 
             msg.schema_version = 1
 
@@ -324,6 +326,7 @@ class WSIngress:
             await ws.send_bytes(msg.SerializeToString())
 
         async def sim_loop():
+            nonlocal precomputed_hint
             import time
 
             stall_notice_last = 0.0
@@ -331,32 +334,35 @@ class WSIngress:
             try:
                 while not stop_evt.is_set():
                     # Commit any staged user inputs
+                    touched = False
                     if state.user_input_atomic_numbers is not None:
                         state.atomic_numbers = state.user_input_atomic_numbers
                         state.user_input_atomic_numbers = None
+                        touched = True
                     if state.user_input_positions is not None:
                         state.positions = np.asarray(
                             state.user_input_positions, dtype=np.float64
                         )
                         state.user_input_positions = None
+                        touched = True
                     if state.user_input_velocities is not None:
                         state.velocities = np.asarray(
                             state.user_input_velocities, dtype=np.float64
                         )
                         state.user_input_velocities = None
+                        touched = True
                     if state.user_input_cell is not None:
                         state.cell = np.asarray(state.user_input_cell, dtype=np.float64)
                         state.user_input_cell = None
+                        touched = True
+
+                    # If the geometry changed, drop any precomputed hint
+                    if touched:
+                        precomputed_hint = None
 
                     if not state.running or state.atomic_numbers == []:
                         await asyncio.sleep(0.02)
                         continue
-
-                    print(
-                        "[ws] sim_loop iteration velocities",
-                        state.velocities,
-                        flush=True,
-                    )
 
                     # Backpressure: don't exceed last_ack + 10
                     if state.server_seq - state.client_ack >= max_unacked:
@@ -365,11 +371,6 @@ class WSIngress:
                             stall_notice_last = now
                             if self._ws_debug:
                                 delta = state.server_seq - state.client_ack
-                                print(
-                                    f"[ws] WAITING_FOR_ACK send server_seq={state.server_seq} "
-                                    f"client_ack={state.client_ack} delta={delta}",
-                                    flush=True,
-                                )
                             await _send_result_bytes(
                                 seq=state.server_seq,
                                 client_seq=state.client_seq,
@@ -413,14 +414,8 @@ class WSIngress:
                         continue
 
                     worker = self._pool.any()
+                    print(f"[wsprecomputed_hint] {precomputed_hint}", flush=True)
                     if state.sim_type == "md":
-                        if self._log_calls:
-                            print(
-                                f"[ws:sim][MD] steps=1 T={state.params.temperature} "
-                                f"dt={state.params.timestep_fs} friction={state.params.friction} "
-                                f"natoms={len(state.atomic_numbers)}",
-                                flush=True,
-                            )
                         fut = worker.run_md.remote(
                             atomic_numbers=state.atomic_numbers,
                             positions=state.positions,
@@ -431,15 +426,9 @@ class WSIngress:
                             timestep_fs=state.params.timestep_fs,
                             friction=state.params.friction,
                             calculator=state.params.calculator,
+                            precomputed=precomputed_hint,
                         )
                     elif state.sim_type == "relax":
-                        if self._log_calls:
-                            print(
-                                f"[ws:sim][RELAX] steps=1 fmax={state.params.fmax} "
-                                f"max_step={state.params.max_step} calc={state.params.calculator} "
-                                f"natoms={len(state.atomic_numbers)}",
-                                flush=True,
-                            )
                         fut = worker.run_relax.remote(
                             atomic_numbers=state.atomic_numbers,
                             positions=state.positions,
@@ -448,6 +437,7 @@ class WSIngress:
                             fmax=state.params.fmax,
                             max_step=state.params.max_step,
                             calculator=state.params.calculator,
+                            precomputed=precomputed_hint,
                         )
                     else:
                         await asyncio.sleep(0.01)
@@ -461,12 +451,7 @@ class WSIngress:
 
                     v_out = res.get("velocities")
                     if v_out is not None:
-                        print(
-                            "[ws] sim_loop iteration got velocities", v_out, flush=True
-                        )
                         state.velocities = np.asarray(v_out, dtype=np.float64)
-                    else:
-                        print("[ws] sim_loop iteration got no velocities", flush=True)
 
                     f_out = res.get("forces")
                     if f_out is not None:
@@ -483,6 +468,28 @@ class WSIngress:
 
                     energy_out = float(res.get("final_energy"))
 
+                    # Maintain precomputed values for the next iteration
+                    if True:  # try:
+                        # MD typically has no stress; relax may include it
+                        S_out = None
+                        if isinstance(res, dict):
+                            S_out = res.get("stress")
+                        S_np = None
+                        if S_out is not None:
+                            s_arr = np.asarray(S_out, dtype=np.float64)
+                            # accept (3,3) or (6,) or (9,) shapes
+                            if s_arr.shape == (3, 3):
+                                S_np = s_arr
+                            elif s_arr.size in (6, 9):
+                                S_np = s_arr.reshape(-1)
+                        precomputed_hint = PrecomputedValues(
+                            energy=energy_out,
+                            forces=(state.forces if state.forces is not None else None),
+                            stress=S_np,
+                        )
+                    # except Exception:
+                    #     precomputed_hint = None
+
                     state.server_seq += 1
                     state.sim_step = int(state.sim_step or 0) + 1
                     await _send_result_bytes(
@@ -496,11 +503,6 @@ class WSIngress:
                         cell=state.cell,
                         energy=energy_out,
                     )
-                    if state.server_seq % 10 == 0 and self._ws_debug:
-                        print(
-                            f"[ws] sent frame seq={state.server_seq} sim_step={state.sim_step}",
-                            flush=True,
-                        )
             except Exception as e:
                 print(f"[ws:sim_loop:error] {e}", flush=True)
                 stop_evt.set()
@@ -522,16 +524,6 @@ class WSIngress:
                 if a:
                     state.client_ack = max(state.client_ack, a)
 
-            if self._ws_debug:
-                if state.client_ack and state.client_ack > prev_ack:
-                    delta = state.server_seq - state.client_ack
-                    print(
-                        f"[ws] ACK recv client_ack={state.client_ack} server_seq={state.server_seq} delta={delta}",
-                        flush=True,
-                    )
-                elif state.client_ack:
-                    print(f"[ws:rx][ack] client_ack={state.client_ack}", flush=True)
-
         def _extract_correlation_fields(msg) -> Optional[int]:
             """Return uic_in_msg; also update UIC and sim_step."""
             uic_in_msg: Optional[int] = None
@@ -544,12 +536,6 @@ class WSIngress:
                 s = int(getattr(msg, "sim_step", 0) or 0)
                 if not state.running and s > 0:
                     state.sim_step = s
-            if self._ws_debug:
-                print(
-                    f"[ws:rx][corr] uic_in_msg={uic_in_msg} state_uic={state.user_interaction_count} "
-                    f"sim_step_in_msg={int(getattr(msg, 'sim_step', 0) or 0)} state_sim_step={state.sim_step} running={state.running}",
-                    flush=True,
-                )
             return uic_in_msg
 
         async def _handle_user_interaction(msg, uic_in_msg: Optional[int]) -> None:
@@ -578,23 +564,14 @@ class WSIngress:
 
             if self._ws_debug:
                 print(
-                    f"[ws] USER_INTERACTION recv natoms={n} running={'true' if state.running else 'false'}",
+                    f"[ws][USER_INTERACTION] recv natoms={n} running={'true' if state.running else 'false'}",
                     flush=True,
                 )
 
             if state.running:
                 # Invalidate forces so next produced frame recomputes
                 state.forces = None
-                if self._ws_debug:
-                    print(
-                        "[ws:state] applied USER_INTERACTION during running sim",
-                        flush=True,
-                    )
                 return
-
-            # Idle: apply staged user inputs to the live state (then clear the staging)
-            if self._ws_debug:
-                print("[ws] USER_INTERACTION idle -> compute", flush=True)
 
             if state.user_input_atomic_numbers is not None:
                 state.atomic_numbers = list(state.user_input_atomic_numbers)
@@ -655,10 +632,6 @@ class WSIngress:
                 )
             except Exception as e:
                 print("[ws] USER_INTERACTION compute failed")
-                print(
-                    f"[ws] USER_INTERACTION compute failed with '{state.params.calculator}' (no fallback): {e}",
-                    flush=True,
-                )
                 state.server_seq += 1
                 await _send_result_bytes(
                     seq=state.server_seq,
@@ -676,7 +649,6 @@ class WSIngress:
                     message=("COMPUTE_ERROR: " + str(e)),
                 )
                 return
-            print("[ws] USER_INTERACTION compute succeeded", flush=True)
             results = res.get("results", {}) if isinstance(res, dict) else {}
             E = results.get("energy")
             F = results.get("forces")
@@ -706,7 +678,6 @@ class WSIngress:
                 except Exception:
                     S_np = None
 
-            print(f"[ws] USER_INTERACTION sending result {E}", flush=True)
             state.server_seq += 1
             await _send_result_bytes(
                 seq=state.server_seq,
@@ -724,9 +695,13 @@ class WSIngress:
             )
 
         def _handle_start_simulation(msg) -> None:
+            nonlocal precomputed_hint
             st = getattr(msg, "start", None)
             if st is None:
                 return
+            prev_running = bool(state.running)
+            prev_type = state.sim_type
+            prev_params = state.params
             state.sim_type = (
                 "md"
                 if (st.simulation_type == pb.ClientAction.Start.SimType.MD)
@@ -743,6 +718,37 @@ class WSIngress:
                     max_step=float(sp.max_step),
                     optimizer=(sp.optimizer or "bfgs"),
                 )
+
+            # If MD is currently running and only parameters are being updated,
+            # apply live updates gracefully. For temperature changes,
+            # reseed velocities on the next step so the new target takes effect
+            # immediately.
+            try:
+                if prev_running and prev_type == "md" and state.sim_type == "md":
+                    # Temperature change detection (avoid reseed for tiny deltas)
+                    try:
+                        oldT = float(getattr(prev_params, "temperature", float("nan")))
+                        newT = float(getattr(state.params, "temperature", oldT))
+                        if (
+                            not np.isnan(oldT)
+                            and np.isfinite(oldT)
+                            and np.isfinite(newT)
+                        ):
+                            if abs(newT - oldT) > 1e-6:
+                                # Clear velocities so worker initializes from new T
+                                state.velocities = None
+                                if self._ws_debug:
+                                    msg = (
+                                        "[ws] LIVE_PARAM_UPDATE (MD): reseed velocities "
+                                        f"for T {oldT} -> {newT}"
+                                    )
+                                    print(msg, flush=True)
+                    except Exception:
+                        pass
+                    # For friction/timestep changes, no special handling needed
+                    # (picked up next step)
+            except Exception:
+                pass
 
             # Enforce UMA-only at start; if invalid, notify and do not start.
             async def _notify_bad_calc(err_msg: str) -> None:
@@ -769,23 +775,22 @@ class WSIngress:
                 state.running = False
                 asyncio.create_task(_notify_bad_calc(str(e)))
 
+            # Reset precomputed hint on (re)start to avoid stale application
+            precomputed_hint = None
+
             if self._ws_debug:
                 print(
                     f"[ws] START_SIM type={state.sim_type} calc={state.params.calculator} "
                     f"T={state.params.temperature} dt={state.params.timestep_fs} "
                     f"friction={state.params.friction} running={state.running}",
-                    flush=True,
-                )
-                print(
-                    f"[ws:state] counters uic={state.user_interaction_count} sim_step={state.sim_step}",
+                    f"counters uic={state.user_interaction_count} sim_step={state.sim_step}",
                     flush=True,
                 )
 
         async def _handle_stop_simulation() -> None:
+            nonlocal precomputed_hint
             state.running = False
             print("[ws] STOP_SIM", flush=True)
-            if self._ws_debug:
-                print("[ws:state] running=false", flush=True)
             try:
                 state.server_seq += 1
                 await _send_result_bytes(
@@ -804,14 +809,14 @@ class WSIngress:
                 )
             except Exception:
                 pass
+            finally:
+                precomputed_hint = None
 
         def _handle_ping(msg) -> None:
             if hasattr(msg, "ack"):
                 a = int(getattr(msg, "ack", 0) or 0)
                 if a:
                     state.client_ack = max(state.client_ack, a)
-                    if self._ws_debug:
-                        print(f"[ws] ACK {a}", flush=True)
 
         async def _reader():
             nonlocal reader_done
@@ -954,10 +959,8 @@ def _detect_default_ncpus() -> int:
         import multiprocessing as mp
 
         cpus = mp.cpu_count()
-        print(f"DETECTED {cpus} CPUS", flush=True)
         return max(1, mp.cpu_count())
     except Exception:
-        print("REFALLING BACK TO 8 CPUS", flush=True)
         return 8
 
 

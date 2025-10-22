@@ -841,6 +841,31 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     running.kind = null; resetRPS();
   }
 
+  // Live MD parameter updates while streaming
+  // When temperature/friction sliders change, if MD is running, push a Start update with full params
+  function sendLiveMDParamsUpdate() {
+    try {
+      if (running.kind !== 'md') return;
+      const ws = getWS();
+      // Read current targets from globals/config
+      let T = 1500;
+      try { if (typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) T = Number(window.__MLIP_TARGET_TEMPERATURE) || 1500; } catch { }
+      const fr = (typeof window !== 'undefined' && Number.isFinite(window.__MLIP_CONFIG?.mdFriction))
+        ? Number(window.__MLIP_CONFIG.mdFriction) : DEFAULT_MD_FRICTION;
+      const dt = 1.0; // keep current default timestep
+      // Always send the full struct to avoid proto3 scalar presence ambiguity
+      ws.startSimulation({ type: 'md', params: { calculator: 'uma', temperature: T, timestep_fs: dt, friction: fr } });
+      if (dbg.apiOn()) dbg.log('[mdWS][live-update]', { temperature: T, timestep_fs: dt, friction: fr });
+    } catch { }
+  }
+
+  try {
+    if (typeof window !== 'undefined') {
+      window.addEventListener('mlip:temperature-changed', sendLiveMDParamsUpdate);
+      window.addEventListener('mlip:friction-changed', sendLiveMDParamsUpdate);
+    }
+  } catch { }
+
   function setForceVectorsEnabled(on) {
     try {
       if (typeof on === 'boolean') { if (!!state.showForces !== on) state.toggleForceVectorsVisibility(); }

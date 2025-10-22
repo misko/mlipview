@@ -114,12 +114,6 @@ class _PredictDeploy:  # runs on GPU replica
     @serve.batch(max_batch_size=MAX_BATCH, batch_wait_timeout_s=WAIT_S)
     async def predict(self, payloads: List[Tuple[tuple, dict]]):
         # Preserve order; return one result per payload.
-        if self._geom_debug:
-            print(
-                "[UMA] predict called on device %s size=%d"
-                % (self.DEVICE, len(payloads)),
-                flush=True,
-            )
         # Optional geometry debug logging
         if self._geom_debug:
             singles = [p[0][0] for p in payloads] if payloads else []
@@ -130,12 +124,10 @@ class _PredictDeploy:  # runs on GPU replica
                 zs = getattr(item, "atomic_numbers", None)
                 n = pos.shape[0] if pos is not None else -1
                 print(
-                    f"[UMA][input] item={idx} natoms={n} "
-                    # f"pos={pos} cell={cell} "
-                    f"Z={zs} dataset={ds}",
+                    f"[UMA][input] item={idx} natoms={n} ",
+                    # f"pos={pos} cell={cell} ",
                     flush=True,
                 )
-        t0 = time.perf_counter()
         try:
             # update simple metrics
             self._predict_calls += 1
@@ -144,61 +136,21 @@ class _PredictDeploy:  # runs on GPU replica
             if len(payloads) == 1:
                 single = payloads[0][0][0]
                 pred = self._unit.predict(single)
-                res = [{k: v.detach().cpu() for k, v in pred.items()}]
-                # Geometry debug: log outputs (energy, forces)
-                if self._geom_debug:
-                    e0 = res[0].get("energy")
-                    f0 = res[0].get("forces")
-                    print(
-                        "[UMA][predict][out] item=0 E=" + str(e0),
-                        flush=True,
-                    )
-                dt = time.perf_counter() - t0
-                if self._geom_debug:
-                    print(
-                        (
-                            "[UMA] predict finished size=1 "
-                            f"wall={dt:.4f}s "
-                            f"ms/item={(dt * 1000.0):.2f}"
-                        ),
-                        flush=True,
-                    )
-                return res
-            else:
-                # CPU pack + GPU predict + CPU unbatch (legacy in-replica path)
-                batch = atomicdata_list_to_batch([x[0][0] for x in payloads])
-                batch.dataset = [x[0] for x in batch.dataset]
-                pred = self._unit.predict(batch)
-                all_outputs = {k: v.detach().cpu() for k, v in pred.items()}
-                forces_by_mol = all_outputs["forces"].split(batch["natoms"].tolist())
-                out = [
-                    {"energy": energy, "forces": forces, "stress": stress[0]}
-                    for energy, forces, stress in zip(
-                        all_outputs["energy"].split(1),
-                        forces_by_mol,
-                        all_outputs["stress"].split(1),
-                    )
-                ]
-                # Geometry debug: log outputs (energy, forces) for each item
-                if self._geom_debug:
-                    for idx, it in enumerate(out):
-                        e0 = it.get("energy")
-                        f0 = it.get("forces")
-                        print(
-                            f"[UMA][predict][out] item={idx} E=" + str(e0),
-                            flush=True,
-                        )
-            dt = time.perf_counter() - t0
-            size = len(payloads)
-            if self._geom_debug:
-                print(
-                    (
-                        f"[UMA] predict finished size={size} "
-                        f"wall={dt:.4f}s "
-                        f"ms/item={(dt * 1000.0 / max(1, size)):.2f}"
-                    ),
-                    flush=True,
+                return [{k: v.detach().cpu() for k, v in pred.items()}]
+            # CPU pack + GPU predict + CPU unbatch (legacy in-replica path)
+            batch = atomicdata_list_to_batch([x[0][0] for x in payloads])
+            batch.dataset = [x[0] for x in batch.dataset]
+            pred = self._unit.predict(batch)
+            all_outputs = {k: v.detach().cpu() for k, v in pred.items()}
+            forces_by_mol = all_outputs["forces"].split(batch["natoms"].tolist())
+            out = [
+                {"energy": energy, "forces": forces, "stress": stress[0]}
+                for energy, forces, stress in zip(
+                    all_outputs["energy"].split(1),
+                    forces_by_mol,
+                    all_outputs["stress"].split(1),
                 )
+            ]
             return out
         except Exception as e:
             print("Unexpected error in UMA predictor: %s" % e)

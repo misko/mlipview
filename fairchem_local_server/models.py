@@ -10,6 +10,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, root_validator, validator
+import numpy as _np
 
 # Hard cap for number of atoms accepted by any request.
 # Enforced at the model layer so all ingress paths share the same check.
@@ -26,7 +27,8 @@ def _enforce_atom_limit(values: Dict[str, Any]) -> Dict[str, Any]:
     n = max(len(zs), len(coords))
     if n > MAX_ATOMS_PER_REQUEST:
         raise ValueError(
-            ("Too many atoms: " f"{n} > MAX_ATOMS_PER_REQUEST={MAX_ATOMS_PER_REQUEST}")
+            "Too many atoms: "
+            f"{n} > MAX_ATOMS_PER_REQUEST={MAX_ATOMS_PER_REQUEST}"
         )
     return values
 
@@ -68,6 +70,19 @@ class RelaxIn(BaseModel):
     @root_validator(skip_on_failure=True)
     def _limit_natoms(cls, values):  # type: ignore
         return _enforce_atom_limit(values)
+
+    # Accept plain dicts for precomputed and coerce into PrecomputedValues
+    @validator("precomputed", pre=True)
+    def _coerce_precomputed_relax(cls, v):  # type: ignore
+        if v is None or isinstance(v, PrecomputedValues):
+            return v
+        if isinstance(v, dict):
+            return PrecomputedValues(
+                energy=v.get("energy"),
+                forces=v.get("forces"),
+                stress=v.get("stress"),
+            )
+        return v
 
 
 class RelaxResult(BaseModel):
@@ -113,6 +128,19 @@ class MDIn(BaseModel):
             raise ValueError("velocities length must match number of atoms")
         return v
 
+    # Accept plain dicts for precomputed and coerce into PrecomputedValues
+    @validator("precomputed", pre=True)
+    def _coerce_precomputed_md(cls, v):  # type: ignore
+        if v is None or isinstance(v, PrecomputedValues):
+            return v
+        if isinstance(v, dict):
+            return PrecomputedValues(
+                energy=v.get("energy"),
+                forces=v.get("forces"),
+                stress=v.get("stress"),
+            )
+        return v
+
 
 class MDResult(BaseModel):
     initial_energy: float
@@ -127,35 +155,46 @@ class MDResult(BaseModel):
     precomputed_applied: Optional[List[str]] = None
 
 
-class PrecomputedValues(BaseModel):
-    """Optional precomputed results a client can supply to skip first calc.
+class PrecomputedValues:
+    """Lightweight wrapper for precomputed calculator results.
 
-    energy: potential energy (eV)
-    forces: N x 3 forces (eV/Å)
-    stress: Voigt 6-vector (eV/Å^3) consistent with ASE ordering
-            [xx, yy, zz, yz, xz, xy]. We also accept length-9 (3x3 row-major)
-            and convert to Voigt ordering.
+    Stored as numpy arrays for efficiency in hot loops.
+
+    This is intentionally not a Pydantic model to avoid expensive coercions in
+    hot loops. Use field validators on inputs (MDIn/RelaxIn) to build this from
+    plain dicts when coming from HTTP/JSON requests.
+
+    Attributes:
+      energy: float or None
+      forces: (N,3) numpy array or None
+      stress: numpy array of shape (6,) or (9,) or None
     """
 
-    energy: Optional[float] = None
-    forces: Optional[List[List[float]]] = None
-    stress: Optional[List[float]] = None
+    def __init__(
+        self,
+        *,
+        energy: Optional[float] = None,
+        forces: Optional[List[List[float]] | _np.ndarray] = None,
+        stress: Optional[List[float] | _np.ndarray] = None,
+    ) -> None:
+        self.energy = float(energy) if energy is not None else None
+        self.forces = (
+            _np.asarray(forces, dtype=float)
+            if forces is not None
+            else None
+        )
+        self.stress = (
+            _np.asarray(stress, dtype=float)
+            if stress is not None
+            else None
+        )
 
-    @validator("forces")
-    def _validate_forces(cls, v):  # type: ignore
-        if v is None:
-            return v
-        if not all(len(row) == 3 for row in v):
-            raise ValueError("forces must be a list of [x,y,z] vectors")
-        return v
-
-    @validator("stress")
-    def _validate_stress(cls, v):  # type: ignore
-        if v is None:
-            return v
-        if len(v) not in (6, 9):
-            raise ValueError("stress must have length 6 (Voigt) or 9 (matrix)")
-        return v
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        return (
+            f"PrecomputedValues(energy={self.energy}, "
+            f"forces={None if self.forces is None else self.forces.shape}, "
+            f"stress={None if self.stress is None else self.stress.shape})"
+        )
 
 
 __all__ = [

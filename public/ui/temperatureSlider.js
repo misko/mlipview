@@ -99,7 +99,12 @@ export function initTemperatureSlider({ hudEl, getViewer }) {
     try {
       const v = getViewer && getViewer();
       if (v && v.state && v.state.dynamics) v.state.dynamics.targetTemperature = T;
-    } catch {}
+    } catch { }
+    // Notify listeners (viewer can live-update running MD params)
+    try {
+      const evt = new Event('mlip:temperature-changed');
+      window.dispatchEvent(evt);
+    } catch { }
   }
 
   // Initialize from existing global if provided by loader (XYZ temperature), else default to 1500
@@ -176,7 +181,7 @@ export function syncTemperatureSliderToGlobal(root = document) {
     }
     slider.value = String(bestI);
     label.textContent = `T=${want}K`;
-  } catch {}
+  } catch { }
 }
 
 // Install a single global listener the first time this module is evaluated
@@ -186,7 +191,7 @@ try {
     document.addEventListener('mlip:temperature-changed', () => {
       try {
         syncTemperatureSliderToGlobal(document);
-      } catch {}
+      } catch { }
     });
   }
-} catch {}
+} catch { }

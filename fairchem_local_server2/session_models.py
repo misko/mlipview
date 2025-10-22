@@ -85,6 +85,15 @@ class SessionState(BaseModel):
     forces: List[List[float]] = None
     cell: Optional[List[List[float]]] = None
 
+    # Cached/precomputed values (numpy at runtime in ws_app)
+    # Populated from idle compute (USER_INTERACTION path); consumed once by the
+    # first MD/Relax step to avoid an extra calculator call.
+    energy: Optional[float] = None
+    stress: Optional[List[float]] = None  # stored as np.ndarray in ws_app
+
+    # One-shot snapshot to forward into the next simulation start
+    precomputed_valid: bool = False
+
     # User input state
     user_input_atomic_numbers: List[int] = None
     user_input_positions: List[List[float]] = None

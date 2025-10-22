@@ -69,9 +69,9 @@ class ASEWorker:
         timestep_fs: float,
         friction: float,
         calculator: str = "uma",
+        precomputed: Optional[PrecomputedValues] = None,
     ) -> Dict[str, Any]:
-        t0 = time.perf_counter()
-
+        print(f"[run_md] with temperature={temperature}K steps={steps}", flush=True)
         calc_enum = RelaxCalculatorName(calculator)
         _validate_atomic_numbers_or_raise(atomic_numbers)
 
@@ -88,16 +88,10 @@ class ASEWorker:
             friction=float(friction),
             calculator=calc_enum,
             return_trajectory=False,
-            precomputed=None,
+            precomputed=precomputed,
             velocities_in=velocities,
         )
         out = md_res.dict()
-        dt = time.perf_counter() - t0
-        print(
-            f"[timing] ASEWorker.run_md natoms={len(atomic_numbers)} "
-            f"calc={calc_enum.value} wall={dt:.4f}s",
-            flush=True,
-        )
         return out
 
     def run_relax(
@@ -110,6 +104,7 @@ class ASEWorker:
         fmax: float,
         max_step: float,
         calculator: str = "uma",
+        precomputed: Optional[PrecomputedValues] = None,
     ) -> Dict[str, Any]:
         t0 = time.perf_counter()
 
@@ -126,15 +121,9 @@ class ASEWorker:
             steps=int(steps),
             calculator=calc_enum,
             max_step=float(max_step),
-            precomputed=None,
+            precomputed=precomputed,
         )
         out = rx.dict()
-        dt = time.perf_counter() - t0
-        print(
-            f"[timing] ASEWorker.run_relax natoms={len(atomic_numbers)} "
-            f"calc={calc_enum.value} wall={dt:.4f}s",
-            flush=True,
-        )
         return out
 
     def run_simple(
@@ -146,8 +135,6 @@ class ASEWorker:
         properties: Optional[List[str]] = None,
         calculator: str = "uma",
     ) -> Dict[str, Any]:
-        t0 = time.perf_counter()
-
         _validate_atomic_numbers_or_raise(atomic_numbers)
         inp = SimpleIn(
             atomic_numbers=list(map(int, atomic_numbers)),
@@ -158,12 +145,6 @@ class ASEWorker:
         )
 
         res = _simple_calculate(inp)
-        dt = time.perf_counter() - t0
-        print(
-            f"[timing] ASEWorker.run_simple natoms={len(atomic_numbers)} "
-            f"calc={calculator} wall={dt:.4f}s",
-            flush=True,
-        )
         return res
 
 
@@ -215,7 +196,6 @@ def _md_run(
     v_existing = atoms.get_velocities()
     if v_existing is not None and (np.asarray(v_existing) > 0).any():
         # Keep existing velocities on the Atoms object.
-        print(f"[md_run] using existing velocities ", flush=True)
         pass
     elif velocities_in is not None:
         try:
@@ -226,25 +206,23 @@ def _md_run(
             raise HTTPException(status_code=400, detail="velocities shape mismatch")
         if not np.all(np.isfinite(v)):
             raise HTTPException(status_code=400, detail="velocities contain non-finite")
-        print(f"[md_run] using provided velocities", flush=True)
         atoms.set_velocities(v)
     else:
         # Initialize from temperature (standard Langevin setup)
-        print(
-            f"[md_run] initializing velocities from temperature {temperature}",
-            flush=True,
-        )
         MaxwellBoltzmannDistribution(atoms, temperature_K=temperature)
 
     # Apply any precomputed values (if provided) before first energy access.
     pre_applied: list[str] = _maybe_apply_precomputed(atoms, precomputed, len(atoms))
-
     if "energy" in pre_applied:
         initial_energy = float(atoms.calc.results["energy"])  # type: ignore[attr-defined]
     else:
         initial_energy = float(atoms.get_potential_energy())
 
     # Langevin MD
+    print(
+        f"[md] Starting MD: steps={steps} T={temperature}K dt={timestep_fs}fs",
+        flush=True,
+    )
     dyn = Langevin(
         atoms,
         float(timestep_fs) * _units.fs,
@@ -257,9 +235,7 @@ def _md_run(
     prev = atoms.get_positions().copy()
 
     for _ in range(int(steps)):
-        print("[md_run] MD step", flush=True)
         dyn.run(1)
-        print("[md_run] MD step done", flush=True)
         if energies is not None:
             energies.append(float(atoms.get_potential_energy()))
 

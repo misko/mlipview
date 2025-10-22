@@ -47,6 +47,11 @@ export function initFrictionSlider({ hudEl }) {
       window.__MLIP_CONFIG.mdFriction = num;
     }
     updateLabel(num);
+    // Notify listeners that friction changed (viewer can live-update MD params)
+    try {
+      const evt = new Event('mlip:friction-changed');
+      window.dispatchEvent(evt);
+    } catch { }
   }
 
   // Initialize from config
