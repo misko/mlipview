@@ -291,7 +291,7 @@ export function createFairchemWS() {
           // If someone sent JSON but wrapped as bytes, sniff first non-space
           let i = 0; while (i < bytes.length && bytes[i] <= 32) i++;
           const b0 = bytes[i];
-          if (b0 === 123 /*'{'*/ || b0 === 91 /*'['*/) { __wsErr('[WS] JSON in binary path; ignoring frame.'); return; }
+          //if (b0 === 123 /*'{'*/ || b0 === 91 /*'['*/) { __wsErr('[WS] JSON in binary path; ignoring frame.'); return; }
 
           const r = fromBinary(ServerResultSchema, bytes);
           const out = {

@@ -215,6 +215,7 @@ def _md_run(
     v_existing = atoms.get_velocities()
     if v_existing is not None and np.asarray(v_existing).shape == (len(atoms), 3):
         # Keep existing velocities on the Atoms object.
+        print(f"[md_run] using existing velocities ", flush=True)
         pass
     elif velocities_in is not None:
         try:
@@ -225,9 +226,14 @@ def _md_run(
             raise HTTPException(status_code=400, detail="velocities shape mismatch")
         if not np.all(np.isfinite(v)):
             raise HTTPException(status_code=400, detail="velocities contain non-finite")
+        print(f"[md_run] using provided velocities", flush=True)
         atoms.set_velocities(v)
     else:
         # Initialize from temperature (standard Langevin setup)
+        print(
+            f"[md_run] initializing velocities from temperature {temperature}",
+            flush=True,
+        )
         MaxwellBoltzmannDistribution(atoms, temperature_K=temperature)
 
     # Apply any precomputed values (if provided) before first energy access.

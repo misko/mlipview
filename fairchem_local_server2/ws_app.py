@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from collections import deque
 from typing import Optional
@@ -18,12 +19,13 @@ from fairchem_local_server.model_runtime import (
     MODEL_NAME,
     TASK_NAME,
     UMA_DEPLOYMENT_NAME,
+    _PackAndRoute,
     _PredictDeploy,
     health_snapshot,
     install_predict_handle,
 )
 
-app = FastAPI(title="UMA Serve WS API", debug=False)
+app = FastAPI(title="UMA Serve WS API", debug=True)
 
 # ---- helpers: protobuf <-> numpy (flat packed arrays) -----------------------
 
@@ -350,6 +352,12 @@ class WSIngress:
                         await asyncio.sleep(0.02)
                         continue
 
+                    print(
+                        "[ws] sim_loop iteration velocities",
+                        state.velocities,
+                        flush=True,
+                    )
+
                     # Backpressure: don't exceed last_ack + 10
                     if state.server_seq - state.client_ack >= max_unacked:
                         now = time.time()
@@ -453,7 +461,12 @@ class WSIngress:
 
                     v_out = res.get("velocities")
                     if v_out is not None:
+                        print(
+                            "[ws] sim_loop iteration got velocities", v_out, flush=True
+                        )
                         state.velocities = np.asarray(v_out, dtype=np.float64)
+                    else:
+                        print("[ws] sim_loop iteration got no velocities", flush=True)
 
                     f_out = res.get("forces")
                     if f_out is not None:
@@ -900,11 +913,29 @@ class WSIngress:
                 stop_evt.set()
 
         # Run concurrently until either loop exits
-        await asyncio.gather(
-            sim_loop(),
-            _reader(),
-            recv_loop(),
-        )
+        # await asyncio.gather(
+        #     sim_loop(),
+        #     _reader(),
+        #     recv_loop(),
+        # )
+        # Run concurrently; if any finishes, cancel the rest cleanly
+        tasks = [
+            asyncio.create_task(sim_loop(), name="sim_loop"),
+            asyncio.create_task(_reader(), name="ws_reader"),
+            asyncio.create_task(recv_loop(), name="recv_loop"),
+        ]
+        try:
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            # Drain cancellations
+            for t in tasks:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await t
 
 
 def _detect_default_ngpus() -> int:
@@ -957,14 +988,28 @@ def deploy(
             pass
 
     if replica_count > 0:
-        uma = _PredictDeploy.options(
+        gpu = _PredictDeploy.options(
             name=UMA_DEPLOYMENT_NAME,
             num_replicas=int(replica_count),
             # ray_actor_options={"num_gpus": 1},
         ).bind(MODEL_NAME, TASK_NAME)
+        # CPU packer (0 GPU) sits in front and performs pack/unpack
+        # CPU side: fan out 8 packers
+        packer = _PackAndRoute.options(
+            name="uma_pack",
+            num_replicas=8,  # <-- fan-out here
+            max_ongoing_requests=1024,  # optional: increase concurrency
+            ray_actor_options={
+                "num_gpus": 0,
+                "num_cpus": 0.25,
+            },  # reserve a bit of CPU per packer
+        ).bind(gpu)
         dag = WSIngress.options(
             num_replicas=ingress_replicas, max_ongoing_requests=512
-        ).bind(uma, pool_size)
+        ).bind(gpu, pool_size)
+        # dag = WSIngress.options(
+        #     num_replicas=ingress_replicas, max_ongoing_requests=512
+        # ).bind(uma, pool_size)
     else:
         # LJ-only or client-provided calculator flows
         dag = WSIngress.options(

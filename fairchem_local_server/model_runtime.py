@@ -1,7 +1,7 @@
 """Central runtime utilities for UMA model + ASE calculator.
 
 Serve-owns-HTTP model:
-- This module defines the UMA batched predictor deployment (no HTTP)
+- This module defines the UMA predictor deployments (no HTTP)
 - The Serve ingress app constructs the DAG and injects a handle via
     install_predict_handle(...)
 - No serve.start / serve.run in this file
@@ -10,6 +10,8 @@ Notes:
 - Server-side Atoms cache has been removed across the stack.
 - We do not keep a global FAIRChemCalculator instance; a lightweight
     calculator is constructed on demand using the installed UMA handle.
+- Packing/unpacking is handled on CPU in _PackAndRoute; GPU sees one pre-packed
+    batch via _PredictDeploy.predict_raw.
 """
 
 from __future__ import annotations
@@ -35,24 +37,23 @@ MODEL_NAME = os.getenv("UMA_MODEL", "uma-s-1p1")
 TASK_NAME = os.getenv("UMA_TASK", "omol")
 
 # Batch tunables
-MAX_BATCH = int(os.environ.get("UMA_BATCH_MAX", 16))
-WAIT_S = float(os.environ.get("UMA_BATCH_WAIT_S", 0.003))
+MAX_BATCH = int(os.environ.get("UMA_BATCH_MAX", 32))
+WAIT_S = float(os.environ.get("UMA_BATCH_WAIT_S", 0.00))
 
 # Logical deployment name (must match the one you bind in the Serve DAG)
 UMA_DEPLOYMENT_NAME = "uma_predict"
 
 # --- State ------------------------------------------------------------------
 
-_PU: BatchedPredictUnit | None = None
+_PU: "BatchedPredictUnit | None" = None
 
 
-# --- Ray Serve UMA deployment (no HTTP route) --------------------------------
+# --- Ray Serve UMA deployments (no HTTP route) -------------------------------
 
 
 @serve.deployment(ray_actor_options={"num_gpus": 0.5})
 class _PredictDeploy:  # runs on GPU replica
     def __init__(self, model_name: str, task_name: str):
-
         self.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
         print(
             f"[model_runtime] torch_version={getattr(torch, '__version__', None)} "
@@ -61,7 +62,7 @@ class _PredictDeploy:  # runs on GPU replica
             f"device={self.DEVICE}",
             flush=True,
         )
-        print(f"[batched:init] loading model={model_name} task={task_name}")
+        print(f"[batched:init] loading model={model_name} task={task_name}", flush=True)
         print(
             (
                 f"[batched:init] DEVICE={self.DEVICE} "
@@ -93,7 +94,23 @@ class _PredictDeploy:  # runs on GPU replica
             ),
         )
 
-    # Batched inference (async, required by Serve)
+    # ---- Raw single-call entrypoint (no Serve batching, no CPU splits) ----
+    async def predict_raw(self, batch: Any):
+        """
+        Expects one pre-packed batch (CPU tensors/arrays). Runs once on GPU and
+        returns UNSPLIT CPU tensors plus split metadata needed for CPU-side unbatch.
+        """
+        try:
+            pred = self._unit.predict(batch)
+            out = {k: v.detach().cpu() for k, v in pred.items()}
+            # Provide per-molecule counts to guide CPU unbatching
+            out["natoms"] = batch["natoms"].tolist()
+            return out
+        except Exception as e:
+            print(f"[UMA][predict_raw] error: {e}", flush=True)
+            raise
+
+    # Batched inference (legacy path; kept for compatibility)
     @serve.batch(max_batch_size=MAX_BATCH, batch_wait_timeout_s=WAIT_S)
     async def predict(self, payloads: List[Tuple[tuple, dict]]):
         # Preserve order; return one result per payload.
@@ -111,7 +128,7 @@ class _PredictDeploy:  # runs on GPU replica
                 cell = getattr(item, "cell", None)
                 ds = getattr(item, "dataset", None)
                 zs = getattr(item, "atomic_numbers", None)
-                n = pos.shape[0]
+                n = pos.shape[0] if pos is not None else -1
                 print(
                     f"[UMA][geom] item={idx} natoms={n} "
                     f"pos={pos} cell={cell} "
@@ -148,15 +165,12 @@ class _PredictDeploy:  # runs on GPU replica
                     )
                 return res
             else:
-                # warmup
+                # CPU pack + GPU predict + CPU unbatch (legacy in-replica path)
                 batch = atomicdata_list_to_batch([x[0][0] for x in payloads])
                 batch.dataset = [x[0] for x in batch.dataset]
                 pred = self._unit.predict(batch)
                 all_outputs = {k: v.detach().cpu() for k, v in pred.items()}
                 forces_by_mol = all_outputs["forces"].split(batch["natoms"].tolist())
-                # stress_by_mol = all_outputs["stress"].split(
-                #     batch["num_atoms"]
-                # )
                 out = [
                     {"energy": energy, "forces": forces, "stress": stress[0]}
                     for energy, forces, stress in zip(
@@ -208,6 +222,37 @@ class _PredictDeploy:  # runs on GPU replica
         return {"ok": True}
 
 
+@serve.deployment(ray_actor_options={"num_gpus": 0})
+class _PackAndRoute:
+    """
+    CPU-side packer/unpacker. This is the handle the rest of the app should call.
+    It receives many single items (via Serve batching), builds ONE packed batch
+    on CPU, calls the GPU once, then unbatches on CPU and returns per-item dicts.
+    """
+
+    def __init__(self, gpu_handle):
+        self._gpu = gpu_handle  # handle to _PredictDeploy
+
+    @serve.batch(max_batch_size=MAX_BATCH, batch_wait_timeout_s=WAIT_S)
+    async def predict(self, payloads: List[Tuple[tuple, dict]]):
+        # Extract the single items from Serve’s (args, kwargs) envelope
+        singles = [p[0][0] for p in payloads]
+        # Pack on CPU
+        batch = atomicdata_list_to_batch(singles)
+        # Preserve metadata pattern used by your GPU path
+        batch.dataset = [x[0] for x in batch.dataset]
+        # One raw GPU call (awaitable)
+        resp = await self._gpu.predict_raw.remote(batch)
+        # Unbatch on CPU (cheap)
+        energies = resp["energy"].split(1)  # [N] or [N,1]
+        forces_by_mol = resp["forces"].split(resp["natoms"])  # concat->per-mol
+        stresses = resp["stress"].split(1)
+        return [
+            {"energy": e, "forces": f, "stress": s[0]}
+            for e, f, s in zip(energies, forces_by_mol, stresses)
+        ]
+
+
 class BatchedPredictUnit:
     """Synchronous client wrapper (FAIRChem expects sync .predict)."""
 
@@ -241,8 +286,7 @@ class BatchedPredictUnit:
         # DeploymentResponse.result() is safe in that context.
         resp = self._handle.predict.remote((args, kwargs))  # type: ignore
         r = resp.result()
-        dt = time.perf_counter() - t0
-        # print(f"[UMA-client] predict wall={dt:.4f}s", flush=True)
+        _ = time.perf_counter() - t0
         # Serve batched methods always return a list of results with the same
         # length as the input batch. For our client wrapper, unwrap a single
         # element list to a dict for downstream FAIRChemCalculator.
@@ -273,16 +317,8 @@ def install_predict_handle(handle) -> None:
     """Install the UMA deployment handle and build the calculator.
 
     Call this ONCE from your Serve ingress deployment __init__, passing the
-    bound handle for `_PredictDeploy`. Example (in your serve_app.py):
-
-        uma = _PredictDeploy.options(name=UMA_DEPLOYMENT_NAME).bind(
-            MODEL_NAME, TASK_NAME
-        )
-        ing = Ingress.bind(uma)
-        serve.run(ing, name="http_app", route_prefix="/")
-
-    And inside Ingress.__init__(predict_handle):
-        install_predict_handle(predict_handle)
+    bound handle for the predictor you want the calculator to use. In the
+    new two-stage flow, pass the CPU packer (_PackAndRoute) handle.
     """
     global _PU
 
@@ -353,6 +389,7 @@ __all__ = [
     "TASK_NAME",
     "UMA_DEPLOYMENT_NAME",
     "_PredictDeploy",
+    "_PackAndRoute",
     "install_predict_handle",
     "get_batched_predict_unit",
     "get_calculator",
