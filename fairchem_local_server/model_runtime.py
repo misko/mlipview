@@ -130,8 +130,8 @@ class _PredictDeploy:  # runs on GPU replica
                 zs = getattr(item, "atomic_numbers", None)
                 n = pos.shape[0] if pos is not None else -1
                 print(
-                    f"[UMA][geom] item={idx} natoms={n} "
-                    f"pos={pos} cell={cell} "
+                    f"[UMA][input] item={idx} natoms={n} "
+                    # f"pos={pos} cell={cell} "
                     f"Z={zs} dataset={ds}",
                     flush=True,
                 )
@@ -150,7 +150,7 @@ class _PredictDeploy:  # runs on GPU replica
                     e0 = res[0].get("energy")
                     f0 = res[0].get("forces")
                     print(
-                        "[UMA][geom][out] item=0 E=" + str(e0),
+                        "[UMA][predict][out] item=0 E=" + str(e0),
                         flush=True,
                     )
                 dt = time.perf_counter() - t0
@@ -185,7 +185,7 @@ class _PredictDeploy:  # runs on GPU replica
                         e0 = it.get("energy")
                         f0 = it.get("forces")
                         print(
-                            f"[UMA][geom][out] item={idx} E=" + str(e0),
+                            f"[UMA][predict][out] item={idx} E=" + str(e0),
                             flush=True,
                         )
             dt = time.perf_counter() - t0

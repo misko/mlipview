@@ -213,7 +213,7 @@ def _md_run(
 
     # ---- Velocities: use provided; else use existing; else initialize from T ----
     v_existing = atoms.get_velocities()
-    if v_existing is not None and np.asarray(v_existing).shape == (len(atoms), 3):
+    if v_existing is not None and (np.asarray(v_existing) > 0).any():
         # Keep existing velocities on the Atoms object.
         print(f"[md_run] using existing velocities ", flush=True)
         pass
@@ -257,7 +257,9 @@ def _md_run(
     prev = atoms.get_positions().copy()
 
     for _ in range(int(steps)):
+        print("[md_run] MD step", flush=True)
         dyn.run(1)
+        print("[md_run] MD step done", flush=True)
         if energies is not None:
             energies.append(float(atoms.get_potential_energy()))
 
