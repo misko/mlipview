@@ -35,8 +35,8 @@ MODEL_NAME = os.getenv("UMA_MODEL", "uma-s-1p1")
 TASK_NAME = os.getenv("UMA_TASK", "omol")
 
 # Batch tunables
-MAX_BATCH = int(os.environ.get("UMA_BATCH_MAX", 16))
-WAIT_S = float(os.environ.get("UMA_BATCH_WAIT_S", 0.003))
+MAX_BATCH = int(os.environ.get("UMA_BATCH_MAX", 32))
+WAIT_S = float(os.environ.get("UMA_BATCH_WAIT_S", 0.00))
 
 # Logical deployment name (must match the one you bind in the Serve DAG)
 UMA_DEPLOYMENT_NAME = "uma_predict"
@@ -49,10 +49,10 @@ _PU: BatchedPredictUnit | None = None
 # --- Ray Serve UMA deployment (no HTTP route) --------------------------------
 
 
-@serve.deployment(ray_actor_options={"num_gpus": 1})
+@serve.deployment(ray_actor_options={"num_gpus": 0.25})
 class _PredictDeploy:  # runs on GPU replica
     def __init__(self, model_name: str, task_name: str):
-
+        print("starting UMA _PredictDeploy", flush=True)
         self.DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
         print(
             f"[model_runtime] torch_version={getattr(torch, '__version__', None)} "
