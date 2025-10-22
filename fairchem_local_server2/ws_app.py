@@ -960,12 +960,16 @@ def deploy(
         uma = _PredictDeploy.options(
             name=UMA_DEPLOYMENT_NAME,
             num_replicas=int(replica_count),
-            ray_actor_options={"num_gpus": 1},
+            # ray_actor_options={"num_gpus": 1},
         ).bind(MODEL_NAME, TASK_NAME)
-        dag = WSIngress.options(num_replicas=ingress_replicas).bind(uma, pool_size)
+        dag = WSIngress.options(
+            num_replicas=ingress_replicas, max_ongoing_requests=512
+        ).bind(uma, pool_size)
     else:
         # LJ-only or client-provided calculator flows
-        dag = WSIngress.options(num_replicas=ingress_replicas).bind(None, pool_size)
+        dag = WSIngress.options(
+            num_replicas=ingress_replicas, max_ongoing_requests=512
+        ).bind(None, pool_size)
 
     serve.run(
         dag,

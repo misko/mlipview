@@ -49,7 +49,7 @@ _PU: BatchedPredictUnit | None = None
 # --- Ray Serve UMA deployment (no HTTP route) --------------------------------
 
 
-@serve.deployment(ray_actor_options={"num_gpus": 1})
+@serve.deployment(ray_actor_options={"num_gpus": 0.5})
 class _PredictDeploy:  # runs on GPU replica
     def __init__(self, model_name: str, task_name: str):
 

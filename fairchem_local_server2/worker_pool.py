@@ -38,7 +38,7 @@ def _validate_atomic_numbers_or_raise(atomic_numbers: List[int]) -> None:
         )
 
 
-@ray.remote(num_cpus=1)
+@ray.remote(num_cpus=0.1)
 class ASEWorker:
     """
     CPU worker for MD/Relax using UMA-backed calculator.
