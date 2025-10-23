@@ -1,5 +1,5 @@
 // index.js — streamlined viewer orchestration with WS/protobuf backend
-// Behavior-compatible refactor to reduce verbosity & duplication.
+// Refactored: unified streaming loop, idle listener, predictable throttle, lighter debounces.
 
 import { createMoleculeState } from './domain/moleculeState.js';
 import { createBondService } from './domain/bondService.js';
@@ -17,20 +17,15 @@ import { getWS } from './fairchem_ws_client.js';
 import { SYMBOL_TO_Z } from './data/periodicTable.js';
 
 /* ──────────────────────────────────────────────────────────────────────────
-   Tunables & Defaults — centralized (override via window.__MLIP_CONFIG)
-   --------------------------------------------------------------------------
-   Why this block?
-   - Puts *all* tweakable timings in one place (no buried magic numbers).
-   - Keeps defaults safe; allows runtime overrides (tests/devtools).
-   - Uses getters so changes to window.__MLIP_CONFIG are read live.
-   -------------------------------------------------------------------------- */
+   Tunables & Defaults
+   ────────────────────────────────────────────────────────────────────────── */
 
 const DEFAULTS = {
-  DRAG_THROTTLE_MS: 25,       // how often we emit USER_INTERACTION during drag
-  POS_ENERGY_DEBOUNCE_MS: 50,  // debounce between positionsChanged and recompute-forces
-  LATCH_AFTER_DRAG_MS: 600,    // latch the last-dragged atom (mouse/touch)
-  LATCH_AFTER_VR_MS: 800,      // latch the last-dragged atom (VR source)
-  RPS_WINDOW_MS: 2000,         // rolling window (ms) for RPS calculation
+  DRAG_THROTTLE_MS: 25,
+  POS_ENERGY_DEBOUNCE_MS: 50,
+  LATCH_AFTER_DRAG_MS: 600,
+  LATCH_AFTER_VR_MS: 800,
+  RPS_WINDOW_MS: 2000,
 };
 
 function cfgNumber(v, fallback) {
@@ -38,7 +33,6 @@ function cfgNumber(v, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-// Read-anytime getters so runtime can tweak window.__MLIP_CONFIG on the fly
 const TUNABLES = {
   get DRAG_THROTTLE_MS() {
     if (typeof window === 'undefined') return DEFAULTS.DRAG_THROTTLE_MS;
@@ -62,7 +56,6 @@ const TUNABLES = {
   },
 };
 
-// (Optional) Log effective tunables on boot for quick visibility in dev/test
 try {
   console.log('[config:tunables]', {
     dragThrottleMs: TUNABLES.DRAG_THROTTLE_MS,
@@ -74,14 +67,17 @@ try {
 } catch { }
 
 /* ──────────────────────────────────────────────────────────────────────────
-   Small utilities (logging, query flags, throttling, transforms, cache ops)
+   Utils
    ────────────────────────────────────────────────────────────────────────── */
 
-const dbg = {
+const env = {
+  now: () => (performance?.now?.() ?? Date.now()),
   apiOn: () => (typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_API),
+};
+
+const dbg = {
   log: (...a) => { try { console.log(...a); } catch { } },
   warn: (...a) => { try { console.warn(...a); } catch { } },
-  err: (...a) => { try { console.error(...a); } catch { } },
 };
 
 const qbool = (key) => {
@@ -92,14 +88,19 @@ const qbool = (key) => {
   } catch { return false; }
 };
 
-const throttle = (fn, ms) => {
-  let t = 0, id = null;
-  return (...a) => {
-    const now = (performance?.now?.() ?? Date.now());
-    const since = now - t;
-    if (id) return;
-    const delay = Math.max(0, ms - since);
-    id = setTimeout(() => { id = null; t = (performance?.now?.() ?? Date.now()); fn(...a); }, delay);
+// Predictable throttle (leading + trailing)
+const throttle = (fn, wait) => {
+  let last = 0, timer = null, lastArgs = null;
+  return (...args) => {
+    const now = env.now();
+    const remaining = wait - (now - last);
+    lastArgs = args;
+    if (remaining <= 0) {
+      if (timer) { clearTimeout(timer); timer = null; }
+      last = now; fn(...lastArgs);
+    } else if (!timer) {
+      timer = setTimeout(() => { last = env.now(); timer = null; fn(...lastArgs); }, remaining);
+    }
   };
 };
 
@@ -137,10 +138,7 @@ const setText = (id, txt) => { try { const el = document.getElementById(id); if 
 const onWin = (fn) => { try { if (typeof window !== 'undefined') fn(window); } catch { } };
 
 /* ──────────────────────────────────────────────────────────────────────────
-   Runtime config (min step interval, MD friction) — centralized & clamped
-   --------------------------------------------------------------------------
-   Also place our tunables into window.__MLIP_CONFIG with defaults so
-   they can be overridden by tests/devtools at runtime.
+   Runtime config
    ────────────────────────────────────────────────────────────────────────── */
 
 if (typeof window !== 'undefined') {
@@ -150,7 +148,6 @@ if (typeof window !== 'undefined') {
   if (!Number.isFinite(window.__MLIP_CONFIG.mdFriction))
     window.__MLIP_CONFIG.mdFriction = DEFAULT_MD_FRICTION;
 
-  // Tunables defaulting (leave if already set)
   if (!Number.isFinite(window.__MLIP_CONFIG.dragThrottleMs))
     window.__MLIP_CONFIG.dragThrottleMs = DEFAULTS.DRAG_THROTTLE_MS;
   if (!Number.isFinite(window.__MLIP_CONFIG.posEnergyDebounceMs))
@@ -162,7 +159,6 @@ if (typeof window !== 'undefined') {
   if (!Number.isFinite(window.__MLIP_CONFIG.rpsWindowMs))
     window.__MLIP_CONFIG.rpsWindowMs = DEFAULTS.RPS_WINDOW_MS;
 
-  // Optional toggles via query params
   const autoMD = new URLSearchParams(window.location?.search || '').get('autoMD');
   if (autoMD === '0' || String(autoMD).toLowerCase() === 'false') window.__MLIPVIEW_NO_AUTO_MD = true;
 }
@@ -196,7 +192,7 @@ export function setMdFriction(f) {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
-   Feature flags (mutable at runtime)
+   Feature flags
    ────────────────────────────────────────────────────────────────────────── */
 
 const FEATURES = (typeof window !== 'undefined' && (window.__MLIP_FEATURES ||= {
@@ -213,7 +209,7 @@ function enableFeatureFlag(name, value = true) {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
-   Energy plot (tiny inline module)
+   Energy plot
    ────────────────────────────────────────────────────────────────────────── */
 
 const energyPlot = (() => {
@@ -235,15 +231,20 @@ const energyPlot = (() => {
     ctx.clearRect(0, 0, W, H);
     if (series.length === 0) return;
     if (series.length === 1) {
-      const p = series[0]; ctx.fillStyle = '#6fc2ff'; ctx.beginPath();
-      ctx.arc(W / 2, H / 2, 3, 0, Math.PI * 2); ctx.fill();
+      const p = series[0];
+      ctx.fillStyle = '#6fc2ff';       // ← restore dot color
+      ctx.beginPath();
+      ctx.arc(W / 2, H / 2, 3, 0, Math.PI * 2);
+      ctx.fill();
       if (label) label.textContent = 'E steps=1';
       return;
     }
     let minE = Infinity, maxE = -Infinity;
     for (const p of series) { if (p.E < minE) minE = p.E; if (p.E > maxE) maxE = p.E; }
     if (maxE - minE < 1e-12) maxE = minE + 1e-12;
-    ctx.strokeStyle = '#6fc2ff'; ctx.lineWidth = 1; ctx.beginPath();
+    ctx.strokeStyle = '#6fc2ff';       // ← restore line color
+    ctx.lineWidth = 1;
+    ctx.beginPath();
     for (let k = 0; k < series.length; k++) {
       const p = series[k];
       const x = (k / (series.length - 1)) * (W - 4) + 2;
@@ -258,8 +259,7 @@ const energyPlot = (() => {
     if (typeof E !== 'number' || !isFinite(E)) return;
     if (E === last && !(typeof window !== 'undefined' && window.__ALLOW_DUPLICATE_ENERGY_TICKS)) return;
     const i = series.length; series.push({ i, E, kind }); last = E;
-    if (typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_API) dbg.log('[energy] len=', series.length);
-    setText('instEnergy', `E: ${E.toFixed(2)}`);
+    setText('instEnergy', 'E: ' + E.toFixed(2));
     draw();
   };
 
@@ -276,7 +276,6 @@ const energyPlot = (() => {
 export async function initNewViewer(canvas, { elements, positions, bonds }) {
   __count('index#initNewViewer');
 
-  // Debug toggles from query-string
   onWin(w => {
     if (w.__MLIPVIEW_DEBUG_API == null) w.__MLIPVIEW_DEBUG_API = qbool('debug');
     w.__MLIPVIEW_DEBUG_PICK = qbool('debugPick');
@@ -285,10 +284,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   });
 
   const state = createMoleculeState({ elements, positions, bonds });
-  // Cache initial positions for reset
   try { state.__initialPositions = (state.positions || []).map(p => ({ x: p.x, y: p.y, z: p.z })); } catch { }
 
-  // Versioning & caches
+  // Versions & caches
   state.forceCache = { version: 0, energy: NaN, forces: [], stress: null, stale: true };
   let structureVersion = 0;
   let resetEpoch = 0;
@@ -296,18 +294,17 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   let totalInteractionVersion = 0;
   let lastAppliedUIC = 0;
 
-  const modifiedByVersion = new Map(); // v -> Set(indices)
+  const modifiedByVersion = new Map();
   const draggingAtoms = new Set();
-  const latchedUntil = new Map(); // idx -> ts
+  const latchedUntil = new Map();
   const latchAtom = (i, ms = TUNABLES.LATCH_AFTER_DRAG_MS) => {
-    const now = (performance?.now?.() ?? Date.now());
-    latchedUntil.set(i, now + ms);
+    const now = env.now(); latchedUntil.set(i, now + ms);
   };
   const currentDraggedAtom = { idx: null };
 
   const buildExcludeSet = () => {
     const out = new Set(draggingAtoms);
-    const now = (performance?.now?.() ?? Date.now());
+    const now = env.now();
     for (const [i, t] of latchedUntil) { if (t > now) out.add(i); else latchedUntil.delete(i); }
     return out;
   };
@@ -315,11 +312,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   const bumpUser = (reason) => {
     userInteractionVersion++; totalInteractionVersion++; structureVersion++;
     if (state.forceCache) { state.forceCache.stale = true; state.forceCache.version = structureVersion; }
-    if (dbg.apiOn()) dbg.log('[version][user]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
+    if (env.apiOn()) dbg.log('[version][user]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
   };
   const bumpSim = (reason) => {
     totalInteractionVersion++;
-    if (dbg.apiOn()) dbg.log('[version][sim]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
+    if (env.apiOn()) dbg.log('[version][sim]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
   };
 
   const updateForces = (forces, { reason } = {}) => {
@@ -332,14 +329,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   };
 
   const updateEnergyForces = ({ energy, forces, stress = null, reason }) => {
-    if (typeof energy === 'number') {
-      state.dynamics ||= {};
-      state.dynamics.energy = energy;
-    }
+    if (typeof energy === 'number') { state.dynamics ||= {}; state.dynamics.energy = energy; }
     const effectiveForces = Array.isArray(forces) ? forces : (state.forces || []);
     if (Array.isArray(forces)) updateForces(forces, { reason });
     state.forceCache = { version: structureVersion, energy: state.dynamics?.energy, forces: effectiveForces, stress, stale: false };
-    if (dbg.apiOn()) dbg.log('[forces-cache]', reason, { n: effectiveForces.length, E: state.forceCache.energy });
+    if (env.apiOn()) dbg.log('[forces-cache]', reason, { n: effectiveForces.length, E: state.forceCache.energy });
   };
 
   const getVelocitiesIfFresh = () => {
@@ -374,12 +368,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       const cell = stateCellToArray(state.cell);
       ws.userInteraction({ atomic_numbers, positions: positionsTriples, velocities: v || undefined, cell });
       __wsState.inited = true; __wsState.lastAtomCount = nat; __wsState.lastCellKey = ckey;
-      if (dbg.apiOn()) dbg.log('[WS][ensureInit]', { nat, v: !!v, hasCell: !!cell });
+      if (env.apiOn()) dbg.log('[WS][ensureInit]', { nat, v: !!v, hasCell: !!cell });
     }
     return true;
   }
 
-  // Simple force provider using WS idle compute
+  // Force provider using one-shot WS
   let lastForceResult = { energy: NaN, forces: [] };
   let inFlight = false;
 
@@ -394,12 +388,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       await ensureWsInit();
       const positions = posToTriples(state);
       try { ws.setCounters({ userInteractionCount: userInteractionVersion }); } catch { }
-      if (dbg.apiOn()) dbg.log('[WS][simple] USER_INTERACTION', { n: positions.length, uic: userInteractionVersion });
+      if (env.apiOn()) dbg.log('[WS][simple] USER_INTERACTION', { n: positions.length, uic: userInteractionVersion });
       ws.userInteraction({ positions });
-      const t0 = (performance?.now?.() ?? Date.now());
-      const { energy, forces, userInteractionCount: uicFromServer } = await ws.waitForEnergy({ timeoutMs: 5000 });
-      const timingMs = Math.round(((performance?.now?.() ?? Date.now()) - t0) * 100) / 100;
-      if (dbg.apiOn()) dbg.log('[WS][simple][recv]', { energy, forcesLen: forces?.length || 0, uicFromServer, currentUIC: userInteractionVersion, timingMs });
+      const t0 = env.now();
+      const { energy, forces } = await ws.waitForEnergy({ timeoutMs: 5000 });
+      const timingMs = Math.round((env.now() - t0) * 100) / 100;
+      if (env.apiOn()) dbg.log('[WS][simple][recv]', { energy, forcesLen: forces?.length || 0, timingMs });
       if (typeof energy === 'number') {
         lastForceResult = { energy, forces: forces || [] };
         updateEnergyForces({ energy, forces, reason: 'fetchRemoteForcesWS' });
@@ -431,7 +425,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     } catch { return energyPlot.length(); }
   }
 
-  // Recompute bonds when positions change
+  // Bonds
   const __origMarkPositionsChanged = state.markPositionsChanged?.bind(state) || null;
   const bondService = createBondService(state);
   const recomputeBonds = (reason = 'manual') => {
@@ -439,7 +433,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     const bonds = bondService.recomputeAndStore();
     try { view.rebuildBonds(bonds); } catch { }
     if (reason !== 'markPositionsChanged') recordInteraction('rebonds');
-    if (dbg.apiOn()) dbg.log(`[bonds] recomputed after ${reason} (count=${bonds ? bonds.length : 0})`);
+    if (env.apiOn()) dbg.log(`[bonds] recomputed after ${reason} (count=${bonds ? bonds.length : 0})`);
     return bonds;
   };
   state.markPositionsChanged = (...a) => {
@@ -469,7 +463,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     else { installTouchControls({ canvas, scene, camera, picking: pickingProxy }); dbg.log('[touchControls] installed'); }
   } catch (e) { dbg.warn('[touchControls] install failed', e?.message || e); }
 
-  // Interaction bookkeeping
+  // Interactions log
   const interactions = [];
   let __suppressNextPosChange = false;
   const recordInteraction = (kind) => {
@@ -482,17 +476,17 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     }
   };
 
-  // Drag emission (throttled) — emits positions while dragging at a tunable rate
+  // Drag emission (throttled)
   const emitDuringDrag = throttle(() => {
     try {
-      bumpUser('dragMove'); // bump only when we actually transmit
+      bumpUser('dragMove');
       const ws = getWS();
       ws.setCounters?.({ userInteractionCount: userInteractionVersion });
       ws.userInteraction?.({ positions: posToTriples(state) });
     } catch { }
   }, TUNABLES.DRAG_THROTTLE_MS);
 
-  // Wrapped manipulation to track edits
+  // Wrapped manipulation
   function selectedAtomIndex() {
     try { return state.selection?.kind === 'atom' ? state.selection.data.index : null; }
     catch { return null; }
@@ -543,7 +537,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
           modifiedByVersion.get(userInteractionVersion) || modifiedByVersion.set(userInteractionVersion, new Set());
           for (const i of sideAtoms) modifiedByVersion.get(userInteractionVersion).add(i);
         }
-        if (!running.kind) ff.computeForces();
+        if (running.kind === null) ff.computeForces();
         recordInteraction('bondRotate');
         __suppressNextPosChange = true;
       }
@@ -552,7 +546,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   };
   try { Object.defineProperty(wrappedManipulation, '__isWrappedManipulation', { value: true }); } catch { wrappedManipulation.__isWrappedManipulation = true; }
 
-  // Picking after wrappedManipulation available
+  // Picking with energy hook
   const picking = (pickingRef = createPickingService(
     scene,
     view,
@@ -562,13 +556,13 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       camera,
       energyHook: ({ kind }) => {
         const dragging = draggingAtoms.size > 0 || currentDraggedAtom.idx != null;
-        if (!running.kind) { if (dragging) emitDuringDrag(); else ff.computeForces(); }
+        if (mode === Mode.Idle) { if (dragging) emitDuringDrag(); else ff.computeForces(); }
         recordInteraction(kind || 'drag');
       },
     },
   ));
 
-  // VR setup
+  // VR support
   let vrPicker = null; try { vrPicker = createVRPicker({ scene, view }); } catch (e) { dbg.warn('[VR] vrPicker init failed', e?.message || e); }
   const vr = createVRSupport(scene, {
     picking: {
@@ -582,7 +576,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   });
   try { vr.init().then(res => dbg.log(res.supported ? '[VR] support initialized (auto)' : '[VR] not supported')); } catch (e) { dbg.warn('[VR] auto init failed', e?.message || e); }
 
-  // Baseline energy (seed forces/energy once)
+  // Baseline energy
   async function baselineEnergy() {
     __count('index#baselineEnergy');
     interactions.length = 0; energyPlot.reset();
@@ -590,7 +584,6 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     catch { res = { energy: NaN, forces: [] }; }
     window.__RELAX_FORCES = res.forces || [];
     if (res.forces?.length) updateForces(res.forces, { reason: 'baselineEnergy' });
-    // first energy point is added when API returns; keep baseline silent
   }
   try { await baselineEnergy(); } catch { }
 
@@ -603,7 +596,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     }
   } catch { }
 
-  // Capture initial cell snapshot for reset
+  // Capture initial cell snapshot
   try {
     if (!state.__initialCellSnapshot && state.cell?.a && state.cell?.b && state.cell?.c) {
       const c = state.cell;
@@ -618,35 +611,32 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     }
   } catch { }
 
-  // positionsChanged debounce (avoid overwriting step forces)
-  let posEnergyTimer = null, pendingPosEnergy = false, skipFirstPosChangeForVersion = true;
+  // positionsChanged debounce
+  let posTickScheduled = false;
   state.bus.on('positionsChanged', () => {
     const dragging = draggingAtoms.size > 0 || currentDraggedAtom.idx != null;
     if (dragging) { emitDuringDrag(); return; }
-    pendingPosEnergy = true;
-    if (posEnergyTimer) return;
-    posEnergyTimer = setTimeout(() => {
-      posEnergyTimer = null;
-      if (!pendingPosEnergy) return; pendingPosEnergy = false;
+    if (posTickScheduled) return;
+    posTickScheduled = true;
+    setTimeout(() => {
+      posTickScheduled = false;
       if (__suppressNextPosChange) { __suppressNextPosChange = false; return; }
-      if (skipFirstPosChangeForVersion) { skipFirstPosChangeForVersion = false; if (!running.kind) ff.computeForces(); return; }
-      if (!running.kind) ff.computeForces();
-      bumpUser('posChange'); recordInteraction('posChange');
+      if (mode === Mode.Idle) { bumpUser('posChange'); ff.computeForces(); recordInteraction('posChange'); }
     }, TUNABLES.POS_ENERGY_DEBOUNCE_MS);
   });
 
-  // RPS counter (UI label optional)
+  // RPS counter
   const rps = { samples: [], windowMs: TUNABLES.RPS_WINDOW_MS, value: 0 };
   const resetRPS = () => { rps.samples.length = 0; rps.value = 0; setText('rpsLabel', 'RPS: --'); };
   const noteReqDone = () => {
-    const now = (performance?.now?.() ?? Date.now());
+    const now = env.now();
     rps.samples.push(now);
     while (rps.samples.length && now - rps.samples[0] > rps.windowMs) rps.samples.shift();
     rps.value = (rps.samples.length >= 2) ? ((rps.samples.length - 1)) * 1000 / (rps.samples[rps.samples.length - 1] - rps.samples[0]) : 0;
     setText('rpsLabel', 'RPS: ' + rps.value.toFixed(1));
   };
 
-  // Helpers for app focus (desktop)
+  // Focus helpers (kept for completeness; not used here)
   const isAppFocused = () => {
     try {
       if (typeof window === 'undefined' || typeof document === 'undefined') return true;
@@ -706,7 +696,6 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   async function mdStep(opts = {}) {
     __count('index#mdStep');
     try {
-      // live T override if present
       let temperature = opts.temperature;
       try { if ((temperature == null || !Number.isFinite(temperature)) && typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) temperature = Number(window.__MLIP_TARGET_TEMPERATURE); } catch { }
       const r = await doOneStepViaWS('md', {
@@ -721,14 +710,13 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   }
 
   /* ────────────────────────────────────────────────────────────────────────
-     Streaming WS loops
+     Streaming WS loops (unified)
      ──────────────────────────────────────────────────────────────────────── */
 
   function handleStreamFrame(kind, ws, r) {
-    // Discard only if older than what we've ALREADY APPLIED (not our local "future" counter).
     const uic = Number.isFinite(r.userInteractionCount) ? (r.userInteractionCount | 0) : 0;
     if (uic > 0 && uic < lastAppliedUIC) {
-      if (dbg.apiOn()) dbg.log(`[${kind}WS][discard-stale-applied]`, { server: uic, lastAppliedUIC });
+      if (env.apiOn()) dbg.log(`[${kind}WS][discard-stale-applied]`, { server: uic, lastAppliedUIC });
       return;
     }
     try { const seq = Number(r.seq) || 0; if (seq > 0) ws.ack(seq); } catch { }
@@ -736,7 +724,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     const exclude = buildExcludeSet();
     if (Array.isArray(r.positions) && r.positions.length === state.positions.length) {
       applyTriples(state, r.positions, { exclude });
-      __suppressNextPosChange = true; state.markPositionsChanged(); bumpSim(kind === 'md' ? 'mdWS' : 'relaxWS');
+      __suppressNextPosChange = true; state.markPositionsChanged(); bumpSim(kind === 'md' ? 'mdWS' : (kind === 'relax' ? 'relaxWS' : 'idleWS'));
     }
     const E = (typeof r.energy === 'number') ? r.energy : state.dynamics?.energy;
     updateEnergyForces({ energy: E, forces: r.forces?.length ? r.forces : undefined, reason: kind + 'WS' });
@@ -748,7 +736,6 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
         state.dynamics ||= {}; state.dynamics.temperature = r.temperature;
         setText('instTemp', 'T: ' + r.temperature.toFixed(1) + ' K');
       }
-      // test-mode fallback: ensure velocities shape exists
       try {
         const tm = typeof window !== 'undefined' && !!window.__MLIPVIEW_TEST_MODE;
         const haveV = Array.isArray(state.dynamics?.velocities) && state.dynamics.velocities.length === state.elements.length;
@@ -762,122 +749,104 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (uic > lastAppliedUIC) lastAppliedUIC = uic;
   }
 
-  let running = { kind: null, abort: null };
+  const Mode = Object.freeze({ Idle: 'idle', MD: 'md', Relax: 'relax' });
+  let mode = Mode.Idle;
+  let running = { kind: null, abort: null }; // keep for API compatibility
 
-  // Idle WS listener (updates energy during drag)
   let idleUnsub = null;
   async function attachIdleWSListener() {
     const ws = getWS();
     await ensureWsInit();
-    if (idleUnsub) return; // already attached
+    if (idleUnsub) return;
     idleUnsub = ws.onResult((r) => {
-      // If a streaming loop is active, let its subscriber own the frames.
-      if (running.kind) return;
+      if (mode !== Mode.Idle) return;
       handleStreamFrame('idle', ws, r);
     });
   }
+  function detachIdleWSListener() { try { idleUnsub && idleUnsub(); } catch { } finally { idleUnsub = null; } }
 
-  async function startRelaxContinuous({ maxSteps = 1000 } = {}) {
-    if (!FEATURES.RELAX_LOOP) { dbg.warn('[feature] RELAX_LOOP disabled'); return { disabled: true }; }
-    if (running.kind) return { ignored: true };
-    running.kind = 'relax';
-
-    const ws = getWS(); await ensureWsInit();
-    try { if (posEnergyTimer) { clearTimeout(posEnergyTimer); posEnergyTimer = null; } pendingPosEnergy = false; } catch { }
-    try { ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 }); } catch { }
-    try {
-      const v = getVelocitiesIfFresh();
-      ws.userInteraction({ positions: posToTriples(state), velocities: v || undefined });
-    } catch { }
-    resetRPS();
-
-    let taken = 0, unsub = null, stopped = false;
-    unsub = ws.onResult((r) => {
-      if (stopped || running.kind !== 'relax') return;
-      if (dbg.apiOn()) dbg.log('[relaxWS][frame]', { seq: Number(r.seq) || 0, uic: Number(r.userInteractionCount) || 0, simStep: Number(r.simStep) || 0, have: { pos: !!r.positions, forces: !!r.forces, energy: typeof r.energy === 'number' } });
-      handleStreamFrame('relax', ws, r);
-      if (++taken >= maxSteps) { stopped = true; try { ws.stopSimulation(); } catch { } try { unsub && unsub(); } catch { } running.kind = null; resetRPS(); }
-    });
-
-    ws.startSimulation({ type: 'relax', params: { calculator: 'uma', fmax: state?.optimizer?.fmax || 0.05, max_step: MAX_STEP, optimizer: 'bfgs' } });
-    if (dbg.apiOn()) dbg.log('[relaxWS][start]');
-    return { streaming: true };
+  function setMode(next) {
+    if (mode === next) return;
+    mode = next;
+    running.kind = (mode === Mode.Idle) ? null : (mode === Mode.MD ? 'md' : 'relax');
+    if (mode === Mode.Idle) attachIdleWSListener(); else detachIdleWSListener();
   }
 
-  async function startMDContinuous({ steps = 1000, calculator = 'uma', temperature = 1500, timestep_fs = 1.0, friction } = {}) {
-    if (!FEATURES.MD_LOOP) { dbg.warn('[feature] MD_LOOP disabled'); return { disabled: true }; }
-    if (running.kind) return { ignored: true };
-    running.kind = 'md';
+  async function startContinuous(kind, opts = {}) {
+    const isMD = kind === 'md';
+    if ((isMD && !FEATURES.MD_LOOP) || (!isMD && !FEATURES.RELAX_LOOP)) { dbg.warn('[feature] loop disabled', kind); return { disabled: true }; }
+    if (mode !== Mode.Idle) return { ignored: true };
+    setMode(isMD ? Mode.MD : Mode.Relax);
 
     const ws = getWS(); await ensureWsInit();
-    try { if (posEnergyTimer) { clearTimeout(posEnergyTimer); posEnergyTimer = null; } pendingPosEnergy = false; } catch { }
+    try { if (posTickScheduled) posTickScheduled = false; } catch { }
     try { ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 }); } catch { }
     try {
       const v = getVelocitiesIfFresh();
       ws.userInteraction({ positions: posToTriples(state), velocities: v || undefined });
     } catch { }
-    // test-mode: seed zero velocities
-    try {
-      const tm = typeof window !== 'undefined' && !!window.__MLIPVIEW_TEST_MODE;
-      if (tm && state.positions?.length === state.elements.length) {
-        state.dynamics ||= {}; state.dynamics.velocities = state.positions.map(() => [0, 0, 0]);
-      }
-    } catch { }
     resetRPS();
 
     let taken = 0, unsub = null, stopped = false;
     unsub = ws.onResult((r) => {
-      if (stopped || running.kind !== 'md') return;
-      if (dbg.apiOn()) dbg.log('[mdWS][frame]', { seq: Number(r.seq) || 0, uic: Number(r.userInteractionCount) || 0, simStep: Number(r.simStep) || 0, have: { pos: !!r.positions, forces: !!r.forces, energy: typeof r.energy === 'number', vel: !!r.velocities } });
-      handleStreamFrame('md', ws, r);
-      const extraAllowance = 5;
-      const haveV = Array.isArray(state.dynamics?.velocities) && state.dynamics.velocities.length === state.elements.length;
-      if (++taken >= steps && (haveV || taken - steps >= extraAllowance)) {
-        stopped = true; try { ws.stopSimulation(); } catch { } try { unsub && unsub(); } catch { }
-        running.kind = null; resetRPS();
+      if (stopped || mode !== (isMD ? Mode.MD : Mode.Relax)) return;
+      if (env.apiOn()) dbg.log(`[${kind}WS][frame]`, { seq: Number(r.seq) || 0, uic: Number(r.userInteractionCount) || 0, simStep: Number(r.simStep) || 0, have: { pos: !!r.positions, forces: !!r.forces, energy: typeof r.energy === 'number' } });
+      handleStreamFrame(kind, ws, r);
+      if (isMD) {
+        const steps = opts.steps ?? 1000;
+        const extraAllowance = 5;
+        const haveV = Array.isArray(state.dynamics?.velocities) && state.dynamics.velocities.length === state.elements.length;
+        if (++taken >= steps && (haveV || taken - steps >= extraAllowance)) {
+          stopped = true; try { ws.stopSimulation(); } catch { } try { unsub && unsub(); } catch { }
+          setMode(Mode.Idle); resetRPS();
+        }
+      } else {
+        const maxSteps = opts.maxSteps ?? 1000;
+        if (++taken >= maxSteps) {
+          stopped = true; try { ws.stopSimulation(); } catch { } try { unsub && unsub(); } catch { }
+          setMode(Mode.Idle); resetRPS();
+        }
       }
     });
 
-    // live temperature from global target if present
-    try { if (typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) temperature = Number(window.__MLIP_TARGET_TEMPERATURE); } catch { }
+    // live temperature from global target if present (MD)
+    let temperature = isMD ? (opts.temperature ?? 1500) : undefined;
+    try { if (isMD && typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) temperature = Number(window.__MLIP_TARGET_TEMPERATURE); } catch { }
+
     ws.startSimulation({
-      type: 'md',
-      params: {
-        calculator,
-        temperature,
-        timestep_fs,
-        friction: (Number.isFinite(friction) ? friction : cfg.mdFriction),
-      },
+      type: isMD ? 'md' : 'relax',
+      params: isMD
+        ? { calculator: opts.calculator || 'uma', temperature, timestep_fs: opts.timestep_fs ?? 1.0, friction: (Number.isFinite(opts.friction) ? opts.friction : cfg.mdFriction) }
+        : { calculator: 'uma', fmax: state?.optimizer?.fmax || 0.05, max_step: MAX_STEP, optimizer: 'bfgs' },
     });
-    if (dbg.apiOn()) dbg.log('[mdWS][start]', { temperature, timestep_fs, friction: (Number.isFinite(friction) ? friction : cfg.mdFriction) });
+    if (env.apiOn()) dbg.log(`[${kind}WS][start]`, isMD ? { temperature, timestep_fs: opts.timestep_fs ?? 1.0 } : {});
     return { streaming: true };
   }
+
+  const startMDContinuous = (opts) => startContinuous('md', opts);
+  const startRelaxContinuous = (opts) => startContinuous('relax', opts);
 
   function stopSimulation() {
     try { const ws = getWS(); ws.stopSimulation(); } catch { }
-    running.kind = null; resetRPS();
+    setMode(Mode.Idle); resetRPS();
   }
 
-  // Live MD parameter updates while streaming
-  // When temperature/friction sliders change, if MD is running, push a Start update with full params
   function sendLiveMDParamsUpdate() {
     try {
-      if (running.kind !== 'md') return;
+      if (mode !== Mode.MD) return;
       const ws = getWS();
-      // Read current targets from globals/config
       let T = 1500;
       try {
         if (typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) {
           const tRaw = Number(window.__MLIP_TARGET_TEMPERATURE);
-          if (Number.isFinite(tRaw)) T = tRaw; // allow 0K; avoid falsy fallback
+          if (Number.isFinite(tRaw)) T = tRaw;
         }
       } catch { }
       const fr = (typeof window !== 'undefined' && Number.isFinite(window.__MLIP_CONFIG?.mdFriction))
         ? Number(window.__MLIP_CONFIG.mdFriction) : DEFAULT_MD_FRICTION;
-      const dt = 1.0; // keep current default timestep
-      // Always send the full struct to avoid proto3 scalar presence ambiguity
+      const dt = 1.0;
       ws.startSimulation({ type: 'md', params: { calculator: 'uma', temperature: T, timestep_fs: dt, friction: fr } });
-      if (dbg.apiOn()) dbg.log('[mdWS][live-update]', { temperature: T, timestep_fs: dt, friction: fr });
+      if (env.apiOn()) dbg.log('[mdWS][live-update]', { temperature: T, timestep_fs: dt, friction: fr });
     } catch { }
   }
 
@@ -902,7 +871,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   function getVersionInfo() { return { userInteractionVersion, totalInteractionVersion, resetEpoch }; }
 
   async function resetToInitialPositions() {
-    const t0 = (performance?.now?.() ?? Date.now());
+    const t0 = env.now();
     dbg.log('[Reset] begin VR/AR-safe reset', { when: new Date().toISOString() });
     try {
       stopSimulation();
@@ -933,13 +902,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
         state.markCellChanged?.();
       } catch { }
 
-      const f0 = (performance?.now?.() ?? Date.now());
       try { await ff.computeForces({ sync: true }); } catch (e) { dbg.warn('[Reset] computeForces failed', e?.message || e); }
-      const f1 = (performance?.now?.() ?? Date.now());
       energyPlot.reset();
 
-      const t1 = (performance?.now?.() ?? Date.now());
-      dbg.log('[Reset] done', { totalMs: Math.round((t1 - t0) * 100) / 100, recomputeMs: Math.round((f1 - f0) * 100) / 100 });
+      const t1 = env.now();
+      dbg.log('[Reset] done', { totalMs: Math.round((t1 - t0) * 100) / 100 });
       return true;
     } catch (e) { dbg.warn('[Reset] exception', e?.message || e); return false; }
   }
@@ -954,7 +921,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
           const m = window.viewerApi.getMetrics(); if (m.running) return;
           window.viewerApi.startMDContinuous({}).then(() => {
             try { const btn = document.getElementById('btnMDRun'); if (btn && btn.textContent === 'stop') btn.textContent = 'run'; } catch { }
-            if (dbg.apiOn()) dbg.log('[autoMD] completed initial MD run');
+            if (env.apiOn()) dbg.log('[autoMD] completed initial MD run');
           });
           try { const btn = document.getElementById('btnMDRun'); if (btn) btn.textContent = 'stop'; } catch { }
         } catch (e) { dbg.warn('[autoMD] start failed', e?.message || e); }
@@ -962,7 +929,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     }
   } catch { }
 
-  // Render loop (XR-friendly)
+  // Render loop
   let renderActive = true;
   const testMode = (typeof window !== 'undefined') && !!window.__MLIPVIEW_TEST_MODE;
   const rafLoop = () => {
@@ -984,7 +951,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(rafLoop);
   }
 
-  // Cleanup for Jest/teardown + small debug helpers
+  // Cleanup & dev helpers
   onWin(w => {
     w.__MLIPVIEW_CLEANUP ||= [];
     w.__MLIPVIEW_CLEANUP.push(() => {
@@ -993,7 +960,6 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     });
     w.__MLIPVIEW_API_ENABLE = (on) => { w.__MLIPVIEW_DEBUG_API = !!on; dbg.log('[API] debug set to', w.__MLIPVIEW_DEBUG_API); };
 
-    // Expose tunable setters for quick dev/testing without build
     w.setDragThrottleMs = (ms) => {
       w.__MLIP_CONFIG.dragThrottleMs = Number(ms) || DEFAULTS.DRAG_THROTTLE_MS;
       dbg.log('[config] dragThrottleMs =', w.__MLIP_CONFIG.dragThrottleMs);
@@ -1009,7 +975,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   function setForceProvider() { return 'uma'; }
   function shutdown() { renderActive = false; try { engine?.stopRenderLoop?.(); } catch { } }
 
-  // Attach the idle listener once, after everything is wired and `running` exists.
+  // Attach idle listener for idle mode
   try { await attachIdleWSListener(); } catch { }
 
   return {
@@ -1048,7 +1014,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
-   Global viewerApi bootstrap for tests / devtools
+   Global viewerApi bootstrap
    ────────────────────────────────────────────────────────────────────────── */
 
 onWin(w => {
@@ -1065,7 +1031,6 @@ onWin(w => {
       });
     }
   } catch { }
-  // small debug helper
   try {
     Object.defineProperty(w, '__dumpCurrentAtoms', {
       value: function () {
