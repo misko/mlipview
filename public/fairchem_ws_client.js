@@ -338,6 +338,7 @@ export function createFairchemWS() {
 
           } else {
             // unknown payload
+            __wsErr('[WS] Unknown payload case:', which);
             return;
           }
 

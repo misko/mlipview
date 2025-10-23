@@ -764,6 +764,19 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   let running = { kind: null, abort: null };
 
+  // Idle WS listener (updates energy during drag)
+  let idleUnsub = null;
+  async function attachIdleWSListener() {
+    const ws = getWS();
+    await ensureWsInit();
+    if (idleUnsub) return; // already attached
+    idleUnsub = ws.onResult((r) => {
+      // If a streaming loop is active, let its subscriber own the frames.
+      if (running.kind) return;
+      handleStreamFrame('idle', ws, r);
+    });
+  }
+
   async function startRelaxContinuous({ maxSteps = 1000 } = {}) {
     if (!FEATURES.RELAX_LOOP) { dbg.warn('[feature] RELAX_LOOP disabled'); return { disabled: true }; }
     if (running.kind) return { ignored: true };
@@ -995,6 +1008,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   function setForceProvider() { return 'uma'; }
   function shutdown() { renderActive = false; try { engine?.stopRenderLoop?.(); } catch { } }
+
+  // Attach the idle listener once, after everything is wired and `running` exists.
+  try { await attachIdleWSListener(); } catch { }
 
   return {
     state,

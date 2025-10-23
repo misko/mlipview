@@ -591,11 +591,6 @@ class WSIngress:
                     flush=True,
                 )
 
-            if state.running:
-                # Invalidate forces so next produced frame recomputes
-                state.forces = None
-                return
-
             if state.user_input_atomic_numbers is not None:
                 state.atomic_numbers = list(state.user_input_atomic_numbers)
                 state.user_input_atomic_numbers = None
@@ -619,30 +614,9 @@ class WSIngress:
                 state.cell = np.asarray(state.user_input_cell, dtype=np.float64)
                 state.user_input_cell = None
 
-            # --- UMA-only guard for idle compute path ---
-            try:
-                _assert_uma(state.params.calculator)
-            except ValueError as e:
-                state.server_seq += 1
-                await _send_result_bytes(
-                    seq=state.server_seq,
-                    client_seq=state.client_seq,
-                    user_interaction_count=(
-                        int(uic_in_msg) if uic_in_msg is not None else None
-                    ),
-                    sim_step=(state.sim_step or None),
-                    positions=None,
-                    velocities=None,
-                    forces=None,
-                    cell=None,
-                    energy=None,
-                    stress=None,
-                    message=str(e),
-                )
-                return
-
             worker = self._pool.any()
             try:
+                print("[ws] USER_INTERACTION compute start", flush=True)
                 res = await asyncio.to_thread(
                     ray.get,
                     worker.run_simple.remote(

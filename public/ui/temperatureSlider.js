@@ -59,7 +59,7 @@ export function initTemperatureSlider({ hudEl, getViewer }) {
   label.style.opacity = '0.85';
   // Keep width stable when value length changes
   label.style.whiteSpace = 'pre';
-  try { label.style.fontVariantNumeric = 'tabular-nums'; } catch {}
+  try { label.style.fontVariantNumeric = 'tabular-nums'; } catch { }
   label.textContent = 'T=    1500K';
 
   const slider = document.createElement('input');

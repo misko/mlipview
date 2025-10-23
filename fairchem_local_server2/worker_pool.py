@@ -106,7 +106,6 @@ class ASEWorker:
         calculator: str = "uma",
         precomputed: Optional[PrecomputedValues] = None,
     ) -> Dict[str, Any]:
-        t0 = time.perf_counter()
 
         calc_enum = RelaxCalculatorName(calculator)
         _validate_atomic_numbers_or_raise(atomic_numbers)
@@ -425,6 +424,7 @@ def _maybe_apply_precomputed(
             raise HTTPException(status_code=400, detail="precomputed.energy not finite")
         calc.results["energy"] = e
         calc.results["free_energy"] = e
+        print("[_maybe_apply_precomputed] applied precomputed energy", flush=True)
         applied.append("energy")
 
     if pre.forces is not None:
@@ -439,6 +439,7 @@ def _maybe_apply_precomputed(
             )
         calc.results["forces"] = f
         applied.append("forces")
+        print("[_maybe_apply_precomputed] applied precomputed forces", flush=True)
         # Some ASE calculators expect 'atoms' to match results to avoid reuse issues.
         calc.atoms = atoms.copy()
 

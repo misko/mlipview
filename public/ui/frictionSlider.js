@@ -31,7 +31,7 @@ export function initFrictionSlider({ hudEl }) {
   label.style.opacity = '0.85';
   // Keep width stable when value length changes
   label.style.whiteSpace = 'pre';
-  try { label.style.fontVariantNumeric = 'tabular-nums'; } catch {}
+  try { label.style.fontVariantNumeric = 'tabular-nums'; } catch { }
 
   const slider = document.createElement('input');
   slider.type = 'range';
