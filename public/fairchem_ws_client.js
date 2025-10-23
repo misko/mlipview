@@ -38,7 +38,6 @@ const __warn = (...a) => { if (__wsDebugOn()) try { console.warn(...a); } catch 
 const __err = (...a) => { try { console.error(...a); } catch { } };
 
 function __n(v) { return typeof v === 'bigint' ? Number(v) : typeof v === 'number' ? v : 0; }
-
 function __triplesToFlat3(triples) {
   if (!Array.isArray(triples)) return undefined;
   const out = new Array(triples.length * 3);
@@ -49,12 +48,14 @@ function __triplesToFlat3(triples) {
   }
   return out;
 }
-
 function __flat3ToTriples(arr) {
-  if (!Array.isArray(arr)) return undefined;
-  const n = Math.floor(arr.length / 3);
+  if (arr == null) return undefined;
+  // Accept plain arrays, TypedArrays, and any iterable with numeric length
+  const a = Array.isArray(arr) ? arr : (typeof arr.length === 'number' ? Array.from(arr) : Array.from(arr));
+  const n = Math.floor(a.length / 3);
+  if (n <= 0) return [];
   const out = new Array(n);
-  for (let i = 0, k = 0; i < n; i++) out[i] = [arr[k++], arr[k++], arr[k++]];
+  for (let i = 0, k = 0; i < n; i++) out[i] = [a[k++], a[k++], a[k++]];
   return out;
 }
 
@@ -268,14 +269,22 @@ export function createFairchemWS() {
           const which = r.payload?.case;
           if (which === 'frame') {
             const fr = r.payload.value;
+
             if (fr.energy != null) out.energy = fr.energy;
-            if (typeof fr.temperature === 'number') out.temperature = fr.temperature;
-            if (typeof fr.kinetic === 'number') out.kinetic = fr.kinetic;
-            if (Array.isArray(fr.positions)) out.positions = __flat3ToTriples(fr.positions) || [];
-            if (Array.isArray(fr.forces)) out.forces = __flat3ToTriples(fr.forces) || [];
-            if (Array.isArray(fr.velocities)) out.velocities = __flat3ToTriples(fr.velocities) || [];
+
+            // Accept TypedArrays (Float64Array) or arrays
+            const posTriples = __flat3ToTriples(fr.positions);
+            if (posTriples) out.positions = posTriples;
+
+            const forceTriples = __flat3ToTriples(fr.forces);
+            if (forceTriples) out.forces = forceTriples;
+
+            const velTriples = __flat3ToTriples(fr.velocities);
+            if (velTriples) out.velocities = velTriples;
+
             if (fr.cell && Array.isArray(fr.cell.m)) out.cell = __mat3ToRows(fr.cell.m);
             if (fr.stress && Array.isArray(fr.stress.m)) out.stress = __mat3ToRows(fr.stress.m);
+
           } else if (which === 'notice') {
             const n = r.payload.value;
             if (typeof n.message === 'string') {

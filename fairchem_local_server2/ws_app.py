@@ -562,20 +562,18 @@ class WSIngress:
             return uic_in_msg
 
         async def _handle_user_interaction(msg, uic_in_msg: Optional[int]) -> None:
-            # Stage incoming deltas into the "user_input_*" slots
+            # --- Stage incoming deltas ---
             ui = getattr(msg, "user_interaction", None)
             if ui is not None:
                 if getattr(ui, "atomic_numbers", None) and len(ui.atomic_numbers) > 0:
                     state.user_input_atomic_numbers = [
                         int(z) for z in ui.atomic_numbers
                     ]
-
                 if getattr(ui, "positions", None) and len(ui.positions) > 0:
                     state.user_input_positions = _flat3_to_np(ui.positions)
-
+                    print("[ws] staged user_input_positions", flush=True)
                 if getattr(ui, "velocities", None) and len(ui.velocities) > 0:
                     state.user_input_velocities = _flat3_to_np(ui.velocities)
-
                 if getattr(ui, "HasField", None) and ui.HasField("cell"):
                     state.user_input_cell = _mat3_to_np(ui.cell)
 
@@ -584,39 +582,21 @@ class WSIngress:
                 if state.user_input_positions is None
                 else int(state.user_input_positions.shape[0])
             )
-
             if self._ws_debug:
                 print(
                     f"[ws][USER_INTERACTION] recv natoms={n} running={'true' if state.running else 'false'}",
                     flush=True,
                 )
 
-            if state.user_input_atomic_numbers is not None:
-                state.atomic_numbers = list(state.user_input_atomic_numbers)
-                state.user_input_atomic_numbers = None
-                assert (
-                    len(state.atomic_numbers) != 0
-                ), "atomic_numbers must be non-empty"
+            # --- If a simulation is running, DO NOT compute now; let sim_loop emit the next frame ---
+            if state.running:
+                return
 
-            if state.user_input_positions is not None:
-                state.positions = np.asarray(
-                    state.user_input_positions, dtype=np.float64
-                )
-                state.user_input_positions = None
-
-            if state.user_input_velocities is not None:
-                state.velocities = np.asarray(
-                    state.user_input_velocities, dtype=np.float64
-                )
-                state.user_input_velocities = None
-
-            if state.user_input_cell is not None:
-                state.cell = np.asarray(state.user_input_cell, dtype=np.float64)
-                state.user_input_cell = None
-
+            # --- Idle path: single property compute so the viewer gets immediate E/F feedback ---
             worker = self._pool.any()
             try:
-                print("[ws] USER_INTERACTION compute start", flush=True)
+                if self._ws_debug:
+                    print("[ws] USER_INTERACTION compute start (idle)", flush=True)
                 res = await asyncio.to_thread(
                     ray.get,
                     worker.run_simple.remote(
@@ -628,7 +608,7 @@ class WSIngress:
                     ),
                 )
             except Exception as e:
-                print("[ws] USER_INTERACTION compute failed")
+                print("[ws] USER_INTERACTION compute failed (idle)", flush=True)
                 state.server_seq += 1
                 await _send_result_bytes(
                     seq=state.server_seq,
@@ -646,12 +626,13 @@ class WSIngress:
                     message=("COMPUTE_ERROR: " + str(e)),
                 )
                 return
+
             results = res.get("results", {}) if isinstance(res, dict) else {}
             E = results.get("energy")
             F = results.get("forces")
             S = results.get("stress")
 
-            # Numpy coercions with shape checks
+            # --- Shape-safe coercions (forces/stress) ---
             F_np = None
             if F is not None:
                 try:
@@ -664,7 +645,7 @@ class WSIngress:
                     if F_np.shape[1] != 3:
                         raise ValueError("forces must have shape (N, 3)")
                 except Exception:
-                    F_np = None  # fall back to None if malformed
+                    F_np = None
 
             S_np = None
             if S is not None:
@@ -683,7 +664,7 @@ class WSIngress:
                     int(uic_in_msg) if uic_in_msg is not None else None
                 ),
                 sim_step=(state.sim_step or None),
-                positions=None,
+                positions=None,  # idle property-only frame: OK to omit positions
                 velocities=None,
                 forces=F_np,
                 cell=None,
