@@ -193,7 +193,7 @@ def _md_run(
 
     # ---- Velocities: use provided; else use existing; else initialize from T ----
     v_existing = atoms.get_velocities()
-    if v_existing is not None and (np.asarray(v_existing) > 0).any():
+    if v_existing is not None and (np.abs(np.asarray(v_existing)) > 0).any():
         # Keep existing velocities on the Atoms object.
         pass
     elif velocities_in is not None:

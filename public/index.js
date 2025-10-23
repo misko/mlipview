@@ -366,7 +366,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       const positionsTriples = posToTriples(state);
       const v = getVelocitiesIfFresh();
       const cell = stateCellToArray(state.cell);
-      ws.userInteraction({ atomic_numbers, positions: positionsTriples, velocities: v || undefined, cell });
+      ws.userInteraction({ natoms: nat, atomic_numbers, positions: positionsTriples, velocities: v || undefined, cell });
       __wsState.inited = true; __wsState.lastAtomCount = nat; __wsState.lastCellKey = ckey;
       if (env.apiOn()) dbg.log('[WS][ensureInit]', { nat, v: !!v, hasCell: !!cell });
     }
@@ -482,7 +482,14 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       bumpUser('dragMove');
       const ws = getWS();
       ws.setCounters?.({ userInteractionCount: userInteractionVersion });
-      ws.userInteraction?.({ positions: posToTriples(state) });
+      // Send only the currently dragged atoms (sparse delta)
+      const idxs = Array.from(draggingAtoms || []);
+      if (idxs.length === 0) return;
+      const triples = idxs.map(i => {
+        const p = state.positions[i] || { x: 0, y: 0, z: 0 };
+        return [p.x, p.y, p.z];
+      });
+      ws.userInteraction?.({ positions: { indices: idxs, triples } });
     } catch { }
   }, TUNABLES.DRAG_THROTTLE_MS);
 
@@ -915,17 +922,43 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   try {
     const autoOk = (typeof window !== 'undefined') && !window.__MLIPVIEW_TEST_MODE && !window.__MLIPVIEW_NO_AUTO_MD;
     if (autoOk) {
-      setTimeout(() => {
-        try {
-          if (!window.viewerApi) return;
-          const m = window.viewerApi.getMetrics(); if (m.running) return;
-          window.viewerApi.startMDContinuous({}).then(() => {
-            try { const btn = document.getElementById('btnMDRun'); if (btn && btn.textContent === 'stop') btn.textContent = 'run'; } catch { }
-            if (env.apiOn()) dbg.log('[autoMD] completed initial MD run');
-          });
-          try { const btn = document.getElementById('btnMDRun'); if (btn) btn.textContent = 'stop'; } catch { }
-        } catch (e) { dbg.warn('[autoMD] start failed', e?.message || e); }
-      }, 0);
+      const MAX_AUTO_MD_ATTEMPTS = 120;
+      const scheduleAutoMD = (attempt = 0, delayMs = 0) => {
+        if (attempt > MAX_AUTO_MD_ATTEMPTS) return;
+        setTimeout(() => {
+          try {
+            const api = window.viewerApi;
+            if (!api || typeof api.startMDContinuous !== 'function') {
+              scheduleAutoMD(attempt + 1, 75);
+              return;
+            }
+            const metrics = api.getMetrics?.();
+            if (metrics && metrics.running) return;
+
+            try {
+              const btn = document.getElementById('btnMDRun');
+              if (btn) btn.textContent = 'stop';
+            } catch { }
+
+            Promise.resolve(api.startMDContinuous({}))
+              .then(() => {
+                try {
+                  const btn = document.getElementById('btnMDRun');
+                  if (btn && btn.textContent === 'stop') btn.textContent = 'run';
+                } catch { }
+                if (env.apiOn()) dbg.log('[autoMD] start invoked');
+              })
+              .catch((err) => {
+                if (env.apiOn()) dbg.warn('[autoMD] start failed', err?.message || err);
+                scheduleAutoMD(attempt + 1, 250);
+              });
+          } catch (err) {
+            if (env.apiOn()) dbg.warn('[autoMD] start error', err?.message || err);
+            scheduleAutoMD(attempt + 1, 150);
+          }
+        }, Math.max(0, delayMs | 0));
+      };
+      scheduleAutoMD();
     }
   } catch { }
 

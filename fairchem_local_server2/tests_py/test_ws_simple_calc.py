@@ -42,12 +42,23 @@ async def _ws_simple_once(
         init = pb.ClientAction()
         init.seq = seq
         init.schema_version = 1
-        ui = pb.ClientAction.UserInteraction()
-        ui.atomic_numbers.extend(int(z) for z in Z)
+        ui = pb.UserInteractionSparse()
+        ui.natoms = len(Z)
+        inz = pb.IntDelta()
+        inz.indices.extend(list(range(len(Z))))
+        inz.values.extend(int(z) for z in Z)
+        ui.atomic_numbers.CopyFrom(inz)
+        vr = pb.Vec3Delta()
+        vr.indices.extend(list(range(len(R))))
         for p in R:
-            ui.positions.extend([float(p[0]), float(p[1]), float(p[2])])
+            vr.coords.extend([float(p[0]), float(p[1]), float(p[2])])
+        ui.positions.CopyFrom(vr)
         if cell is not None:
-            m = pb.Mat3()
+            m = (
+                pb.UserInteractionSparse.Mat3()
+                if hasattr(pb, "UserInteractionSparse")
+                else pb.Mat3()
+            )
             m.m.extend(list(map(float, cell)))
             ui.cell.CopyFrom(m)
         init.user_interaction.CopyFrom(ui)
@@ -58,9 +69,12 @@ async def _ws_simple_once(
         req = pb.ClientAction()
         req.seq = seq
         req.schema_version = 1
-        ui2 = pb.ClientAction.UserInteraction()
+        ui2 = pb.UserInteractionSparse()
+        vr2 = pb.Vec3Delta()
+        vr2.indices.extend(list(range(len(R))))
         for p in R:
-            ui2.positions.extend([float(p[0]), float(p[1]), float(p[2])])
+            vr2.coords.extend([float(p[0]), float(p[1]), float(p[2])])
+        ui2.positions.CopyFrom(vr2)
         req.user_interaction.CopyFrom(ui2)
         # Attach optional counters if fields exist
         if hasattr(req, "user_interaction_count"):

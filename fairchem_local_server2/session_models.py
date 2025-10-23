@@ -85,15 +85,6 @@ class SessionState(BaseModel):
     forces: List[List[float]] = None
     cell: Optional[List[List[float]]] = None
 
-    # Cached/precomputed values (numpy at runtime in ws_app)
-    # Populated from idle compute (USER_INTERACTION path); consumed once by the
-    # first MD/Relax step to avoid an extra calculator call.
-    energy: Optional[float] = None
-    stress: Optional[List[float]] = None  # stored as np.ndarray in ws_app
-
-    # One-shot snapshot to forward into the next simulation start
-    precomputed_valid: bool = False
-
     # User input state
     user_input_atomic_numbers: List[int] = None
     user_input_positions: List[List[float]] = None
@@ -111,3 +102,13 @@ class SessionState(BaseModel):
     # Frontend correlation counters (last seen)
     user_interaction_count: int = 0
     sim_step: int = 0
+
+    # Pending sparse deltas
+    # (applied at top of sim loop or immediately when idle)
+    pending_z_idx: Optional[list[int]] = None
+    pending_z_values: Optional[list[int]] = None
+    pending_pos_idx: Optional[list[int]] = None
+    pending_pos_coords: Optional[list[float]] = None  # flat 3*k
+    pending_vel_idx: Optional[list[int]] = None
+    pending_vel_coords: Optional[list[float]] = None  # flat 3*k
+    pending_cell: Optional[list[float]] = None  # flat 9

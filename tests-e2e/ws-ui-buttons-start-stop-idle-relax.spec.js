@@ -20,7 +20,7 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
   const h = await health.json();
   if (!h || String(h.device || '').toLowerCase() !== 'cuda') test.skip(true, 'Backend not on CUDA');
 
-  await page.goto(`${baseURL || ''}/index.html?mol=molecules/water.xyz`);
+  await page.goto(`${baseURL || ''}/index.html?mol=molecules/water.xyz&debug=1`);
   await page.waitForFunction(() => window.__MLIP_DEFAULT_LOADED === true, null, { timeout: 45000 });
 
   // Connect WS and warm up one idle energy to ensure UMA is responsive
@@ -146,10 +146,6 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
   expect(relaxFrames).toBeGreaterThanOrEqual(12);
 
   // Stop Relax via UI toggle and verify stop indicator
-  await page.evaluate(() => {
-    const el = document.getElementById('toggleRelax');
-    if (el) el.click();
-  });
   const sawStopRelax = await page.evaluate(async () => {
     const ws = window.__fairchem_ws__;
     let saw = false;
@@ -159,6 +155,8 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
       } catch { }
     });
     try {
+      const btn = document.getElementById('toggleRelax');
+      btn?.click();
       const t0 = Date.now();
       while (Date.now() - t0 < 6000 && !saw) await new Promise((r) => setTimeout(r, 50));
     } finally {

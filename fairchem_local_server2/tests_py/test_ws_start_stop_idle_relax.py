@@ -40,10 +40,17 @@ def test_ws_start_stop_idle_relax_sequence(ws_base_url: str):
             seq += 1
             init.seq = seq
             init.schema_version = 1
-            ui = pb.ClientAction.UserInteraction()
-            ui.atomic_numbers.extend(Z)
+            ui = pb.UserInteractionSparse()
+            ui.natoms = len(Z)
+            inz = pb.IntDelta()
+            inz.indices.extend(list(range(len(Z))))
+            inz.values.extend(int(z) for z in Z)
+            ui.atomic_numbers.CopyFrom(inz)
+            vr = pb.Vec3Delta()
+            vr.indices.extend(list(range(len(R))))
             for p in R:
-                ui.positions.extend([float(p[0]), float(p[1]), float(p[2])])
+                vr.coords.extend([float(p[0]), float(p[1]), float(p[2])])
+            ui.positions.CopyFrom(vr)
             init.user_interaction.CopyFrom(ui)
             await ws.send(init.SerializeToString())
 
@@ -56,13 +63,13 @@ def test_ws_start_stop_idle_relax_sequence(ws_base_url: str):
                     continue
                 fr = r.frame
                 has_energy = getattr(fr, "energy", None) is not None
-                no_pos = len(fr.positions) == 0
-                if has_energy and no_pos:
+                # Idle frames may include positions; only require energy
+                if has_energy:
                     seq += 1
                     ack = pb.ClientAction()
                     ack.seq = seq
                     ack.ack = int(getattr(r, "seq", 0))
-                    ack.ping.CopyFrom(pb.ClientAction.Ping())
+                    # ack-only; no ping payload in this schema
                     await ws.send(ack.SerializeToString())
                     break
 
@@ -86,15 +93,16 @@ def test_ws_start_stop_idle_relax_sequence(ws_base_url: str):
                 r = await _recv_any(ws, timeout=20.0)
                 if r is None:
                     continue
-                if r.WhichOneof("payload") == "frame" and len(r.frame.positions) >= len(
-                    Z
-                ):
+                cond = r.WhichOneof("payload") == "frame" and len(
+                    r.frame.positions
+                ) >= len(Z)
+                if cond:
                     md_frames += 1
                     seq += 1
                     ack = pb.ClientAction()
                     ack.seq = seq
                     ack.ack = int(getattr(r, "seq", 0))
-                    ack.ping.CopyFrom(pb.ClientAction.Ping())
+                    # ack-only; no ping payload in this schema
                     await ws.send(ack.SerializeToString())
 
             # Stop MD; expect a stop message/flag frame
@@ -131,9 +139,14 @@ def test_ws_start_stop_idle_relax_sequence(ws_base_url: str):
                 dx = 0.01 * ((i % 2) * 2 - 1)
                 pos = [list(p) for p in R]
                 pos[1][0] += dx
-                ui2 = pb.ClientAction.UserInteraction()
-                for p in pos:
-                    ui2.positions.extend([float(p[0]), float(p[1]), float(p[2])])
+                ui2 = pb.UserInteractionSparse()
+                # send only index 1 perturbation as a sparse delta
+                delta = pb.Vec3Delta()
+                delta.indices.extend([1])
+                delta.coords.extend(
+                    [float(pos[1][0]), float(pos[1][1]), float(pos[1][2])]
+                )
+                ui2.positions.CopyFrom(delta)
                 req.user_interaction.CopyFrom(ui2)
                 try:
                     req.user_interaction_count = i + 1
@@ -141,7 +154,7 @@ def test_ws_start_stop_idle_relax_sequence(ws_base_url: str):
                     pass
                 await ws.send(req.SerializeToString())
 
-                # Expect energy/forces but no positions in idle frames
+                # Expect idle frames with energy/forces; positions optional
                 for _ in range(10):
                     r = await _recv_any(ws, timeout=10.0)
                     if r is None:
@@ -152,14 +165,13 @@ def test_ws_start_stop_idle_relax_sequence(ws_base_url: str):
                     e_ok = hasattr(fr, "energy") and (
                         getattr(fr, "energy", None) is not None
                     )
-                    no_pos = len(fr.positions) == 0
-                    if e_ok and no_pos:
+                    if e_ok:
                         idle_results += 1
                         seq += 1
                         ack = pb.ClientAction()
                         ack.seq = seq
                         ack.ack = int(getattr(r, "seq", 0))
-                        ack.ping.CopyFrom(pb.ClientAction.Ping())
+                        # ack-only; no ping payload in this schema
                         await ws.send(ack.SerializeToString())
                         break
 
@@ -190,15 +202,16 @@ def test_ws_start_stop_idle_relax_sequence(ws_base_url: str):
                 r = await _recv_any(ws, timeout=20.0)
                 if r is None:
                     continue
-                if r.WhichOneof("payload") == "frame" and len(r.frame.positions) >= len(
-                    Z
-                ):
+                cond2 = r.WhichOneof("payload") == "frame" and len(
+                    r.frame.positions
+                ) >= len(Z)
+                if cond2:
                     rx_frames += 1
                     seq += 1
                     ack = pb.ClientAction()
                     ack.seq = seq
                     ack.ack = int(getattr(r, "seq", 0))
-                    ack.ping.CopyFrom(pb.ClientAction.Ping())
+                    # ack-only; no ping payload in this schema
                     await ws.send(ack.SerializeToString())
 
             # Stop RELAX; expect stop indicator

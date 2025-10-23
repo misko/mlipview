@@ -354,46 +354,86 @@ export function createFairchemWS() {
     return userInteraction({ atomic_numbers, positions, velocities, cell });
   }
 
-  function userInteraction({ atomic_numbers, positions, velocities, cell } = {}) {
+  function userInteraction({ atomic_numbers, positions, velocities, cell, natoms } = {}) {
+    // Build sparse UserInteraction payload (UserInteractionSparse)
     const payload = {};
-    if (Array.isArray(atomic_numbers)) payload.atomicNumbers = atomic_numbers.map((z) => z | 0);
-    if (Array.isArray(positions)) payload.positions = __triplesToFlat3(positions);
-    if (Array.isArray(velocities)) payload.velocities = __triplesToFlat3(velocities);
+
+    // Helper: normalize IntDelta
+    const toIntDelta = (arrOrDelta) => {
+      if (!arrOrDelta) return undefined;
+      // Accept shape: { indices, values } or plain array (full)
+      if (Array.isArray(arrOrDelta)) {
+        const n = arrOrDelta.length | 0;
+        return { indices: Array.from({ length: n }, (_, i) => i >>> 0), values: arrOrDelta.map(v => v >>> 0) };
+      }
+      if (Array.isArray(arrOrDelta.indices) && Array.isArray(arrOrDelta.values)) {
+        return { indices: arrOrDelta.indices.map(i => i >>> 0), values: arrOrDelta.values.map(v => v >>> 0) };
+      }
+      return undefined;
+    };
+
+    // Helper: normalize Vec3Delta
+    const toVec3Delta = (objOrTriples) => {
+      if (!objOrTriples) return undefined;
+      // Accept shape: array of triples (full), or { indices, triples|coords }
+      if (Array.isArray(objOrTriples)) {
+        const triples = objOrTriples;
+        const n = triples.length | 0;
+        return { indices: Array.from({ length: n }, (_, i) => i >>> 0), coords: __triplesToFlat3(triples) };
+      }
+      if (Array.isArray(objOrTriples.indices)) {
+        const idx = objOrTriples.indices.map(i => i >>> 0);
+        if (Array.isArray(objOrTriples.coords)) {
+          return { indices: idx, coords: objOrTriples.coords.map(Number) };
+        }
+        if (Array.isArray(objOrTriples.triples)) {
+          return { indices: idx, coords: __triplesToFlat3(objOrTriples.triples) };
+        }
+      }
+      return undefined;
+    };
+
+    // natoms: when provided, server will resize ahead of applying deltas
+    if (Number.isFinite(natoms)) payload.natoms = natoms | 0;
+
+    // Deltas
+    const zDelta = toIntDelta(atomic_numbers);
+    if (zDelta) payload.atomicNumbers = zDelta;
+
+    const rDelta = toVec3Delta(positions);
+    if (rDelta) payload.positions = rDelta;
+
+    const vDelta = toVec3Delta(velocities);
+    if (vDelta) payload.velocities = vDelta;
+
+    // Cell: full 3x3, tiny and rare – keep simple
     if (cell && Array.isArray(cell) && cell.length === 3) {
-      payload.cell = {
-        m: [
-          +cell[0][0], +cell[0][1], +cell[0][2],
-          +cell[1][0], +cell[1][1], +cell[1][2],
-          +cell[2][0], +cell[2][1], +cell[2][2],
-        ]
-      };
+      const flat = [
+        +cell[0][0], +cell[0][1], +cell[0][2],
+        +cell[1][0], +cell[1][1], +cell[1][2],
+        +cell[2][0], +cell[2][1], +cell[2][2],
+      ];
+      payload.cell = { m: flat };
     }
 
     const msg = withCounters({ payload: { case: 'userInteraction', value: payload } });
 
     __notifyTestHook(msg, 'USER_INTERACTION', {
-      positionsLenTriples: Array.isArray(positions) ? positions.length : undefined,
-      velocitiesLenTriples: Array.isArray(velocities) ? velocities.length : undefined,
+      natoms,
+      positionsLenTriples: Array.isArray(positions) ? positions.length : (Array.isArray(positions?.indices) ? positions.indices.length : undefined),
+      velocitiesLenTriples: Array.isArray(velocities) ? velocities.length : (Array.isArray(velocities?.indices) ? velocities.indices.length : undefined),
       hasCell: !!payload.cell,
     });
 
     __log('[WS][tx][USER_INTERACTION]', {
       seq: msg.seq | 0,
       uic: msg.userInteractionCount | 0,
-      atoms: Array.isArray(payload.atomicNumbers) ? payload.atomicNumbers.length : 0,
-      positions: Array.isArray(payload.positions) ? payload.positions.length : 0,
-      velocities: Array.isArray(payload.velocities) ? payload.velocities.length : 0,
-      hasCell: !!msg.userInteraction?.cell,
+      natoms: payload.natoms >>> 0,
+      zIdx: payload.atomicNumbers ? payload.atomicNumbers.indices.length : 0,
+      rIdx: payload.positions ? payload.positions.indices.length : 0,
+      vIdx: payload.velocities ? payload.velocities.indices.length : 0,
+      hasCell: !!payload.cell,
     });
-
-    try {
-      const dbgApi = typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_API;
-      if ((dbgApi || __wsDebugOn()) && Array.isArray(positions)) {
-        console.log('[WS][tx][USER_INTERACTION][positions]', positions);
-        console.log('[WS][tx][USER_INTERACTION][flat3.len]',
-          Array.isArray(payload.positions) ? payload.positions.length : -1);
-      }
-    } catch { }
 
     sendBytes(toBinary(ClientActionSchema, msg));
   }
@@ -459,13 +499,20 @@ export function createFairchemWS() {
   function flushAck() {
     ackScheduled = false;
     const n = highestSeq | 0;
-    if (n <= lastAckSent) return;
+    // If test harness is actively blocking small binary frames, don't advance
+    // lastAckSent on this attempt so we will retry once unblocked.
+    const blocked = (typeof window !== 'undefined' && !!window.__BLOCK_ACKS__);
+    if (!blocked && n <= lastAckSent) return;
     const msg = create(ClientActionSchema, { seq: nextSeq(), schemaVersion: 1, ack: n, payload: { case: 'ping', value: {} } });
     __notifyTestHook(msg, 'PING');
     sendBytes(toBinary(ClientActionSchema, msg));
     __log('[WS][tx][ACK]', { seq: msg.seq | 0, ack: n | 0 });
-    lastAckSent = n;
-    setAck(n);
+    // Only record ack as sent when we're not in a blocked mode; this allows
+    // resending once the blocker is lifted (used by e2e backpressure test).
+    if (!blocked) {
+      lastAckSent = n;
+      setAck(n);
+    }
   }
   function maybeAck(seqNum) {
     highestSeq = Math.max(highestSeq, seqNum | 0);

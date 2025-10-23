@@ -20,14 +20,30 @@ async def _run_coalescing(uri: str, updates: int = 30) -> tuple[int, int]:
         init = pb.ClientAction()
         init.seq = seq
         init.schema_version = 1
-        ui = pb.ClientAction.UserInteraction()
-        ui.atomic_numbers.extend(Z)
-        for p in R:
-            ui.positions.extend([float(p[0]), float(p[1]), float(p[2])])
+        ui = pb.UserInteractionSparse()
+        # natoms and full arrays sent as sparse deltas
+        ui.natoms = len(Z)
+        z_delta = pb.IntDelta()
+        z_delta.indices.extend([0, 1])
+        z_delta.values.extend([int(Z[0]), int(Z[1])])
+        ui.atomic_numbers.CopyFrom(z_delta)
+        r_delta = pb.Vec3Delta()
+        r_delta.indices.extend([0, 1])
+        r_delta.coords.extend(
+            [
+                float(R[0][0]),
+                float(R[0][1]),
+                float(R[0][2]),
+                float(R[1][0]),
+                float(R[1][1]),
+                float(R[1][2]),
+            ]
+        )
+        ui.positions.CopyFrom(r_delta)
         init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
 
-        # Drain one idle frame (energy only), ack
+        # Drain one idle result (frame or notice), ack
         for _ in range(20):
             try:
                 data = await asyncio.wait_for(ws.recv(), timeout=2.0)
@@ -37,15 +53,23 @@ async def _run_coalescing(uri: str, updates: int = 30) -> tuple[int, int]:
                 continue
             res = pb.ServerResult()
             res.ParseFromString(data)
-            if res.WhichOneof("payload") != "frame":
-                continue
-            fr = res.frame
-            if getattr(fr, "energy", None) is not None and len(fr.positions) == 0:
+            which = res.WhichOneof("payload")
+            if which == "frame":
+                fr = res.frame
+                if getattr(fr, "energy", None) is not None and len(fr.positions) == 0:
+                    seq += 1
+                    ack = pb.ClientAction()
+                    ack.seq = seq
+                    ack.ack = int(res.seq)
+                    # No ping payload in current schema; ack-only is valid
+                    await ws.send(ack.SerializeToString())
+                    break
+            elif which == "notice":
                 seq += 1
                 ack = pb.ClientAction()
                 ack.seq = seq
                 ack.ack = int(res.seq)
-                ack.ping.CopyFrom(pb.ClientAction.Ping())
+                # No ping payload in current schema; ack-only is valid
                 await ws.send(ack.SerializeToString())
                 break
 
@@ -56,13 +80,19 @@ async def _run_coalescing(uri: str, updates: int = 30) -> tuple[int, int]:
             msg = pb.ClientAction()
             msg.seq = seq
             msg.schema_version = 1
-            ui2 = pb.ClientAction.UserInteraction()
-            # Alternate small perturbation on H position
+            ui2 = pb.UserInteractionSparse()
+            # Alternate small perturbation on H position (index 1)
             dx = 0.01 * ((i % 2) * 2 - 1)
-            pos = [[p for p in row] for row in R]
-            pos[1][0] += dx
-            for p in pos:
-                ui2.positions.extend([float(p[0]), float(p[1]), float(p[2])])
+            r_delta2 = pb.Vec3Delta()
+            r_delta2.indices.extend([1])
+            r_delta2.coords.extend(
+                [
+                    float(R[1][0] + dx),
+                    float(R[1][1]),
+                    float(R[1][2]),
+                ]
+            )
+            ui2.positions.CopyFrom(r_delta2)
             msg.user_interaction.CopyFrom(ui2)
             try:
                 msg.user_interaction_count = i + 1
@@ -85,11 +115,11 @@ async def _run_coalescing(uri: str, updates: int = 30) -> tuple[int, int]:
                 continue
             res = pb.ServerResult()
             res.ParseFromString(data)
-            if res.WhichOneof("payload") != "frame":
-                continue
-            fr = res.frame
-            if len(fr.positions) == 0:
-                idle_frames += 1
+            which = res.WhichOneof("payload")
+            if which == "frame":
+                fr = res.frame
+                if len(fr.positions) == 0:
+                    idle_frames += 1
                 try:
                     last_uic = int(getattr(res, "user_interaction_count", 0))
                 except Exception:
@@ -99,7 +129,19 @@ async def _run_coalescing(uri: str, updates: int = 30) -> tuple[int, int]:
                 ack = pb.ClientAction()
                 ack.seq = seq
                 ack.ack = int(res.seq)
-                ack.ping.CopyFrom(pb.ClientAction.Ping())
+                # No ping payload in current schema; ack-only is valid
+                await ws.send(ack.SerializeToString())
+            elif which == "notice":
+                try:
+                    last_uic = int(getattr(res, "user_interaction_count", 0))
+                except Exception:
+                    last_uic = 0
+                # ACK to advance server window
+                seq += 1
+                ack = pb.ClientAction()
+                ack.seq = seq
+                ack.ack = int(res.seq)
+                # No ping payload in current schema; ack-only is valid
                 await ws.send(ack.SerializeToString())
 
         return last_uic, idle_frames

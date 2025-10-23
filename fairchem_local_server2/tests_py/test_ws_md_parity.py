@@ -21,12 +21,22 @@ async def _ws_nth_md_step(
         init = pb.ClientAction()
         init.seq = seq
         init.schema_version = 1
-        ui = pb.ClientAction.UserInteraction()
-        ui.atomic_numbers.extend(int(z) for z in Z)
+        ui = pb.UserInteractionSparse()
+        ui.natoms = len(Z)
+        inz = pb.IntDelta()
+        inz.indices.extend(list(range(len(Z))))
+        inz.values.extend(int(z) for z in Z)
+        ui.atomic_numbers.CopyFrom(inz)
+        vr = pb.Vec3Delta()
+        vr.indices.extend(list(range(len(R))))
         for p in R:
-            ui.positions.extend([float(p[0]), float(p[1]), float(p[2])])
+            vr.coords.extend([float(p[0]), float(p[1]), float(p[2])])
+        ui.positions.CopyFrom(vr)
+        vv = pb.Vec3Delta()
+        vv.indices.extend(list(range(len(Z))))
         for _ in Z:
-            ui.velocities.extend([0.0, 0.0, 0.0])
+            vv.coords.extend([0.0, 0.0, 0.0])
+        ui.velocities.CopyFrom(vv)
         init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
 
@@ -71,7 +81,7 @@ async def _ws_nth_md_step(
             ack = pb.ClientAction()
             ack.seq = seq
             ack.ack = int(res.seq)
-            ack.ping.CopyFrom(pb.ClientAction.Ping())
+            # ack-only; no ping payload in this schema
             await ws.send(ack.SerializeToString())
             taken += 1
 

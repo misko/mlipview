@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from typing import List
 import time
+from typing import List
 
 import numpy as np
 from ase import units as _units
@@ -13,11 +13,7 @@ from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.optimize import BFGS as _BFGS
 from fastapi import HTTPException
 
-from .atoms_utils import (
-    build_atoms,
-    center_and_return_shift,
-    compute_properties,
-)
+from .atoms_utils import build_atoms, center_and_return_shift, compute_properties
 from .log import log_event
 from .models import (
     MDIn,
@@ -99,9 +95,7 @@ def _relax_run(
     shift = center_and_return_shift(atoms)
 
     # Apply precomputed results (if any) before first energy access
-    pre_applied: list[str] = _maybe_apply_precomputed(
-        atoms, precomputed, len(atoms)
-    )
+    pre_applied: list[str] = _maybe_apply_precomputed(atoms, precomputed, len(atoms))
 
     if "energy" in pre_applied:
         # Honor client-provided energy without triggering a recalculation
@@ -261,9 +255,7 @@ def _md_run(
         # print(atoms.get_velocities())
     # velocities newly initialized from temperature
 
-    pre_applied: list[str] = _maybe_apply_precomputed(
-        atoms, precomputed, len(atoms)
-    )
+    pre_applied: list[str] = _maybe_apply_precomputed(atoms, precomputed, len(atoms))
 
     if "energy" in pre_applied:
         initial_energy = float(atoms.calc.results["energy"])  # type: ignore
@@ -300,9 +292,7 @@ def _md_run(
         if not np.isfinite(max_disp) or max_disp > 5.0:
             raise HTTPException(
                 status_code=500,
-                detail=(
-                    f"MD instability detected (max step disp {max_disp:.2f} Å)"
-                ),
+                detail=(f"MD instability detected (max step disp {max_disp:.2f} Å)"),
             )
         prev[:] = new_pos
 
@@ -337,6 +327,7 @@ def _md_run(
         forces=forces,
         steps_completed=int(steps),
         temperature=Tfinal,
+        kinetic=KE,
         energies=energies,
         calculator=calculator,
         precomputed_applied=(pre_applied if pre_applied else None),

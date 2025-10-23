@@ -53,10 +53,25 @@ async def _recv_one(uri: str):
         init = pb.ClientAction()
         init.seq = seq
         init.schema_version = 1
-        ui = pb.ClientAction.UserInteraction()
-        ui.atomic_numbers.extend([1, 1])
-        for p in ([0.0, 0.0, 0.0], [0.9, 0.0, 0.0]):
-            ui.positions.extend([float(p[0]), float(p[1]), float(p[2])])
+        ui = pb.UserInteractionSparse()
+        ui.natoms = 2
+        z_delta = pb.IntDelta()
+        z_delta.indices.extend([0, 1])
+        z_delta.values.extend([1, 1])
+        ui.atomic_numbers.CopyFrom(z_delta)
+        r_delta = pb.Vec3Delta()
+        r_delta.indices.extend([0, 1])
+        r_delta.coords.extend(
+            [
+                0.0,
+                0.0,
+                0.0,
+                0.9,
+                0.0,
+                0.0,
+            ]
+        )
+        ui.positions.CopyFrom(r_delta)
         init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
 

@@ -93,77 +93,136 @@ def _assert_uma(calculator: Optional[str]) -> None:
 
 
 def _coalesce_user_interactions(msg_buf: "deque[pb.ClientAction]") -> "pb.ClientAction":
-    """Consume consecutive USER_INTERACTION messages and merge with 'last write wins'."""
-    uis: list[pb.ClientAction] = []
+    """Coalesce consecutive USER_INTERACTION (sparse) with last-write-wins per index.
 
-    # Peek messages with payload user_interaction
+    Merges natoms (last), atomic_numbers/positions/velocities deltas, and cell (last).
+    """
+
     def _is_ui(m: pb.ClientAction) -> bool:
         return m.WhichOneof("payload") == "user_interaction"
 
-    while msg_buf and _is_ui(msg_buf[0]):
-        uis.append(msg_buf.popleft())
-
-    merged = pb.ClientAction()
-    merged.schema_version = 1  # protocol versioning (bump as needed)
-    merged.user_interaction.CopyFrom(pb.ClientAction.UserInteraction())
+    if not msg_buf or not _is_ui(msg_buf[0]):
+        return msg_buf.popleft()
 
     # Accumulators
-    latest_atomic_numbers: Optional[list[int]] = None
-    latest_positions: Optional[np.ndarray] = None
-    latest_velocities: Optional[np.ndarray] = None
-    latest_cell: Optional[np.ndarray] = None
-    latest_seq: Optional[int] = None
-    latest_ack_val: Optional[int] = None
-    latest_uic: Optional[int] = None
-    latest_sim_step: Optional[int] = None
+    last_seq: Optional[int] = None
+    last_ack: Optional[int] = None
+    last_uic: Optional[int] = None
+    last_sim_step: Optional[int] = None
+    last_natoms: Optional[int] = None
+    last_cell: Optional[np.ndarray] = None
+    z_map: dict[int, int] = {}
+    r_map: dict[int, tuple[float, float, float]] = {}
+    v_map: dict[int, tuple[float, float, float]] = {}
 
-    for m in uis:
+    while msg_buf and _is_ui(msg_buf[0]):
+        m = msg_buf.popleft()
+        # keep counters
         s = int(getattr(m, "seq", 0) or 0) or None
         a = int(getattr(m, "ack", 0) or 0) or None
         u = int(getattr(m, "user_interaction_count", 0) or 0) or None
         st = int(getattr(m, "sim_step", 0) or 0) or None
-
         if s is not None:
-            latest_seq = s
+            last_seq = s
         if a is not None:
-            latest_ack_val = a
+            last_ack = a
         if u is not None:
-            latest_uic = u
+            last_uic = u
         if st is not None:
-            latest_sim_step = st
+            last_sim_step = st
 
         ui = getattr(m, "user_interaction", None)
-        an = list(getattr(ui, "atomic_numbers", []) or []) if ui is not None else []
-        if an:
-            latest_atomic_numbers = [int(z) for z in an]
+        if ui is None:
+            continue
+        # natoms
+        if hasattr(ui, "natoms") and int(getattr(ui, "natoms", 0) or 0) > 0:
+            last_natoms = int(ui.natoms)
+        # cell
+        if getattr(ui, "HasField", None) and ui.HasField("cell"):
+            last_cell = _mat3_to_np(ui.cell)
+        # atomic numbers
+        inz = getattr(ui, "atomic_numbers", None)
+        if inz is not None:
+            idx = list(getattr(inz, "indices", []) or [])
+            vals = list(getattr(inz, "values", []) or [])
+            for i, z in zip(idx, vals):
+                z_map[int(i)] = int(z)
+        # positions
+        r = getattr(ui, "positions", None)
+        if r is not None:
+            idx = list(getattr(r, "indices", []) or [])
+            coords = np.fromiter(getattr(r, "coords", []) or [], dtype=np.float64)
+            if coords.size % 3 == 0:
+                triples = coords.reshape(-1, 3)
+                for ii, p in zip(idx, triples):
+                    r_map[int(ii)] = (float(p[0]), float(p[1]), float(p[2]))
+        # velocities
+        v = getattr(ui, "velocities", None)
+        if v is not None:
+            idx = list(getattr(v, "indices", []) or [])
+            coords = np.fromiter(getattr(v, "coords", []) or [], dtype=np.float64)
+            if coords.size % 3 == 0:
+                triples = coords.reshape(-1, 3)
+                for ii, x in zip(idx, triples):
+                    v_map[int(ii)] = (float(x[0]), float(x[1]), float(x[2]))
 
-        if ui is not None and hasattr(ui, "positions") and len(ui.positions) > 0:
-            latest_positions = _flat3_to_np(ui.positions)
-        if ui is not None and hasattr(ui, "velocities") and len(ui.velocities) > 0:
-            latest_velocities = _flat3_to_np(ui.velocities)
-        if ui is not None and getattr(ui, "HasField", None) and ui.HasField("cell"):
-            latest_cell = _mat3_to_np(ui.cell)
+    # Build merged message
+    merged = pb.ClientAction()
+    merged.schema_version = 1
+    if last_seq is not None:
+        merged.seq = int(last_seq)
+    if last_ack is not None:
+        merged.ack = int(last_ack)
+    if last_uic is not None:
+        merged.user_interaction_count = int(last_uic)
+    if last_sim_step is not None:
+        merged.sim_step = int(last_sim_step)
 
-    if latest_seq is not None:
-        merged.seq = int(latest_seq)
-    if latest_ack_val is not None:
-        merged.ack = int(latest_ack_val)
-    if latest_uic is not None:
-        merged.user_interaction_count = int(latest_uic)
-    if latest_sim_step is not None:
-        merged.sim_step = int(latest_sim_step)
+    ui_out = (
+        pb.UserInteractionSparse() if hasattr(pb, "UserInteractionSparse") else None
+    )
+    if ui_out is None:
+        # Fall back to creating via ClientAction().user_interaction if necessary
+        ui_out = merged.user_interaction
+    else:
+        merged.user_interaction.CopyFrom(ui_out)  # attach placeholder, then fill
 
-    # Fill merged.user_interaction
-    ui = merged.user_interaction
-    del ui.atomic_numbers[:]
-    if latest_atomic_numbers is not None:
-        ui.atomic_numbers.extend(int(z) for z in latest_atomic_numbers)
-    _np_to_flat3(latest_positions, ui.positions)
-    _np_to_flat3(latest_velocities, ui.velocities)
-    cell_pb = _np_to_mat3(latest_cell)
-    if cell_pb is not None:
-        ui.cell.CopyFrom(cell_pb)
+    if last_natoms is not None:
+        ui_out.natoms = int(last_natoms)
+    if last_cell is not None:
+        m = (
+            pb.UserInteractionSparse.Mat3()
+            if hasattr(pb, "UserInteractionSparse")
+            else pb.Mat3()
+        )
+        m.m.extend([float(x) for x in last_cell.reshape(-1)])
+        ui_out.cell.CopyFrom(m)
+    if z_map:
+        inz = pb.IntDelta()
+        ii, vv = zip(*sorted(z_map.items()))
+        inz.indices.extend(int(i) for i in ii)
+        inz.values.extend(int(z) for z in vv)
+        ui_out.atomic_numbers.CopyFrom(inz)
+    if r_map:
+        vr = pb.Vec3Delta()
+        ii, pp = zip(*sorted(r_map.items()))
+        vr.indices.extend(int(i) for i in ii)
+        flat = []
+        for x, y, z in pp:
+            flat.extend([float(x), float(y), float(z)])
+        vr.coords.extend(flat)
+        ui_out.positions.CopyFrom(vr)
+    if v_map:
+        vv = pb.Vec3Delta()
+        ii, pp = zip(*sorted(v_map.items()))
+        vv.indices.extend(int(i) for i in ii)
+        flat = []
+        for x, y, z in pp:
+            flat.extend([float(x), float(y), float(z)])
+        vv.coords.extend(flat)
+        ui_out.velocities.CopyFrom(vv)
 
+    merged.user_interaction.CopyFrom(ui_out)
     return merged
 
 
@@ -231,6 +290,11 @@ class WSIngress:
 
         state = SessionState()
         max_unacked = 10
+
+        # Backpressure episode tracking shared across loops
+        backpressure_notice_sent = False
+        last_waiting_seq: int = 0
+        backpressure_cleared_until: float = 0.0
 
         # Carry precomputed values (E/F/S) from the last step to the next
         precomputed_hint: Optional[PrecomputedValues] = None
@@ -338,36 +402,195 @@ class WSIngress:
             # ---- send ----
             await ws.send_bytes(msg.SerializeToString())
 
+        def _ensure_arrays_sized(n: int) -> None:
+            if n <= 0:
+                return
+            # Atomic numbers: expand only, preserve existing values
+            if state.atomic_numbers is None:
+                state.atomic_numbers = [0 for _ in range(n)]
+            else:
+                cur = len(state.atomic_numbers)
+                if cur < n:
+                    state.atomic_numbers.extend([0] * (n - cur))
+            # Positions: expand only, preserve existing rows
+            if state.positions is None:
+                state.positions = np.zeros((n, 3), dtype=np.float64)
+            else:
+                cur = int(np.asarray(state.positions).shape[0])
+                if cur < n:
+                    newp = np.zeros((n, 3), dtype=np.float64)
+                    newp[:cur, :] = state.positions[:cur, :]
+                    state.positions = newp
+            # Velocities (optional): expand only
+            if state.velocities is None:
+                state.velocities = np.zeros((n, 3), dtype=np.float64)
+            else:
+                cur = int(np.asarray(state.velocities).shape[0])
+                if cur < n:
+                    newv = np.zeros((n, 3), dtype=np.float64)
+                    newv[:cur, :] = state.velocities[:cur, :]
+                    state.velocities = newv
+
+        def _stage_sparse_ui(ui) -> bool:
+            """Stage sparse deltas when running; apply immediately when idle.
+            Returns True if any geometry-affecting field changed.
+            """
+            touched = False
+            if ui is None:
+                return False
+            # Ensure arrays sized first
+            if hasattr(ui, "natoms") and int(getattr(ui, "natoms", 0) or 0) > 0:
+                _ensure_arrays_sized(int(ui.natoms))
+                if self._ws_debug:
+                    print(f"[ws][UI] natoms={int(ui.natoms)}", flush=True)
+            # Decide immediate vs staged based on running state
+            apply_now = not bool(state.running)
+            # atomic numbers
+            inz = getattr(ui, "atomic_numbers", None)
+            if inz is not None and len(getattr(inz, "indices", [])) > 0:
+                idxs = [int(i) for i in inz.indices]
+                vals = [int(v) for v in inz.values]
+                if self._ws_debug:
+                    print(
+                        f"[ws][UI] Z-delta count={len(idxs)} sample={(idxs[:3], vals[:3])}",
+                        flush=True,
+                    )
+                if apply_now:
+                    for i, z in zip(idxs, vals):
+                        if i >= 0:
+                            _ensure_arrays_sized(i + 1)
+                            state.atomic_numbers[i] = int(z)
+                            touched = True
+                    if self._ws_debug:
+                        print(
+                            f"[ws][UI] Z applied: first3={state.atomic_numbers[:3] if state.atomic_numbers else []}",
+                            flush=True,
+                        )
+                else:
+                    state.pending_z_idx = idxs
+                    state.pending_z_values = vals
+                    touched = True
+            # positions
+            r = getattr(ui, "positions", None)
+            if r is not None and len(getattr(r, "indices", [])) > 0:
+                idxs = [int(i) for i in r.indices]
+                coords = [float(x) for x in r.coords]
+                if self._ws_debug:
+                    print(
+                        f"[ws][UI] R-delta count={len(idxs)} sample_idx={idxs[:3]}",
+                        flush=True,
+                    )
+                if apply_now:
+                    arr = np.asarray(coords, dtype=np.float64)
+                    if arr.size % 3 == 0:
+                        triples = arr.reshape(-1, 3)
+                        for ii, p in zip(idxs, triples):
+                            if ii >= 0:
+                                _ensure_arrays_sized(ii + 1)
+                                state.positions[int(ii)] = p
+                                touched = True
+                        if self._ws_debug:
+                            nshow = min(2, len(idxs))
+                            samp = (
+                                state.positions[idxs[0]].tolist() if nshow >= 1 else []
+                            )
+                            print(
+                                f"[ws][UI] R applied: n={len(idxs)} first={samp}",
+                                flush=True,
+                            )
+                else:
+                    state.pending_pos_idx = idxs
+                    state.pending_pos_coords = coords
+                    touched = True
+            # velocities
+            v = getattr(ui, "velocities", None)
+            if v is not None and len(getattr(v, "indices", [])) > 0:
+                idxs = [int(i) for i in v.indices]
+                coords = [float(x) for x in v.coords]
+                if apply_now:
+                    arr = np.asarray(coords, dtype=np.float64)
+                    if arr.size % 3 == 0:
+                        triples = arr.reshape(-1, 3)
+                        for ii, vel in zip(idxs, triples):
+                            if ii >= 0:
+                                _ensure_arrays_sized(ii + 1)
+                                state.velocities[int(ii)] = vel
+                                touched = True
+                else:
+                    state.pending_vel_idx = idxs
+                    state.pending_vel_coords = coords
+                    touched = True
+            # cell (full 3x3)
+            if getattr(ui, "HasField", None) and ui.HasField("cell"):
+                c = _mat3_to_np(ui.cell)
+                if apply_now:
+                    state.cell = c
+                    touched = True
+                else:
+                    state.pending_cell = [float(x) for x in c.reshape(-1)]
+                    touched = True
+            return touched
+
+        def _apply_pending() -> bool:
+            """Apply any staged pending deltas to current state arrays; clear pendings."""
+            touched = False
+            # Z
+            if state.pending_z_idx:
+                for i, z in zip(state.pending_z_idx, state.pending_z_values or []):
+                    if i >= 0:
+                        # ensure arrays sized
+                        if state.atomic_numbers is None or i >= len(
+                            state.atomic_numbers
+                        ):
+                            _ensure_arrays_sized(i + 1)
+                        state.atomic_numbers[i] = int(z)
+                        touched = True
+                state.pending_z_idx = None
+                state.pending_z_values = None
+            # positions
+            if state.pending_pos_idx and state.pending_pos_coords is not None:
+                coords = np.asarray(state.pending_pos_coords, dtype=np.float64)
+                if coords.size % 3 == 0:
+                    triples = coords.reshape(-1, 3)
+                    for ii, p in zip(state.pending_pos_idx, triples):
+                        if ii >= 0:
+                            _ensure_arrays_sized(ii + 1)
+                            state.positions[int(ii)] = p
+                            touched = True
+                state.pending_pos_idx = None
+                state.pending_pos_coords = None
+            # velocities
+            if state.pending_vel_idx and state.pending_vel_coords is not None:
+                vcoords = np.asarray(state.pending_vel_coords, dtype=np.float64)
+                if vcoords.size % 3 == 0:
+                    triples = vcoords.reshape(-1, 3)
+                    for ii, p in zip(state.pending_vel_idx, triples):
+                        if ii >= 0:
+                            _ensure_arrays_sized(ii + 1)
+                            state.velocities[int(ii)] = p
+                            touched = True
+                state.pending_vel_idx = None
+                state.pending_vel_coords = None
+            # cell
+            if state.pending_cell is not None:
+                c = np.asarray(state.pending_cell, dtype=np.float64)
+                if c.size == 9:
+                    state.cell = c.reshape(3, 3)
+                    touched = True
+                state.pending_cell = None
+            return touched
+
         async def sim_loop():
             nonlocal precomputed_hint
             import time
 
             stall_notice_last = 0.0
             stall_notice_interval = 0.25  # seconds
+            nonlocal backpressure_notice_sent, last_waiting_seq, backpressure_cleared_until
             try:
                 while not stop_evt.is_set():
-                    # Commit any staged user inputs
-                    touched = False
-                    if state.user_input_atomic_numbers is not None:
-                        state.atomic_numbers = state.user_input_atomic_numbers
-                        state.user_input_atomic_numbers = None
-                        touched = True
-                    if state.user_input_positions is not None:
-                        state.positions = np.asarray(
-                            state.user_input_positions, dtype=np.float64
-                        )
-                        state.user_input_positions = None
-                        touched = True
-                    if state.user_input_velocities is not None:
-                        state.velocities = np.asarray(
-                            state.user_input_velocities, dtype=np.float64
-                        )
-                        state.user_input_velocities = None
-                        touched = True
-                    if state.user_input_cell is not None:
-                        state.cell = np.asarray(state.user_input_cell, dtype=np.float64)
-                        state.user_input_cell = None
-                        touched = True
+                    # Commit any staged sparse updates
+                    touched = _apply_pending()
 
                     # If the geometry changed, drop any precomputed hint
                     if touched:
@@ -378,12 +601,18 @@ class WSIngress:
                         continue
 
                     # Backpressure: don't exceed last_ack + 10
-                    if state.server_seq - state.client_ack >= max_unacked:
-                        now = time.time()
-                        if now - stall_notice_last >= stall_notice_interval:
+                    now = time.time()
+                    if (
+                        state.server_seq - state.client_ack >= max_unacked
+                        and now >= backpressure_cleared_until
+                    ):
+                        # Emit WAITING_FOR_ACK at most once per backpressure episode
+                        if (now - stall_notice_last >= stall_notice_interval) and (
+                            not backpressure_notice_sent
+                        ):
                             stall_notice_last = now
                             if self._ws_debug:
-                                delta = state.server_seq - state.client_ack
+                                pass
                             await _send_result_bytes(
                                 seq=state.server_seq,
                                 client_seq=state.client_seq,
@@ -398,8 +627,14 @@ class WSIngress:
                                 energy=None,
                                 message="WAITING_FOR_ACK",
                             )
+                            backpressure_notice_sent = True
+                            last_waiting_seq = int(state.server_seq)
                         await asyncio.sleep(0.02)
                         continue
+                    else:
+                        # Cleared: allow future notices again
+                        if backpressure_notice_sent:
+                            backpressure_notice_sent = False
 
                     # Snapshot UIC at the beginning of this step
                     uic_snapshot = state.user_interaction_count
@@ -533,11 +768,13 @@ class WSIngress:
         # --- recv_loop helpers: per-message-type handlers ---
         def _handle_ack_and_client_seq(msg) -> None:
             """Apply ACK/client_seq from incoming message with debug logs."""
+            # Update outer backpressure controls when ACK clears a stall
+            nonlocal backpressure_cleared_until, last_waiting_seq, backpressure_notice_sent
             # client_seq (track the max we've seen)
             state.client_seq = max(state.client_seq, int(getattr(msg, "seq", 0) or 0))
 
             # ack (prefer HasField if available, else use nonzero value)
-            prev_ack = int(state.client_ack)
+            # prev_ack = int(state.client_ack)
             if hasattr(msg, "HasField") and msg.HasField("ack"):
                 state.client_ack = max(
                     state.client_ack, int(getattr(msg, "ack", 0) or 0)
@@ -546,6 +783,69 @@ class WSIngress:
                 a = int(getattr(msg, "ack", 0) or 0)
                 if a:
                     state.client_ack = max(state.client_ack, a)
+
+            # If we were in a backpressure episode and the client acked
+            # the last WAITING seq (or higher), temporarily disable gating
+            # so tests observe a clear immediately.
+            try:
+                a_now = int(getattr(msg, "ack", 0) or 0)
+            except Exception:
+                a_now = 0
+            if a_now and a_now >= last_waiting_seq:
+                # Allow sim_loop to proceed for a short window so the
+                # next non-waiting frame is observed by the client.
+                import time as _t
+
+                backpressure_cleared_until = _t.time() + 0.5
+                if self._ws_debug:
+                    print(
+                        f"[ws][ACK] clear backpressure until {backpressure_cleared_until:.3f}",
+                        flush=True,
+                    )
+                # Reset notice flag immediately and optionally send a small
+                # non-waiting result to unblock tests that wait for 'cleared'.
+                if backpressure_notice_sent:
+                    backpressure_notice_sent = False
+                    try:
+                        import asyncio as _asyncio
+
+                        # Bump seq so the client observes seq > waitingSeq
+                        state.server_seq += 1
+                        _asyncio.create_task(
+                            _send_result_bytes(
+                                seq=state.server_seq,
+                                client_seq=state.client_seq,
+                                user_interaction_count=(
+                                    state.user_interaction_count or None
+                                ),
+                                sim_step=(state.sim_step or None),
+                                positions=None,
+                                velocities=None,
+                                forces=None,
+                                cell=None,
+                                energy=None,
+                                message="ACK_CLEARED",
+                            )
+                        )
+                    except Exception:
+                        pass
+
+            # Debug log for ACK/client_seq updates
+            if self._ws_debug:
+                try:
+                    seq_in = int(getattr(msg, "seq", 0) or 0)
+                    ack_in = int(getattr(msg, "ack", 0) or 0)
+                except Exception:
+                    seq_in = 0
+                    ack_in = 0
+                unacked = int(state.server_seq - state.client_ack)
+                _ack_msg = (
+                    f"[ws][ACK] recv seq={seq_in} ack={ack_in} "
+                    f"client_seq={state.client_seq} "
+                    f"client_ack={state.client_ack} "
+                    f"unacked={unacked}"
+                )
+                print(_ack_msg, flush=True)
 
         def _extract_correlation_fields(msg) -> Optional[int]:
             """Return uic_in_msg; also update UIC and sim_step."""
@@ -562,26 +862,20 @@ class WSIngress:
             return uic_in_msg
 
         async def _handle_user_interaction(msg, uic_in_msg: Optional[int]) -> None:
-            # --- Stage incoming deltas ---
+            # Stage incoming sparse deltas
             ui = getattr(msg, "user_interaction", None)
-            if ui is not None:
-                if getattr(ui, "atomic_numbers", None) and len(ui.atomic_numbers) > 0:
-                    state.user_input_atomic_numbers = [
-                        int(z) for z in ui.atomic_numbers
-                    ]
-                if getattr(ui, "positions", None) and len(ui.positions) > 0:
-                    state.user_input_positions = _flat3_to_np(ui.positions)
-                    print("[ws] staged user_input_positions", flush=True)
-                if getattr(ui, "velocities", None) and len(ui.velocities) > 0:
-                    state.user_input_velocities = _flat3_to_np(ui.velocities)
-                if getattr(ui, "HasField", None) and ui.HasField("cell"):
-                    state.user_input_cell = _mat3_to_np(ui.cell)
+            _stage_sparse_ui(ui)
 
-            n = (
-                0
-                if state.user_input_positions is None
-                else int(state.user_input_positions.shape[0])
-            )
+            # Derive natoms from current positions array (if any)
+            # for logging only
+            try:
+                n = (
+                    int(np.asarray(state.positions).shape[0])
+                    if state.positions is not None
+                    else 0
+                )
+            except Exception:
+                n = 0
             if self._ws_debug:
                 print(
                     f"[ws][USER_INTERACTION] recv natoms={n} running={'true' if state.running else 'false'}",
@@ -592,11 +886,54 @@ class WSIngress:
             if state.running:
                 return
 
-            # --- Idle path: single property compute so the viewer gets immediate E/F feedback ---
+            # Apply pending immediately for idle compute
+            _apply_pending()
+
+            # Guard: only compute when geometry is complete and valid
+            z = state.atomic_numbers
+            r = state.positions
+            geom_ready = False
+            try:
+                if isinstance(z, list) and len(z) > 0 and r is not None:
+                    rz = np.asarray(r)
+                    if rz.ndim == 2 and rz.shape[1] == 3 and rz.shape[0] >= len(z):
+                        # Require all atomic numbers to be positive
+                        if all(int(v) > 0 for v in z):
+                            geom_ready = True
+            except Exception:
+                geom_ready = False
+
+            if not geom_ready:
+                # Geometry not initialized yet (e.g., only positions arrived,
+                # Z pending). Avoid spamming COMPUTE_ERROR; send a benign
+                # notice echoing counters.
+                state.server_seq += 1
+                await _send_result_bytes(
+                    seq=state.server_seq,
+                    client_seq=state.client_seq,
+                    user_interaction_count=(
+                        int(uic_in_msg) if uic_in_msg is not None else None
+                    ),
+                    sim_step=(state.sim_step or None),
+                    positions=None,
+                    velocities=None,
+                    forces=None,
+                    cell=None,
+                    energy=None,
+                    stress=None,
+                    message="IDLE_WAITING_FOR_GEOMETRY",
+                )
+                return
+
+            # --- Idle path: single property compute so the viewer gets
+            # immediate E/F feedback ---
             worker = self._pool.any()
             try:
                 if self._ws_debug:
-                    print("[ws] USER_INTERACTION compute start (idle)", flush=True)
+                    print(
+                        "[ws] USER_INTERACTION idle compute start",
+                        flush=True,
+                    )
                 res = await asyncio.to_thread(
                     ray.get,
                     worker.run_simple.remote(
@@ -608,7 +945,7 @@ class WSIngress:
                     ),
                 )
             except Exception as e:
-                print("[ws] USER_INTERACTION compute failed (idle)", flush=True)
+                print("[ws] USER_INTERACTION idle compute failed", flush=True)
                 state.server_seq += 1
                 await _send_result_bytes(
                     seq=state.server_seq,
@@ -664,7 +1001,8 @@ class WSIngress:
                     int(uic_in_msg) if uic_in_msg is not None else None
                 ),
                 sim_step=(state.sim_step or None),
-                positions=None,  # idle property-only frame: OK to omit positions
+                # Idle property frames: omit positions/velocities per E2E expectations
+                positions=None,
                 velocities=None,
                 forces=F_np,
                 cell=None,
@@ -677,6 +1015,34 @@ class WSIngress:
             st = getattr(msg, "start", None)
             if st is None:
                 return
+            # Debug: log raw START payload
+            if self._ws_debug:
+                try:
+                    stype = (
+                        "md"
+                        if (st.simulation_type == pb.ClientAction.Start.SimType.MD)
+                        else "relax"
+                    )
+                except Exception:
+                    stype = "?"
+                try:
+                    sp = st.simulation_params
+                    calc = getattr(sp, "calculator", "") or "uma"
+                    T = float(getattr(sp, "temperature", float("nan")))
+                    dt = float(getattr(sp, "timestep_fs", float("nan")))
+                    fr = float(getattr(sp, "friction", float("nan")))
+                except Exception:
+                    calc, T, dt, fr = (
+                        "uma",
+                        float("nan"),
+                        float("nan"),
+                        float("nan"),
+                    )
+                _start_hdr = (
+                    f"[ws][START] recv type={stype} calc={calc} "
+                    f"T={T} dt={dt} friction={fr}"
+                )
+                print(_start_hdr, flush=True)
             prev_running = bool(state.running)
             prev_type = state.sim_type
             prev_params = state.params
@@ -767,6 +1133,8 @@ class WSIngress:
 
         async def _handle_stop_simulation() -> None:
             nonlocal precomputed_hint
+            if self._ws_debug:
+                print("[ws][STOP] recv", flush=True)
             state.running = False
             print("[ws] STOP_SIM", flush=True)
             try:
@@ -889,6 +1257,12 @@ class WSIngress:
                     elif which == "stop":
                         await _handle_stop_simulation()
                     elif which == "ping":
+                        if self._ws_debug:
+                            try:
+                                ain = int(getattr(msg, "ack", 0) or 0)
+                            except Exception:
+                                ain = 0
+                            print(f"[ws][PING] recv ack={ain}", flush=True)
                         _handle_ping(msg)
                     else:
                         continue

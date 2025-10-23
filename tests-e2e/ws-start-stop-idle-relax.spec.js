@@ -13,7 +13,7 @@ test('autoMD → stop → idle drag → relax → stop (WS)', async ({ page, bas
   if (!health.ok()) test.skip(true, 'Backend health unavailable');
   const h = await health.json();
   if (!h || String(h.device || '').toLowerCase() !== 'cuda') test.skip(true, 'Backend not on CUDA');
-  await page.goto(`${baseURL || ''}/index.html?mol=molecules/water.xyz`);
+  await page.goto(`${baseURL || ''}/index.html?mol=molecules/water.xyz&debug=1`);
   await page.waitForFunction(() => window.__MLIP_DEFAULT_LOADED === true, null, { timeout: 45000 });
 
   // Connect WS and ensure an initial idle energy frame so UMA is warmed up

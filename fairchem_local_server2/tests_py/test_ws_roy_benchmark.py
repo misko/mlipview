@@ -106,10 +106,17 @@ async def _run_ws_md_frames(
         init = pb.ClientAction()
         init.seq = seq
         init.schema_version = 1
-        ui = pb.ClientAction.UserInteraction()
-        ui.atomic_numbers.extend([int(z) for z in Z])
+        ui = pb.UserInteractionSparse()
+        ui.natoms = len(Z)
+        inz = pb.IntDelta()
+        inz.indices.extend(list(range(len(Z))))
+        inz.values.extend(int(z) for z in Z)
+        ui.atomic_numbers.CopyFrom(inz)
+        vr = pb.Vec3Delta()
+        vr.indices.extend(list(range(len(xyz))))
         for p in xyz:
-            ui.positions.extend([float(p[0]), float(p[1]), float(p[2])])
+            vr.coords.extend([float(p[0]), float(p[1]), float(p[2])])
+        ui.positions.CopyFrom(vr)
         init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
 
@@ -145,7 +152,7 @@ async def _run_ws_md_frames(
             ack = pb.ClientAction()
             ack.seq = seq
             ack.ack = last_seq
-            ack.ping.CopyFrom(pb.ClientAction.Ping())
+            # ack-only; no ping payload in this schema
             await ws.send(ack.SerializeToString())
 
         # STOP_SIMULATION

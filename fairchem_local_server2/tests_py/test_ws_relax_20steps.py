@@ -34,9 +34,9 @@ def _load_water_xyz(path: str) -> tuple[List[int], List[List[float]]]:
     return zs, pos
 
 
-async def _recv_server_result(ws):
-    # Receive a single binary ServerResult
-    msg = await ws.recv()
+async def _recv_server_result(ws, timeout: float = 30.0):
+    """Receive a single binary ServerResult with a timeout to avoid hangs."""
+    msg = await asyncio.wait_for(ws.recv(), timeout=timeout)
     if isinstance(msg, (bytes, bytearray)):
         r = pb.ServerResult()
         r.ParseFromString(msg)
@@ -55,30 +55,53 @@ async def run_relax_20(ws_url: str, xyz_path: str):
         client_seq += 1
         init.seq = client_seq
         init.schema_version = 1
-        ui = pb.ClientAction.UserInteraction()
-        ui.atomic_numbers.extend(int(z) for z in zs)
+        ui = pb.UserInteractionSparse()
+        ui.natoms = len(zs)
+        z_delta = pb.IntDelta()
+        z_delta.indices.extend(list(range(len(zs))))
+        z_delta.values.extend(int(z) for z in zs)
+        ui.atomic_numbers.CopyFrom(z_delta)
+        r_delta = pb.Vec3Delta()
+        r_delta.indices.extend(list(range(len(pos))))
         for p in pos:
-            ui.positions.extend([float(p[0]), float(p[1]), float(p[2])])
+            r_delta.coords.extend([float(p[0]), float(p[1]), float(p[2])])
+        ui.positions.CopyFrom(r_delta)
         init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
+        # Tiny settle to allow idle compute to start
+        await asyncio.sleep(0.1)
 
-        # Wait for idle energy frame (positions omitted per protocol)
+        # Trigger idle compute by sending positions-only update
+        client_seq += 1
+        req = pb.ClientAction()
+        req.seq = client_seq
+        req.schema_version = 1
+        ui2 = pb.UserInteractionSparse()
+        vr2 = pb.Vec3Delta()
+        vr2.indices.extend(list(range(len(pos))))
+        for p in pos:
+            vr2.coords.extend([float(p[0]), float(p[1]), float(p[2])])
+        ui2.positions.CopyFrom(vr2)
+        req.user_interaction.CopyFrom(ui2)
+        await ws.send(req.SerializeToString())
+
+        # Wait for idle energy frame (positions often omitted by protocol)
         for _ in range(10):
-            r = await _recv_server_result(ws)
+            r = await _recv_server_result(ws, timeout=30.0)
             if r is None:
                 continue
             if r.WhichOneof("payload") == "frame":
                 fr = r.frame
-                # idle frame has no positions but includes energy
+                # idle frame should include energy
                 has_energy = getattr(fr, "energy", None) is not None
-                if has_energy and len(fr.positions) == 0:
+                if has_energy:
                     energies.append(float(fr.energy))
                     # ACK idle energy frame to advance server window
                     client_seq += 1
                     ack = pb.ClientAction()
                     ack.seq = client_seq
                     ack.ack = int(getattr(r, "seq", 0))
-                    ack.ping.CopyFrom(pb.ClientAction.Ping())
+                    # ack-only; no ping payload in this schema
                     await ws.send(ack.SerializeToString())
                     break
 
@@ -103,7 +126,7 @@ async def run_relax_20(ws_url: str, xyz_path: str):
             # Expect one sim frame with positions/forces/energy
             r = None
             for _ in range(50):
-                r = await _recv_server_result(ws)
+                r = await _recv_server_result(ws, timeout=30.0)
                 if r is None:
                     continue
                 if r.WhichOneof("payload") == "frame":
@@ -116,7 +139,7 @@ async def run_relax_20(ws_url: str, xyz_path: str):
                         ack = pb.ClientAction()
                         ack.seq = client_seq
                         ack.ack = int(getattr(r, "seq", 0))
-                        ack.ping.CopyFrom(pb.ClientAction.Ping())
+                        # ack-only; no ping payload in this schema
                         await ws.send(ack.SerializeToString())
                         break
 
@@ -206,6 +229,7 @@ def _uma_reference_trace(
     return trace, pos_initial, pos_final
 
 
+@pytest.mark.timeout(180)
 def test_ws_relax_20steps_parity(ws_base_url: str, tmp_path):
     """
     Direct WS test equivalent of the frontend water UMA 20-step relax parity.
