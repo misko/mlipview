@@ -2,9 +2,27 @@
 // Controls window.__MLIP_CONFIG.mdFriction; default from constants. Range [0, 2.0] with 0.01 step.
 import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS } from '../util/constants.js';
 
+function shouldEnableFrictionUI() {
+  if (typeof window === 'undefined') return true;
+  if (window.__MLIP_DEV_MODE === true) return true;
+  try {
+    const q = new URLSearchParams(window.location?.search || '');
+    const raw = q.get('dev');
+    if (raw == null) return false;
+    return raw === '1' || raw.toLowerCase() === 'true';
+  } catch {
+    return false;
+  }
+}
+
 export function initFrictionSlider({ hudEl }) {
   if (!hudEl) return;
-  if (hudEl.querySelector('#frictionSliderWrapper')) return;
+  const existing = hudEl.querySelector('#frictionSliderWrapper');
+  if (!shouldEnableFrictionUI()) {
+    if (existing) existing.remove();
+    return;
+  }
+  if (existing) return;
 
   if (typeof window !== 'undefined') {
     window.__MLIP_CONFIG = window.__MLIP_CONFIG || {

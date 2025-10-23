@@ -3,6 +3,7 @@
 describe('desktop left panel UI', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="app" style="position:relative"></div>';
+    window.__MLIP_DEV_MODE = true;
   });
 
   test('builds collapsible sections with defaults and controls', async () => {

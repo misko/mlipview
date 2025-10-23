@@ -26,6 +26,8 @@ const DEFAULTS = {
   LATCH_AFTER_DRAG_MS: 600,
   LATCH_AFTER_VR_MS: 800,
   RPS_WINDOW_MS: 2000,
+  CONTINUOUS_STEPS: 1000,
+  SAFE_SPHERE_RADIUS: 20,
 };
 
 function cfgNumber(v, fallback) {
@@ -53,6 +55,10 @@ const TUNABLES = {
   get RPS_WINDOW_MS() {
     if (typeof window === 'undefined') return DEFAULTS.RPS_WINDOW_MS;
     return cfgNumber(window.__MLIP_CONFIG?.rpsWindowMs, DEFAULTS.RPS_WINDOW_MS);
+  },
+  get SAFE_SPHERE_RADIUS() {
+    if (typeof window === 'undefined') return DEFAULTS.SAFE_SPHERE_RADIUS;
+    return cfgNumber(window.__MLIP_CONFIG?.safeSphereRadius, DEFAULTS.SAFE_SPHERE_RADIUS);
   },
 };
 
@@ -127,6 +133,36 @@ const applyTriples = (state, triples, { exclude } = {}) => {
   }
 };
 
+function clampVectorToRadius(pos, radius) {
+  if (!pos || typeof pos !== 'object') return false;
+  const x = Number(pos.x) || 0;
+  const y = Number(pos.y) || 0;
+  const z = Number(pos.z) || 0;
+  const r2 = x * x + y * y + z * z;
+  const limit = radius * radius;
+  if (r2 === 0 || r2 <= limit) return false;
+  const r = Math.sqrt(r2);
+  if (!Number.isFinite(r) || r === 0) return false;
+  const scale = radius / r;
+  pos.x = x * scale;
+  pos.y = y * scale;
+  pos.z = z * scale;
+  return true;
+}
+
+function enforceSafeSphere(state) {
+  const radius = TUNABLES.SAFE_SPHERE_RADIUS;
+  if (!Number.isFinite(radius) || radius <= 0) return false;
+  const pts = state?.positions;
+  if (!Array.isArray(pts) || !pts.length) return false;
+  let changed = false;
+  for (const p of pts) {
+    if (clampVectorToRadius(p, radius)) changed = true;
+  }
+  if (changed && env.apiOn()) dbg.log('[safeSphere][clamp]', { radius, count: pts.length });
+  return changed;
+}
+
 const stateCellToArray = (c) => (c && c.enabled) ? [
   [c.a.x, c.a.y, c.a.z],
   [c.b.x, c.b.y, c.b.z],
@@ -158,6 +194,8 @@ if (typeof window !== 'undefined') {
     window.__MLIP_CONFIG.latchAfterVrMs = DEFAULTS.LATCH_AFTER_VR_MS;
   if (!Number.isFinite(window.__MLIP_CONFIG.rpsWindowMs))
     window.__MLIP_CONFIG.rpsWindowMs = DEFAULTS.RPS_WINDOW_MS;
+  if (!Number.isFinite(window.__MLIP_CONFIG.safeSphereRadius))
+    window.__MLIP_CONFIG.safeSphereRadius = DEFAULTS.SAFE_SPHERE_RADIUS;
 
   const autoMD = new URLSearchParams(window.location?.search || '').get('autoMD');
   if (autoMD === '0' || String(autoMD).toLowerCase() === 'false') window.__MLIPVIEW_NO_AUTO_MD = true;
@@ -284,6 +322,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   });
 
   const state = createMoleculeState({ elements, positions, bonds });
+  try { enforceSafeSphere(state); } catch { }
   try { state.__initialPositions = (state.positions || []).map(p => ({ x: p.x, y: p.y, z: p.z })); } catch { }
 
   // Versions & caches
@@ -293,6 +332,14 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   let userInteractionVersion = 0;
   let totalInteractionVersion = 0;
   let lastAppliedUIC = 0;
+  let currentStepBudget = null;
+
+  function resetStepBudgetDueToInteraction(reason) {
+    if (!currentStepBudget) return;
+    currentStepBudget.remaining = currentStepBudget.limit;
+    currentStepBudget.overshoot = 0;
+    if (env.apiOn()) dbg.log('[stepBudget][reset]', { reason, limit: currentStepBudget.limit, kind: currentStepBudget.kind });
+  }
 
   const modifiedByVersion = new Map();
   const draggingAtoms = new Set();
@@ -311,6 +358,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   const bumpUser = (reason) => {
     userInteractionVersion++; totalInteractionVersion++; structureVersion++;
+    resetStepBudgetDueToInteraction(reason);
     if (state.forceCache) { state.forceCache.stale = true; state.forceCache.version = structureVersion; }
     if (env.apiOn()) dbg.log('[version][user]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
   };
@@ -437,6 +485,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     return bonds;
   };
   state.markPositionsChanged = (...a) => {
+    enforceSafeSphere(state);
     structureVersion++;
     if (state.forceCache) { state.forceCache.stale = true; state.forceCache.version = structureVersion; }
     const r = __origMarkPositionsChanged ? __origMarkPositionsChanged(...a) : undefined;
@@ -479,6 +528,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   // Drag emission (throttled)
   const emitDuringDrag = throttle(() => {
     try {
+      enforceSafeSphere(state);
       bumpUser('dragMove');
       const ws = getWS();
       ws.setCounters?.({ userInteractionCount: userInteractionVersion });
@@ -758,7 +808,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   const Mode = Object.freeze({ Idle: 'idle', MD: 'md', Relax: 'relax' });
   let mode = Mode.Idle;
-  let running = { kind: null, abort: null }; // keep for API compatibility
+  let running = { kind: null, abort: null, stepBudget: null }; // keep for API compatibility
 
   let idleUnsub = null;
   async function attachIdleWSListener() {
@@ -776,7 +826,13 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (mode === next) return;
     mode = next;
     running.kind = (mode === Mode.Idle) ? null : (mode === Mode.MD ? 'md' : 'relax');
-    if (mode === Mode.Idle) attachIdleWSListener(); else detachIdleWSListener();
+    if (mode === Mode.Idle) {
+      running.stepBudget = null;
+      currentStepBudget = null;
+      attachIdleWSListener();
+    } else {
+      detachIdleWSListener();
+    }
   }
 
   async function startContinuous(kind, opts = {}) {
@@ -794,25 +850,45 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     } catch { }
     resetRPS();
 
-    let taken = 0, unsub = null, stopped = false;
+    const rawLimit = isMD ? opts.steps : opts.maxSteps;
+    const limitCandidate = Number.isFinite(rawLimit) ? Math.floor(rawLimit) : DEFAULTS.CONTINUOUS_STEPS;
+    const stepLimit = Math.max(1, limitCandidate);
+    const extraAllowance = isMD ? 5 : 0;
+
+    currentStepBudget = {
+      kind: isMD ? 'md' : 'relax',
+      limit: stepLimit,
+      remaining: stepLimit,
+      extraAllowance,
+      overshoot: 0,
+    };
+    running.stepBudget = currentStepBudget;
+
+    let unsub = null, stopped = false;
     unsub = ws.onResult((r) => {
       if (stopped || mode !== (isMD ? Mode.MD : Mode.Relax)) return;
       if (env.apiOn()) dbg.log(`[${kind}WS][frame]`, { seq: Number(r.seq) || 0, uic: Number(r.userInteractionCount) || 0, simStep: Number(r.simStep) || 0, have: { pos: !!r.positions, forces: !!r.forces, energy: typeof r.energy === 'number' } });
       handleStreamFrame(kind, ws, r);
+      const budget = currentStepBudget;
+      if (!budget || budget.kind !== (isMD ? 'md' : 'relax')) return;
+      if (budget.remaining > 0) {
+        budget.remaining -= 1;
+        budget.overshoot = 0;
+        return;
+      }
+
       if (isMD) {
-        const steps = opts.steps ?? 1000;
-        const extraAllowance = 5;
         const haveV = Array.isArray(state.dynamics?.velocities) && state.dynamics.velocities.length === state.elements.length;
-        if (++taken >= steps && (haveV || taken - steps >= extraAllowance)) {
+        if (haveV || budget.overshoot >= budget.extraAllowance) {
           stopped = true; try { ws.stopSimulation(); } catch { } try { unsub && unsub(); } catch { }
           setMode(Mode.Idle); resetRPS();
+        } else {
+          budget.overshoot += 1;
+          return;
         }
       } else {
-        const maxSteps = opts.maxSteps ?? 1000;
-        if (++taken >= maxSteps) {
-          stopped = true; try { ws.stopSimulation(); } catch { } try { unsub && unsub(); } catch { }
-          setMode(Mode.Idle); resetRPS();
-        }
+        stopped = true; try { ws.stopSimulation(); } catch { } try { unsub && unsub(); } catch { }
+        setMode(Mode.Idle); resetRPS();
       }
     });
 

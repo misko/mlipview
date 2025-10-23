@@ -5,12 +5,12 @@
 beforeAll(() => {
   if (!global.BABYLON) {
     global.BABYLON = {
-      TransformNode: class {},
+      TransformNode: class { },
       MeshBuilder: {
         CreateCylinder: () => ({
-          dispose() {},
-          setEnabled() {},
-          position: { set() {} },
+          dispose() { },
+          setEnabled() { },
+          position: { set() { } },
           rotationQuaternion: null,
           scaling: {},
           isPickable: false,
@@ -24,7 +24,7 @@ beforeAll(() => {
           this.specularColor = {};
         }
       },
-      Color3: class {},
+      Color3: class { },
       Vector3: class {
         constructor(x = 0, y = 0, z = 0) {
           this.x = x;
@@ -66,17 +66,17 @@ beforeAll(() => {
           return {};
         }
       },
-      Scene: class {},
+      Scene: class { },
     };
   }
 });
 
 jest.mock('../public/render/scene.js', () => ({
   createScene: async () => ({
-    engine: { runRenderLoop: (fn) => {} },
+    engine: { runRenderLoop: (fn) => { } },
     scene: {
       meshes: [],
-      render: () => {},
+      render: () => { },
       onPointerObservable: {
         _l: [],
         add(fn) {
@@ -84,7 +84,7 @@ jest.mock('../public/render/scene.js', () => ({
         },
       },
     },
-    camera: { attachControl: () => {} },
+    camera: { attachControl: () => { } },
   }),
 }));
 
@@ -183,14 +183,14 @@ async function setupViewer() {
   energyCanvas.width = 260;
   energyCanvas.height = 80;
   energyCanvas.getContext = () => ({
-    clearRect() {},
-    beginPath() {},
-    moveTo() {},
-    lineTo() {},
-    stroke() {},
-    arc() {},
-    fill() {},
-    fillRect() {},
+    clearRect() { },
+    beginPath() { },
+    moveTo() { },
+    lineTo() { },
+    stroke() { },
+    arc() { },
+    fill() { },
+    fillRect() { },
     strokeStyle: null,
     lineWidth: 1,
     fillStyle: null,
@@ -202,6 +202,7 @@ async function setupViewer() {
   const mod = await import('../public/index.js');
   const { initTemperatureSlider } = await import('../public/ui/temperatureSlider.js');
   const { initFrictionSlider } = await import('../public/ui/frictionSlider.js');
+  window.__MLIP_DEV_MODE = true;
   const viewer = await mod.initNewViewer(canvas, {
     elements: [{ Z: 8 }, { Z: 1 }, { Z: 1 }],
     positions: [
