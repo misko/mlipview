@@ -54,10 +54,6 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
 
   // Stop MD via UI toggle and verify stop indicator (use DOM click to avoid visibility issues)
   await page.waitForSelector('#toggleMD', { state: 'attached' });
-  await page.evaluate(() => {
-    const el = document.getElementById('toggleMD');
-    if (el) el.click();
-  });
   const sawStopMd = await page.evaluate(async () => {
     const ws = window.__fairchem_ws__;
     let saw = false;
@@ -67,6 +63,8 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
       } catch { }
     });
     try {
+      const btn = document.getElementById('toggleMD');
+      btn?.click();
       const t0 = Date.now();
       while (Date.now() - t0 < 6000 && !saw) await new Promise((r) => setTimeout(r, 50));
     } finally {
