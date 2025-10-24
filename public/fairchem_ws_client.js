@@ -288,6 +288,10 @@ export function createFairchemWS() {
             const velTriples = __flat3ToTriples(fr.velocities);
             if (velTriples) out.velocities = velTriples;
 
+            if (typeof fr.temperature === 'number') out.temperature = fr.temperature;
+            if (typeof fr.timestepFs === 'number') out.timestep_fs = fr.timestepFs;
+            if (typeof fr.friction === 'number') out.friction = fr.friction;
+
             if (fr.cell && Array.isArray(fr.cell.m)) out.cell = __mat3ToRows(fr.cell.m);
             if (fr.stress && Array.isArray(fr.stress.m)) out.stress = __mat3ToRows(fr.stress.m);
 

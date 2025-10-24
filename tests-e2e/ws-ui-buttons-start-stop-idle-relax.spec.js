@@ -192,15 +192,83 @@ test('Temperature indicator only reports during MD runs', async ({
 
   await expect(instTemp).toHaveText(placeholderRegex);
 
-  await page.evaluate(async () => {
-    await window.viewerApi.startMDContinuous({ steps: 500, temperature: 1200 });
+  const mdTemperatureResult = await page.evaluate(async () => {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const ws = window.__fairchem_ws__;
+    const instLabel = document.getElementById('instTemp');
+    const slider = document.getElementById('mdTempSlider');
+    const sliderLabel = document.getElementById('tempLabel');
+    if (!ws || !instLabel) return { samples: [], before: null, after: null };
+
+    const before = {
+      sliderValue: slider?.value ?? null,
+      sliderText: sliderLabel?.textContent ?? null,
+    };
+
+    const samples = [];
+    const off = ws.onResult((r) => {
+      try {
+        if (!r || typeof r.seq !== 'number') return;
+        const seq = Number(r.seq) || 0;
+        const frameTemp = typeof r.temperature === 'number' ? r.temperature : NaN;
+        const sample = { seq, frameTemp, displayText: null };
+        samples.push(sample);
+        if (typeof window.requestAnimationFrame === 'function') {
+          window.requestAnimationFrame(() => {
+            try {
+              sample.displayText = instLabel.textContent?.trim() || '';
+            } catch {
+              sample.displayText = null;
+            }
+          });
+        } else {
+          sample.displayText = instLabel.textContent?.trim() || '';
+        }
+      } catch {
+        /* ignore */
+      }
+    });
+
+    try {
+      const res = await window.viewerApi.startMDContinuous({ steps: 240, temperature: 1100 });
+      if (res?.disabled) return { samples: [], before, after: before };
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline && samples.length < 16) await wait(100);
+      const settleDeadline = Date.now() + 1000;
+      while (samples.some((s) => s.displayText == null) && Date.now() < settleDeadline) {
+        await wait(25);
+      }
+    } finally {
+      try { window.viewerApi.stopSimulation(); } catch { }
+      try { off && off(); } catch { }
+    }
+
+    const after = {
+      sliderValue: slider?.value ?? null,
+      sliderText: sliderLabel?.textContent ?? null,
+    };
+
+    return { samples, before, after };
   });
 
-  await expect(instTemp).toHaveText(/T:\s*\d+(?:\.\d+)?\s*K/, { timeout: 20_000 });
+  expect(mdTemperatureResult.samples.length).toBeGreaterThanOrEqual(8);
+  expect(mdTemperatureResult.before).not.toBeNull();
+  expect(mdTemperatureResult.after).not.toBeNull();
+  expect(mdTemperatureResult.before.sliderValue).toBe(mdTemperatureResult.after.sliderValue);
+  expect(mdTemperatureResult.before.sliderText).toBe(mdTemperatureResult.after.sliderText);
 
-  await page.evaluate(() => {
-    window.viewerApi.stopSimulation();
+  const parsedDisplays = mdTemperatureResult.samples.map((s) => {
+    const match = s.displayText?.match(/T:\s*(-?\d+(?:\.\d+)?)\s*K/i);
+    return match ? Number.parseFloat(match[1]) : Number.NaN;
   });
+  expect(parsedDisplays.every(Number.isFinite)).toBe(true);
+  parsedDisplays.forEach((displayValue, idx) => {
+    const frameTemp = mdTemperatureResult.samples[idx].frameTemp;
+    if (!Number.isFinite(frameTemp)) return;
+    expect(Math.abs(displayValue - frameTemp)).toBeLessThanOrEqual(0.2);
+  });
+  const displaySpan = Math.max(...parsedDisplays) - Math.min(...parsedDisplays);
+  expect(displaySpan).toBeGreaterThan(0.05);
 
   await expect(instTemp).toHaveText(placeholderRegex, { timeout: 20_000 });
 

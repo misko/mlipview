@@ -844,6 +844,75 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   let running = { kind: null, abort: null, stepBudget: null }; // keep for API compatibility
 
   let idleUnsub = null;
+  let mdStreamUnsub = null;
+  let relaxStreamUnsub = null;
+
+  const streamListenerStats = {
+    md: { attach: 0, detach: 0, active: 0, maxActive: 0 },
+    relax: { attach: 0, detach: 0, active: 0, maxActive: 0 },
+  };
+
+  const statsFor = (kind) => (kind === 'relax' ? streamListenerStats.relax : streamListenerStats.md);
+
+  function resetStreamListenerStats() {
+    for (const key of Object.keys(streamListenerStats)) {
+      const stat = streamListenerStats[key];
+      stat.attach = 0;
+      stat.detach = 0;
+      stat.active = 0;
+      stat.maxActive = 0;
+    }
+  }
+
+  function trackAttach(kind) {
+    const stat = statsFor(kind);
+    stat.attach += 1;
+    stat.active += 1;
+    if (stat.active > stat.maxActive) stat.maxActive = stat.active;
+  }
+
+  function trackDetach(kind) {
+    const stat = statsFor(kind);
+    stat.detach += 1;
+    stat.active = Math.max(0, stat.active - 1);
+  }
+
+  function makeTrackedUnsub(kind, unsub) {
+    let done = false;
+    const tracked = () => {
+      if (done) return;
+      done = true;
+      try { unsub && unsub(); } catch { }
+      trackDetach(kind);
+      if (kind === 'md' && mdStreamUnsub === tracked) mdStreamUnsub = null;
+      if (kind === 'relax' && relaxStreamUnsub === tracked) relaxStreamUnsub = null;
+    };
+    return tracked;
+  }
+
+  function clearMdStreamListener() {
+    if (typeof mdStreamUnsub === 'function') {
+      const fn = mdStreamUnsub;
+      mdStreamUnsub = null;
+      fn();
+    }
+  }
+
+  function clearRelaxStreamListener() {
+    if (typeof relaxStreamUnsub === 'function') {
+      const fn = relaxStreamUnsub;
+      relaxStreamUnsub = null;
+      fn();
+    }
+  }
+
+  function debugStreamListenerStats({ reset = false } = {}) {
+    if (reset) resetStreamListenerStats();
+    return {
+      md: { ...streamListenerStats.md },
+      relax: { ...streamListenerStats.relax },
+    };
+  }
   async function attachIdleWSListener() {
     const ws = getWS();
     await ensureWsInit();
@@ -857,6 +926,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   function setMode(next) {
     if (mode === next) return;
+    if (mode === Mode.MD && next !== Mode.MD) clearMdStreamListener();
+    if (mode === Mode.Relax && next !== Mode.Relax) clearRelaxStreamListener();
     mode = next;
     if (mode !== Mode.MD) {
       try { if (state?.dynamics) state.dynamics.temperature = undefined; } catch { }
@@ -910,6 +981,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     running.stepBudget = currentStepBudget;
 
     let unsub = null, stopped = false;
+    if (isMD) clearMdStreamListener();
+    else clearRelaxStreamListener();
     unsub = ws.onResult((r) => {
       if (stopped || mode !== (isMD ? Mode.MD : Mode.Relax)) return;
       if (env.apiOn()) dbg.log(`[${kind}WS][frame]`, { seq: Number(r.seq) || 0, uic: Number(r.userInteractionCount) || 0, simStep: Number(r.simStep) || 0, have: { pos: !!r.positions, forces: !!r.forces, energy: typeof r.energy === 'number' } });
@@ -925,17 +998,26 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       if (isMD) {
         const haveV = Array.isArray(state.dynamics?.velocities) && state.dynamics.velocities.length === state.elements.length;
         if (haveV || budget.overshoot >= budget.extraAllowance) {
-          stopped = true; try { ws.stopSimulation(); } catch { } try { unsub && unsub(); } catch { }
+          stopped = true; try { ws.stopSimulation(); } catch { }
+          clearMdStreamListener();
           setMode(Mode.Idle); resetRPS();
         } else {
           budget.overshoot += 1;
           return;
         }
       } else {
-        stopped = true; try { ws.stopSimulation(); } catch { } try { unsub && unsub(); } catch { }
+        stopped = true; try { ws.stopSimulation(); } catch { }
+        clearRelaxStreamListener();
         setMode(Mode.Idle); resetRPS();
       }
     });
+    if (isMD) {
+      trackAttach('md');
+      mdStreamUnsub = makeTrackedUnsub('md', unsub);
+    } else {
+      trackAttach('relax');
+      relaxStreamUnsub = makeTrackedUnsub('relax', unsub);
+    }
 
     // live temperature from global target if present (MD)
     let temperature = isMD ? (opts.temperature ?? 1500) : undefined;
@@ -962,6 +1044,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   function stopSimulation() {
     try { const ws = getWS(); ws.stopSimulation(); } catch { }
+    clearMdStreamListener();
+    clearRelaxStreamListener();
     setMode(Mode.Idle); resetRPS();
   }
 
@@ -1276,9 +1360,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     enableFeatureFlag,
     setMinStepInterval,
     requestSimpleCalculateNow,
-    debugGhostSnapshot,
-    debugHighlightState,
-    debugCameraControls,
+      debugGhostSnapshot,
+      debugHighlightState,
+      debugStreamListenerStats,
+      debugCameraControls,
     debugBondMetrics,
     setTestAutoSelectFallback,
     debugSelectAtom,

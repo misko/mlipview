@@ -48,6 +48,35 @@ viewerApi.debugHighlightState = () => ({
 
 ---
 
+## `viewerApi.debugStreamListenerStats({ reset = false } = {})`
+
+**Purpose:** Surface the attach/detach counts for the MD/relax streaming websocket listeners so tests can assert that repeated start/stop cycles do not leak extra handlers.
+
+**Suggested shape:**
+
+```js
+const streamListenerStats = {
+  md: { attach: 0, detach: 0, active: 0, maxActive: 0 },
+  relax: { attach: 0, detach: 0, active: 0, maxActive: 0 },
+};
+
+viewerApi.debugStreamListenerStats = ({ reset = false } = {}) => {
+  if (reset) {
+    for (const key of Object.keys(streamListenerStats)) {
+      Object.assign(streamListenerStats[key], { attach: 0, detach: 0, active: 0, maxActive: 0 });
+    }
+  }
+  return {
+    md: { ...streamListenerStats.md },
+    relax: { ...streamListenerStats.relax },
+  };
+};
+```
+
+**Used by:** `tests-e2e/x-md-multi-start-stop.spec.js` to confirm triple MD start attempts still leave exactly one active listener.
+
+---
+
 ## `viewerApi.debugCameraControls()`
 
 **Purpose:** Track camera detach/attach invocations during drag interactions.
