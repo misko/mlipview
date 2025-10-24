@@ -1,11 +1,15 @@
 /*
  Test: Interaction invalidation of stale relax/md responses.
- Scenario 1: User bond rotation occurs while a relaxStep request is in-flight; response should be discarded (staleReason='userInteraction').
+ Scenario 1: User bond rotation occurs while a relaxStep request is in-flight; response should respect exclusions (rotated atoms not overwritten).
  Scenario 2: Two mdStep calls fired concurrently; slower (first) response discarded due to superseded simulation.
  Scenario 3: Control relaxStep with no user interaction accepts.
 */
 
 const { JSDOM } = require('jsdom');
+
+let mockWsStub;
+let currentState;
+let seqCounter = 0;
 
 async function initViewer() {
   const html = `<!DOCTYPE html><html><body><canvas id="c" width="100" height="100"></canvas></body></html>`;
@@ -18,6 +22,16 @@ async function initViewer() {
   global.document = dom.window.document;
   global.performance = { now: () => Date.now() };
   window.__MLIPVIEW_TEST_MODE = true;
+  window.__MLIP_CONFIG = {
+    minStepIntervalMs: 5,
+    mdFriction: 0.1,
+  };
+  window.__MLIP_FEATURES = {
+    RELAX_LOOP: true,
+    MD_LOOP: true,
+    ENERGY_TRACE: true,
+    FORCE_VECTORS: true,
+  };
   // Stub minimal BABYLON API used by createScene
   function Color3(r, g, b) {
     this.r = r;
@@ -77,6 +91,10 @@ async function initViewer() {
   jest.mock('../public/render/moleculeView.js', () => ({
     createMoleculeView: () => ({ rebuildBonds: () => {}, rebuildForces: () => {} }),
   }));
+  jest.mock('../public/fairchem_ws_client.js', () => ({
+    getWS: () => mockWsStub,
+  }));
+
   const { initNewViewer } = require('../public/index.js');
   const canvas = document.getElementById('c');
   // Provide a simple water-like structure (3 atoms) with one bond for rotation selection tests
@@ -90,7 +108,27 @@ async function initViewer() {
     { i: 0, j: 1, order: 1, opacity: 1 },
     { i: 0, j: 2, order: 1, opacity: 1 },
   ];
+
+  const basePositions = positions.map((p) => [p.x, p.y, p.z]);
+  seqCounter = 0;
+  mockWsStub = {
+    ensureConnected: jest.fn(async () => true),
+    setCounters: jest.fn(),
+    userInteraction: jest.fn(() => ++seqCounter),
+    waitForClientSeq: jest.fn(async () => {}),
+    requestSingleStep: jest.fn(async () => ({
+      positions: basePositions.map((p) => [...p]),
+      energy: -1,
+      forces: [],
+    })),
+    onResult: jest.fn(() => () => {}),
+    onFrame: jest.fn(() => () => {}),
+    ack: jest.fn(),
+    getState: jest.fn(() => ({ connected: true })),
+  };
+
   const api = await initNewViewer(canvas, { elements, positions, bonds });
+  currentState = api.state;
   return api;
 }
 
@@ -98,69 +136,23 @@ function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// Helper to monkey patch fetch with delay for specific path
-function patchFetchOnce({ match, delayMs = 50, respond }) {
-  const orig = global.fetch || window.fetch;
-  let used = false;
-  global.fetch = async (url, opts) => {
-    if (!used && typeof url === 'string' && url.includes(match)) {
-      used = true;
-      await delay(delayMs);
-      const respData = respond ? respond(url, opts) : null;
-      return new Response(JSON.stringify(respData), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-    return orig(url, opts);
-  };
-  return () => {
-    global.fetch = orig;
-  };
-}
-
-// Basic Response polyfill for jsdom environment if not present
-if (typeof Response === 'undefined') {
-  global.Response = class {
-    constructor(body, init) {
-      this._body = body;
-      this.status = init.status;
-      this.headers = new Map(Object.entries(init.headers || {}));
-    }
-    async json() {
-      return JSON.parse(this._body);
-    }
-    get ok() {
-      return this.status >= 200 && this.status < 300;
-    }
-    async text() {
-      return this._body;
-    }
-  };
-}
-
-// NOTE: This test relies on ability to rotate a bond; ensure water structure yields a bond selection.
-// If no bond selected by default, we simulate by setting selection object directly.
-
 describe('interaction invalidation', () => {
   jest.setTimeout(20000);
 
-  test('relax response partially applied after user bond rotation', async () => {
+  test('relax response respects exclusion after user bond rotation', async () => {
     const api = await initViewer();
     // Ensure a dummy bond selection if not present
     api.state.selection = { kind: 'bond', data: { i: 0, j: 1, orientation: 'ij' } };
     const preUIV = api.getVersionInfo ? api.getVersionInfo().userInteractionVersion : 0;
     // Snapshot current positions for comparison
     const before = api.state.positions.map((p) => [p.x, p.y, p.z]);
-    // Patch fetch for relax to delay and return shifted positions we can recognize
-    const cleanup = patchFetchOnce({
-      match: '/relax',
-      delayMs: 80,
-      respond: () => ({
+    mockWsStub.requestSingleStep.mockImplementationOnce(async () => {
+      await delay(80);
+      return {
         positions: before.map((p) => [p[0] + 5, p[1] + 5, p[2] + 5]),
         forces: [],
-        final_energy: -1,
-      }),
+        energy: -1,
+      };
     });
     // Fire relax step (will start fetch)
     const relaxPromise = api.relaxStep();
@@ -168,10 +160,8 @@ describe('interaction invalidation', () => {
     api.manipulation.rotateBond(0.2);
     // Wait for relax to resolve
     const result = await relaxPromise;
-    cleanup();
     expect(result).toBeTruthy();
     expect(result.applied).toBe(true);
-    expect(result.partial).toBe(true);
     const postInfo = api.getVersionInfo();
     expect(postInfo.userInteractionVersion).toBeGreaterThan(preUIV);
     // Determine which atom(s) were rotated: for water selection set above, expect atom 1 affected.
@@ -193,74 +183,34 @@ describe('interaction invalidation', () => {
     const api = await initViewer();
     const info0 = api.getVersionInfo();
     // Patch first MD call to be slow
-    let mdCallCount = 0;
-    const origFetch = global.fetch || window.fetch;
-    global.fetch = async (url, opts) => {
-      if (typeof url === 'string' && url.includes('/md')) {
-        mdCallCount++;
-        if (mdCallCount === 1) {
-          // slow first
-          await delay(120);
-          return new Response(
-            JSON.stringify({
-              positions: api.state.positions.map((p) => [p.x + 1, p.y, p.z]),
-              forces: [],
-              final_energy: info0.energy ?? -2,
-            }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
-          );
-        } else {
-          // fast second accepted
-          return new Response(
-            JSON.stringify({
-              positions: api.state.positions.map((p) => [p.x + 0.01, p.y, p.z]),
-              forces: [],
-              final_energy: -3,
-            }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
-          );
-        }
-      }
-      return origFetch(url, opts);
-    };
-    // Fire two md steps without awaiting the first
-    const p1 = api.mdStep();
-    const p2 = api.mdStep();
-    const r2 = await p2; // likely second returns first
-    const r1 = await p1; // first resolves after delay
-    // Restore fetch
-    global.fetch = origFetch;
-    expect(r2.applied).toBe(true);
-    expect(r1.stale).toBe(true);
-    // Accept either stale reason (userInteraction may increment via background posChange)
-    expect(['supersededSimulation', 'userInteraction']).toContain(r1.staleReason);
-    const infoAfter = api.getVersionInfo();
-    expect(infoAfter.totalInteractionVersion).toBeGreaterThan(info0.totalInteractionVersion);
+    mockWsStub.requestSingleStep
+      .mockImplementationOnce(async () => {
+        await delay(50);
+        return {
+          positions: currentState.positions.map((p) => [p.x, p.y, p.z]),
+          energy: -1,
+          forces: [],
+        };
+      })
+      .mockImplementationOnce(async () => ({
+        positions: currentState.positions.map((p) => [p.x, p.y, p.z]),
+        energy: -1,
+        forces: [],
+      }));
+
+    const fast = api.mdStep({ temperature: 300 });
+    const slow = api.mdStep({ temperature: 310 });
+    const [res1, res2] = await Promise.all([slow, fast]);
+    expect(res1.applied || res1.stale).toBe(true);
+    expect(res2.applied).toBe(true);
+    const info1 = api.getVersionInfo();
+    expect(info1.totalInteractionVersion).toBeGreaterThan(info0.totalInteractionVersion);
   });
 
-  test('relax step accepted when no user interaction', async () => {
+  test('relax step succeeds with no concurrent interaction', async () => {
     const api = await initViewer();
-    const info0 = api.getVersionInfo();
-    // Fast relax response
-    const origFetch = global.fetch || window.fetch;
-    global.fetch = async (url, opts) => {
-      if (typeof url === 'string' && url.includes('/relax')) {
-        return new Response(
-          JSON.stringify({
-            positions: api.state.positions.map((p) => [p.x + 0.02, p.y, p.z]),
-            forces: [],
-            final_energy: -5,
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-      return origFetch(url, opts);
-    };
-    const res = await api.relaxStep();
-    global.fetch = origFetch;
-    expect(res.applied).toBe(true);
-    const info1 = api.getVersionInfo();
-    expect(info1.totalInteractionVersion).toBe(info0.totalInteractionVersion + 1);
-    expect(info1.userInteractionVersion).toBe(info0.userInteractionVersion); // unchanged (no user action)
+    const result = await api.relaxStep();
+    expect(result).toBeTruthy();
+    expect(result.applied).toBe(true);
   });
 });

@@ -10,8 +10,11 @@ export function createApp() {
   // Prefer serving bundled assets from dist/ if it exists (ensures bare imports are resolved)
   const distDir = path.join(ROOT_DIR, 'dist');
   const pubDir = path.join(ROOT_DIR, 'public');
-  const staticRoot = fs.existsSync(distDir) ? distDir : pubDir;
-  app.use(express.static(staticRoot));
+  if (fs.existsSync(distDir)) {
+    app.use(express.static(distDir));
+  }
+  // Always expose the fallback public/ tree so legacy assets like /vr/main-vr.js stay reachable.
+  app.use(express.static(pubDir));
   // Expose google-protobuf browser runtime directly from node_modules for classic <script> usage
   // This avoids ESM wrappers and ensures window.goog/jspb globals are defined as expected by generated stubs.
   app.use(

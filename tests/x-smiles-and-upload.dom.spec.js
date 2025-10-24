@@ -66,7 +66,7 @@ describe('System panel SMILES + XYZ upload', () => {
     const xyz = '3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0';
     const file = new File([xyz], 'water.xyz', { type: 'text/plain' });
     // Some jsdom versions may not implement File.prototype.text reliably; force it
-    Object.defineProperty(file, 'text', { configurable: true, value: () => Promise.resolve(xyz) });
+    file.text = () => Promise.resolve(xyz);
     // Simulate file selection (jsdom: files is a readonly getter)
     Object.defineProperty(fileInput, 'files', { configurable: true, get: () => [file] });
     fileInput.dispatchEvent(new Event('change'));
@@ -100,7 +100,7 @@ describe('System panel SMILES + XYZ upload', () => {
     // XYZ with empty second line (valid XYZ format)
     const xyz = '3\n\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n';
     const file = new File([xyz], 'water_blank_comment.xyz', { type: 'text/plain' });
-    Object.defineProperty(file, 'text', { configurable: true, value: () => Promise.resolve(xyz) });
+    file.text = () => Promise.resolve(xyz);
     Object.defineProperty(fileInput, 'files', { configurable: true, get: () => [file] });
     fileInput.dispatchEvent(new Event('change'));
     // Wait for async to complete
