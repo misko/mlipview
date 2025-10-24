@@ -186,6 +186,63 @@ viewerApi.debugGetSelection = () => selectionService.get();
 
 ---
 
+## `viewerApi.debugWsState()`
+
+**Purpose:** Surface the recent websocket state transitions (connecting, reconnect scheduling, open/close, etc.) plus the reconnection banner state so tests can assert precise reconnect behaviour without scraping the DOM.
+
+**Suggested shape:**
+
+```js
+viewerApi.debugWsState = () => ({
+  reconnect: {
+    attempts: reconnectState.attempts,
+    nextAttemptAt: reconnectState.nextAttemptAt,
+    bannerVisible: reconnectState.bannerVisible,
+  },
+  pendingResume: pendingResume.kind ? { kind: pendingResume.kind, opts: { ...pendingResume.opts } } : null,
+  log: wsStateLog.map((evt) => ({ ...evt })),
+});
+```
+
+**Used by:** `tests-e2e/x-ws-reconnect.spec.js` to wait for banner visibility changes and verify reconnect/open events.
+
+---
+
+## `viewerApi.forceWsReconnect()`
+
+**Purpose:** Immediately trigger a websocket reconnect attempt (cancelling any backoff timer) so tests can simulate the user pressing the “Reconnect now” CTA.
+
+**Suggested shape:**
+
+```js
+viewerApi.forceWsReconnect = () => {
+  getWS().reconnectNow?.();
+  return true;
+};
+```
+
+**Used by:** Reconnect Playwright tests to assert manual reconnects clear the banner promptly.
+
+---
+
+## `viewerApi.simulateWsDrop({ failAttempts } = {})`
+
+**Purpose:** Forcefully close the websocket while keeping the client in auto-reconnect mode; optionally pre-program the next N reconnect attempts to fail. This lets tests emulate server restarts mid-run.
+
+**Suggested shape:**
+
+```js
+viewerApi.simulateWsDrop = ({ failAttempts = 0 } = {}) => {
+  if (Number.isFinite(failAttempts)) window.__MLIPVIEW_WS_FAIL_ATTEMPTS = Math.max(0, failAttempts | 0);
+  getWS().forceDisconnect?.('test-drop');
+  return true;
+};
+```
+
+**Used by:** `tests-e2e/x-ws-reconnect.spec.js` to drop the connection during an MD run and verify automatic recovery.
+
+---
+
 ### Authoring Notes
 
 - Keep hook implementations colocated with viewer bootstrap (`public/index.js`) so they can access the live `view` and `state`.

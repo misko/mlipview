@@ -216,6 +216,87 @@ export function createFairchemWS() {
     } catch { }
   }
 
+  let reconnectAttempts = 0;
+  let reconnectTimer = null;
+  const MAX_RECONNECT_DELAY_MS = 30000;
+  const BASE_RECONNECT_DELAY_MS = 3000;
+  let hasConnectedOnce = false;
+
+  const openWaiters = new Set();
+
+  function notifyOpenWaiters(value = true) {
+    for (const entry of openWaiters) {
+      try { entry.resolve(value); } catch { }
+      if (entry.timer) clearTimeout(entry.timer);
+    }
+    openWaiters.clear();
+  }
+
+  function failOpenWaiters(err) {
+    for (const entry of openWaiters) {
+      if (entry.timer) clearTimeout(entry.timer);
+      try { entry.reject(err); } catch { }
+    }
+    openWaiters.clear();
+  }
+
+  function waitForNextOpen({ timeoutMs = 60000 } = {}) {
+    return new Promise((resolve, reject) => {
+      const entry = { resolve, reject, timer: null };
+      entry.timer = setTimeout(() => {
+        openWaiters.delete(entry);
+        reject(new Error('waitForOpen timeout'));
+      }, Math.max(1000, timeoutMs | 0));
+      openWaiters.add(entry);
+    });
+  }
+
+  function emitState(evt) {
+    try {
+      if (typeof window !== 'undefined' && typeof window.__WS_ON_STATE__ === 'function') {
+        window.__WS_ON_STATE__(evt);
+      }
+    } catch { }
+    try {
+      if (typeof globalThis !== 'undefined' && typeof globalThis.__WS_ON_STATE__ === 'function') {
+        if (globalThis.__WS_ON_STATE__ !== window?.__WS_ON_STATE__) globalThis.__WS_ON_STATE__(evt);
+      }
+    } catch { }
+  }
+
+  function clearReconnectTimer() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
+
+  function computeDelayMs() {
+    const n = Math.max(0, reconnectAttempts - 1);
+    const delay = BASE_RECONNECT_DELAY_MS * Math.pow(1.8, n);
+    return Math.min(MAX_RECONNECT_DELAY_MS, Math.round(delay));
+  }
+
+  function scheduleReconnect(reason) {
+    if (!wantConnected) return;
+    clearReconnectTimer();
+    reconnectAttempts += 1;
+    const delayMs = computeDelayMs();
+    const nextAttemptAt = Date.now() + delayMs;
+    emitState({
+      type: 'reconnect-scheduled',
+      attempts: reconnectAttempts,
+      delayMs,
+      nextAttemptAt,
+      reason,
+    });
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      __connectPromise = null;
+      ensureConnected().catch(() => { });
+    }, delayMs);
+  }
+
   function sendBytes(buf) {
     if (ws && ws.readyState === 1) {
       __log('[WS][tx-bytes]', { len: buf?.byteLength || buf?.length || 0 });
@@ -227,7 +308,43 @@ export function createFairchemWS() {
 
   let wantConnected = false;
 
-  function close() { wantConnected = false; try { ws && ws.close(); } catch { } }
+  function close() {
+    wantConnected = false;
+    clearReconnectTimer();
+    failOpenWaiters(new Error('ws closed'));
+    try { ws && ws.close(); } catch { }
+  }
+
+  function forceDisconnect(reason) {
+    wantConnected = true;
+    clearReconnectTimer();
+    if (ws && (ws.readyState === 0 || ws.readyState === 1)) {
+      try { ws.close(4000, reason || 'force-disconnect'); } catch { }
+    } else {
+      scheduleReconnect(reason || 'force-disconnect');
+    }
+  }
+
+  function shouldForceFailAttempt() {
+    try {
+      if (typeof window !== 'undefined' && window.__MLIPVIEW_TEST_MODE) {
+        if (typeof window.__MLIPVIEW_WS_FAIL_ATTEMPTS === 'number' && window.__MLIPVIEW_WS_FAIL_ATTEMPTS > 0) {
+          window.__MLIPVIEW_WS_FAIL_ATTEMPTS -= 1;
+          return true;
+        }
+      }
+    } catch { }
+    return false;
+  }
+
+  function resetSeqCounters() {
+    clientAck = 0;
+    lastCounters.userInteractionCount = 0;
+    lastCounters.simStep = 0;
+    lastClientSeq = 0;
+    lastAckSent = 0;
+    highestSeq = 0;
+  }
 
   async function connect() {
     __assertPB();
@@ -235,25 +352,42 @@ export function createFairchemWS() {
     const url = base.replace(/\/$/, '') + '/ws';
     __log('[WS][connect]', url);
 
+    wantConnected = true;
+    emitState({ type: 'connecting', attempts: reconnectAttempts + 1 });
+
+    if (shouldForceFailAttempt()) {
+      const err = new Error('forced connection failure (test)');
+      emitState({ type: 'error', error: err.message });
+      scheduleReconnect('forced-test-failure');
+      throw err;
+    }
+
     ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
 
     return new Promise((resolve, reject) => {
       ws.onopen = () => {
         wantConnected = true;
+        const isReconnect = hasConnectedOnce;
+        hasConnectedOnce = true;
+        clearReconnectTimer();
+        reconnectAttempts = 0;
+        resetSeqCounters();
         __log('[WS][open]', { readyState: ws?.readyState });
-        try { if (typeof window !== 'undefined' && typeof window.__WS_ON_STATE__ === 'function') window.__WS_ON_STATE__({ type: 'open', url }); } catch { }
+        emitState({ type: 'open', url, isReconnect });
+        notifyOpenWaiters(true);
         resolve(true);
       };
       ws.onerror = (e) => {
         __err('[WS][error]', e?.message || e);
-        try { if (typeof window !== 'undefined' && typeof window.__WS_ON_STATE__ === 'function') window.__WS_ON_STATE__({ type: 'error', error: e?.message || String(e) }); } catch { }
+        emitState({ type: 'error', error: e?.message || String(e) });
+        if (wantConnected) scheduleReconnect(e?.message || 'error');
         reject(e);
       };
       ws.onclose = (ev) => {
         __warn('[WS][close]', { code: ev?.code, reason: ev?.reason });
-        try { if (typeof window !== 'undefined' && typeof window.__WS_ON_STATE__ === 'function') window.__WS_ON_STATE__({ type: 'close', code: ev?.code, reason: ev?.reason }); } catch { }
-        if (wantConnected) setTimeout(() => { if (!__connectPromise) ensureConnected().catch(() => { }); }, 1000);
+        emitState({ type: 'close', code: ev?.code, reason: ev?.reason });
+        if (wantConnected) scheduleReconnect(ev?.reason || 'close');
       };
       ws.onmessage = async (ev) => {
         try {
@@ -341,12 +475,21 @@ export function createFairchemWS() {
     });
   }
 
-  async function ensureConnected() {
+  async function ensureConnected({ timeoutMs = 60000 } = {}) {
     if (ws && ws.readyState === 1) return true;
-    if (__connectPromise) { await __connectPromise; return true; }
-    __connectPromise = connect().finally(() => { __connectPromise = null; });
-    await __connectPromise;
-    return true;
+    if (!wantConnected) wantConnected = true;
+
+    if (!__connectPromise) {
+      __connectPromise = connect().finally(() => { __connectPromise = null; });
+    }
+
+    try {
+      await __connectPromise;
+      return ws && ws.readyState === 1;
+    } catch (err) {
+      if (!wantConnected) throw err;
+      return waitForNextOpen({ timeoutMs });
+    }
   }
 
   function withCounters(payload) {
@@ -505,6 +648,15 @@ export function createFairchemWS() {
     sendBytes(toBinary(ClientActionSchema, msg));
   }
 
+  function reconnectNow() {
+    wantConnected = true;
+    clearReconnectTimer();
+    __connectPromise = null;
+    if (ws && ws.readyState === 1) return Promise.resolve(true);
+    try { ws && ws.close(); } catch { }
+    return ensureConnected();
+  }
+
   // Batched ACK (one per frame)
   let lastAckSent = 0, highestSeq = 0, ackScheduled = false;
   function flushAck() {
@@ -648,6 +800,8 @@ export function createFairchemWS() {
     stopSimulation,
     setTestHook,
     injectTestResult,
+    reconnectNow,
+    forceDisconnect,
   };
 
   try {

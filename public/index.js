@@ -14,6 +14,7 @@ import { createVRPicker } from './vr/vr-picker.js';
 import { __count } from './util/funcCount.js';
 import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS, MAX_STEP } from './util/constants.js';
 import { getWS } from './fairchem_ws_client.js';
+import { showErrorBanner, hideErrorBanner } from './ui/errorBanner.js';
 import { SYMBOL_TO_Z } from './data/periodicTable.js';
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -31,6 +32,17 @@ const DEFAULTS = {
 };
 
 const TEMP_PLACEHOLDER = 'T: — K';
+
+const wsStateLog = [];
+const reconnectState = {
+  attempts: 0,
+  nextAttemptAt: 0,
+  countdownTimer: null,
+  bannerVisible: false,
+};
+
+const pendingResume = { kind: null, opts: null };
+const lastContinuousOpts = { md: null, relax: null };
 
 function cfgNumber(v, fallback) {
   const n = Number(v);
@@ -63,6 +75,36 @@ const TUNABLES = {
     return cfgNumber(window.__MLIP_CONFIG?.safeSphereRadius, DEFAULTS.SAFE_SPHERE_RADIUS);
   },
 };
+
+const wsStateListeners = new Set();
+function addWsStateListener(fn) {
+  if (typeof fn === 'function') wsStateListeners.add(fn);
+  return () => wsStateListeners.delete(fn);
+}
+
+function dispatchWsState(evt) {
+  const snapshot = { ...(evt || {}), timestamp: Date.now() };
+  wsStateLog.push(snapshot);
+  while (wsStateLog.length > 200) wsStateLog.shift();
+  for (const fn of wsStateListeners) {
+    try { fn(snapshot); } catch { }
+  }
+}
+
+try {
+  if (typeof window !== 'undefined' && !window.__MLIPVIEW_WS_STATE_BRIDGE__) {
+    const previous = typeof window.__WS_ON_STATE__ === 'function' ? window.__WS_ON_STATE__ : null;
+    const bridged = function wsStateBridge(evt) {
+      dispatchWsState(evt || {});
+      if (previous) {
+        try { previous(evt); } catch { }
+      }
+    };
+    bridged.__MLIPVIEW_BRIDGED__ = true;
+    window.__WS_ON_STATE__ = bridged;
+    window.__MLIPVIEW_WS_STATE_BRIDGE__ = true;
+  }
+} catch { }
 
 try {
   console.log('[config:tunables]', {
@@ -839,7 +881,127 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (uic > lastAppliedUIC) lastAppliedUIC = uic;
   }
 
+  function clearReconnectCountdown() {
+    if (reconnectState.countdownTimer) {
+      clearInterval(reconnectState.countdownTimer);
+      reconnectState.countdownTimer = null;
+    }
+  }
+
+  function hideReconnectBannerUi() {
+    if (!reconnectState.bannerVisible) return;
+    reconnectState.bannerVisible = false;
+    clearReconnectCountdown();
+    try { hideErrorBanner(); } catch { }
+  }
+
+  function updateReconnectCountdownText() {
+    if (!reconnectState.bannerVisible) return;
+    const label = typeof document !== 'undefined' ? document.getElementById('wsReconnectCountdown') : null;
+    if (!label) return;
+    const remainingMs = Math.max(0, (reconnectState.nextAttemptAt || Date.now()) - Date.now());
+    const seconds = Math.max(0, Math.ceil(remainingMs / 1000));
+    label.textContent = `Reconnecting in ${seconds}s (attempt ${Math.max(0, reconnectState.attempts)})`;
+  }
+
+  function showReconnectBannerUi(data) {
+    reconnectState.attempts = Math.max(0, data?.attempts || reconnectState.attempts || 0);
+    reconnectState.nextAttemptAt = data?.nextAttemptAt || Date.now();
+    if (reconnectState.attempts < 1) {
+      hideReconnectBannerUi();
+      return;
+    }
+    reconnectState.bannerVisible = true;
+    showErrorBanner('', {
+      persist: true,
+      className: 'ws-reconnect-banner',
+      onRender: (el) => {
+        try {
+          el.innerHTML = `
+            <span class="ws-reconnect-message">
+              Connection to the simulation server was lost.
+              <strong id="wsReconnectCountdown"></strong>
+            </span>
+            <button id="wsReconnectNow" class="ws-reconnect-button">Reconnect now</button>
+          `;
+          el.style.background = '#f8c9c9';
+          el.style.color = '#5a0000';
+          el.style.display = 'flex';
+          el.style.flexWrap = 'wrap';
+          el.style.justifyContent = 'center';
+          el.style.alignItems = 'center';
+          el.style.gap = '12px';
+          el.dataset.banner = 'ws-reconnect';
+          const btn = el.querySelector('#wsReconnectNow');
+          if (btn) {
+            btn.style.background = '#ffffff';
+            btn.style.border = '1px solid #bb3d3d';
+            btn.style.color = '#5a0000';
+            btn.style.padding = '4px 10px';
+            btn.style.cursor = 'pointer';
+            btn.onclick = () => {
+              try { getWS().reconnectNow(); } catch { }
+            };
+          }
+        } catch { }
+        updateReconnectCountdownText();
+      },
+    });
+    clearReconnectCountdown();
+    reconnectState.countdownTimer = setInterval(updateReconnectCountdownText, 500);
+  }
+
   const Mode = Object.freeze({ Idle: 'idle', MD: 'md', Relax: 'relax' });
+
+  function rememberResume(kind, opts) {
+    if (!kind) return;
+    pendingResume.kind = kind;
+    pendingResume.opts = opts ? { ...opts } : {};
+  }
+
+  function consumePendingResume() {
+    const info = { kind: pendingResume.kind, opts: pendingResume.opts ? { ...pendingResume.opts } : {} };
+    pendingResume.kind = null;
+    pendingResume.opts = null;
+    return info;
+  }
+
+  addWsStateListener((evt) => {
+    const type = evt?.type;
+    if (type === 'reconnect-scheduled') {
+      showReconnectBannerUi(evt || {});
+    } else if (type === 'open') {
+      hideReconnectBannerUi();
+      reconnectState.attempts = 0;
+      reconnectState.nextAttemptAt = 0;
+      __wsState.inited = false;
+      __wsState.lastAtomCount = 0;
+      __wsState.lastCellKey = 'off';
+      const pending = consumePendingResume();
+      Promise.resolve()
+        .then(() => ensureWsInit())
+        .then(() => {
+          if (pending.kind === 'md') {
+            startContinuous('md', pending.opts || {}).catch(() => { });
+          } else if (pending.kind === 'relax') {
+            startContinuous('relax', pending.opts || {}).catch(() => { });
+          }
+        })
+        .catch(() => { });
+    } else if (type === 'close') {
+      __wsState.inited = false;
+      __wsState.lastAtomCount = 0;
+      __wsState.lastCellKey = 'off';
+      const currentMode = mode;
+      if (currentMode === Mode.MD || currentMode === Mode.Relax) {
+        const kind = currentMode === Mode.MD ? 'md' : 'relax';
+        rememberResume(kind, lastContinuousOpts[kind]);
+      }
+      try { clearMdStreamListener(); } catch { }
+      try { clearRelaxStreamListener(); } catch { }
+      setMode(Mode.Idle);
+    }
+  });
   let mode = Mode.Idle;
   let running = { kind: null, abort: null, stepBudget: null }; // keep for API compatibility
 
@@ -948,6 +1110,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if ((isMD && !FEATURES.MD_LOOP) || (!isMD && !FEATURES.RELAX_LOOP)) { dbg.warn('[feature] loop disabled', kind); return { disabled: true }; }
     if (mode !== Mode.Idle) return { ignored: true };
     setMode(isMD ? Mode.MD : Mode.Relax);
+    lastContinuousOpts[isMD ? 'md' : 'relax'] = { ...(opts || {}) };
+    if (pendingResume.kind) {
+      pendingResume.kind = null;
+      pendingResume.opts = null;
+    }
 
     const ws = getWS(); await ensureWsInit();
     try { if (posTickScheduled) posTickScheduled = false; } catch { }
@@ -1193,6 +1360,43 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     }
   }
 
+  function debugWsState() {
+    return {
+      reconnect: {
+        attempts: reconnectState.attempts,
+        nextAttemptAt: reconnectState.nextAttemptAt,
+        bannerVisible: reconnectState.bannerVisible,
+      },
+      pendingResume: pendingResume.kind ? { kind: pendingResume.kind, opts: pendingResume.opts ? { ...pendingResume.opts } : {} } : null,
+      log: wsStateLog.map((entry) => ({ ...entry })),
+    };
+  }
+
+  function forceWsReconnect() {
+    try {
+      const ws = getWS();
+      ws.reconnectNow?.();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function simulateWsDrop({ failAttempts } = {}) {
+    try {
+      if (typeof failAttempts === 'number' && Number.isFinite(failAttempts)) {
+        if (typeof window !== 'undefined') window.__MLIPVIEW_WS_FAIL_ATTEMPTS = Math.max(0, failAttempts | 0);
+      }
+    } catch { }
+    try {
+      const ws = getWS();
+      ws.forceDisconnect?.('test-drop');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async function resetToInitialPositions() {
     const t0 = env.now();
     dbg.log('[Reset] begin VR/AR-safe reset', { when: new Date().toISOString() });
@@ -1369,6 +1573,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     debugSelectAtom,
     debugSelectBond,
     debugGetSelection,
+    debugWsState,
+    forceWsReconnect,
+    simulateWsDrop,
   };
 }
 
