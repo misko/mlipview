@@ -4,12 +4,12 @@
 import { test, expect } from './fixtures.js';
 
 test.describe('WS protocol: simulation counters', () => {
-  test('sim frames echo UIC snapshot and increment simStep', async ({ page, baseURL }) => {
+  test('sim frames echo UIC snapshot and increment simStep', async ({
+    page,
+    loadViewerPage,
+  }) => {
     test.setTimeout(45_000);
-    await page.goto(`${baseURL || ''}/index.html?autoMD=0`);
-    await page.waitForFunction(() => !!window.viewerApi && !!window.__MLIP_DEFAULT_LOADED, {
-      timeout: 45000,
-    });
+    await loadViewerPage({ query: { autoMD: 0 }, testMode: false });
 
     const res = await page.evaluate(async () => {
       const ws = window.__fairchem_ws__;

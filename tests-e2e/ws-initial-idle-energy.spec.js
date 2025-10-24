@@ -22,7 +22,7 @@ async function waitForEnergy(page, timeoutMs = 12000) {
     );
 }
 
-test('initial load (autoMD=0) produces idle energy frame', async ({ page, baseURL }) => {
+test('initial load (autoMD=0) produces idle energy frame', async ({ page, loadViewerPage }) => {
     test.setTimeout(45000);
     // Collect only error-level logs for assertions (stdout mirroring handled by fixtures)
     const consoleErrors = [];
@@ -35,16 +35,7 @@ test('initial load (autoMD=0) produces idle energy frame', async ({ page, baseUR
         consoleErrors.push(text);
     });
 
-    await page.addInitScript(() => {
-        window.__MLIPVIEW_TEST_MODE = false;
-        window.__MLIPVIEW_SERVER = 'http://127.0.0.1:8000';
-    });
-
-    await page.goto(`${baseURL}/index.html?autoMD=0&wsDebug=1&debug=1`);
-
-    await page.waitForFunction(() => !!window.viewerApi && !!window.__MLIP_DEFAULT_LOADED, {
-        timeout: 45000,
-    });
+    await loadViewerPage({ query: { autoMD: 0, wsDebug: 1 }, testMode: false });
 
     // Wait for the first energy-bearing frame (idle compute from init USER_INTERACTION)
     const res = await waitForEnergy(page, 12000);

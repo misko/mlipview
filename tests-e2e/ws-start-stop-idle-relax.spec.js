@@ -1,20 +1,14 @@
 // Purpose: End-to-end flow across MD start/stop, idle drag computes, RELAX start/stop over WS-only protocol.
 import { test, expect } from './fixtures.js';
 
-test('autoMD → stop → idle drag → relax → stop (WS)', async ({ page, baseURL }) => {
+test('autoMD → stop → idle drag → relax → stop (WS)', async ({ page, loadViewerPage }) => {
   test.setTimeout(60_000);
-  // Ensure WS base and disable autoMD via query flag to control start explicitly
-  await page.addInitScript(() => {
-    window.__MLIPVIEW_SERVER = 'http://127.0.0.1:8000';
-    window.__MLIPVIEW_TEST_MODE = true;
-  });
   // Health precheck: ensure we're talking to the right server and CUDA is available
   const health = await page.request.get('http://127.0.0.1:8000/serve/health');
   if (!health.ok()) test.skip(true, 'Backend health unavailable');
   const h = await health.json();
   if (!h || String(h.device || '').toLowerCase() !== 'cuda') test.skip(true, 'Backend not on CUDA');
-  await page.goto(`${baseURL || ''}/index.html?mol=molecules/water.xyz&debug=1`);
-  await page.waitForFunction(() => window.__MLIP_DEFAULT_LOADED === true, null, { timeout: 45000 });
+  await loadViewerPage({ query: { mol: 'molecules/water.xyz' } });
 
   // Connect WS and ensure an initial idle energy frame so UMA is warmed up
   await page.evaluate(async () => {

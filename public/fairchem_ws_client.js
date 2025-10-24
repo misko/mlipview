@@ -115,6 +115,7 @@ let __connectPromise = null;
  *  getState: () => { seq:number, clientAck:number, userInteractionCount:number, simStep:number, connected:boolean },
  *  requestSingleStep: ({type:'md'|'relax', params?:any}) => Promise<any>,
  *  waitForEnergy: ({timeoutMs?:number}?) => Promise<any>,
+ *  waitForClientSeq: (seq:number, opts?:{timeoutMs?:number}) => Promise<boolean>,
  *  initSystem: (args:any)=>void,
  *  userInteraction: (args:any)=>void,
  *  beginDrag: (index:number)=>void,
@@ -134,6 +135,7 @@ export function createFairchemWS() {
   let seq = 0;
   let clientAck = 0;
   const lastCounters = { userInteractionCount: 0, simStep: 0 };
+  let lastClientSeq = 0;
 
   // Instance-level test hook
   let __testHook = null;
@@ -157,7 +159,7 @@ export function createFairchemWS() {
 
   function nextSeq() { seq = (seq | 0) + 1; return seq; }
   function setAck(s) { clientAck = Math.max(clientAck, s | 0); }
-  function getState() { return { seq, clientAck, ...lastCounters, connected: !!ws && ws.readyState === 1 }; }
+  function getState() { return { seq, clientAck, clientSeq: lastClientSeq, ...lastCounters, connected: !!ws && ws.readyState === 1 }; }
   function setCounters({ userInteractionCount, simStep }) {
     if (Number.isFinite(userInteractionCount)) lastCounters.userInteractionCount = userInteractionCount | 0;
     if (Number.isFinite(simStep)) lastCounters.simStep = simStep | 0;
@@ -265,6 +267,10 @@ export function createFairchemWS() {
             userInteractionCount: __n(r.userInteractionCount),
             simStep: __n(r.simStep),
           };
+
+          if (typeof out.client_seq === 'number' && Number.isFinite(out.client_seq)) {
+            lastClientSeq = Math.max(lastClientSeq, out.client_seq | 0);
+          }
 
           const which = r.payload?.case;
           if (which === 'frame') {
@@ -436,6 +442,7 @@ export function createFairchemWS() {
     });
 
     sendBytes(toBinary(ClientActionSchema, msg));
+    return msg.seq | 0;
   }
 
   // No-ops retained for compatibility
@@ -551,6 +558,41 @@ export function createFairchemWS() {
     });
   }
 
+  function waitForClientSeq(targetSeq, { timeoutMs = 3000 } = {}) {
+    const need = targetSeq | 0;
+    if (need <= 0) return Promise.resolve(true);
+    if (lastClientSeq >= need) return Promise.resolve(true);
+    try {
+      if (
+        (typeof window !== 'undefined' && window.__MLIPVIEW_TEST_MODE === true) ||
+        (typeof globalThis !== 'undefined' && globalThis.__MLIPVIEW_TEST_MODE === true)
+      ) {
+        return Promise.resolve(true);
+      }
+    } catch { }
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const done = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { off(); } catch { }
+        fn(value);
+      };
+      const timer = setTimeout(() => done(reject, new Error('waitForClientSeq timeout')), Math.max(50, timeoutMs | 0));
+      const off = subscribe((res) => {
+        try {
+          if (!res || typeof res !== 'object') return;
+          const cs = Number(res.client_seq);
+          if (Number.isFinite(cs) && cs >= need) {
+            lastClientSeq = Math.max(lastClientSeq, cs | 0);
+            done(resolve, true);
+          }
+        } catch { }
+      });
+    });
+  }
+
   async function requestSingleStep({ type, params }) {
     if (!ws || ws.readyState !== 1) {
       __warn('[WS][single-step][not-connected]');
@@ -593,6 +635,7 @@ export function createFairchemWS() {
     getState,
     requestSingleStep,
     waitForEnergy,
+    waitForClientSeq,
     initSystem,
     userInteraction,
     beginDrag,

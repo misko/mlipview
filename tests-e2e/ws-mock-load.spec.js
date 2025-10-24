@@ -26,7 +26,7 @@
 import { test, expect } from './fixtures.js';
 
 test.describe('WS mock page load', () => {
-  test('loads ws-test.html without protobuf init errors', async ({ page, baseURL }) => {
+  test('loads ws-test.html without protobuf init errors', async ({ page, loadWsHarnessPage }) => {
     test.setTimeout(20000);
 
     // Collect console errors for assertions (stdout mirroring handled by fixtures)
@@ -40,12 +40,7 @@ test.describe('WS mock page load', () => {
       consoleErrors.push(text);
     });
 
-    // Mock WebSocket so page can call ensureConnected/init without hitting a real backend
-    await page.addInitScript(() => {
-      // Ensure secure-ish origin behavior warning is not fatal; we just observe console
-      window.__MLIPVIEW_TEST_MODE = true;
-      window.__MLIPVIEW_SERVER = 'http://localhost:8000';
-
+    const mockWsInit = () => {
       class MockWS {
         constructor(url) {
           this._url = url;
@@ -56,9 +51,7 @@ test.describe('WS mock page load', () => {
           }, 10);
         }
         set binaryType(_) { }
-        send(_) {
-          /* ignore */
-        }
+        send(_) { /* ignore */ }
         close() {
           this.readyState = 3;
           this.onclose && this.onclose({});
@@ -69,10 +62,13 @@ test.describe('WS mock page load', () => {
         onclose() { }
       }
       window.WebSocket = MockWS;
-    });
+    };
 
-    // Navigate to the test harness
-    await page.goto(`${baseURL}/ws-test.html?sim=0`);
+    await loadWsHarnessPage({
+      query: { sim: 0 },
+      server: 'http://localhost:8000',
+      extraInit: mockWsInit,
+    });
 
     // With bundling, we don't expose goog/jspb globals; instead, assert the client API boots
     await page.waitForFunction(() => typeof window.__WS_API__ === 'object', { timeout: 10000 });

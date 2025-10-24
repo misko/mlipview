@@ -25,15 +25,8 @@ async function waitFor(pred, { timeout = 8000, interval = 50 } = {}) {
 }
 
 test.describe('WS streaming single-socket', () => {
-  test('single websocket and increasing frames', async ({ page, baseURL }) => {
+  test('single websocket and increasing frames', async ({ page, loadWsHarnessPage }) => {
     test.setTimeout(30000);
-
-    // Force same-origin static hosting and point frontend to our WS backend
-    await page.addInitScript(() => {
-      window.__MLIPVIEW_SERVER = 'http://localhost:8000';
-      window.__MLIPVIEW_TEST_MODE = true; // bypass focus gating
-      window.__MLIP_CONFIG = { minStepIntervalMs: 1, mdFriction: 0.02 };
-    });
 
     const sockEvents = [];
     const consoleErrors = [];
@@ -70,9 +63,12 @@ test.describe('WS streaming single-socket', () => {
       ws.on('close', () => sockEvents.push({ type: 'close' }));
     });
 
-    // Use a minimal WS test harness page
-    await page.goto(`${baseURL}/ws-test.html?sim=1&wsDebug=1&debug=1`);
-    await page.waitForFunction(() => !!window.__WS_READY__, { timeout: 10000 });
+    await loadWsHarnessPage({
+      query: { sim: 1, wsDebug: 1 },
+      server: 'http://localhost:8000',
+      configOverrides: { minStepIntervalMs: 1, mdFriction: 0.02 },
+    });
+    await page.waitForFunction(() => !!window.__WS_READY__, { timeout: 10_000 });
 
     // Ensure WS API is present
     const apiPresent = await page.evaluate(

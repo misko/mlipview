@@ -14,19 +14,13 @@ import { test, expect } from './fixtures.js';
  *  - Accumulate 15 more frames, then stop the simulation; expect a stop notice.
  */
 
-test('ws live MD param updates (temperature + friction)', async ({ page, baseURL }) => {
+test('ws live MD param updates (temperature + friction)', async ({ page, loadViewerPage }) => {
     test.setTimeout(60_000);
-    // Set WS base and test mode for deterministic behavior
-    await page.addInitScript(() => {
-        window.__MLIPVIEW_SERVER = 'http://127.0.0.1:8000';
-        window.__MLIPVIEW_TEST_MODE = true;
-    });
 
     // Health precheck
     const health = await page.request.get('http://127.0.0.1:8000/serve/health');
     if (!health.ok()) test.skip(true, 'Backend health unavailable');
-    await page.goto(`${baseURL || ''}/index.html?debug=1&mol=molecules/water.xyz`);
-    await page.waitForFunction(() => window.__MLIP_DEFAULT_LOADED === true, null, { timeout: 45000 });
+    await loadViewerPage({ query: { mol: 'molecules/water.xyz', dev: 1 } });
 
     // Orchestrate in-page: start MD, wait 15 frames, change temperature, wait 15 more, stop
     const result = await page.evaluate(async () => {

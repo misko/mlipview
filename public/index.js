@@ -30,6 +30,8 @@ const DEFAULTS = {
   SAFE_SPHERE_RADIUS: 20,
 };
 
+const TEMP_PLACEHOLDER = 'T: — K';
+
 function cfgNumber(v, fallback) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -414,7 +416,16 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       const positionsTriples = posToTriples(state);
       const v = getVelocitiesIfFresh();
       const cell = stateCellToArray(state.cell);
-      ws.userInteraction({ natoms: nat, atomic_numbers, positions: positionsTriples, velocities: v || undefined, cell });
+      const seq = ws.userInteraction({ natoms: nat, atomic_numbers, positions: positionsTriples, velocities: v || undefined, cell });
+      if (typeof ws.waitForClientSeq === 'function' && Number.isFinite(seq) && seq > 0) {
+        try {
+          await ws.waitForClientSeq(seq, { timeoutMs: 4000 });
+        } catch (err) {
+          __wsState.inited = false;
+          if (env.apiOn()) dbg.warn('[WS][ensureInit][wait] failed', err?.message || err);
+          throw err;
+        }
+      }
       __wsState.inited = true; __wsState.lastAtomCount = nat; __wsState.lastCellKey = ckey;
       if (env.apiOn()) dbg.log('[WS][ensureInit]', { nat, v: !!v, hasCell: !!cell });
     }
@@ -719,8 +730,14 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     try { ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 }); } catch { }
     try {
       const v = getVelocitiesIfFresh();
-      ws.userInteraction({ positions: posToTriples(state), velocities: v || undefined });
-    } catch { }
+      const prepSeq = ws.userInteraction({ positions: posToTriples(state), velocities: v || undefined });
+      if (typeof ws.waitForClientSeq === 'function' && Number.isFinite(prepSeq) && prepSeq > 0) {
+        await ws.waitForClientSeq(prepSeq, { timeoutMs: 3000 });
+      }
+    } catch (err) {
+      if (env.apiOn()) dbg.warn(`[${kind}Step][prep] failed`, err?.message || err);
+      throw err;
+    }
     const r = await ws.requestSingleStep({ type: kind, params });
     const epochAtSend = resetEpoch;
     if (epochAtSend !== resetEpoch) return { stale: true, staleReason: 'staleEpoch', epochAtSend, resetEpoch };
@@ -825,6 +842,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   function setMode(next) {
     if (mode === next) return;
     mode = next;
+    if (mode !== Mode.MD) {
+      try { if (state?.dynamics) state.dynamics.temperature = undefined; } catch { }
+      setText('instTemp', TEMP_PLACEHOLDER);
+    }
     running.kind = (mode === Mode.Idle) ? null : (mode === Mode.MD ? 'md' : 'relax');
     if (mode === Mode.Idle) {
       running.stepBudget = null;
@@ -846,8 +867,16 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     try { ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 }); } catch { }
     try {
       const v = getVelocitiesIfFresh();
-      ws.userInteraction({ positions: posToTriples(state), velocities: v || undefined });
-    } catch { }
+      const prepSeq = ws.userInteraction({ positions: posToTriples(state), velocities: v || undefined });
+      if (typeof ws.waitForClientSeq === 'function' && Number.isFinite(prepSeq) && prepSeq > 0) {
+        await ws.waitForClientSeq(prepSeq, { timeoutMs: 3000 });
+      }
+    } catch (err) {
+      setMode(Mode.Idle);
+      resetRPS();
+      if (env.apiOn()) dbg.warn(`[${kind}WS][prep] failed`, err?.message || err);
+      throw err;
+    }
     resetRPS();
 
     const rawLimit = isMD ? opts.steps : opts.maxSteps;
@@ -895,6 +924,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     // live temperature from global target if present (MD)
     let temperature = isMD ? (opts.temperature ?? 1500) : undefined;
     try { if (isMD && typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) temperature = Number(window.__MLIP_TARGET_TEMPERATURE); } catch { }
+    if (isMD && Number.isFinite(temperature)) {
+      const tempValue = Number(temperature);
+      state.dynamics ||= {};
+      state.dynamics.temperature = tempValue;
+      setText('instTemp', `T: ${tempValue.toFixed(1)} K`);
+    }
 
     ws.startSimulation({
       type: isMD ? 'md' : 'relax',
@@ -928,6 +963,14 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       const fr = (typeof window !== 'undefined' && Number.isFinite(window.__MLIP_CONFIG?.mdFriction))
         ? Number(window.__MLIP_CONFIG.mdFriction) : DEFAULT_MD_FRICTION;
       const dt = 1.0;
+      if (Number.isFinite(T)) {
+        const tempValue = Number(T);
+        state.dynamics ||= {};
+        state.dynamics.temperature = tempValue;
+        setText('instTemp', `T: ${tempValue.toFixed(1)} K`);
+      } else {
+        setText('instTemp', TEMP_PLACEHOLDER);
+      }
       ws.startSimulation({ type: 'md', params: { calculator: 'uma', temperature: T, timestep_fs: dt, friction: fr } });
       if (env.apiOn()) dbg.log('[mdWS][live-update]', { temperature: T, timestep_fs: dt, friction: fr });
     } catch { }

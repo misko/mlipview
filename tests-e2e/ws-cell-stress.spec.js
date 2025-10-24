@@ -6,13 +6,10 @@ import { test, expect } from './fixtures.js';
 test.describe('WS protocol: cell and optional stress', () => {
   test('idle compute with cell includes energy and may include stress', async ({
     page,
-    baseURL,
+    loadViewerPage,
   }) => {
     test.setTimeout(45_000);
-    await page.goto(`${baseURL || ''}/index.html?autoMD=0&wsDebug=1&debug=1`);
-    await page.waitForFunction(() => !!window.viewerApi && !!window.__MLIP_DEFAULT_LOADED, {
-      timeout: 45000,
-    });
+    await loadViewerPage({ query: { autoMD: 0, wsDebug: 1 } });
 
     const result = await page.evaluate(async () => {
       const ws = window.__fairchem_ws__;

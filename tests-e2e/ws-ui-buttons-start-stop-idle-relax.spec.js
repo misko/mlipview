@@ -7,12 +7,11 @@ import { test, expect } from './fixtures.js';
 // - Drag (via manipulation API) to generate >=12 idle frames
 // - Start Relax via Relax toggle, wait >=12 frames
 // - Stop via Relax toggle and verify stop message/flag
-test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ page, baseURL }) => {
+test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({
+  page,
+  loadViewerPage,
+}) => {
   test.setTimeout(60_000);
-  // Ensure we target the right backend; do NOT set test mode so auto MD remains enabled
-  await page.addInitScript(() => {
-    window.__MLIPVIEW_SERVER = 'http://127.0.0.1:8000';
-  });
 
   // Health precheck: backend must be up and on CUDA for UMA
   const health = await page.request.get('http://127.0.0.1:8000/serve/health');
@@ -20,8 +19,12 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
   const h = await health.json();
   if (!h || String(h.device || '').toLowerCase() !== 'cuda') test.skip(true, 'Backend not on CUDA');
 
-  await page.goto(`${baseURL || ''}/index.html?mol=molecules/water.xyz&debug=1`);
-  await page.waitForFunction(() => window.__MLIP_DEFAULT_LOADED === true, null, { timeout: 45000 });
+  await loadViewerPage({
+    query: { mol: 'molecules/water.xyz' },
+    server: 'http://127.0.0.1:8000',
+    testMode: false,
+    disableAutoMd: false,
+  });
 
   // Connect WS and warm up one idle energy to ensure UMA is responsive
   await page.evaluate(async () => {
@@ -163,4 +166,67 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({ pa
     return saw;
   });
   expect(sawStopRelax).toBeTruthy();
+});
+
+test('Temperature indicator only reports during MD runs', async ({
+  page,
+  loadViewerPage,
+  ensureWsReady,
+}) => {
+  test.setTimeout(60_000);
+
+  const health = await page.request.get('http://127.0.0.1:8000/serve/health');
+  if (!health.ok()) test.skip(true, 'Backend health unavailable');
+  const h = await health.json();
+  if (!h || String(h.device || '').toLowerCase() !== 'cuda') test.skip(true, 'Backend not on CUDA');
+
+  await loadViewerPage({
+    query: { mol: 'molecules/water.xyz', autoMD: 0 },
+    server: 'http://127.0.0.1:8000',
+  });
+
+  expect(await ensureWsReady()).toBeTruthy();
+
+  const instTemp = page.locator('#instTemp');
+  const placeholderRegex = /T:\s*[—-]\s*K/;
+
+  await expect(instTemp).toHaveText(placeholderRegex);
+
+  await page.evaluate(async () => {
+    await window.viewerApi.startMDContinuous({ steps: 500, temperature: 1200 });
+  });
+
+  await expect(instTemp).toHaveText(/T:\s*\d+(?:\.\d+)?\s*K/, { timeout: 20_000 });
+
+  await page.evaluate(() => {
+    window.viewerApi.stopSimulation();
+  });
+
+  await expect(instTemp).toHaveText(placeholderRegex, { timeout: 20_000 });
+
+  const sawRelaxFrames = await page.evaluate(async () => {
+    const ws = window.__fairchem_ws__;
+    if (!ws) return false;
+    await window.viewerApi.startRelaxContinuous({ maxSteps: 120 });
+    return await new Promise((resolve) => {
+      const off = ws.onResult((r) => {
+        if (Array.isArray(r.positions)) {
+          try { off && off(); } catch { }
+          resolve(true);
+        }
+      });
+      setTimeout(() => {
+        try { off && off(); } catch { }
+        resolve(false);
+      }, 10_000);
+    });
+  });
+
+  expect(sawRelaxFrames).toBeTruthy();
+
+  await expect(instTemp).toHaveText(placeholderRegex, { timeout: 10_000 });
+
+  await page.evaluate(() => {
+    window.viewerApi.stopSimulation();
+  });
 });

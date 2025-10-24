@@ -30,7 +30,7 @@ async function collectFrames(page, { timeout = 8000 } = {}) {
   );
 }
 
-test('idle frames omit positions and carry energy', async ({ page, baseURL }) => {
+test('idle frames omit positions and carry energy', async ({ page, loadViewerPage }) => {
   test.setTimeout(45000);
   // Collect console errors for assertions (logging streamed via fixtures)
   const consoleErrors = [];
@@ -42,15 +42,7 @@ test('idle frames omit positions and carry energy', async ({ page, baseURL }) =>
     const text = (err && (err.message || String(err))) || 'unknown pageerror';
     consoleErrors.push(text);
   });
-  await page.addInitScript(() => {
-    window.__MLIPVIEW_TEST_MODE = false;
-    window.__MLIPVIEW_SERVER = 'http://127.0.0.1:8000';
-  });
-  await page.goto(`${baseURL}/index.html?autoMD=0&wsDebug=1&debug=1`);
-
-  await page.waitForFunction(() => !!window.viewerApi && !!window.__MLIP_DEFAULT_LOADED, {
-    timeout: 45000,
-  });
+  await loadViewerPage({ query: { autoMD: 0, wsDebug: 1 }, testMode: false });
   // Ensure WS is connected before triggering the idle compute
   await page.evaluate(async () => {
     const ws = window.__fairchem_ws__;

@@ -31,16 +31,9 @@ async function onceEnergy(page, { timeout = 5000 } = {}) {
   );
 }
 
-test('idle compute echoes user_interaction_count', async ({ page, baseURL }) => {
+test('idle compute echoes user_interaction_count', async ({ page, loadViewerPage }) => {
   test.setTimeout(45000);
-  await page.addInitScript(() => {
-    window.__MLIPVIEW_TEST_MODE = false;
-    window.__MLIPVIEW_SERVER = 'http://127.0.0.1:8000';
-  });
-  await page.goto(`${baseURL}/index.html?autoMD=0&wsDebug=1&debug=1`);
-  await page.waitForFunction(() => !!window.viewerApi && !!window.__MLIP_DEFAULT_LOADED, {
-    timeout: 45000,
-  });
+  await loadViewerPage({ query: { autoMD: 0, wsDebug: 1 }, testMode: false });
 
   // Attach listener BEFORE sending USER_INTERACTION to avoid race and wait for matching UIC
   const echoed = await page.evaluate(async () => {

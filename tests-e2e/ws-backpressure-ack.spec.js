@@ -10,22 +10,22 @@
 import { test, expect } from './fixtures.js';
 
 test.describe('WS protocol: backpressure and ACK', () => {
-  test('WAITING_FOR_ACK appears and then clears after ack', async ({ page, baseURL }) => {
+  test('WAITING_FOR_ACK appears and then clears after ack', async ({ page, loadViewerPage }) => {
     test.setTimeout(45_000);
 
-    // --- Transport-level ACK dropper BEFORE the app loads ---
-    await page.addInitScript(() => {
-      const _realSend = WebSocket.prototype.send;
-      Object.defineProperty(WebSocket.prototype, '_realSend', {
-        value: _realSend,
-        configurable: true,
-      });
+    const ackDropperInit = () => {
+      const proto = WebSocket.prototype;
+      if (!Object.prototype.hasOwnProperty.call(proto, '_realSend')) {
+        Object.defineProperty(proto, '_realSend', {
+          value: proto.send,
+          configurable: true,
+        });
+      }
 
-      // When true, heuristic-drops tiny binary frames (typical ACK len 9–11).
-      // We’ll flip this to false once we decide to allow ACKs.
       window.__BLOCK_ACKS__ = true;
+      window.__MLIPVIEW_DEBUG_API = true;
 
-      WebSocket.prototype.send = function (data) {
+      proto.send = function (data) {
         if (window.__BLOCK_ACKS__) {
           try {
             const isBinary = typeof data !== 'string';
@@ -44,23 +44,13 @@ test.describe('WS protocol: backpressure and ACK', () => {
         }
         return WebSocket.prototype._realSend.call(this, data);
       };
-    });
+    };
 
-    // --- App flags BEFORE navigation ---
-    await page.addInitScript(() => {
-      window.__MLIPVIEW_SERVER = 'http://localhost:8000';
-      window.__MLIPVIEW_NO_AUTO_MD = true;   // don't auto-start MD
-      window.__MLIPVIEW_TEST_MODE = true;    // bypass focus gating
-      window.__MLIP_CONFIG = { minStepIntervalMs: 1, mdFriction: 0.02 };
-      window.__MLIPVIEW_DEBUG_API = true;    // extra logs if client supports
-    });
-
-    // Console mirroring handled by fixtures; no per-test wiring needed
-
-    // --- Load app and wait ready ---
-    await page.goto(`${baseURL || ''}/index.html?autoMD=0&debug=1&wsDebug=1`);
-    await page.waitForFunction(() => !!window.viewerApi && !!window.__MLIP_DEFAULT_LOADED, {
-      timeout: 45_000,
+    await loadViewerPage({
+      query: { autoMD: 0, wsDebug: 1 },
+      server: 'http://localhost:8000',
+      configOverrides: { minStepIntervalMs: 1, mdFriction: 0.02 },
+      extraInit: ackDropperInit,
     });
 
     // --- Core test ---
