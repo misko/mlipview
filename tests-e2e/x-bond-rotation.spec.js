@@ -230,4 +230,111 @@ test.describe('Bond rotation isolation', () => {
       expect(drift).toBeLessThan(0.01);
     }
   });
+
+  test('scroll wheel rotates selected bond', async ({ page, loadViewerPage, ensureWsReady }) => {
+    await loadViewerPage({
+      server: BACKEND_URL,
+      query: { mol: 'molecules/roy.xyz', autoMD: 0 },
+      disableAutoMd: true,
+      testMode: true,
+    });
+    expect(await ensureWsReady()).toBeTruthy();
+
+    const setup = await page.evaluate(() => {
+      const api = window.viewerApi;
+      const { state } = api;
+      const elements = state.elements || [];
+      const bonds = (state.bonds || []).map((b, index) => ({
+        i: b.i,
+        j: b.j,
+        key: b.key ?? `${b.i}-${b.j}`,
+        index,
+      }));
+      const candidates = bonds.filter((b) => {
+        const ei = elements[b.i];
+        const ej = elements[b.j];
+        return (ei === 'N' && ej === 'C') || (ei === 'C' && ej === 'N');
+      });
+      if (!candidates.length) throw new Error('no N-C bonds found');
+      let selected = null;
+      for (const bond of candidates) {
+        for (const orientation of [0, 1]) {
+          api.debugSelectBond({
+            i: bond.i,
+            j: bond.j,
+            key: bond.key,
+            index: bond.index,
+            orientation,
+          });
+          const sel = api.debugGetSelection();
+          const group = sel?.data?.rotationGroup;
+          if (!group || !Array.isArray(group.sideAtoms) || !group.sideAtoms.length) continue;
+          const hasHydrogen = group.sideAtoms.some((idx) => elements[idx] === 'H');
+          if (hasHydrogen) {
+            selected = {
+              bond,
+              orientation,
+              sideAtoms: [...group.sideAtoms],
+              anchor: group.anchor,
+              movingRoot: group.movingRoot,
+            };
+            break;
+          }
+        }
+        if (selected) break;
+      }
+      if (!selected) throw new Error('no N-C bond with hydrogen rotation group');
+      const positions = selected.sideAtoms.map((idx) => {
+        const p = state.positions[idx];
+        return { idx, x: p.x, y: p.y, z: p.z };
+      });
+      return { ...selected, positions };
+    });
+
+    expect(setup.sideAtoms.length).toBeGreaterThan(0);
+
+    await page.$eval('canvas', (canvas) => {
+      const evt = new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true });
+      canvas.dispatchEvent(evt);
+    });
+    await page.waitForTimeout(80);
+
+    const afterScrollUp = await page.evaluate(({ indices }) => {
+      return indices.map((idx) => {
+        const p = window.viewerApi.state.positions[idx];
+        return { idx, x: p.x, y: p.y, z: p.z };
+      });
+    }, { indices: setup.sideAtoms });
+
+    let maxDelta = 0;
+    for (const pt of afterScrollUp) {
+      const before = setup.positions.find((p) => p.idx === pt.idx);
+      expect(before).toBeTruthy();
+      const delta = Math.hypot(pt.x - before.x, pt.y - before.y, pt.z - before.z);
+      if (delta > maxDelta) maxDelta = delta;
+    }
+    expect(maxDelta).toBeGreaterThan(0.01);
+
+    await page.$eval('canvas', (canvas) => {
+      const evt = new WheelEvent('wheel', { deltaY: 120, bubbles: true, cancelable: true });
+      canvas.dispatchEvent(evt);
+    });
+    await page.waitForTimeout(80);
+
+    const afterScrollDown = await page.evaluate(({ indices }) => {
+      return indices.map((idx) => {
+        const p = window.viewerApi.state.positions[idx];
+        return { idx, x: p.x, y: p.y, z: p.z };
+      });
+    }, { indices: setup.sideAtoms });
+
+    let deltaBetween = 0;
+    for (const pt of afterScrollDown) {
+      const prev = afterScrollUp.find((p) => p.idx === pt.idx);
+      expect(prev).toBeTruthy();
+      const delta = Math.hypot(pt.x - prev.x, pt.y - prev.y, pt.z - prev.z);
+      if (delta > deltaBetween) deltaBetween = delta;
+    }
+    expect(deltaBetween).toBeGreaterThan(0.005);
+  });
 });

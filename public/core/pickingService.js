@@ -19,7 +19,7 @@ export function createPickingService(
   scene,
   view,
   selectionService,
-  { manipulation, camera, energyHook } = {}
+  { manipulation, camera, energyHook, bondScrollStep } = {}
 ) {
   __count('pickingService#createPickingService');
   let cameraDetachedForDrag = false;
@@ -292,6 +292,10 @@ export function createPickingService(
   let usedDomListeners = false;
   if (scene.getEngine && scene.getEngine().getRenderingCanvas) {
     const canvas = scene.getEngine().getRenderingCanvas();
+    const effectiveBondScrollStep =
+      typeof bondScrollStep === 'number' && Number.isFinite(bondScrollStep) && bondScrollStep > 0
+        ? bondScrollStep
+        : Math.PI / 36;
     // Avoid duplicate pointerdown handling: scene.onPointerObservable already listens for POINTERDOWN above.
     // We still attach DOM listeners to support environments where Babylon doesn't pipe DOM -> onPointerObservable (tests/jsdom),
     // and to track pointer coordinates for drag.
@@ -329,6 +333,28 @@ export function createPickingService(
     canvas && canvas.addEventListener('pointermove', pm);
     canvas && canvas.addEventListener('pointerup', pu);
     canvas && canvas.addEventListener('pointerleave', pu);
+    const onWheel = (e) => {
+      try {
+        if (!manipulation || typeof manipulation.rotateBond !== 'function') return;
+        const sel = selectionService?.get?.();
+        if (!sel || sel.kind !== 'bond') return;
+        if (typeof e?.preventDefault === 'function') e.preventDefault();
+        if (typeof e?.stopPropagation === 'function') e.stopPropagation();
+        if (typeof e?.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+        const deltaY = typeof e?.deltaY === 'number' ? e.deltaY : 0;
+        if (!Number.isFinite(deltaY) || deltaY === 0) return;
+        const scale = -deltaY / 120;
+        const angle = scale * effectiveBondScrollStep;
+        if (!Number.isFinite(angle) || Math.abs(angle) < 1e-5) return;
+        const rotated = manipulation.rotateBond(angle);
+        if (rotated && typeof energyHook === 'function') {
+          try {
+            energyHook({ kind: 'bondRotate' });
+          } catch {}
+        }
+      } catch {}
+    };
+    canvas && canvas.addEventListener('wheel', onWheel, { passive: false, capture: true });
     usedDomListeners = !!canvas;
     // Removed document-level capture fallback to reduce complexity; canvas listeners suffice in browsers/tests.
     // Touch mapping: only attach if custom touchControls not installed

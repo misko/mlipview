@@ -30,6 +30,7 @@ const DEFAULTS = {
   CONTINUOUS_STEPS: 1000,
   SAFE_SPHERE_RADIUS: 20,
   ROTATION_LATCH_MS: 600,
+  BOND_SCROLL_STEP_RAD: Math.PI / 36,
 };
 
 const TEMP_PLACEHOLDER = 'T: — K';
@@ -79,6 +80,10 @@ const TUNABLES = {
     if (typeof window === 'undefined') return DEFAULTS.ROTATION_LATCH_MS;
     return cfgNumber(window.__MLIP_CONFIG?.rotationLatchMs, DEFAULTS.ROTATION_LATCH_MS);
   },
+  get BOND_SCROLL_STEP_RAD() {
+    if (typeof window === 'undefined') return DEFAULTS.BOND_SCROLL_STEP_RAD;
+    return cfgNumber(window.__MLIP_CONFIG?.bondScrollStepRad, DEFAULTS.BOND_SCROLL_STEP_RAD);
+  },
 };
 
 const wsStateListeners = new Set();
@@ -118,6 +123,7 @@ try {
     latchAfterDragMs: TUNABLES.LATCH_AFTER_DRAG_MS,
     latchAfterVrMs: TUNABLES.LATCH_AFTER_VR_MS,
     rpsWindowMs: TUNABLES.RPS_WINDOW_MS,
+    bondScrollStepRad: TUNABLES.BOND_SCROLL_STEP_RAD,
   });
 } catch { }
 
@@ -786,6 +792,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
         if (mode === Mode.Idle) { if (dragging) emitDuringDrag(); else ff.computeForces(); }
         recordInteraction(kind || 'drag');
       },
+      bondScrollStep: TUNABLES.BOND_SCROLL_STEP_RAD,
     },
   ));
 
