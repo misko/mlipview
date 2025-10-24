@@ -31,6 +31,7 @@ const DEFAULTS = {
   SAFE_SPHERE_RADIUS: 20,
   ROTATION_LATCH_MS: 600,
   BOND_SCROLL_STEP_RAD: Math.PI / 36,
+  WS_CONNECT_TIMEOUT_MS: 1500,
 };
 
 const TEMP_PLACEHOLDER = 'T: — K';
@@ -84,6 +85,10 @@ const TUNABLES = {
     if (typeof window === 'undefined') return DEFAULTS.BOND_SCROLL_STEP_RAD;
     return cfgNumber(window.__MLIP_CONFIG?.bondScrollStepRad, DEFAULTS.BOND_SCROLL_STEP_RAD);
   },
+  get WS_CONNECT_TIMEOUT_MS() {
+    if (typeof window === 'undefined') return DEFAULTS.WS_CONNECT_TIMEOUT_MS;
+    return cfgNumber(window.__MLIP_CONFIG?.wsConnectTimeoutMs, DEFAULTS.WS_CONNECT_TIMEOUT_MS);
+  },
 };
 
 const wsStateListeners = new Set();
@@ -124,6 +129,7 @@ try {
     latchAfterVrMs: TUNABLES.LATCH_AFTER_VR_MS,
     rpsWindowMs: TUNABLES.RPS_WINDOW_MS,
     bondScrollStepRad: TUNABLES.BOND_SCROLL_STEP_RAD,
+    wsConnectTimeoutMs: TUNABLES.WS_CONNECT_TIMEOUT_MS,
   });
 } catch { }
 
@@ -537,9 +543,20 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       return [c.a.x, c.a.y, c.a.z, c.b.x, c.b.y, c.b.z, c.c.x, c.c.y, c.c.z].map(Number).map(x => x || 0).join(',');
     } catch { return 'off'; }
   };
-  async function ensureWsInit() {
+  async function ensureWsInit({ allowOffline = true, timeoutMs = TUNABLES.WS_CONNECT_TIMEOUT_MS } = {}) {
     const ws = getWS();
-    await ws.ensureConnected();
+    let connected = false;
+    try {
+      connected = await ws.ensureConnected({ timeoutMs });
+    } catch (err) {
+      if (!allowOffline) throw err;
+      if (env.apiOn()) dbg.warn('[WS][ensureInit][connect] failed', err?.message || err);
+      return false;
+    }
+    if (!connected || !ws || ws.readyState !== 1) {
+      if (!allowOffline) throw new Error('WS not connected');
+      return false;
+    }
     const nat = (state.elements || []).length;
     const ckey = cellKey();
     const need = !__wsState.inited || __wsState.lastAtomCount !== nat || __wsState.lastCellKey !== ckey;
@@ -576,7 +593,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     try {
       if (!state.elements?.length) return lastForceResult;
       const ws = getWS();
-      await ensureWsInit();
+      const ok = await ensureWsInit({ allowOffline: true });
+      if (!ok) return lastForceResult;
       const positions = posToTriples(state);
       try { ws.setCounters({ userInteractionCount: userInteractionVersion }); } catch { }
       if (env.apiOn()) dbg.log('[WS][simple] USER_INTERACTION', { n: positions.length, uic: userInteractionVersion });
@@ -604,7 +622,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   async function requestSimpleCalculateNow() {
     try {
-      const ws = getWS(); await ensureWsInit();
+      const ws = getWS();
+      const ok = await ensureWsInit({ allowOffline: true });
+      if (!ok) return energyPlot.length();
       ws.setCounters?.({ userInteractionCount: userInteractionVersion });
       ws.userInteraction?.({ positions: posToTriples(state) });
       const { energy, forces } = await ws.waitForEnergy({ timeoutMs: 5000 });
@@ -819,7 +839,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     window.__RELAX_FORCES = res.forces || [];
     if (res.forces?.length) updateForces(res.forces, { reason: 'baselineEnergy' });
   }
-  try { await baselineEnergy(); } catch { }
+  try { baselineEnergy().catch(() => { }); } catch { }
 
   // Seed initial positions if missing
   try {
@@ -892,7 +912,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
      ──────────────────────────────────────────────────────────────────────── */
 
   async function doOneStepViaWS(kind, params) {
-    const ws = getWS(); await ensureWsInit();
+    const ws = getWS();
+    await ensureWsInit({ allowOffline: false });
     try { ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 }); } catch { }
     try {
       const v = getVelocitiesIfFresh();
@@ -1088,8 +1109,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       __wsState.lastCellKey = 'off';
       const pending = consumePendingResume();
       Promise.resolve()
-        .then(() => ensureWsInit())
+        .then(() => ensureWsInit({ allowOffline: true }))
         .then(() => {
+          attachIdleWSListener().catch(() => { });
           if (pending.kind === 'md') {
             startContinuous('md', pending.opts || {}).catch(() => { });
           } else if (pending.kind === 'relax') {
@@ -1186,12 +1208,14 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   }
   async function attachIdleWSListener() {
     const ws = getWS();
-    await ensureWsInit();
-    if (idleUnsub) return;
-    idleUnsub = ws.onResult((r) => {
-      if (mode !== Mode.Idle) return;
-      handleStreamFrame('idle', ws, r);
-    });
+    if (!idleUnsub) {
+      idleUnsub = ws.onResult((r) => {
+        if (mode !== Mode.Idle) return;
+        handleStreamFrame('idle', ws, r);
+      });
+    }
+    const ok = await ensureWsInit({ allowOffline: true });
+    return ok;
   }
   function detachIdleWSListener() { try { idleUnsub && idleUnsub(); } catch { } finally { idleUnsub = null; } }
 
@@ -1208,7 +1232,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (mode === Mode.Idle) {
       running.stepBudget = null;
       currentStepBudget = null;
-      attachIdleWSListener();
+      attachIdleWSListener().catch(() => { });
     } else {
       detachIdleWSListener();
     }
@@ -1225,7 +1249,15 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       pendingResume.opts = null;
     }
 
-    const ws = getWS(); await ensureWsInit();
+    const ws = getWS();
+    try {
+      await ensureWsInit({ allowOffline: false });
+    } catch (err) {
+      setMode(Mode.Idle);
+      resetRPS();
+      if (env.apiOn()) dbg.warn(`[${kind}WS][connect] failed`, err?.message || err);
+      throw err;
+    }
     try { if (posTickScheduled) posTickScheduled = false; } catch { }
     try { ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 }); } catch { }
     try {
@@ -1638,7 +1670,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   function shutdown() { renderActive = false; try { engine?.stopRenderLoop?.(); } catch { } }
 
   // Attach idle listener for idle mode
-  try { await attachIdleWSListener(); } catch { }
+  try { attachIdleWSListener().catch(() => { }); } catch { }
 
   return {
     state,
