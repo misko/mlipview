@@ -1,8 +1,8 @@
 import { createMoleculeState } from '../public/domain/moleculeState.js';
 import { createBondService } from '../public/domain/bondService.js';
 
-describe('bondService periodic', () => {
-  test('finds bond across boundary', () => {
+describe('x-bond service periodic', () => {
+  test('detects bond across periodic boundary', () => {
     const st = createMoleculeState({
       elements: ['C', 'C'],
       positions: [
@@ -18,6 +18,7 @@ describe('bondService periodic', () => {
       enabled: true,
       originOffset: { x: 0, y: 0, z: 0 },
     };
+
     const svc = createBondService(st);
     const bonds = svc.computePeriodicBonds();
     expect(bonds.some((b) => b.i === 0 && b.j === 1)).toBe(true);

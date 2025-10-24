@@ -1,0 +1,170 @@
+# Test Hook Reference
+
+To support reliable Playwright coverage while keeping the production viewer encapsulated, add reusable debug hooks behind `viewerApi` (and document them here when you introduce or update one).
+
+The hooks listed below are **only** for test code. Guard them behind environment checks (`window.__MLIPVIEW_TEST_MODE`, etc.) so they are harmless in production builds.
+
+---
+
+## `viewerApi.debugGhostSnapshot()`
+
+**Purpose:** Surface ghost/periodic bonding details without reaching into `view._internals`.
+
+**Suggested shape:**
+
+```js
+viewerApi.debugGhostSnapshot = () => ({
+  ghostBondCount: view._internals?.ghostBondGroups
+    ? [...view._internals.ghostBondGroups.values()]
+        .reduce((sum, grp) => sum + grp.mats.length, 0)
+    : 0,
+  ghostGroups: view._internals
+    ? [...view._internals.ghostBondGroups.entries()].map(([key, grp]) => ({
+        key,
+        count: grp.mats.length,
+      }))
+    : [],
+});
+```
+
+**Used by:** Benzene rotation E2E test—asserts ghost bonds render after rotations.
+
+---
+
+## `viewerApi.debugHighlightState()`
+
+**Purpose:** Query highlight visibility without poking private flags.
+
+**Suggested shape:**
+
+```js
+viewerApi.debugHighlightState = () => ({
+  atomVisible: !!view._internals?.highlight?.atom?.isVisible,
+  bondVisible: !!view._internals?.highlight?.bond?.isVisible,
+});
+```
+
+**Used by:** Bond-highlight Playwright test (atom vs. bond selection UX).
+
+---
+
+## `viewerApi.debugCameraControls()`
+
+**Purpose:** Track camera detach/attach invocations during drag interactions.
+
+**Suggested shape:**
+
+```js
+const cameraStats = { detachCalls: 0, attachCalls: 0 };
+const origDetach = camera.detachControl.bind(camera);
+const origAttach = camera.attachControl.bind(camera);
+
+camera.detachControl = (...args) => {
+  cameraStats.detachCalls += 1;
+  return origDetach(...args);
+};
+camera.attachControl = (...args) => {
+  cameraStats.attachCalls += 1;
+  return origAttach(...args);
+};
+
+viewerApi.debugCameraControls = ({ reset = false } = {}) => {
+  if (reset) {
+    cameraStats.detachCalls = 0;
+    cameraStats.attachCalls = 0;
+  }
+  return { ...cameraStats };
+};
+```
+
+**Used by:** Camera-suppression Playwright test to confirm detaching during drag and reattaching afterwards.
+
+---
+
+## `viewerApi.debugBondMetrics()`
+
+**Purpose:** Fetch bond lengths and classifications via public API instead of `state.bonds` internals.
+
+**Suggested shape:**
+
+```js
+viewerApi.debugBondMetrics = () => {
+  const { elements, positions, bonds } = viewerApi.state;
+  const distance = (a, b) => {
+    const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+    return Math.hypot(dx, dy, dz);
+  };
+  return bonds.map(({ i, j, opacity }) => ({
+    i,
+    j,
+    elements: [elements[i], elements[j]],
+    length: distance(positions[i], positions[j]),
+    opacity,
+  }));
+};
+```
+
+**Used by:** Benzene rotation test to validate C–C / C–H ranges after manipulating geometry.
+
+---
+
+## `viewerApi.setTestAutoSelectFallback(on = true)`
+
+**Purpose:** Enable or disable the automated “select atom 0 when pick misses” fallback without touching `_internals` from tests.
+
+**Suggested shape:**
+
+```js
+viewerApi.setTestAutoSelectFallback = (on = true) => {
+  if (view._internals) {
+    view._internals._debugAutoSelectFirstOnEmpty = !!on;
+    return true;
+  }
+  return false;
+};
+```
+
+**Used by:** Camera-suppression Playwright test to trigger drag behavior even when the pointer doesn’t land on an atom.
+
+---
+
+## `viewerApi.debugSelectAtom(index)` / `viewerApi.debugSelectBond({ … })` / `viewerApi.debugGetSelection()`
+
+**Purpose:** Drive the selection service without reaching into private structures. `debugSelectAtom` selects an atom by index, `debugSelectBond` accepts `{ i, j, index?, key?, orientation?, side? }`, and `debugGetSelection` returns the current selection snapshot.
+
+**Suggested shape:**
+
+```js
+viewerApi.debugSelectAtom = (index) => {
+  selectionService.clickAtom(Number(index));
+  return selectionService.get();
+};
+
+viewerApi.debugSelectBond = ({ i, j, index = 0, key = `${i}-${j}`, orientation, side } = {}) => {
+  selectionService.clickBond({ i, j, index, key });
+  if (orientation != null && viewerApi.state.selection?.kind === 'bond') {
+    viewerApi.state.selection.data.orientation = orientation;
+  } else if (side) {
+    viewerApi.state.selection.data.orientation = side === 'i' ? 1 : 0;
+  }
+  return selectionService.get();
+};
+
+viewerApi.debugGetSelection = () => selectionService.get();
+```
+
+**Used by:** Bond highlight and benzene rotation Playwright tests to set up selections via public hooks.
+
+---
+
+### Authoring Notes
+
+- Keep hook implementations colocated with viewer bootstrap (`public/index.js`) so they can access the live `view` and `state`.
+- Wrap each hook registration in a guard:
+  ```js
+  if (typeof window !== 'undefined' && window.__MLIPVIEW_TEST_MODE) {
+    Object.defineProperty(window.viewerApi, 'debugHighlightState', { value: ..., configurable: true });
+  }
+  ```
+- Avoid mutating private structures outside of the hook registration; tests should treat the results as readonly snapshots.
+- Update this document whenever you add/remove a hook so teams can reuse existing helpers rather than invent new ones.

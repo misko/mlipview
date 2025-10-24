@@ -1,21 +1,12 @@
 /**
- * bondRotateEnergyCount.spec.js
- * Ensures a single bond rotation produces exactly one new energy step (interaction) beyond baseline.
  * @jest-environment jsdom
  */
 
 jest.mock('../public/render/scene.js', () => ({
   createScene: async () => ({
-    engine: { runRenderLoop: (fn) => {} },
+    engine: { runRenderLoop: () => {} },
     scene: {
-      onPointerObservable: {
-        _l: [],
-        add(fn) {
-          this._l.push(fn);
-        },
-        notify() {},
-        notifyObservers() {},
-      },
+      onPointerObservable: { add: () => {} },
       render: () => {},
     },
     camera: { attachControl: () => {} },
@@ -24,14 +15,14 @@ jest.mock('../public/render/scene.js', () => ({
 
 if (!global.BABYLON) {
   global.BABYLON = {
-    Vector3: class Vector3 {
+    Vector3: class {
       constructor(x = 0, y = 0, z = 0) {
         this.x = x;
         this.y = y;
         this.z = z;
       }
     },
-    Color4: class Color4 {
+    Color4: class {
       constructor(r, g, b, a) {
         this.r = r;
         this.g = g;
@@ -74,11 +65,11 @@ function setupDOM() {
   return viewer;
 }
 
-describe('single bond rotation energy step count (API-only policy)', () => {
-  test('rotateBond alone adds zero energy steps', async () => {
-    const viewer = setupDOM();
+describe('x-bond rotate energy count', () => {
+  test('rotateBond does not add energy samples', async () => {
+    const canvas = setupDOM();
     const mod = await import('../public/index.js');
-    const api = await mod.initNewViewer(viewer, {
+    const api = await mod.initNewViewer(canvas, {
       elements: [6, 6, 1],
       positions: [
         { x: 0, y: 0, z: 0 },
@@ -90,16 +81,13 @@ describe('single bond rotation energy step count (API-only policy)', () => {
         { i: 1, j: 2 },
       ],
     });
+
     const before = api.debugEnergySeriesLength();
-    // Select bond and rotate once
-    api.state.selection = {
-      kind: 'bond',
-      data: { i: 0, j: 1, orientation: { axis: 'iToJ', side: 'j' } },
-    };
-    api.manipulation.rotateBond(Math.PI / 10);
-    // Wait a bit longer than the debounced 50ms positionsChanged handler to ensure any suppressed posChange would have fired
+    api.debugSelectBond({ i: 0, j: 1, index: 0 });
+    const changed = api.manipulation.rotateBond(Math.PI / 10);
+    expect(changed).toBe(true);
     await new Promise((r) => setTimeout(r, 80));
     const after = api.debugEnergySeriesLength();
-    expect(after - before).toBe(0); // no energy point added without API call
+    expect(after - before).toBe(0);
   });
 });

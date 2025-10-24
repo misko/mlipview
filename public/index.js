@@ -507,6 +507,21 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   // Scene & view
   const { engine, scene, camera } = await createScene(canvas);
+
+  const cameraControlStats = { detachCalls: 0, attachCalls: 0 };
+  if (typeof window !== 'undefined' && window.__MLIPVIEW_TEST_MODE && camera && !camera.__MLIPVIEW_CONTROL_HOOKED__) {
+    const origDetach = typeof camera.detachControl === 'function' ? camera.detachControl.bind(camera) : null;
+    const origAttach = typeof camera.attachControl === 'function' ? camera.attachControl.bind(camera) : null;
+    camera.detachControl = function (...args) {
+      cameraControlStats.detachCalls += 1;
+      return origDetach ? origDetach(...args) : undefined;
+    };
+    camera.attachControl = function (...args) {
+      cameraControlStats.attachCalls += 1;
+      return origAttach ? origAttach(...args) : undefined;
+    };
+    Object.defineProperty(camera, '__MLIPVIEW_CONTROL_HOOKED__', { value: true, configurable: true });
+  }
   onWin(w => {
     w.__MLIPVIEW_DEBUG_TOUCH = !!w.__MLIPVIEW_DEBUG_TOUCH;
     w.enableTouchDebug = (on) => { w.__MLIPVIEW_DEBUG_TOUCH = !!on; dbg.log('[touchDebug] set to', w.__MLIPVIEW_DEBUG_TOUCH); };
@@ -615,10 +630,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   try { Object.defineProperty(wrappedManipulation, '__isWrappedManipulation', { value: true }); } catch { wrappedManipulation.__isWrappedManipulation = true; }
 
   // Picking with energy hook
+  const selectionService = createSelectionService(state);
   const picking = (pickingRef = createPickingService(
     scene,
     view,
-    createSelectionService(state),
+    selectionService,
     {
       manipulation: new Proxy({}, { get: (_, k) => wrappedManipulation?.[k] }),
       camera,
@@ -637,7 +653,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       ...picking,
       view,
       vrPicker,
-      selectionService: picking.selectionService,
+      selectionService,
       manipulation: new Proxy({}, { get: (_, k) => wrappedManipulation?.[k] }),
       molState: state,
     },
@@ -995,6 +1011,103 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   function debugRecordInteraction(kind) { recordInteraction(kind || 'debug'); }
   function getForceCacheVersion() { return state.forceCache?.version; }
   function getVersionInfo() { return { userInteractionVersion, totalInteractionVersion, resetEpoch }; }
+  function debugGhostSnapshot() {
+    const groups = view?._internals?.ghostBondGroups;
+    if (!groups || typeof groups.entries !== 'function') return { ghostBondCount: 0, ghostGroups: [] };
+    let ghostBondCount = 0;
+    const ghostGroups = [];
+    for (const [key, grp] of groups.entries()) {
+      const count = grp && grp.mats ? grp.mats.length >>> 0 : 0;
+      ghostBondCount += count;
+      ghostGroups.push({ key, count });
+    }
+    return { ghostBondCount, ghostGroups };
+  }
+  function debugHighlightState() {
+    const hi = view?._internals?.highlight;
+    return {
+      atomVisible: !!hi?.atom?.isVisible,
+      bondVisible: !!hi?.bond?.isVisible,
+    };
+  }
+  function debugCameraControls({ reset = false } = {}) {
+    if (reset) {
+      cameraControlStats.detachCalls = 0;
+      cameraControlStats.attachCalls = 0;
+    }
+    return { detachCalls: cameraControlStats.detachCalls, attachCalls: cameraControlStats.attachCalls };
+  }
+  function debugBondMetrics() {
+    const bonds = Array.isArray(state.bonds) ? state.bonds : [];
+    const positions = Array.isArray(state.positions) ? state.positions : [];
+    const elements = Array.isArray(state.elements) ? state.elements : [];
+    const distance = (a, b) => {
+      if (!a || !b) return NaN;
+      const dx = (a.x || 0) - (b.x || 0);
+      const dy = (a.y || 0) - (b.y || 0);
+      const dz = (a.z || 0) - (b.z || 0);
+      return Math.hypot(dx, dy, dz);
+    };
+    return bonds.map((bond, idx) => {
+      const i = bond?.i ?? 0;
+      const j = bond?.j ?? 0;
+      return {
+        index: idx,
+        i,
+        j,
+        elements: [elements[i] ?? null, elements[j] ?? null],
+        length: distance(positions[i], positions[j]),
+        opacity: typeof bond?.opacity === 'number' ? bond.opacity : 1,
+      };
+    });
+  }
+  function setTestAutoSelectFallback(on = true) {
+    if (view?._internals) {
+      view._internals._debugAutoSelectFirstOnEmpty = !!on;
+      return true;
+    }
+    return false;
+  }
+  function debugSelectAtom(index) {
+    try {
+      const idx = Number(index);
+      selectionService.clickAtom(idx);
+      return selectionService.get();
+    } catch {
+      return null;
+    }
+  }
+  function debugSelectBond(ref) {
+    try {
+      if (!ref || typeof ref !== 'object') return null;
+      const i = Number(ref.i);
+      const j = Number(ref.j);
+      if (!Number.isInteger(i) || !Number.isInteger(j)) return null;
+      const payload = {
+        i,
+        j,
+        index: ref.index != null ? ref.index : 0,
+        key: ref.key != null ? ref.key : `${i}-${j}`,
+      };
+      selectionService.clickBond(payload);
+      if (ref.orientation != null && state.selection?.kind === 'bond') {
+        state.selection.data.orientation = ref.orientation;
+      }
+      if (ref.side && state.selection?.kind === 'bond') {
+        state.selection.data.orientation = ref.side === 'i' ? 1 : 0;
+      }
+      return selectionService.get();
+    } catch {
+      return null;
+    }
+  }
+  function debugGetSelection() {
+    try {
+      return selectionService.get();
+    } catch {
+      return null;
+    }
+  }
 
   async function resetToInitialPositions() {
     const t0 = env.now();
@@ -1133,7 +1246,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   return {
     state,
     bondService,
-    selection: picking.selectionService,
+    selection: selectionService,
+    selectionService,
     ff,
     dynamics: { stepMD: () => { }, stepRelax: ({ forceFn }) => forceFn && forceFn() },
     view,
@@ -1162,6 +1276,14 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     enableFeatureFlag,
     setMinStepInterval,
     requestSimpleCalculateNow,
+    debugGhostSnapshot,
+    debugHighlightState,
+    debugCameraControls,
+    debugBondMetrics,
+    setTestAutoSelectFallback,
+    debugSelectAtom,
+    debugSelectBond,
+    debugGetSelection,
   };
 }
 
