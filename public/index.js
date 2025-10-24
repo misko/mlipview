@@ -29,6 +29,7 @@ const DEFAULTS = {
   RPS_WINDOW_MS: 2000,
   CONTINUOUS_STEPS: 1000,
   SAFE_SPHERE_RADIUS: 20,
+  ROTATION_LATCH_MS: 600,
 };
 
 const TEMP_PLACEHOLDER = 'T: — K';
@@ -73,6 +74,10 @@ const TUNABLES = {
   get SAFE_SPHERE_RADIUS() {
     if (typeof window === 'undefined') return DEFAULTS.SAFE_SPHERE_RADIUS;
     return cfgNumber(window.__MLIP_CONFIG?.safeSphereRadius, DEFAULTS.SAFE_SPHERE_RADIUS);
+  },
+  get ROTATION_LATCH_MS() {
+    if (typeof window === 'undefined') return DEFAULTS.ROTATION_LATCH_MS;
+    return cfgNumber(window.__MLIP_CONFIG?.rotationLatchMs, DEFAULTS.ROTATION_LATCH_MS);
   },
 };
 
@@ -161,6 +166,11 @@ const zOf = (e) =>
         SYMBOL_TO_Z[e?.symbol] || SYMBOL_TO_Z[e?.sym] || SYMBOL_TO_Z[e?.S] || 0);
 
 const posToTriples = (state) => state.positions.map(p => [p.x, p.y, p.z]);
+const triplesForIndices = (state, indices) =>
+  indices.map((idx) => {
+    const p = state.positions[idx] || { x: 0, y: 0, z: 0 };
+    return [p.x, p.y, p.z];
+  });
 
 const applyTriples = (state, triples, { exclude } = {}) => {
   const N = Math.min(state.positions.length, triples?.length || 0);
@@ -387,16 +397,90 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   const modifiedByVersion = new Map();
   const draggingAtoms = new Set();
+  const rotatingAtoms = new Map();
   const latchedUntil = new Map();
+  const bondLatch = {
+    atoms: new Set(),
+    active: false,
+    key: null,
+    anchor: null,
+    movingRoot: null,
+  };
   const latchAtom = (i, ms = TUNABLES.LATCH_AFTER_DRAG_MS) => {
     const now = env.now(); latchedUntil.set(i, now + ms);
   };
+  const markRotatingAtoms = (indices) => {
+    if (!Array.isArray(indices) || !indices.length) return;
+    const now = env.now();
+    const expiry = now + TUNABLES.ROTATION_LATCH_MS;
+    for (const idx of indices) {
+      rotatingAtoms.set(idx, expiry);
+      latchedUntil.set(idx, expiry);
+    }
+  };
   const currentDraggedAtom = { idx: null };
+  function sendBondLatchUpdate({ bumpReason = null } = {}) {
+    if (!bondLatch.active || bondLatch.atoms.size === 0) return;
+    if (bumpReason) {
+      bumpUser(bumpReason);
+      modifiedByVersion.get(userInteractionVersion) || modifiedByVersion.set(userInteractionVersion, new Set());
+      const modSet = modifiedByVersion.get(userInteractionVersion);
+      for (const idx of bondLatch.atoms) modSet.add(idx);
+    }
+    const indices = Array.from(bondLatch.atoms);
+    const triples = triplesForIndices(state, indices);
+    try {
+      const ws = getWS();
+      ws.setCounters?.({ userInteractionCount: userInteractionVersion });
+      ws.userInteraction?.({ positions: { indices, triples } });
+    } catch { }
+  }
+  function clearBondLatch({ sendFinal = false, bumpReason = 'bondRotateFinalize' } = {}) {
+    if (!bondLatch.active) return;
+    const latchedIndices = Array.from(bondLatch.atoms);
+    if (sendFinal && latchedIndices.length) {
+      sendBondLatchUpdate({ bumpReason });
+    }
+    bondLatch.atoms.clear();
+    bondLatch.active = false;
+    bondLatch.key = null;
+    bondLatch.anchor = null;
+    bondLatch.movingRoot = null;
+    for (const idx of latchedIndices) {
+      rotatingAtoms.delete(idx);
+      latchedUntil.delete(idx);
+    }
+  }
+  function setBondLatchFromGroup(group) {
+    if (!group || !Array.isArray(group.sideAtoms) || group.sideAtoms.length === 0) {
+      clearBondLatch({ sendFinal: true });
+      return;
+    }
+    const newKey = `${group.i}|${group.j}|${group.orientation ?? 'null'}`;
+    const same =
+      bondLatch.active &&
+      bondLatch.key === newKey &&
+      bondLatch.anchor === group.anchor &&
+      bondLatch.movingRoot === group.movingRoot &&
+      bondLatch.atoms.size === group.sideAtoms.length &&
+      group.sideAtoms.every((idx) => bondLatch.atoms.has(idx));
+    if (same) return;
+    clearBondLatch({ sendFinal: true });
+    bondLatch.atoms = new Set(group.sideAtoms);
+    bondLatch.active = bondLatch.atoms.size > 0;
+    bondLatch.key = newKey;
+    bondLatch.anchor = group.anchor;
+    bondLatch.movingRoot = group.movingRoot;
+  }
 
   const buildExcludeSet = () => {
     const out = new Set(draggingAtoms);
     const now = env.now();
     for (const [i, t] of latchedUntil) { if (t > now) out.add(i); else latchedUntil.delete(i); }
+    for (const [i, t] of rotatingAtoms) { if (t > now) out.add(i); else rotatingAtoms.delete(i); }
+    if (bondLatch.active) {
+      for (const i of bondLatch.atoms) out.add(i);
+    }
     return out;
   };
 
@@ -661,18 +745,35 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
         if (Array.isArray(sideAtoms) && sideAtoms.length) {
           modifiedByVersion.get(userInteractionVersion) || modifiedByVersion.set(userInteractionVersion, new Set());
           for (const i of sideAtoms) modifiedByVersion.get(userInteractionVersion).add(i);
+          markRotatingAtoms(sideAtoms);
         }
         if (running.kind === null) ff.computeForces();
         recordInteraction('bondRotate');
         __suppressNextPosChange = true;
+        sendBondLatchUpdate();
       }
       return r;
     },
   };
+  try { wrappedManipulation._debug = manipulation._debug; } catch { }
   try { Object.defineProperty(wrappedManipulation, '__isWrappedManipulation', { value: true }); } catch { wrappedManipulation.__isWrappedManipulation = true; }
 
   // Picking with energy hook
   const selectionService = createSelectionService(state);
+  try {
+    state.bus?.on?.('selectionChanged', (sel) => {
+      try {
+        if (sel && sel.kind === 'bond') {
+          const group = sel.data?.rotationGroup;
+          if (group && Array.isArray(group.sideAtoms) && group.sideAtoms.length) {
+            setBondLatchFromGroup(group);
+            return;
+          }
+        }
+        clearBondLatch({ sendFinal: true });
+      } catch { }
+    });
+  } catch { }
   const picking = (pickingRef = createPickingService(
     scene,
     view,
@@ -800,7 +901,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     const epochAtSend = resetEpoch;
     if (epochAtSend !== resetEpoch) return { stale: true, staleReason: 'staleEpoch', epochAtSend, resetEpoch };
     if (Array.isArray(r.positions) && r.positions.length === state.positions.length) {
-      applyTriples(state, r.positions);
+      const exclude = buildExcludeSet();
+      applyTriples(state, r.positions, { exclude });
       __suppressNextPosChange = true; state.markPositionsChanged(); bumpSim(kind === 'md' ? 'mdStepApply' : 'relaxStepApply');
     }
     updateEnergyForces({ energy: r.energy, forces: r.forces, stress: r.stress || null, reason: kind });

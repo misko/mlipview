@@ -1,4 +1,5 @@
 import { createEmptySelection, applyBondClick } from '../selection-model.js';
+import { computeBondRotationGroup } from './bondRotationUtils.js';
 import { __count } from '../util/funcCount.js';
 
 export function createSelectionService(molState) {
@@ -36,6 +37,14 @@ export function createSelectionService(molState) {
         molState.selection = createEmptySelection();
       }
       const result = applyBondClick(molState.selection, ref);
+      if (molState.selection.kind === 'bond') {
+        try {
+          const { i, j, orientation } = molState.selection.data;
+          molState.selection.data.rotationGroup = computeBondRotationGroup(molState, { i, j, orientation });
+        } catch {
+          try { delete molState.selection.data.rotationGroup; } catch {}
+        }
+      }
       try {
         if (typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_SELECT)
           console.log('[selectService] result bond', result, 'selection=', molState.selection);

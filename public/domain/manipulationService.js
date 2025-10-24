@@ -8,6 +8,7 @@
 // Emits position change via molState.markPositionsChanged(); does not recompute bonds.
 
 import { orientationToSide } from '../selection-model.js';
+import { computeBondRotationGroup } from './bondRotationUtils.js';
 import { __count } from '../util/funcCount.js';
 
 // Optional deps: { bondService } to trigger bond recomputation after an atom drag.
@@ -129,34 +130,12 @@ export function createManipulationService(molState, { bondService } = {}) {
     if (!molState.selection || molState.selection.kind !== 'bond') return false;
     const { i, j, orientation } = molState.selection.data;
     const side = sideOverride || orientationToSide(orientation); // 'i' or 'j'
-    const anchor = side === 'i' ? j : i; // rotate the opposite side around anchor->moving axis
-    const movingRoot = side === 'i' ? i : j; // starting atom of moving side
-    // Build adjacency with opacity filtering: exclude "soft" bonds from rigid rotation graph.
-    // Bonds with opacity below threshold are considered visually/structurally weak and do not propagate rotation.
-    const ROTATION_BOND_OPACITY_MIN = 0.85; // Tunable: strong bonds typically near 1.0; soft/crossing ~0.5.
-    const adj = Array.from({ length: molState.positions.length }, () => []);
-    for (const b of molState.bonds) {
-      const op = b.opacity == null ? 1 : b.opacity;
-      const isSelectedBond = (b.i === i && b.j === j) || (b.i === j && b.j === i);
-      if (isSelectedBond || op >= ROTATION_BOND_OPACITY_MIN) {
-        adj[b.i].push(b.j);
-        adj[b.j].push(b.i);
-      }
+    let group = molState.selection.data.rotationGroup;
+    if (!group || group.orientation !== orientation || group.i !== i || group.j !== j) {
+      group = computeBondRotationGroup(molState, { i, j, orientation });
+      molState.selection.data.rotationGroup = group;
     }
-    // Collect side atoms via BFS starting at movingRoot but do not cross the anchor
-    const sideAtoms = [];
-    const queue = [movingRoot];
-    const visited = new Set([anchor]);
-    visited.add(movingRoot);
-    while (queue.length) {
-      const a = queue.shift();
-      sideAtoms.push(a);
-      for (const nb of adj[a])
-        if (!visited.has(nb)) {
-          visited.add(nb);
-          queue.push(nb);
-        }
-    }
+    const { anchor, movingRoot, sideAtoms } = group;
     // Axis from anchor to movingRoot
     const pAnchor = molState.positions[anchor];
     const pMove = molState.positions[movingRoot];
