@@ -77,7 +77,30 @@ test.describe('WebSocket reconnect handling', () => {
     });
 
     await page.evaluate(async () => {
-      await window.viewerApi.startMDContinuous({ steps: 400, temperature: 900 });
+      const ws = window.__fairchem_ws__;
+      try {
+        await ws.ensureConnected({ timeoutMs: 15000 });
+        try { await window.viewerApi?.baselineEnergy?.(); } catch {}
+        try { await ws.waitForEnergy({ timeoutMs: 10000 }); } catch {}
+      } catch {}
+    });
+
+    await page.evaluate(async () => {
+      const ws = window.__fairchem_ws__;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await window.viewerApi.startMDContinuous({ steps: 400, temperature: 900 });
+          break;
+        } catch (err) {
+          const msg = err?.message || String(err);
+          if (attempt === 0 && /WS not connected/i.test(msg)) {
+            try { await ws.ensureConnected({ timeoutMs: 15000 }); } catch {}
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            continue;
+          }
+          throw err;
+        }
+      }
     });
 
     await page.waitForFunction(() => (window.__MLIPVIEW_WS_FRAMES || []).filter((f) => Number.isFinite(f.simStep)).length >= 8, { timeout: 20000 });

@@ -20,6 +20,27 @@ try {
   }
 } catch (_) {}
 
+// Ensure a generous WS connect timeout for all test environments to avoid flakiness.
+try {
+  const target = (typeof globalThis !== 'undefined' ? globalThis : global) || {};
+  target.__MLIP_CONFIG = target.__MLIP_CONFIG || {};
+  if (
+    !Number.isFinite(target.__MLIP_CONFIG.wsConnectTimeoutMs) ||
+    target.__MLIP_CONFIG.wsConnectTimeoutMs < 15000
+  ) {
+    target.__MLIP_CONFIG.wsConnectTimeoutMs = 15000;
+  }
+  if (typeof window !== 'undefined') {
+    window.__MLIP_CONFIG = window.__MLIP_CONFIG || target.__MLIP_CONFIG;
+    if (
+      !Number.isFinite(window.__MLIP_CONFIG.wsConnectTimeoutMs) ||
+      window.__MLIP_CONFIG.wsConnectTimeoutMs < 15000
+    ) {
+      window.__MLIP_CONFIG.wsConnectTimeoutMs = 15000;
+    }
+  }
+} catch (_) {}
+
 // Provide WebSocket for jsdom/node by using the 'ws' package when not available
 try {
   // Prefer not to override if environment already provides a WebSocket

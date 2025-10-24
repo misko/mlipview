@@ -297,12 +297,41 @@ export function createFairchemWS() {
     }, delayMs);
   }
 
+  const pendingSends = [];
+
+  function cloneBufferLike(data) {
+    if (data == null) return data;
+    if (typeof data === 'string') return data;
+    if (data instanceof ArrayBuffer) return data.slice(0);
+    if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(data)) {
+      return data.constructor ? new data.constructor(data) : new Uint8Array(data);
+    }
+    if (data instanceof Uint8Array) return data.slice(0);
+    return data;
+  }
+
+  function flushPending() {
+    if (!ws || ws.readyState !== 1 || !pendingSends.length) return;
+    while (pendingSends.length) {
+      const payload = pendingSends.shift();
+      try {
+        __log('[WS][tx-bytes:flush]', { len: payload?.byteLength || payload?.length || 0 });
+        ws.send(payload);
+      } catch (e) {
+        __err('[WS][send-error:flush]', e?.message || e);
+        break;
+      }
+    }
+  }
+
   function sendBytes(buf) {
     if (ws && ws.readyState === 1) {
       __log('[WS][tx-bytes]', { len: buf?.byteLength || buf?.length || 0 });
       try { ws.send(buf); } catch (e) { __err('[WS][send-error]', e?.message || e); }
     } else {
-      __warn('[WS][send-skipped:not-open]', { readyState: ws?.readyState });
+      const queued = cloneBufferLike(buf);
+      pendingSends.push(queued);
+      __warn('[WS][send-queued:not-open]', { readyState: ws?.readyState, len: queued?.byteLength || queued?.length || 0 });
     }
   }
 
@@ -376,6 +405,7 @@ export function createFairchemWS() {
         __log('[WS][open]', { readyState: ws?.readyState });
         emitState({ type: 'open', url, isReconnect });
         notifyOpenWaiters(true);
+        try { flushPending(); } catch { }
         resolve(true);
       };
       ws.onerror = (e) => {
@@ -485,6 +515,8 @@ export function createFairchemWS() {
 
     try {
       await __connectPromise;
+      if (ws && ws.readyState === 1) return true;
+      if (wantConnected) return waitForNextOpen({ timeoutMs });
       return ws && ws.readyState === 1;
     } catch (err) {
       if (!wantConnected) throw err;
@@ -504,7 +536,14 @@ export function createFairchemWS() {
 
   function initSystem({ atomic_numbers, positions, velocities, cell }) {
     __warn('[WS] initSystem deprecated; sending USER_INTERACTION for init');
-    return userInteraction({ atomic_numbers, positions, velocities, cell });
+    const natoms = Array.isArray(positions)
+      ? positions.length
+      : Array.isArray(atomic_numbers)
+        ? atomic_numbers.length
+        : Array.isArray(velocities)
+          ? velocities.length
+          : undefined;
+    return userInteraction({ natoms, atomic_numbers, positions, velocities, cell });
   }
 
   function userInteraction({ atomic_numbers, positions, velocities, cell, natoms } = {}) {

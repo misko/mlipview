@@ -31,7 +31,7 @@ const DEFAULTS = {
   SAFE_SPHERE_RADIUS: 20,
   ROTATION_LATCH_MS: 600,
   BOND_SCROLL_STEP_RAD: Math.PI / 36,
-  WS_CONNECT_TIMEOUT_MS: 1500,
+  WS_CONNECT_TIMEOUT_MS: 15000,
 };
 
 const TEMP_PLACEHOLDER = 'T: — K';
@@ -543,17 +543,33 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       return [c.a.x, c.a.y, c.a.z, c.b.x, c.b.y, c.b.z, c.c.x, c.c.y, c.c.z].map(Number).map(x => x || 0).join(',');
     } catch { return 'off'; }
   };
+  const resetWsInitState = () => {
+    __wsState.inited = false;
+    __wsState.lastAtomCount = 0;
+    __wsState.lastCellKey = 'off';
+  };
+
   async function ensureWsInit({ allowOffline = true, timeoutMs = TUNABLES.WS_CONNECT_TIMEOUT_MS } = {}) {
     const ws = getWS();
     let connected = false;
     try {
       connected = await ws.ensureConnected({ timeoutMs });
     } catch (err) {
+      resetWsInitState();
       if (!allowOffline) throw err;
       if (env.apiOn()) dbg.warn('[WS][ensureInit][connect] failed', err?.message || err);
       return false;
     }
-    if (!connected || !ws || ws.readyState !== 1) {
+    const wsState = (() => {
+      try { return typeof ws?.getState === 'function' ? ws.getState() : null; }
+      catch { return null; }
+    })();
+    const ready =
+      !!wsState?.connected ||
+      (typeof ws?.readyState === 'number' && ws.readyState === 1) ||
+      (!!connected);
+    if (!connected || !ws || !ready) {
+      resetWsInitState();
       if (!allowOffline) throw new Error('WS not connected');
       return false;
     }
@@ -565,17 +581,43 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       const positionsTriples = posToTriples(state);
       const v = getVelocitiesIfFresh();
       const cell = stateCellToArray(state.cell);
-      const seq = ws.userInteraction({ natoms: nat, atomic_numbers, positions: positionsTriples, velocities: v || undefined, cell });
+      let seq = null;
+      try {
+        if (env.apiOn()) {
+          dbg.log('[WS][ensureInit][send]', {
+            nat,
+            zCount: Array.isArray(atomic_numbers) ? atomic_numbers.length : 0,
+            posCount: Array.isArray(positionsTriples) ? positionsTriples.length : 0,
+            cell: !!cell,
+          });
+        }
+        seq = ws.userInteraction({
+          natoms: nat,
+          atomic_numbers,
+          positions: positionsTriples,
+          velocities: v || undefined,
+          cell,
+        });
+      } catch (err) {
+        resetWsInitState();
+        if (!allowOffline) throw err;
+        if (env.apiOn()) dbg.warn('[WS][ensureInit][send] failed', err?.message || err);
+        return false;
+      }
+      const waitMs = Math.max(4000, Number(timeoutMs) || 0);
       if (typeof ws.waitForClientSeq === 'function' && Number.isFinite(seq) && seq > 0) {
         try {
-          await ws.waitForClientSeq(seq, { timeoutMs: 4000 });
+          await ws.waitForClientSeq(seq, { timeoutMs: waitMs });
         } catch (err) {
-          __wsState.inited = false;
+          resetWsInitState();
+          if (!allowOffline) throw err;
           if (env.apiOn()) dbg.warn('[WS][ensureInit][wait] failed', err?.message || err);
-          throw err;
+          return true;
         }
       }
-      __wsState.inited = true; __wsState.lastAtomCount = nat; __wsState.lastCellKey = ckey;
+      __wsState.inited = true;
+      __wsState.lastAtomCount = nat;
+      __wsState.lastCellKey = ckey;
       if (env.apiOn()) dbg.log('[WS][ensureInit]', { nat, v: !!v, hasCell: !!cell });
     }
     return true;
@@ -919,7 +961,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       const v = getVelocitiesIfFresh();
       const prepSeq = ws.userInteraction({ positions: posToTriples(state), velocities: v || undefined });
       if (typeof ws.waitForClientSeq === 'function' && Number.isFinite(prepSeq) && prepSeq > 0) {
-        await ws.waitForClientSeq(prepSeq, { timeoutMs: 3000 });
+        const waitMs = Math.max(4000, Number(TUNABLES.WS_CONNECT_TIMEOUT_MS) || 0);
+        await ws.waitForClientSeq(prepSeq, { timeoutMs: waitMs });
       }
     } catch (err) {
       if (env.apiOn()) dbg.warn(`[${kind}Step][prep] failed`, err?.message || err);
@@ -1250,27 +1293,40 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     }
 
     const ws = getWS();
-    try {
-      await ensureWsInit({ allowOffline: false });
-    } catch (err) {
-      setMode(Mode.Idle);
-      resetRPS();
-      if (env.apiOn()) dbg.warn(`[${kind}WS][connect] failed`, err?.message || err);
-      throw err;
+    try { await ws.ensureConnected({ timeoutMs: TUNABLES.WS_CONNECT_TIMEOUT_MS }); } catch { }
+    let initOk = false;
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2 && !initOk; attempt++) {
+      try {
+        await ensureWsInit({ allowOffline: false });
+        initOk = true;
+      } catch (err) {
+        lastErr = err;
+        if (attempt === 0) {
+          try { await ws.ensureConnected({ timeoutMs: TUNABLES.WS_CONNECT_TIMEOUT_MS }); } catch { }
+          await new Promise(resolve => setTimeout(resolve, 100));
+          continue;
+        }
+      }
+    }
+    if (!initOk) {
+      if (env.apiOn()) dbg.warn(`[${kind}WS][connect] proceeding without confirmed init`, lastErr?.message || lastErr);
     }
     try { if (posTickScheduled) posTickScheduled = false; } catch { }
     try { ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 }); } catch { }
+    let prepSeq = null;
     try {
       const v = getVelocitiesIfFresh();
-      const prepSeq = ws.userInteraction({ positions: posToTriples(state), velocities: v || undefined });
+      prepSeq = ws.userInteraction({ positions: posToTriples(state), velocities: v || undefined });
       if (typeof ws.waitForClientSeq === 'function' && Number.isFinite(prepSeq) && prepSeq > 0) {
-        await ws.waitForClientSeq(prepSeq, { timeoutMs: 3000 });
+        const waitMs = Math.max(4000, Number(TUNABLES.WS_CONNECT_TIMEOUT_MS) || 0);
+        await ws.waitForClientSeq(prepSeq, { timeoutMs: waitMs });
       }
     } catch (err) {
-      setMode(Mode.Idle);
-      resetRPS();
       if (env.apiOn()) dbg.warn(`[${kind}WS][prep] failed`, err?.message || err);
-      throw err;
+      if (typeof prepSeq === 'number' && prepSeq > 0) {
+        try { ws.ack?.(prepSeq); } catch { }
+      }
     }
     resetRPS();
 

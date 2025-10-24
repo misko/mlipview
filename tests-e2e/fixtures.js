@@ -29,12 +29,17 @@ function attachLogging(context) {
   context.on('page', (page) => attachListeners(page));
 }
 
+const DEFAULT_RUNTIME_CONFIG = {
+  wsConnectTimeoutMs: 15000,
+};
+
 async function applyRuntimeInit(page, {
   server = DEFAULT_SERVER_URL,
   testMode = true,
   disableAutoMd = true,
   configOverrides = null,
 } = {}) {
+  const mergedOverrides = { ...DEFAULT_RUNTIME_CONFIG, ...(configOverrides || {}) };
   await page.addInitScript(
     (
       { server, testMode, disableAutoMd, configOverrides }
@@ -47,7 +52,7 @@ async function applyRuntimeInit(page, {
         Object.assign(window.__MLIP_CONFIG, configOverrides);
       }
     },
-    { server, testMode, disableAutoMd, configOverrides }
+    { server, testMode, disableAutoMd, configOverrides: mergedOverrides }
   );
 }
 
@@ -70,17 +75,17 @@ export const test = base.extend({
   },
 
   loadViewerPage: async ({ page, baseURL }, use) => {
-    const loader = async (
-      {
-        query = {},
-        server = DEFAULT_SERVER_URL,
-        testMode = true,
-        disableAutoMd = true,
-        configOverrides = null,
-        waitForViewer = true,
-        extraInit = null,
-      } = {}
-    ) => {
+  const loader = async (
+    {
+      query = {},
+      server = DEFAULT_SERVER_URL,
+      testMode = true,
+      disableAutoMd = true,
+      configOverrides = null,
+      waitForViewer = true,
+      extraInit = null,
+    } = {}
+  ) => {
       await applyRuntimeInit(page, {
         server,
         testMode,
@@ -102,6 +107,17 @@ export const test = base.extend({
           null,
           { timeout: 45_000 }
         );
+        await page.evaluate(async () => {
+          const ws = window.__fairchem_ws__ || window.__WS_API__;
+          if (!ws || typeof ws.ensureConnected !== 'function') return;
+          const tryConnect = ws.ensureConnected({ timeoutMs: 8000 }).catch(() => false);
+          await Promise.race([
+            tryConnect,
+            new Promise(resolve => setTimeout(resolve, 8000, false)),
+          ]);
+          try { await window.viewerApi?.baselineEnergy?.(); } catch { }
+          try { ws.waitForEnergy({ timeoutMs: 10000 }).catch(() => { }); } catch { }
+        });
       }
     };
 
@@ -145,19 +161,18 @@ export const test = base.extend({
 
   ensureWsReady: async ({ page }, use) => {
     const ensure = async ({ timeoutMs = 20_000 } = {}) => {
-      return await page.evaluate(
-        async ({ timeoutMs }) => {
-          const ws = window.__fairchem_ws__ || window.__WS_API__;
-          if (!ws || typeof ws.ensureConnected !== 'function') return false;
-          try {
-            await ws.ensureConnected();
-            return true;
-          } catch {
-            return false;
-          }
-        },
-        { timeoutMs }
-      );
+      return await page.evaluate(async ({ timeoutMs }) => {
+        const ws = window.__fairchem_ws__ || window.__WS_API__;
+        if (!ws || typeof ws.ensureConnected !== 'function') return false;
+        const safeTimeout = Math.max(1000, Math.min(timeoutMs || 20000, 8000));
+        const connect = ws.ensureConnected({ timeoutMs: safeTimeout })
+          .then(() => true)
+          .catch(() => false);
+        return await Promise.race([
+          connect,
+          new Promise((resolve) => setTimeout(() => resolve(false), safeTimeout)),
+        ]);
+      }, { timeoutMs });
     };
 
     await use(ensure);

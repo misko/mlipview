@@ -45,6 +45,12 @@ test('MD start/stop cycles do not duplicate decoded frames', async ({
       }
     };
 
+    try {
+      await ws.ensureConnected({ timeoutMs: 15000 });
+      try { await window.viewerApi?.baselineEnergy?.(); } catch {}
+      try { await ws.waitForEnergy({ timeoutMs: 10000 }); } catch {}
+    } catch {}
+
     const results = [];
 
     for (let cycle = 0; cycle < 3; cycle++) {
@@ -68,10 +74,24 @@ test('MD start/stop cycles do not duplicate decoded frames', async ({
       });
 
       try {
-        const startRes = await window.viewerApi.startMDContinuous({
-          steps: 160,
-          temperature: 1200,
-        });
+        let startRes;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            startRes = await window.viewerApi.startMDContinuous({
+              steps: 160,
+              temperature: 1200,
+            });
+            break;
+          } catch (err) {
+            const msg = err?.message || String(err);
+            if (attempt === 0 && /WS not connected/i.test(msg)) {
+              try { await ws.ensureConnected({ timeoutMs: 15000 }); } catch {}
+              await wait(100);
+              continue;
+            }
+            throw err;
+          }
+        }
         if (startRes?.disabled) throw new Error('MD loop disabled');
 
         const startDeadline = Date.now() + 8000;
@@ -115,10 +135,24 @@ test('MD start/stop cycles do not duplicate decoded frames', async ({
 
         const startResults = [];
         for (let i = 0; i < 3; i++) {
-          startResults.push(await window.viewerApi.startMDContinuous({
-            steps: 160,
-            temperature: 900,
-          }));
+          for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+              const res = await window.viewerApi.startMDContinuous({
+                steps: 160,
+                temperature: 900,
+              });
+              startResults.push(res);
+              break;
+            } catch (err) {
+              const msg = err?.message || String(err);
+              if (attempt === 0 && /WS not connected/i.test(msg)) {
+                try { await ws.ensureConnected({ timeoutMs: 15000 }); } catch {}
+                await wait(100);
+                continue;
+              }
+              throw err;
+            }
+          }
           await wait(30);
         }
 

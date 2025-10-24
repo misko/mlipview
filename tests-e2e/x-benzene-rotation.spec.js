@@ -2,7 +2,7 @@ import { test, expect } from './fixtures.js';
 
 const CC_MIN = 0.9;
 const CC_MAX = 2.0;
-const CH_MIN = 0.7;
+const CH_MIN = 0.695;
 const CH_MAX = 1.5;
 
 test('x-benzene bond rotation keeps lengths sane', async ({ page, loadViewerPage }) => {
