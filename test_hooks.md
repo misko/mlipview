@@ -254,3 +254,19 @@ viewerApi.simulateWsDrop = ({ failAttempts = 0 } = {}) => {
   ```
 - Avoid mutating private structures outside of the hook registration; tests should treat the results as readonly snapshots.
 - Update this document whenever you add/remove a hook so teams can reuse existing helpers rather than invent new ones.
+
+---
+
+## XR HUD Babylon Harness (`tests/utils/xrHudTestHarness.js`)
+
+**Purpose:** Shared Babylon GUI + scene stubs for XR HUD unit tests so we avoid duplicating mock setup in every spec.
+
+**Exports:**
+
+- `setupXRHudTestEnv()` – installs global `window`, `document`, and `BABYLON` GUI stubs if absent.
+- `resetXRHudSingleton()` – clears cached `window.__XR_HUD_FALLBACK` objects between specs.
+- `makeHudScene()` – returns the instrumented mock scene with a camera and render observers.
+- `runHudFrames(scene, count)` – plays queued frame callbacks to simulate render ticks.
+- `findGuiNode(root, predicate)` – BFS helper to locate GUI nodes by id/text.
+
+**Used by:** `tests/x-xr-energy-hud.dom.spec.js`, `tests/x-xr-hud-buttons.spec.js`, `tests/x-xr-hud-energy-depth.spec.js`, `tests/x-xr-hud-energy-plot-picking.spec.js`, `tests/x-xr-hud-energy-scale.spec.js`, `tests/x-xr-hud-position.spec.js`, `tests/x-xr-hud-texture-clamp.spec.js`.

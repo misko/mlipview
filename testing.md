@@ -1,335 +1,169 @@
-## Backend geometry debug flags
-
-When diagnosing UMA prediction discrepancies, enable verbose backend geometry logging to capture positions, cell, atomic numbers, dataset, energies, and forces around each UMA predict call.
-
-### Quick reference
-
-- `UMA_GEOM_DEBUG` (backend server env)
-  - Scope: Enables geometry debug logs inside the UMA predictor replica (Ray Serve deployment).
-  - Effect: Prints one or more lines per predict call with inputs and outputs.
-  - Usage: Set in the environment of the backend process: `UMA_GEOM_DEBUG=1`.
-
-- `BACKEND_DEBUG_GEOM` (Playwright harness env)
-  - Scope: Convenience switch for e2e runs; the Playwright global setup forwards this to the backend so you don’t have to export `UMA_GEOM_DEBUG` manually.
-  - Effect: Also ensures backend stdout/stderr are captured and tailed at the end of the test.
-  - Usage: Prefix your Playwright run: `BACKEND_DEBUG_GEOM=1 npx playwright test ...`
-
-### What gets logged
-
-When enabled, the UMA replica emits lines like the following:
-
-- Input snapshot per item:
-  - `[UMA][geom] item=0 natoms=3 pos=[[...],[...],[...]] cell=[[...],[...],[...]] Z=[1, 1, 8] dataset=['omol']`
-
-- Output snapshot per item:
-  - `[UMA][geom][out] item=0 E=[-2079.8650...] forces=[[...], [...], [...]]`
-
-You may also see timing and device lines useful for performance checks:
-
-- `[UMA] predict called on device cuda size=1`
-- `[UMA] predict finished size=1 wall=0.0267s ms/item=26.72`
-
-### Where the logs go
-
-- Playwright e2e: backend logs are piped to `test-ws-e2e.log`. The `tests-e2e/waterRelaxation.spec.js` test prints the tail of this file upon completion to aid debugging in CI.
-- Local backend runs: logs print to the backend process stdout/stderr (your terminal or process manager log).
-
-### How to enable
-
-- Playwright (recommended for e2e):
-  - Bash:
-    - `BACKEND_DEBUG_GEOM=1 npx playwright test tests-e2e/waterRelaxation.spec.js`
-
-- Direct backend launch (outside Playwright):
-  - `UMA_GEOM_DEBUG=1 ./mlipview_venv/bin/python -m fairchem_local_server2.serve_ws_app --ngpus 1 --ncpus 2 --nhttp 1 --http-port 8000`
-
-### Troubleshooting tips
-
-- Atomic numbers are zeros (e.g., `Z=[0, 0, 0]`):
-  - Cause: Client did not send `atomic_numbers` during initialization.
-  - Fix: Ensure the UI path sends `atomic_numbers` (the viewer derives them via `elementToZ` in `public/index.js`), or include them explicitly in `userInteraction({ atomic_numbers, positions, ... })`.
-
-- Backend rejects a request with `[INVALID_ATOM_Z] atomic_numbers must be positive integers; received ...`:
-  - Cause: One or more atomic numbers are non-positive.
-  - Fix: Correct the `atomic_numbers` in your init; the backend now enforces this in both the UMA predictor path and the ASE worker pool.
-
-- Logs are too noisy / large:
-  - Enable only for short, targeted tests; disable for load or long streaming runs.
-
-Notes:
-
-- Geometry debug printing is intended for development and CI diagnostics. It adds I/O but does not change numerical results.
-- If you need to grep for a specific field in the Playwright log, e.g., to verify species wiring:
-  - `grep -n "Z=\[1, 1, 8\]" test-ws-e2e.log || true`
-
-# Testing guide for the WebSocket + protobuf migration
-
-This document captures the updated testing patterns after migrating to a protobuf-only WebSocket API and cleaning up the frontend test hooks.
-
-## What changed (test-facing)
-
-- REST flows and SIMPLE_CALCULATE/INIT_SYSTEM are removed. Use USER_INTERACTION for initialization and idle computes; use START_SIMULATION/STOP_SIMULATION or requestSingleStep for MD/relax.
-- WebSocket client test hooks are simplified:
-  - Prefer per-instance test hook: `ws.setTestHook(fn)` (new)
-  - Inject decoded frames without protobuf: `ws.injectTestResult(obj)` (new)
-  - Single global fallback for legacy tests: `globalThis.__WS_TEST_HOOK__` and `globalThis.__ON_WS_RESULT__`
-- Frontend now uses protobuf ESM stubs under `public/proto/fairchem_local_server2/session_pb.js`.
-
-## Frontend: WS client API recap
-
-- Initialization: `ws.userInteraction({ atomic_numbers, positions, velocities?, cell? })`
-- Idle compute (forces/energy): send USER_INTERACTION with positions, then `await ws.waitForEnergy()`
-- Single simulation step: `await ws.requestSingleStep({ type: 'md' | 'relax', params })`
-- Streaming runs: `ws.startSimulation({ type: 'md'|'relax', params }); ws.stopSimulation()`
-- Counters for correlation/backpressure: `ws.setCounters({ userInteractionCount, simStep })` and `ws.ack(seq)`
-
-## Test hooks and utilities
-
-- Instance-level (preferred):
-  - `ws.setTestHook(fn)` — receives a minimal JSON snapshot of each outgoing ClientAction (type, counters, sim params, counts)
-  - `ws.injectTestResult(obj)` — directly fan out a decoded ServerResult-like object to all registered listeners
-- Global fallback (legacy support only):
-  - `globalThis.__WS_TEST_HOOK__ = fn` — used if no instance hook is set
-  - `globalThis.__ON_WS_RESULT__ = fn` — inject decoded frames globally; created automatically when the WS client boots
-- Debug toggles:
-  - WS logging: `window.__WS_DEBUG_ENABLE__(true)` or `?wsDebug=1`
-  - API logging in the app: `window.__MLIPVIEW_DEBUG_API = true` or `?debug=1`
-
-## Jest examples (jsdom/node)
-
-### 1) Assert an outgoing USER_INTERACTION on init
-
-```js
-import { getWS } from '../public/fairchem_ws_client.js';
-
-it('sends USER_INTERACTION init with atoms + positions', async () => {
-  const ws = getWS();
-  const sent = [];
-  ws.setTestHook((msg) => sent.push(msg));
-
-  // Simulate app init path
-  const atomic_numbers = [8, 1, 1];
-  const positions = [
-    [0, 0, 0],
-    [0.96, 0, 0],
-    [-0.24, 0.93, 0],
-  ];
-  ws.userInteraction({ atomic_numbers, positions });
-
-  // Minimal assertion on type and counts
-  expect(sent.length).toBeGreaterThan(0);
-  const last = sent[sent.length - 1];
-  expect(last.type).toBeDefined();
-  // If you import the enum, assert equality to ClientAction_Type.USER_INTERACTION
-  expect(last.positionsCount).toBe(positions.length);
-});
-```
-
-### 2) Drive idle compute via waitForEnergy
-
-```js
-import { getWS } from '../public/fairchem_ws_client.js';
-
-it('resolves idle compute energy via waitForEnergy', async () => {
-  const ws = getWS();
-  // Inject an immediate frame to avoid standing up a backend in unit tests
-  const p = ws.waitForEnergy({ timeoutMs: 100 });
-  ws.injectTestResult({ energy: -1.23, forces: [[0, 0, 0]], userInteractionCount: 1, simStep: 0 });
-  const { energy, forces } = await p;
-  expect(energy).toBeCloseTo(-1.23, 6);
-  expect(Array.isArray(forces)).toBe(true);
-});
-```
-
-### 3) Single-step relax
-
-```js
-import { getWS } from '../public/fairchem_ws_client.js';
-
-it('requestSingleStep relax resolves with frame', async () => {
-  const ws = getWS();
-  // Simulate a backend response injected by the test harness
-  const resP = new Promise((resolve) => {
-    ws.onResult((frame) => resolve(frame));
-  });
-  setTimeout(() => {
-    ws.injectTestResult({
-      positions: [[0, 0, 0]],
-      forces: [[0, 0, 0]],
-      energy: -2.0,
-      simStep: 1,
-    });
-  }, 10);
-
-  const r = await ws.requestSingleStep({
-    type: 'relax',
-    params: { calculator: 'lj', fmax: 0.1, max_step: 0.2, optimizer: 'bfgs' },
-  });
-  expect(typeof r.energy).toBe('number');
-  await expect(resP).resolves.toBeDefined();
-});
-```
-
-Notes:
-
-- In pure unit tests, prefer `injectTestResult()` over standing up the server.
-- Use `setTestHook()` to assert the shape and routing of outgoing messages, including counters.
-
-## Playwright examples (browser/e2e)
-
-### 1) Observe outgoing actions
-
-```ts
-// In page context
-await page.exposeFunction('__REC', (msg) => {
-  // record messages in the test runner via page.exposeFunction
-});
-await page.evaluate(() => {
-  const ws = window.__fairchem_ws__;
-  ws.setTestHook(window.__REC);
-  // Kick off a user interaction init
-  ws.userInteraction({
-    atomic_numbers: [8, 1, 1],
-    positions: [
-      [0, 0, 0],
-      [0.96, 0, 0],
-      [-0.24, 0.93, 0],
-    ],
-  });
-});
-```
-
-### 2) Inject a frame and wait for energy
-
-```ts
-await page.evaluate(async () => {
-  const ws = window.__fairchem_ws__;
-  const p = ws.waitForEnergy({ timeoutMs: 1000 });
-  ws.injectTestResult({ energy: -1.0, forces: [[0, 0, 0]], simStep: 0 });
-  const r = await p;
-  // r.energy is -1.0
-});
-```
-
-### 3) Streamed runs
-
-```ts
-await page.evaluate(() => {
-  const ws = window.__fairchem_ws__;
-  ws.startSimulation({
-    type: 'md',
-    params: { calculator: 'uma', temperature: 300, timestep_fs: 1.0, friction: 0.02 },
-  });
-});
-// Optionally listen for frames via global fallback
-await page.evaluate(() => {
-  window.__ON_WS_RESULT__ = (obj) => {
-    /* collect frames */
-  };
-});
-// Stop later:
-await page.evaluate(() => window.__fairchem_ws__.stopSimulation());
-```
-
-## Backend tests (Python) — update notes
-
-- The protobuf schema removed legacy types. Replace any INIT_SYSTEM/SIMPLE_CALCULATE usage:
-  - Initialize by sending USER_INTERACTION with atomic_numbers + positions (and optional cell/velocities).
-  - To trigger idle compute, send a USER_INTERACTION with positions; the server responds with energy/forces and omits positions.
-  - For single steps, use the MD/RELAX pathways (the worker pool provides `run_md`, `run_relax`, and `run_simple` internally).
-- WebSocket is protobuf-only. Text frames can be ignored; ACKs are sent as normal ClientAction messages with type=PING and ack set.
-
-## Common pitfalls and tips
-
-- Counters: set `ws.setCounters({ userInteractionCount, simStep })` before `startSimulation` to keep server-side echo aligned for gating.
-- Stale-frame gating: if your UI discards frames based on `userInteractionCount`, make sure tests set the same count before injecting or asserting.
-- Debugging WS:
-  - Enable noisy logs with `window.__WS_DEBUG_ENABLE__(true)` or `?wsDebug=1` in the test URL.
-  - For API-level logs in the viewer code, use `window.__MLIPVIEW_DEBUG_API = true` or `?debug=1`.
-
-## Migration checklist for existing tests
-
-- [ ] Remove any references to INIT_SYSTEM or SIMPLE_CALCULATE
-- [ ] Replace init flows with `ws.userInteraction({ atomic_numbers, positions, velocities?, cell? })`
-- [ ] For idle force/energy, use `ws.waitForEnergy()` after sending `userInteraction({ positions })`
-- [ ] Prefer `ws.setTestHook` for asserting outgoing actions
-- [ ] Prefer `ws.injectTestResult` or `globalThis.__ON_WS_RESULT__` for simulating incoming frames
-- [ ] If evaluating gating, set `ws.setCounters({ userInteractionCount, simStep })` on the client prior to sending `startSimulation`
-
----
-
-## UI test intents (WebSocket, protobuf)
-
-- autoMdStartsRoy.ws.spec.js
-  - Intent: On app load with default ROY molecule, the UI auto-starts MD via START_SIMULATION over WebSocket and processes a stream of frames. The energy plot should tick at least 20 times as frames arrive.
-  - Design alignment: Matches new_design.md — init via USER_INTERACTION, then START_SIMULATION(MD); frames drive UI; no REST. Should pass.
-
-- mdRpsLabel.ws.spec.js
-  - Intent: The RPS label reflects frame rate during MD streaming. Injecting 5 frames over ~400 ms should yield an RPS around 10.0.
-  - Design alignment: Matches new_design.md — streaming frames update UI; counters/ACKs are internal; test asserts label changes only. Should pass.
-
-- userInteractionWhenIdle.dom.spec.js
-  - Intent: When idle, sending USER_INTERACTION (positions update) triggers an idle compute response carrying energy (and forces) without positions.
-  - Design alignment: Matches new_design.md — idle responses omit positions and include forces/energy; no SIMPLE_CALCULATE verb. Should pass.
-  - Status: Updated to assert outgoing USER_INTERACTION and to inject idle energy via ws.injectTestResult.
-
-- relaxSingleStepNetwork.spec.js
-  - Intent: A single relax step issues exactly one START_SIMULATION with optimizer=BFGS and resolves on the first streamed frame.
-  - Design alignment: Matches new_design.md — single-step implemented via START_SIMULATION + immediate stop in client helper; no SIMPLE_CALCULATE usage. Should pass.
-  - Status: Uses getWS().setTestHook and injects a result; asserts one START_SIMULATION sent.
-
-- autoMdDisabledBaseline.dom.spec.js
-  - Intent: With ?autoMD=0, auto-start is disabled; the app initializes via USER_INTERACTION and plots a baseline idle energy from the first energy-bearing frame.
-  - Design alignment: Matches new_design.md — initialization via USER_INTERACTION and first idle compute frame sets baseline energy; no REST calls. Should pass.
-  - Status: Hook updated to treat any USER_INTERACTION as a trigger; injects idle energy frame.
-
-- autoMdDisabledInteractionEnergies.dom.spec.js
-  - Intent: With ?autoMD=0, user interactions (drag) trigger multiple idle energy computes; energy plot grows by multiple ticks with distinct energies.
-  - Design alignment: Matches new_design.md — idle USER_INTERACTION produces energy/forces frames without positions. Should pass.
-
-- mdTemperatureSlider.spec.js
-  - Intent: Temperature slider value influences outgoing START_SIMULATION(MD) temperature; subsequent mdStep calls use the updated value.
-  - Design alignment: Matches new_design.md — simulation params flow through START_SIMULATION; instantaneous temperature comes from frames. Should pass.
-
-- mdInstantTemperatureDisplay.spec.js
-  - Intent: The HUD instantaneous temperature label (#instTemp) updates from MD frames’ temperature value.
-  - Design alignment: Matches new_design.md — temperature provided in simulation frames is used for UI. Should pass.
-
-- mdTemperatureSync.dom.spec.js
-  - Intent: Slider label and outgoing MD temperature stay consistent on initial load (1500 K default) and after moving the slider.
-  - Design alignment: Matches new_design.md — client drives START_SIMULATION params; tests assert outgoing params only. Should pass.
-
-- relaxForcesUpdate.spec.js
-  - Intent: Force vectors update across successive relax steps; matrix buffers change as injected forces vary.
-  - Design alignment: Matches new_design.md — relax step frames include positions and forces; UI updates force visualization per frame. Should pass.
-  - Status: mdForcesUpdate.spec.js also rewritten to WS-only; removes REST usage and injects baseline + per-step forces via WebSocket hooks.
-
-- apiCellPayload.spec.js
-  - Intent: Enabling PBC triggers USER_INTERACTION init/update that includes cell; test asserts PBC state toggled and message sent.
-  - Design alignment: Matches new_design.md — init/update via USER_INTERACTION carries optional cell; no INIT_SYSTEM/SIMPLE_CALCULATE. Should pass.
-  - Status: Updated to remove INIT_SYSTEM filter in hook; relies on client test hook projection.
-
-- mdVelocityContinuity.spec.js
-  - Intent: A second MD step uses velocities returned from the first step; viewer dynamics.velocities reflects the latest frame.
-  - Design alignment: Matches new_design.md — single-step MD via requestSingleStep; frames carry velocities. Should pass.
-  - Status: Implemented with WS injection of velocities for two steps; asserts continuity.
-- Legacy REST parity tests (mark for removal)
-- fairchem_bfgs_parity.spec.js, relaxWaterIntegration.spec.js, water_relaxation_browser_parity.spec.js, water_relax_run_parity.spec.js, water_md_lj\*.spec.js, water_md_run_stability.spec.js
-  - Reason: Exercise HTTP /serve/simple and /serve/relax endpoints removed in new_design.md.
-  - Action: Remove or rewrite against WS-only protocol using ws.injectTestResult or a fake WS server.
-
-- energyApiOnlyTicks.spec.js
-  - Intent: Only API energy responses add ticks; drag events do not. Relax and MD steps increment the energy chart.
-  - Design alignment: Matches new_design.md — plotting occurs on energy-bearing frames; no SIMPLE_CALCULATE. Should pass.
-
-- forceCache.spec.js
-  - Intent: Client-side force cache version increments only on geometry changes; repeated computeForces without changes should keep version stable; after a mutation, idle USER_INTERACTION recompute bumps version.
-  - Design alignment: Matches new_design.md — idle computes over WS seed/update the cache; HTTP simple_calculate removed. Should pass.
-
-- relaxForceCache.spec.js
-  - Intent: A relax step seeds the force cache; computeForces without change keeps version stable; after mutation, idle compute bumps version.
-  - Design alignment: Matches new_design.md — relax via WS single-step; idle USER_INTERACTION for recompute. Should pass.
-
----
-
-If you find any gaps or edge cases not covered here, add an example to this file so we can keep tests consistent with the new protocol.
+# Ported Test Catalogue
+
+This catalogue tracks only the suites that are fully ported to the protobuf/WebSocket stack. Entries are grouped hierarchically so related coverage is easy to locate. For each test, the intent captures what the suite safeguards, and the implementation notes summarise how the current code exercises that behaviour.
+
+## Playwright WebSocket Suites (`tests-e2e/ws-*.spec.js`)
+
+- **Backpressure & Counter Stability**
+  - `ws-backpressure-ack.spec.js`: Adds a runtime shim that drops binary ACK frames, waits for the viewer to expose `WAITING_FOR_ACK`, then releases a single ACK and asserts the pipeline resumes with monotonically increasing seq counters.
+  - `ws-sim-counters.spec.js`: Runs a continuous MD session, scrapes console telemetry, and confirms `simStep` and ACK identifiers strictly increase while the socket stays open.
+  - `ws-stream-single-socket.spec.js`: Chains multiple MD/relax runs without reloading, observing the shared `WebSocket.readyState` and seq progression to ensure connection reuse without churn.
+  - `ws-safe-sphere.spec.js`: Toggles the safe-sphere overlay twice during a stream and inspects outbound ClientActions to verify counters stay stable and no duplicate toggles fire.
+
+- **Idle Initialisation & Baselines**
+  - `ws-initial-idle-energy.spec.js`: Blocks auto-MD, captures the first idle `forces+energy` frame, and asserts the energy plot baseline is populated exactly once.
+  - `ws-idle-positions-omitted.spec.js`: Requests an idle compute where the backend omits `positions`, then verifies atom transforms remain steady while energy ticks still appear.
+  - `ws-mock-load.spec.js`: Loads the mock dataset through the system panel and inspects the next USER_INTERACTION payload to confirm `natoms`, `atomic_numbers`, and `cell` match the mock definition.
+
+- **Cell Stress & Parameter Updates**
+  - `ws-cell-stress.spec.js`: Starts a relax run against UMA, collects streamed frames, and ensures stress tensors feed through to the HUD alongside force-arrow updates.
+  - `ws-live-md-param-updates.spec.js`: Adjusts MD temperature/friction mid-run, monitors outbound ClientActions, and confirms the following server frames echo the new parameters.
+
+- **Counters, Interaction Echo, and UI Control**
+  - `ws-counters-echo.spec.js`: Drags an atom, pauses, and begins MD while logging the HUD counters; validates server echoes track the viewer’s `userInteractionVersion` and total-interaction counts.
+  - `ws-start-stop-idle-relax.spec.js`: Drives idle, MD, then relax via UI buttons, verifying each phase emits the correct verb and the button state/-LEDs sync with the run status.
+  - `ws-ui-buttons-start-stop-idle-relax.spec.js`: Smoke-tests toolbar controls for stop/start across idle, MD, and relax, ensuring the underlying viewer flags (`isMdRunning`, `isRelaxRunning`) toggle in step.
+
+## Jest Suites (`tests/x-*.spec.js`)
+
+- **Cell & Periodic Boundary Controls**
+  - `x-acetic-acid-ghosts.spec.js`: Loads a periodic XYZ, enables cell + ghosts, triggers `requestSimpleCalculateNow`, and confirms USER_INTERACTION carries a 3×3 cell plus ghost instance counts rise.
+  - `x-api-cell-payload.spec.js`: Toggles the periodic UI switch with a WS hook installed and verifies the captured payload contains cell vectors, origin, and correct atom counts.
+  - `x-cell-optimizer.spec.js`: Documents (via `test.failing`) the desired convergence behaviour for the variable-cell optimiser once reintroduced.
+  - `x-cell-toggle.dom.spec.js`: Builds the HUD, injects a status node, and clicks the cell toggle twice to assert `showCell`, `showGhostCells`, and the button text rotate through ON/OFF labels.
+  - `x-pbc-ghost-master-disabled.dom.spec.js`: Ensures ghost master meshes stay disabled while no thin instances exist, only enabling once ghosts are generated.
+  - `x-pbc-long-bond-crossing.dom.spec.js`: Rebuilds bonds for a sample long-bond structure and checks thin-instance counts match expectations without double counting.
+  - `x-pbc-long-bond-crossing-x.dom.spec.js`: Variant covering X-direction wrapping, validating midpoint diagnostics line up with wrapped coordinates.
+  - `x-periodic-monoclinic-ui.dom.spec.js`: Renders the periodic section, seeds a monoclinic cell into `viewer.state`, and confirms lattice lengths/angles display correctly.
+  - `x-ui-pbc-bond-break-no-artifact.dom.spec.js`: Breaks a bond under PBC and asserts the scene graph contains no stray meshes at the origin.
+
+- **Molecule Loading & Rendering**
+  - `x-molecules.spec.js`: Iterates the molecule registry used on the landing page and asserts each entry exposes the required metadata fields.
+  - `x-moleculeState.spec.js`: Validates `createMoleculeState` for non-periodic inputs by inspecting positions, bonds, and default selection state.
+  - `x-moleculeState.pbc.spec.js`: Same factory but with a 3×3 cell, confirming periodic flags, lengths, and angles are normalised.
+  - `x-molecule-reload.spec.js`: Loads a molecule twice through the viewer API and ensures geometry versions increment without duplicating atoms or ghosts.
+  - `x-molecule-switch-highlight.spec.js`: Switches molecules after selecting an atom and verifies highlights and selection reset.
+  - `x-no-stray-origin-primitives.spec.js`: Runs through common toggles (ghosts, forces) and asserts no mesh remains at `(0,0,0)` unless representing real geometry.
+  - `x-visual-integration.spec.js`: Snapshot-style check that atom and bond thin-instance buffers match expected counts/material IDs for benzene.
+  - `x-lighting-consistency.spec.js`: Inspects material colour coefficients on masters to ensure they match the tuned palette.
+  - `x-red-sphere-switch.spec.js`: Toggles highlight modes and confirms the atom highlight mesh remains cyan (no regression to red).
+
+- **Parsers, Importers, and Prefills**
+  - `x-base64Utf8.spec.js`: Exercises Base64⇄UTF-8 helpers and ensures XYZ comments yield temperature/cell metadata.
+  - `x-xyz-loader.spec.js`: Parses XYZ samples, asserting `atoms`, `temperature`, and `cell` fields populate correctly.
+  - `x-xyz-extended.spec.js`: Covers extended XYZ (`Properties=`) parsing, verifying property arrays align per atom.
+  - `x-smilesLoader.unit.spec.js`: Normalises valid SMILES strings and rejects unsupported syntax.
+  - `x-smiles-and-upload.dom.spec.js`: Simulates SMILES submission and XYZ upload in the System panel, confirming parsed output lands in `viewer.state.pendingLoad`.
+  - `x-methyl-temperature-prefill.dom.spec.js`: Loads the methyl example and checks the MD slider/target temperature default to 500 K.
+  - `x-temperature-slider-prefill.dom.spec.js`: Loads an XYZ with `temp=300K` and asserts UI/global targets reflect 300 K.
+  - `x-temperature-tick-position.dom.spec.js`: Renders the temperature gauge and confirms tick labels/positions match design.
+
+- **Highlight & Ghost Rendering**
+  - `x-highlight.spec.js`: Selects an atom and validates the highlight mesh translation mirrors the atom position.
+  - `x-highlight-visibility.spec.js`: Ensures the highlight mesh starts hidden and becomes visible only when selection exists.
+  - `x-highlight-stray-cylinder.spec.js`: Selects and clears a bond, verifying the bond highlight mesh hides and buffers zero out.
+  - `x-ghost-bonds.spec.js`: Enables ghosts, rebuilds, and asserts ghost bond matrices match expected neighbour counts.
+  - `x-ghost-crossing-bonds.spec.js`: Similar coverage focused on cross-cell bonds to prevent duplicate instances.
+  - `x-ghost-selection.spec.js`: Picks a ghost and confirms the selection resolves to the primary atom with highlight repositioned.
+
+- **Selection & Interaction Mechanics**
+  - `x-selection-clear.spec.js`: Clicks empty space after selecting an atom to ensure the selection resets to `kind=null` and highlights hide.
+  - `x-selection-null-guard.spec.js`: Manually nulls the selection state, calls selection helpers, and verifies no crashes while state normalises.
+  - `x-selection-panel.dom.spec.js`: Renders the selection panel, simulates atom/bond selections, and checks DOM text and action buttons update.
+  - `x-selection-periodic-click.dom.spec.js`: Fires synthetic clicks on periodic table entries and asserts the selection service queues the element and updates UI.
+  - `x-selection-persistence.spec.js`: Mutates positions (should keep selection) then alters topology (should clear selection) to confirm the guard logic.
+  - `x-selection-service.spec.js`: Exercises `clickAtom`/`clickBond` ordering, ensuring mutual exclusion and rotation-group metadata propagation.
+  - `x-pointer-observable-bug.spec.js`: Re-initialises the viewer twice against a stubbed scene and asserts only one Babylon pointer observer attaches.
+  - `x-joystick-delta.spec.js`: Runs joystick input samples through the bond rotation helper to confirm deltas throttle and scale correctly.
+
+- **Bond Rotation & Picking**
+  - `x-bondOpacityIsolation.spec.js`: Rotates a bond and confirms opacity isolation only affects the active pair.
+  - `x-bondRotateEnergyCount.spec.js`: Steps through discrete rotations and checks the energy plot registers the correct number of ticks.
+  - `x-bondRotationSoftBond.spec.js`: Marks a bond as soft, attempts rotation, and asserts atom coordinates remain unchanged.
+  - `x-bondRotationUI.spec.js`: Drives the rotation UI controls and ensures both the viewer manipulation calls and DOM labels update.
+  - `x-bondService.spec.js`: Mutates the cell and runs bond service refresh to verify bond lists/caches regenerate.
+  - `x-picking.spec.js`: Constructs synthetic pick hits and ensures atom/bond resolvers return accurate metadata.
+  - `x-picking-integration.spec.js`: Dispatches pointer events through the picking service, validating selection changes, drag state, and camera detaching.
+  - `x-rotate-recompute.spec.js`: Executes bond rotation commands and checks recompute helpers bump geometry versions and atom indices as expected.
+  - `x-rotation-inversion.spec.js`: Applies opposing rotations and verifies the resulting quaternion correctly inverts to prevent direction flips.
+
+- **Simulation Controls & Auto-MD**
+  - `x-auto-md-panel-toggle-reset.spec.js`: Toggles auto-MD via the panel, injects a completion frame, and asserts the toggle resets with updated status text.
+  - `x-auto-md-run-reset.spec.js`: Starts auto-MD, triggers a viewer reset, and verifies start/stop calls plus timer cleanup.
+  - `x-auto-md-starts-roy.spec.js`: Loads the ROY example with auto-MD enabled and confirms the first outbound ClientAction is `START_SIMULATION` (MD).
+  - `x-md-temperature-slider.spec.js`: Adjusts the temperature slider, runs `viewer.mdStep`, and checks the stubbed `requestSingleStep` receives the updated temperature.
+  - `x-md-temperature-sync.dom.spec.js`: Verifies slider labels start at 1500 K, update after user input, and propagate to MD step parameters.
+  - `x-md-initial-temperature.ws.spec.js`: Loads an XYZ containing temperature metadata and asserts the initial USER_INTERACTION + MD params respect the embedded value.
+  - `x-md-rps-label.ws.spec.js`: Starts/stops MD twice and checks the HUD RPS label reflects the latest frame rate.
+  - `x-methyl-temperature-prefill.dom.spec.js`: (Shared with importer coverage) specifically ensures the example pins the 500 K target.
+
+- **MD & Relaxation Streaming**
+  - `x-md-drag-exclusion-vr.spec.js`: Simulates VR grip selection and injects MD frames to confirm held atoms stay fixed while others move.
+  - `x-md-drag-position-lock.dom.spec.js`: Starts MD, performs a desktop drag, feeds frames, and ensures the dragged atom ignores server updates until release.
+  - `x-md-forces-update.spec.js`: Injects sequential MD frames with varying forces and verifies shaft/head matrices change accordingly.
+  - `x-relax-force-cache.spec.js`: Runs relax single-step, inspects `viewer.state.forceCache`, and confirms idle recompute bumps the version only after geometry change.
+  - `x-relax-forces-update.spec.js`: Feeds relax frames with different forces and checks force arrow thin-instance buffers refresh.
+  - `x-relax-run-post-init-enable.spec.js`: Toggles the relax run feature flag, reloads, and confirms persistence across viewer resets.
+  - `x-relax-single-step-network.spec.js`: Calls the relax helper, ensuring exactly one `START_SIMULATION` fires and the promise resolves on the first injected frame.
+
+- **Force & Energy Visualisation**
+  - `x-force-arrowheads.spec.js`: Uses the Babylon stub, populates forces, emits `forcesChanged`, and checks thin-instance matrices for shafts/heads.
+  - `x-force-render.spec.js`: Confirms the colour buffer retains the calibrated red emissive values (`0.95/0.05/0.05/1`).
+  - `x-force-provider.spec.js`: Mocks a provider, performs recomputes, and verifies the cache version changes only when geometry does.
+  - `x-force-update-perturbation.spec.js`: Perturbs atom positions, triggers force recompute, and asserts the magnitude histogram recalculates.
+  - `x-forces-toggle.dom.spec.js`: Toggles force visibility via the HUD, checking mesh visibility and preference persistence.
+  - `x-energy-reset.dom.spec.js`: Seeds the energy plot, presses reset, and confirms datasets clear and controls hide until new data arrives.
+
+- **UI Panels, Toggles, and Resets**
+  - `x-desktop-panel.dom.spec.js`: Builds the desktop panel and ensures expected controls (MD slider, friction slider, molecule select, cell toggle) exist.
+  - `x-desktop-bond-pick.dom.spec.js`: Stubs picking, dispatches a pointer event, asserts bond selection updates, and exercises rotation buttons.
+  - `x-desktop-rotation-input.dom.spec.js`: Modifies numeric rotation inputs, switches tabs, and confirms values persist.
+  - `x-ui-toggles.dom.spec.js`: Iterates the panel toggles, validating `aria-checked` and viewer flags align with button text.
+  - `x-run-completion-toggles.dom.spec.js`: Starts MD/relax runs, injects completion frames, and checks toggles revert to OFF with updated labels.
+  - `x-reset-button.dom.spec.js`: Clicks the reset button, ensures it disables while awaiting the `resetToInitialPositions` promise, then re-enables.
+  - `x-reset-invalidation.dom.spec.js`: Seeds caches, triggers reset, and asserts caches and HUD overlays return to defaults.
+
+- **User Interaction & Counter Handling**
+  - `x-user-interaction-during-md.dom.spec.js`: Starts MD, injects stale USER_INTERACTION frames (ignored) followed by in-order frames that are applied.
+  - `x-user-interaction-when-idle.dom.spec.js`: Injects idle frames through the WS stub and confirms geometry updates immediately.
+  - `x-user-interaction-version-isolation.spec.js`: Bumps local counters, feeds lower-count frames (ignored), then matches counts to verify acceptance.
+  - `x-interaction-invalidation.spec.js`: Triggers interaction invalidation and assures stale frames with mismatched counters are dropped.
+  - `x-ws-double-connect.dom.spec.js`: Inits the viewer twice with a stubbed WS client and asserts only one underlying connection is established.
+
+- **Dragging & Atom Manipulation**
+  - `x-atom-drag-camera.spec.js`: Simulates drag start, checks manipulation state, and ensures camera inertial offsets zero out while dragging.
+  - `x-atom-drag-screen-plane.spec.js`: Runs the drag solver with sample pointer data and verifies resulting positions stay on the computed plane.
+  - `x-drag-recompute.spec.js`: Performs drag start/end, confirms bond recompute occurs once, and geometry version increments.
+  - `x-cameraSuppression.spec.js`: Ensures the ArcRotate camera remains frozen during active drags by checking inertial offsets and position locks frame-by-frame.
+
+- **VR / XR & Related Assets**
+  - `x-http-vr-asset.spec.js`: Mocks `fetch` to fail and ensures the VR asset loader handles the error path cleanly.
+  - `x-vr-setup.spec.js`: Invokes the VR setup helper with Babylon stubs, checking controller/helper nodes register correctly.
+  - `x-vr-module-availability.spec.js`: Stubs `navigator.xr` absence and asserts capability flags fall back gracefully.
+  - `x-vr-controller-handshake.spec.js`: Simulates controller attach/detach events and verifies viewer latches update.
+  - `x-vr-atom-drag-initiation.spec.js`: Emits mock controller picks to ensure drag begins and MD pauses.
+  - `x-vr-drag-stability.spec.js`: Feeds a pose sequence into the drag solver and checks position deltas stay within tolerance.
+  - `x-vr-dynamic-import.spec.js`: Exercises the dynamic import path for VR modules, ensuring the promise resolves and caches results.
+  - `x-vr-highlight-alignment.spec.js`: Updates head pose while a highlight is active and confirms the highlight mesh repositions correctly.
+  - `x-vr-hud-energy-position.spec.js`: Moves the camera and validates the HUD energy panel follows with the expected offset.
+  - `x-vr-laser-thickness.spec.js`: Adjusts controller laser configuration and asserts mesh widths respect clamp values.
+  - `x-vr-late-bond-rotation.spec.js`: Queues rotation callbacks post-latch and ensures the rotation group updates.
+  - `x-vr-post-release-latch.spec.js`: Releases a VR drag, advances timers, and verifies atoms remain latched until timeout expires.
+  - `x-vr-reuse-parity.spec.js`: Re-enters VR mode twice, ensuring controllers/meshes are reused without duplication.
+  - `x-vr-trigger.spec.js`: Fires synthetic trigger events and checks viewer callbacks execute with normalised payloads.
+  - `x-xr-controls-core.spec.js`: Validates the XR controls model exposes default state and emits observer callbacks on mutation.
+  - `x-xr-dropdown.dom.spec.js`: Renders the XR dropdown, selects each option, and ensures `viewer.xr.setMode` receives the right value.
+  - `x-xr-energy-hud.dom.spec.js`: Builds the XR energy HUD and confirms binding to the energy data source updates labels.
+  - `x-xr-hud.dom.spec.js`: Constructs the XR HUD scaffold, verifying button groups and event wiring.
+  - `x-xr-hud-buttons.spec.js`: Clicks each HUD button and checks the associated viewer handlers fire.
+  - `x-xr-hud-energy-depth.spec.js`: Adjusts the depth slider and asserts stored settings plus style transforms reflect the new depth.
+  - `x-xr-hud-energy-plot-picking.spec.js`: Synthesises pointer events over the HUD chart and ensures handlers return the correct step index.
+  - `x-xr-hud-energy-scale.spec.js`: Moves the energy scale slider and confirms the chart rerenders with the new amplitude.
+  - `x-xr-hud-position.spec.js`: Applies custom offsets and checks HUD anchor matrices translate accordingly.
+  - `x-xr-hud-texture-clamp.spec.js`: Inspects HUD materials to confirm texture clamp modes use `CLAMP_ADDRESSMODE`.
+
+- **Miscellaneous Utilities**
+  - `x-ar-auto-normalize.spec.js`: Runs augmented-reality auto-normalisation on various vectors and asserts values clamp within configured bounds while preserving direction.
+  - `x-spherical-radial-modes.spec.js`: Exercises the spherical drag helper to verify radial displacement magnitudes and directions.
+
+> _Cross-reference_: Tests listed only once above cover all ported `x-*` suites. If you add a new suite, update this hierarchy so related coverage stays discoverable.
