@@ -28,6 +28,13 @@ from .models import PrecomputedValues
 
 app = FastAPI(title="UMA Serve WS API", debug=True)
 
+_FORCE_CPU_ENV = "MLIPVIEW_FORCE_CPU"
+
+
+def _force_cpu_mode() -> bool:
+    val = os.environ.get(_FORCE_CPU_ENV, "").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
 # ---- helpers: protobuf <-> numpy (flat packed arrays) -----------------------
 
 
@@ -1348,7 +1355,16 @@ def deploy(
     - UMA predictor replicas: one per GPU
     - ASE worker pool size: ncpus (CPU-bound)
     """
-    replica_count = int(ngpus) if ngpus is not None else _detect_default_ngpus()
+    force_cpu = _force_cpu_mode()
+    if force_cpu:
+        replica_count = 1
+    else:
+        replica_count = int(ngpus) if ngpus is not None else _detect_default_ngpus()
+        if replica_count <= 0:
+            raise RuntimeError(
+                "CUDA is required for UMA backend. Set MLIPVIEW_FORCE_CPU=1 to run in CPU mode."
+            )
+
     pool_size = int(ncpus) if ncpus is not None else _detect_default_ncpus()
     ingress_replicas = max(1, int(nhttp) if nhttp is not None else 1)
 
@@ -1364,10 +1380,11 @@ def deploy(
             pass
 
     if replica_count > 0:
+        gpu_actor_options = {"num_gpus": 0 if force_cpu else 0.5}
         gpu = _PredictDeploy.options(
             name=UMA_DEPLOYMENT_NAME,
             num_replicas=int(replica_count),
-            # ray_actor_options={"num_gpus": 1},
+            ray_actor_options=gpu_actor_options,
         ).bind(MODEL_NAME, TASK_NAME)
         # CPU packer (0 GPU) sits in front and performs pack/unpack
         # CPU side: fan out 8 packers

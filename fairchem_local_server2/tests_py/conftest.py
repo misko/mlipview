@@ -8,7 +8,7 @@ import httpx
 import pytest
 from ray import serve
 
-from fairchem_local_server2.ws_app import deploy
+from fairchem_local_server2.ws_app import deploy, _force_cpu_mode
 from fairchem_local_server2.model_runtime import (
     UMA_DEPLOYMENT_NAME,
     install_predict_handle,
@@ -30,15 +30,16 @@ def ws_base_url() -> Generator[str, None, None]:
 
     Fails early if CUDA is not available or UMA device isn't CUDA.
     """
-    # Force UMA on GPU only
-    assert _cuda_available(), "CUDA is required for UMA tests"
+    force_cpu = _force_cpu_mode()
+    if not force_cpu:
+        assert _cuda_available(), "CUDA is required for UMA tests"
 
     # Optional: allow overriding HTTP port via env for CI
     base = os.environ.get("WS_BASE", "http://127.0.0.1:8000")
     ws_url = base.replace("http://", "ws://") + "/ws"
 
     # Deploy UMA with one GPU and minimal CPU/HTTP replicas
-    deploy(ngpus=1, ncpus=1, nhttp=1)
+    deploy(ngpus=None if force_cpu else 1, ncpus=1, nhttp=1)
 
     # Poll health endpoint until ready
     health_url = base + "/serve/health"
@@ -49,12 +50,17 @@ def ws_base_url() -> Generator[str, None, None]:
             if r.status_code == 200:
                 j = r.json()
                 # Model runtime reports global device, should be 'cuda'
-                assert (
-                    j.get("cuda_available") is True
-                ), "health indicates no CUDA availability"
-                assert (
-                    j.get("device") or ""
-                ).lower() == "cuda", f"runtime device is {j.get('device')} not cuda"
+                if force_cpu:
+                    assert (
+                        j.get("device") or ""
+                    ).lower() == "cpu", f"runtime device expected cpu, got {j.get('device')}"
+                else:
+                    assert (
+                        j.get("cuda_available") is True
+                    ), "health indicates no CUDA availability"
+                    assert (
+                        j.get("device") or ""
+                    ).lower() == "cuda", f"runtime device is {j.get('device')} not cuda"
                 break
         except Exception:
             pass
@@ -69,7 +75,10 @@ def ws_base_url() -> Generator[str, None, None]:
     assert s.get("status") == "ok", f"UMA stats error: {s}"
     stats = s.get("stats") or {}
     dev = (stats.get("device") or "").lower()
-    assert dev == "cuda", f"UMA device must be CUDA, got {dev}"
+    if force_cpu:
+        assert dev == "cpu", f"UMA device expected CPU in force mode, got {dev}"
+    else:
+        assert dev == "cuda", f"UMA device must be CUDA, got {dev}"
 
     # Retrieve UMA deployment handle for this app and install into test proc
     from ray import serve as rserve  # lazy import to ensure Serve is up
