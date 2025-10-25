@@ -21,9 +21,9 @@ def _uma_available() -> bool:
         return False
 
 
-from fairchem_local_server.atoms_utils import build_atoms
-from fairchem_local_server.models import RelaxCalculatorName
-from fairchem_local_server.services import _md_run
+from fairchem_local_server2.atoms_utils import build_atoms
+from fairchem_local_server2.models import RelaxCalculatorName
+from fairchem_local_server2.services import _md_run
 
 
 @pytest.mark.parametrize("calculator", ["uma"])
@@ -46,7 +46,7 @@ def test_md_single_step_parity_0k_worker_vs_direct(calculator: str):
         try:
             from ray import serve as _serve
 
-            from fairchem_local_server.model_runtime import (
+            from fairchem_local_server2.model_runtime import (
                 UMA_DEPLOYMENT_NAME,
                 install_predict_handle,
             )

@@ -80,12 +80,10 @@ test('UI buttons: autoMD → stop → idle drag → relax → stop', async ({
   // Perform a small drag via manipulation API, requesting deterministic idle compute each step; expect >=12 idle frames
   const idleResults = await page.evaluate(async () => {
     const ws = window.__fairchem_ws__;
-    const N = (window.viewerApi?.state?.positions || []).length | 0;
     let count = 0;
     const off = ws.onResult((r) => {
       try {
-        if (r && typeof r.energy === 'number' && (!r.positions || r.positions.length !== N))
-          count++;
+        if (r && typeof r.energy === 'number') count++;
       } catch { }
     });
     try {

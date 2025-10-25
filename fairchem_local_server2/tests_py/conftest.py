@@ -9,7 +9,7 @@ import pytest
 from ray import serve
 
 from fairchem_local_server2.ws_app import deploy
-from fairchem_local_server.model_runtime import (
+from fairchem_local_server2.model_runtime import (
     UMA_DEPLOYMENT_NAME,
     install_predict_handle,
 )

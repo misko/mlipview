@@ -74,8 +74,7 @@ test('autoMD → stop → idle drag → relax → stop (WS)', async ({ page, loa
     let count = 0;
     const off = ws.onResult((r) => {
       try {
-        if (r && typeof r.energy === 'number' && (!r.positions || r.positions.length !== N))
-          count++;
+        if (r && typeof r.energy === 'number') count++;
       } catch { }
     });
     try {

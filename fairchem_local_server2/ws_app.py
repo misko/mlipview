@@ -15,7 +15,7 @@ from ray.serve.schema import LoggingConfig
 from fairchem_local_server2 import session_pb2 as pb
 from fairchem_local_server2.session_models import SessionState, SimulationParams
 from fairchem_local_server2.worker_pool import WorkerPool
-from fairchem_local_server.model_runtime import (
+from .model_runtime import (
     MODEL_NAME,
     TASK_NAME,
     UMA_DEPLOYMENT_NAME,
@@ -24,7 +24,7 @@ from fairchem_local_server.model_runtime import (
     health_snapshot,
     install_predict_handle,
 )
-from fairchem_local_server.models import PrecomputedValues
+from .models import PrecomputedValues
 
 app = FastAPI(title="UMA Serve WS API", debug=True)
 
@@ -970,6 +970,28 @@ class WSIngress:
             S = results.get("stress")
 
             # --- Shape-safe coercions (forces/stress) ---
+            P_np = None
+            if state.positions is not None:
+                try:
+                    P_np = np.asarray(state.positions, dtype=np.float64)
+                    if P_np.ndim == 1 and P_np.size % 3 == 0:
+                        P_np = P_np.reshape(-1, 3)
+                    if P_np.ndim != 2 or P_np.shape[1] != 3:
+                        P_np = None
+                except Exception:
+                    P_np = None
+
+            V_np = None
+            if state.velocities is not None:
+                try:
+                    V_np = np.asarray(state.velocities, dtype=np.float64)
+                    if V_np.ndim == 1 and V_np.size % 3 == 0:
+                        V_np = V_np.reshape(-1, 3)
+                    if V_np.ndim != 2 or V_np.shape[1] != 3:
+                        V_np = None
+                except Exception:
+                    V_np = None
+
             F_np = None
             if F is not None:
                 try:
@@ -1001,9 +1023,8 @@ class WSIngress:
                     int(uic_in_msg) if uic_in_msg is not None else None
                 ),
                 sim_step=(state.sim_step or None),
-                # Idle property frames: omit positions/velocities per E2E expectations
-                positions=None,
-                velocities=None,
+                positions=P_np,
+                velocities=V_np,
                 forces=F_np,
                 cell=None,
                 energy=(float(E) if E is not None else None),

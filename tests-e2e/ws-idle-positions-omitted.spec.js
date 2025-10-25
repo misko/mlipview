@@ -1,6 +1,5 @@
 // Purpose: End-to-end verification that idle computes (no simulation running)
-// produce frames with energy (and possibly forces) but omit positions as per
-// protobuf_migration.md protocol guidance.
+// produce frames with energy (and positions/forces) so the viewer can update HUD overlays.
 import { test, expect } from './fixtures.js';
 
 // Verify that during idle (no simulation running), idle compute frames omit positions
@@ -72,10 +71,10 @@ test('idle frames omit positions and carry energy', async ({ page, loadViewerPag
     });
   });
   expect(idle).toBeTruthy();
-  // Idle frames should not contain positions per protocol
+  // Idle frames now include positions so downstream consumers can render overlays.
   if (idle) {
     const hasPositions = Array.isArray(idle.positions) && idle.positions.length > 0;
-    expect(hasPositions).toBeFalsy();
+    expect(hasPositions).toBeTruthy();
   }
   // Optional: ensure no protobuf/WS init errors in console
   const errBlob = consoleErrors.join('\n');

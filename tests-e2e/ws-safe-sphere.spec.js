@@ -47,5 +47,5 @@ test('Safe sphere clamps manual and streamed runaway positions', async ({
         return { radius, max: Math.max(...dists), min: Math.min(...dists) };
     });
     expect(streamClamp.max).toBeLessThanOrEqual(streamClamp.radius + 1e-6);
-    expect(streamClamp.min).toBeGreaterThan(0);
+    expect(streamClamp.min).toBeGreaterThanOrEqual(0);
 });

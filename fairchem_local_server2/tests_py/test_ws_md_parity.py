@@ -8,9 +8,9 @@ import pytest
 import websockets
 
 from fairchem_local_server2 import session_pb2 as pb
-from fairchem_local_server.atoms_utils import build_atoms
-from fairchem_local_server.models import RelaxCalculatorName
-from fairchem_local_server.services import _md_run
+from fairchem_local_server2.atoms_utils import build_atoms
+from fairchem_local_server2.models import RelaxCalculatorName
+from fairchem_local_server2.services import _md_run
 
 
 async def _ws_nth_md_step(

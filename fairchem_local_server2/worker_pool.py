@@ -12,13 +12,13 @@ from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.optimize import BFGS as _BFGS
 from fastapi import HTTPException
 
-from fairchem_local_server.atoms_utils import (
+from .atoms_utils import (
     build_atoms,
     center_and_return_shift,
     compute_properties,
 )
-from fairchem_local_server.model_runtime import get_calculator, install_predict_handle
-from fairchem_local_server.models import (
+from .model_runtime import get_calculator, install_predict_handle
+from .models import (
     MDResult,
     PrecomputedValues,
     RelaxCalculatorName,
