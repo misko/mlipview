@@ -222,8 +222,12 @@ export function createMoleculeView(scene, molState) {
       g.mats.push(mat);
       g.indices.push(i);
     }
-    for (const g of atomGroups.values())
+    for (const g of atomGroups.values()) {
       g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
+      const on = g.mats.length > 0;
+      if (typeof g.master.setEnabled === 'function') g.master.setEnabled(on);
+      else g.master.isVisible = on;
+    }
     rebuildBonds();
   }
   function flattenMatrices(mats) {
@@ -911,8 +915,12 @@ export function createMoleculeView(scene, molState) {
       g.mats.push(mat);
       g.indices.push(i);
     }
-    for (const g of atomGroups.values())
+    for (const g of atomGroups.values()) {
       g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
+      const on = g.mats.length > 0;
+      if (typeof g.master.setEnabled === 'function') g.master.setEnabled(on);
+      else g.master.isVisible = on;
+    }
     // (debug log suppressed)
   }
   function updatePositions() {
