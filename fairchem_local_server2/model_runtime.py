@@ -46,6 +46,7 @@ UMA_DEPLOYMENT_NAME = "uma_predict"
 # --- State ------------------------------------------------------------------
 
 _PU: "BatchedPredictUnit | None" = None
+_DEVICE_LOGGED = False
 
 
 # --- Ray Serve UMA deployments (no HTTP route) -------------------------------
@@ -284,7 +285,19 @@ def install_predict_handle(handle) -> None:
         device="cpu",
     ).dataset_to_tasks
 
+    global _DEVICE_LOGGED
     _PU = BatchedPredictUnit(handle, dataset_to_tasks=dtt)
+    try:
+        dev = getattr(_PU, "DEVICE", None)
+        if dev:
+            print(
+                f"[install_predict_handle] predict_unit_device={dev}",
+                flush=True,
+            )
+    except Exception:
+        pass
+    else:
+        _DEVICE_LOGGED = True
 
 
 def get_batched_predict_unit() -> BatchedPredictUnit:

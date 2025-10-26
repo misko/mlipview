@@ -118,6 +118,8 @@ def _coalesce_user_interactions(msg_buf: "deque[pb.ClientAction]") -> "pb.Client
     last_sim_step: Optional[int] = None
     last_natoms: Optional[int] = None
     last_cell: Optional[np.ndarray] = None
+    full_update_present = False
+    last_full_update_val = False
     z_map: dict[int, int] = {}
     r_map: dict[int, tuple[float, float, float]] = {}
     v_map: dict[int, tuple[float, float, float]] = {}
@@ -141,6 +143,13 @@ def _coalesce_user_interactions(msg_buf: "deque[pb.ClientAction]") -> "pb.Client
         ui = getattr(m, "user_interaction", None)
         if ui is None:
             continue
+        # full_update flag
+        try:
+            if getattr(ui, "HasField", None) and ui.HasField("full_update"):
+                full_update_present = True
+                last_full_update_val = bool(getattr(ui, "full_update", False))
+        except (AttributeError, ValueError):
+            pass
         # natoms
         if hasattr(ui, "natoms") and int(getattr(ui, "natoms", 0) or 0) > 0:
             last_natoms = int(ui.natoms)
@@ -204,6 +213,9 @@ def _coalesce_user_interactions(msg_buf: "deque[pb.ClientAction]") -> "pb.Client
         )
         m.m.extend([float(x) for x in last_cell.reshape(-1)])
         ui_out.cell.CopyFrom(m)
+    # Ensure the new field is always present so downstream handlers can rely on HasField
+    if full_update_present:
+        ui_out.full_update = bool(last_full_update_val)
     if z_map:
         inz = pb.IntDelta()
         ii, vv = zip(*sorted(z_map.items()))
@@ -412,31 +424,76 @@ class WSIngress:
         def _ensure_arrays_sized(n: int) -> None:
             if n <= 0:
                 return
-            # Atomic numbers: expand only, preserve existing values
+            target = int(n)
+            # Atomic numbers
             if state.atomic_numbers is None:
-                state.atomic_numbers = [0 for _ in range(n)]
+                state.atomic_numbers = [0 for _ in range(target)]
             else:
                 cur = len(state.atomic_numbers)
-                if cur < n:
-                    state.atomic_numbers.extend([0] * (n - cur))
-            # Positions: expand only, preserve existing rows
+                if cur < target:
+                    state.atomic_numbers.extend([0] * (target - cur))
+            # Positions
             if state.positions is None:
-                state.positions = np.zeros((n, 3), dtype=np.float64)
+                state.positions = np.zeros((target, 3), dtype=np.float64)
             else:
-                cur = int(np.asarray(state.positions).shape[0])
-                if cur < n:
-                    newp = np.zeros((n, 3), dtype=np.float64)
-                    newp[:cur, :] = state.positions[:cur, :]
+                arr = np.asarray(state.positions, dtype=np.float64)
+                cur = arr.shape[0]
+                if cur < target:
+                    newp = np.zeros((target, 3), dtype=np.float64)
+                    if cur > 0:
+                        newp[:cur, :] = arr[:cur, :]
                     state.positions = newp
-            # Velocities (optional): expand only
+                else:
+                    state.positions = arr
+            # Velocities
             if state.velocities is None:
-                state.velocities = np.zeros((n, 3), dtype=np.float64)
+                state.velocities = np.zeros((target, 3), dtype=np.float64)
             else:
-                cur = int(np.asarray(state.velocities).shape[0])
-                if cur < n:
-                    newv = np.zeros((n, 3), dtype=np.float64)
-                    newv[:cur, :] = state.velocities[:cur, :]
+                arr = np.asarray(state.velocities, dtype=np.float64)
+                cur = arr.shape[0]
+                if cur < target:
+                    newv = np.zeros((target, 3), dtype=np.float64)
+                    if cur > 0:
+                        newv[:cur, :] = arr[:cur, :]
                     state.velocities = newv
+                else:
+                    state.velocities = arr
+
+        def _reset_pending_deltas() -> None:
+            state.pending_z_idx = None
+            state.pending_z_values = None
+            state.pending_pos_idx = None
+            state.pending_pos_coords = None
+            state.pending_vel_idx = None
+            state.pending_vel_coords = None
+            state.pending_cell = None
+
+        def _resize_exact(target: int) -> bool:
+            if target < 0:
+                target = 0
+            current = len(state.atomic_numbers) if state.atomic_numbers else 0
+            if target == current:
+                return False
+            changed = False
+            if target > current:
+                _ensure_arrays_sized(target)
+                changed = True
+            else:
+                # shrink arrays
+                if state.atomic_numbers is not None:
+                    state.atomic_numbers = state.atomic_numbers[:target]
+                for attr in ("positions", "velocities", "forces"):
+                    arr = getattr(state, attr)
+                    if arr is None:
+                        continue
+                    arr_np = np.asarray(arr, dtype=np.float64)
+                    if arr_np.ndim == 0 or arr_np.shape[0] <= target:
+                        setattr(state, attr, arr_np[:target])
+                    else:
+                        setattr(state, attr, arr_np[:target])
+                changed = True
+                _reset_pending_deltas()
+            return changed
 
         def _stage_sparse_ui(ui) -> bool:
             """Stage sparse deltas when running; apply immediately when idle.
@@ -446,12 +503,54 @@ class WSIngress:
             if ui is None:
                 return False
             # Ensure arrays sized first
-            if hasattr(ui, "natoms") and int(getattr(ui, "natoms", 0) or 0) > 0:
-                _ensure_arrays_sized(int(ui.natoms))
+            if hasattr(ui, "natoms") and int(getattr(ui, "natoms", 0) or 0) >= 0:
+                target_n = int(ui.natoms)
+                if target_n >= 0:
+                    _ensure_arrays_sized(target_n)
                 if self._ws_debug:
                     print(f"[ws][UI] natoms={int(ui.natoms)}", flush=True)
+            else:
+                target_n = None
+
             # Decide immediate vs staged based on running state
             apply_now = not bool(state.running)
+
+            has_full_update_flag = False
+            has_field = getattr(ui, "HasField", None)
+            if callable(has_field):
+                try:
+                    has_full_update_flag = bool(has_field("full_update"))
+                except (AttributeError, ValueError):
+                    has_full_update_flag = False
+            if not has_full_update_flag:
+                raise ValueError("PROTO_VIOLATION: full_update flag must be set")
+
+            full_update_raw = getattr(ui, "full_update", False)
+            if self._ws_debug:
+                print(
+                    "[ws][UI] full_update raw=%s has_flag=%s"
+                    % (full_update_raw, has_full_update_flag),
+                    flush=True,
+                )
+
+            full_update_flag = bool(full_update_raw)
+
+            if full_update_flag:
+                state.pending_full_update = True
+                state.pending_resize_to = (
+                    int(getattr(ui, "natoms", 0) or 0)
+                    if hasattr(ui, "natoms")
+                    else (len(state.atomic_numbers) if state.atomic_numbers else 0)
+                )
+                vdelta = getattr(ui, "velocities", None)
+                has_vel_delta = bool(
+                    vdelta is not None
+                    and len(getattr(vdelta, "indices", []) or []) > 0
+                )
+                state.pending_full_zero_velocities = not has_vel_delta
+                if self._ws_debug:
+                    print("[ws][UI] full_update flag set", flush=True)
+                apply_now = False  # force staging so resets happen uniformly
             # atomic numbers
             inz = getattr(ui, "atomic_numbers", None)
             if inz is not None and len(getattr(inz, "indices", [])) > 0:
@@ -539,6 +638,7 @@ class WSIngress:
             return touched
 
         def _apply_pending() -> bool:
+            nonlocal precomputed_hint
             """Apply any staged pending deltas to current state arrays; clear pendings."""
             touched = False
             # Z
@@ -585,6 +685,34 @@ class WSIngress:
                     state.cell = c.reshape(3, 3)
                     touched = True
                 state.pending_cell = None
+
+            # Full snapshot bookkeeping
+            if state.pending_full_update:
+                target_n = state.pending_resize_to
+                if target_n is not None:
+                    if _resize_exact(int(target_n)):
+                        touched = True
+                if state.pending_full_zero_velocities:
+                    try:
+                        nrows = (
+                            int(np.asarray(state.positions).shape[0])
+                            if state.positions is not None
+                            else 0
+                        )
+                    except Exception:
+                        nrows = 0
+                    if nrows > 0:
+                        state.velocities = np.zeros((nrows, 3), dtype=np.float64)
+                        touched = True
+                    else:
+                        state.velocities = None
+                state.forces = None
+                precomputed_hint = None
+                state.sim_step = 0
+                state.pending_full_update = False
+                state.pending_full_zero_velocities = False
+                state.pending_resize_to = None
+                state.pending_idle_push = True
             return touched
 
         async def sim_loop():
@@ -602,6 +730,10 @@ class WSIngress:
                     # If the geometry changed, drop any precomputed hint
                     if touched:
                         precomputed_hint = None
+
+                    if state.pending_idle_push and not state.running:
+                        await _emit_idle_frame(state.user_interaction_count or None)
+                        continue
 
                     if not state.running or state.atomic_numbers == []:
                         await asyncio.sleep(0.02)
@@ -868,35 +1000,10 @@ class WSIngress:
                     state.sim_step = s
             return uic_in_msg
 
-        async def _handle_user_interaction(msg, uic_in_msg: Optional[int]) -> None:
-            # Stage incoming sparse deltas
-            ui = getattr(msg, "user_interaction", None)
-            _stage_sparse_ui(ui)
+        async def _emit_idle_frame(uic_hint: Optional[int]) -> None:
+            """Compute and emit an idle frame (energy/forces)."""
+            state.pending_idle_push = False
 
-            # Derive natoms from current positions array (if any)
-            # for logging only
-            try:
-                n = (
-                    int(np.asarray(state.positions).shape[0])
-                    if state.positions is not None
-                    else 0
-                )
-            except Exception:
-                n = 0
-            if self._ws_debug:
-                print(
-                    f"[ws][USER_INTERACTION] recv natoms={n} running={'true' if state.running else 'false'}",
-                    flush=True,
-                )
-
-            # --- If a simulation is running, DO NOT compute now; let sim_loop emit the next frame ---
-            if state.running:
-                return
-
-            # Apply pending immediately for idle compute
-            _apply_pending()
-
-            # Guard: only compute when geometry is complete and valid
             z = state.atomic_numbers
             r = state.positions
             geom_ready = False
@@ -904,22 +1011,18 @@ class WSIngress:
                 if isinstance(z, list) and len(z) > 0 and r is not None:
                     rz = np.asarray(r)
                     if rz.ndim == 2 and rz.shape[1] == 3 and rz.shape[0] >= len(z):
-                        # Require all atomic numbers to be positive
                         if all(int(v) > 0 for v in z):
                             geom_ready = True
             except Exception:
                 geom_ready = False
 
             if not geom_ready:
-                # Geometry not initialized yet (e.g., only positions arrived,
-                # Z pending). Avoid spamming COMPUTE_ERROR; send a benign
-                # notice echoing counters.
                 state.server_seq += 1
                 await _send_result_bytes(
                     seq=state.server_seq,
                     client_seq=state.client_seq,
                     user_interaction_count=(
-                        int(uic_in_msg) if uic_in_msg is not None else None
+                        int(uic_hint) if uic_hint is not None else None
                     ),
                     sim_step=(state.sim_step or None),
                     positions=None,
@@ -932,15 +1035,8 @@ class WSIngress:
                 )
                 return
 
-            # --- Idle path: single property compute so the viewer gets
-            # immediate E/F feedback ---
             worker = self._pool.any()
             try:
-                if self._ws_debug:
-                    print(
-                        "[ws] USER_INTERACTION idle compute start",
-                        flush=True,
-                    )
                 res = await asyncio.to_thread(
                     ray.get,
                     worker.run_simple.remote(
@@ -952,13 +1048,13 @@ class WSIngress:
                     ),
                 )
             except Exception as e:
-                print("[ws] USER_INTERACTION idle compute failed", flush=True)
+                print("[ws] idle compute failed", flush=True)
                 state.server_seq += 1
                 await _send_result_bytes(
                     seq=state.server_seq,
                     client_seq=state.client_seq,
                     user_interaction_count=(
-                        int(uic_in_msg) if uic_in_msg is not None else None
+                        int(uic_hint) if uic_hint is not None else None
                     ),
                     sim_step=(state.sim_step or None),
                     positions=None,
@@ -976,7 +1072,6 @@ class WSIngress:
             F = results.get("forces")
             S = results.get("stress")
 
-            # --- Shape-safe coercions (forces/stress) ---
             P_np = None
             if state.positions is not None:
                 try:
@@ -1027,7 +1122,7 @@ class WSIngress:
                 seq=state.server_seq,
                 client_seq=state.client_seq,
                 user_interaction_count=(
-                    int(uic_in_msg) if uic_in_msg is not None else None
+                    int(uic_hint) if uic_hint is not None else None
                 ),
                 sim_step=(state.sim_step or None),
                 positions=P_np,
@@ -1037,6 +1132,80 @@ class WSIngress:
                 energy=(float(E) if E is not None else None),
                 stress=S_np,
             )
+
+        async def _handle_user_interaction(msg, uic_in_msg: Optional[int]) -> None:
+            nonlocal precomputed_hint
+            # Stage incoming sparse deltas
+            ui = getattr(msg, "user_interaction", None)
+            try:
+                _stage_sparse_ui(ui)
+            except ValueError as err:
+                if self._ws_debug:
+                    print(f"[ws][UI][error] {err}", flush=True)
+                state.server_seq += 1
+                await _send_result_bytes(
+                    seq=state.server_seq,
+                    client_seq=state.client_seq,
+                    user_interaction_count=(
+                        int(uic_in_msg) if uic_in_msg is not None else None
+                    ),
+                    sim_step=(state.sim_step or None),
+                    positions=None,
+                    velocities=None,
+                    forces=None,
+                    cell=None,
+                    energy=None,
+                    message=str(err),
+                    stress=None,
+                    simulation_stopped=False,
+                )
+                return
+
+            if state.running and state.pending_full_update:
+                if self._ws_debug:
+                    print("[ws] STRUCTURE_CHANGED notice (running)", flush=True)
+                state.server_seq += 1
+                await _send_result_bytes(
+                    seq=state.server_seq,
+                    client_seq=state.client_seq,
+                    user_interaction_count=(
+                        int(uic_in_msg) if uic_in_msg is not None else None
+                    ),
+                    sim_step=(state.sim_step or None),
+                    positions=None,
+                    velocities=None,
+                    forces=None,
+                    cell=None,
+                    energy=None,
+                    message="STRUCTURE_CHANGED",
+                    stress=None,
+                    simulation_stopped=False,
+                )
+                return
+
+            # Derive natoms from current positions array (if any)
+            # for logging only
+            try:
+                n = (
+                    int(np.asarray(state.positions).shape[0])
+                    if state.positions is not None
+                    else 0
+                )
+            except Exception:
+                n = 0
+            if self._ws_debug:
+                print(
+                    f"[ws][USER_INTERACTION] recv natoms={n} running={'true' if state.running else 'false'}",
+                    flush=True,
+                )
+
+            # --- If a simulation is running, DO NOT compute now; let sim_loop emit the next frame ---
+            if state.running:
+                return
+
+            # Apply pending immediately for idle compute
+            _apply_pending()
+            await _emit_idle_frame(uic_in_msg)
 
         def _handle_start_simulation(msg) -> None:
             nonlocal precomputed_hint

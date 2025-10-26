@@ -46,6 +46,7 @@ async def _send_ui(
             vv.indices.append(int(i))
             vv.coords.extend([0.0, 0.0, 0.0])
         ui.velocities.CopyFrom(vv)
+    ui.full_update = False
     msg.user_interaction.CopyFrom(ui)
     await ws.send(msg.SerializeToString())
     return seq + 1

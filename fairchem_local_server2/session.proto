@@ -38,11 +38,14 @@ message IntDelta {
 
 // Sparse user interaction payload
 message UserInteractionSparse {
-  optional uint32 natoms = 1;          // total number of atoms, when resizing
+  uint32 natoms = 1;          // total number of atoms, when resizing
   IntDelta atomic_numbers = 2;         // per-index Z updates
   Vec3Delta positions = 3;             // per-index position updates
   Vec3Delta velocities = 4;            // per-index velocity updates
   optional Mat3 cell = 5;              // full 3x3 cell matrix
+  oneof full_update_flag {
+    bool full_update = 6; // must be explicitly set (true for full snapshot, false otherwise)
+  }
 
   // Historical compat: some codegen embeds Mat3 nested; keep shape identical
   message Mat3 { repeated double m = 1 [packed = true]; }

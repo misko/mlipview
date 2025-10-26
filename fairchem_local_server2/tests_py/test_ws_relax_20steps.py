@@ -66,6 +66,7 @@ async def run_relax_20(ws_url: str, xyz_path: str):
         for p in pos:
             r_delta.coords.extend([float(p[0]), float(p[1]), float(p[2])])
         ui.positions.CopyFrom(r_delta)
+        ui.full_update = True
         init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
         # Tiny settle to allow idle compute to start
@@ -82,6 +83,7 @@ async def run_relax_20(ws_url: str, xyz_path: str):
         for p in pos:
             vr2.coords.extend([float(p[0]), float(p[1]), float(p[2])])
         ui2.positions.CopyFrom(vr2)
+        ui2.full_update = False
         req.user_interaction.CopyFrom(ui2)
         await ws.send(req.SerializeToString())
 

@@ -51,6 +51,7 @@ def test_ws_start_stop_idle_relax_sequence(ws_base_url: str):
             for p in R:
                 vr.coords.extend([float(p[0]), float(p[1]), float(p[2])])
             ui.positions.CopyFrom(vr)
+            ui.full_update = True
             init.user_interaction.CopyFrom(ui)
             await ws.send(init.SerializeToString())
 
@@ -147,6 +148,7 @@ def test_ws_start_stop_idle_relax_sequence(ws_base_url: str):
                     [float(pos[1][0]), float(pos[1][1]), float(pos[1][2])]
                 )
                 ui2.positions.CopyFrom(delta)
+                ui2.full_update = False
                 req.user_interaction.CopyFrom(ui2)
                 try:
                     req.user_interaction_count = i + 1

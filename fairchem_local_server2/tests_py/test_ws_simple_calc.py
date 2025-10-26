@@ -61,6 +61,7 @@ async def _ws_simple_once(
             )
             m.m.extend(list(map(float, cell)))
             ui.cell.CopyFrom(m)
+        ui.full_update = True
         init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
 
@@ -75,6 +76,7 @@ async def _ws_simple_once(
         for p in R:
             vr2.coords.extend([float(p[0]), float(p[1]), float(p[2])])
         ui2.positions.CopyFrom(vr2)
+        ui2.full_update = False
         req.user_interaction.CopyFrom(ui2)
         # Attach optional counters if fields exist
         if hasattr(req, "user_interaction_count"):

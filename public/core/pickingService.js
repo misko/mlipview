@@ -120,18 +120,34 @@ export function createPickingService(
       __lastDown = { x: scene.pointerX || 0, y: scene.pointerY || 0, t: now };
     } catch {}
     const res = pickAtPointer();
+    const isRightButton = e && typeof e.button === 'number' && e.button === 2;
     if (!res) {
       if (PDBG)
         try {
           console.log('[pick] no hit; clearing selection');
         } catch {}
-      // Fallback: if no pick result and at least one atom exists, select atom 0 for drag (helps automated tests)
-      if (selectionService.get().kind !== 'atom' && view && view._debugAutoSelectFirstOnEmpty) {
+      if (!isRightButton && selectionService.get().kind !== 'atom' && view && view._debugAutoSelectFirstOnEmpty) {
         selectionService.clickAtom(0);
       } else {
         selectionService.clear();
         return;
       }
+    }
+    if (isRightButton) {
+      if (res && res.kind === 'atom') {
+        try {
+          if (typeof e?.preventDefault === 'function') e.preventDefault();
+          if (typeof e?.stopPropagation === 'function') e.stopPropagation();
+          if (typeof e?.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+        } catch {}
+        try {
+          const api = typeof window !== 'undefined' ? window.viewerApi || null : null;
+          if (api && typeof api.removeAtomByIndex === 'function') {
+            Promise.resolve(api.removeAtomByIndex(res.index)).catch(() => {});
+          }
+        } catch {}
+      }
+      return;
     }
     if (res.kind === 'atom') {
       if (PDBG)
@@ -333,6 +349,12 @@ export function createPickingService(
     canvas && canvas.addEventListener('pointermove', pm);
     canvas && canvas.addEventListener('pointerup', pu);
     canvas && canvas.addEventListener('pointerleave', pu);
+    canvas && canvas.addEventListener('contextmenu', (e) => {
+      if (typeof e?.preventDefault === 'function') e.preventDefault();
+      if (typeof e?.stopPropagation === 'function') e.stopPropagation();
+      if (typeof e?.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+      return false;
+    });
     const onWheel = (e) => {
       try {
         if (!manipulation || typeof manipulation.rotateBond !== 'function') return;

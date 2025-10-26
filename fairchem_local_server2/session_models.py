@@ -112,3 +112,7 @@ class SessionState(BaseModel):
     pending_vel_idx: Optional[list[int]] = None
     pending_vel_coords: Optional[list[float]] = None  # flat 3*k
     pending_cell: Optional[list[float]] = None  # flat 9
+    pending_resize_to: Optional[int] = None
+    pending_idle_push: bool = False
+    pending_full_update: bool = False
+    pending_full_zero_velocities: bool = False

@@ -180,6 +180,14 @@ export function createFairchemWS() {
             : msg && msg.stop ? 'STOP_SIMULATION'
               : msg && msg.ping ? 'PING' : undefined);
 
+      const userPayload = (() => {
+        try {
+          if (msg?.payload?.case === 'userInteraction') return msg.payload.value || null;
+          if (msg?.userInteraction) return msg.userInteraction;
+        } catch { }
+        return null;
+      })();
+
       const out = {
         seq: msg.seq | 0,
         type: kind,
@@ -210,6 +218,14 @@ export function createFairchemWS() {
             ? Math.floor(msg.userInteraction.velocities.length / 3)
             : undefined),
         hasCell: meta?.hasCell ?? !!msg.userInteraction?.cell,
+        natoms:
+          meta?.natoms ??
+          (typeof userPayload?.natoms === 'number' ? userPayload.natoms : undefined),
+        fullUpdate:
+          meta?.fullUpdate ??
+          (userPayload?.fullUpdateFlag?.case === 'fullUpdate'
+            ? !!userPayload.fullUpdateFlag.value
+            : undefined),
       };
       if (__wsDebugOn()) console.log('[WS][TEST_HOOK]', out);
       for (const fn of sinks) { try { fn(out); } catch { } }
@@ -546,7 +562,7 @@ export function createFairchemWS() {
     return userInteraction({ natoms, atomic_numbers, positions, velocities, cell });
   }
 
-  function userInteraction({ atomic_numbers, positions, velocities, cell, natoms } = {}) {
+  function userInteraction({ atomic_numbers, positions, velocities, cell, natoms, full_update } = {}) {
     // Build sparse UserInteraction payload (UserInteractionSparse)
     const payload = {};
 
@@ -588,6 +604,17 @@ export function createFairchemWS() {
     // natoms: when provided, server will resize ahead of applying deltas
     if (Number.isFinite(natoms)) payload.natoms = natoms | 0;
 
+    const isFullUpdate = full_update === true;
+    payload.fullUpdateFlag = { case: 'fullUpdate', value: isFullUpdate };
+    if (isFullUpdate) {
+      if (!Number.isFinite(natoms)) {
+        const inferred =
+          Array.isArray(positions) ? positions.length :
+            Array.isArray(atomic_numbers) ? atomic_numbers.length : undefined;
+        if (Number.isFinite(inferred)) payload.natoms = inferred | 0;
+      }
+    }
+
     // Deltas
     const zDelta = toIntDelta(atomic_numbers);
     if (zDelta) payload.atomicNumbers = zDelta;
@@ -615,6 +642,7 @@ export function createFairchemWS() {
       positionsLenTriples: Array.isArray(positions) ? positions.length : (Array.isArray(positions?.indices) ? positions.indices.length : undefined),
       velocitiesLenTriples: Array.isArray(velocities) ? velocities.length : (Array.isArray(velocities?.indices) ? velocities.indices.length : undefined),
       hasCell: !!payload.cell,
+      fullUpdate: isFullUpdate,
     });
 
     __log('[WS][tx][USER_INTERACTION]', {

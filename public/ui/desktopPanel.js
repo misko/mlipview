@@ -16,6 +16,110 @@ import { isLikelySmiles } from '../util/smilesLoader.js';
 import { elInfo } from '../elements.js';
 import { defaultMassForZ } from '../physics/sim-model.js';
 import { getCellParameters, buildCellFromParameters } from '../util/pbc.js';
+import { OMOL25_ELEMENTS } from '../data/periodicTable.js';
+
+const PERIOD_ROWS = [
+  ['H', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 'He'],
+  ['Li', 'Be', '', '', '', '', '', '', '', '', '', '', 'B', 'C', 'N', 'O', 'F', 'Ne'],
+  ['Na', 'Mg', '', '', '', '', '', '', '', '', '', '', 'Al', 'Si', 'P', 'S', 'Cl', 'Ar'],
+  [
+    'K',
+    'Ca',
+    'Sc',
+    'Ti',
+    'V',
+    'Cr',
+    'Mn',
+    'Fe',
+    'Co',
+    'Ni',
+    'Cu',
+    'Zn',
+    'Ga',
+    'Ge',
+    'As',
+    'Se',
+    'Br',
+    'Kr',
+  ],
+  [
+    'Rb',
+    'Sr',
+    'Y',
+    'Zr',
+    'Nb',
+    'Mo',
+    'Tc',
+    'Ru',
+    'Rh',
+    'Pd',
+    'Ag',
+    'Cd',
+    'In',
+    'Sn',
+    'Sb',
+    'Te',
+    'I',
+    'Xe',
+  ],
+  [
+    'Cs',
+    'Ba',
+    'La',
+    'Hf',
+    'Ta',
+    'W',
+    'Re',
+    'Os',
+    'Ir',
+    'Pt',
+    'Au',
+    'Hg',
+    'Tl',
+    'Pb',
+    'Bi',
+    'Po',
+    'At',
+    'Rn',
+  ],
+  ['Fr', 'Ra', 'Ac', 'Rf', 'Db', 'Sg', 'Bh', 'Hs', 'Mt', 'Ds', 'Rg', 'Cn', 'Nh', 'Fl', 'Mc', 'Lv', 'Ts', 'Og'],
+];
+
+const LANTH = [
+  'La',
+  'Ce',
+  'Pr',
+  'Nd',
+  'Pm',
+  'Sm',
+  'Eu',
+  'Gd',
+  'Tb',
+  'Dy',
+  'Ho',
+  'Er',
+  'Tm',
+  'Yb',
+  'Lu',
+];
+
+const ACTIN = [
+  'Ac',
+  'Th',
+  'Pa',
+  'U',
+  'Np',
+  'Pu',
+  'Am',
+  'Cm',
+  'Bk',
+  'Cf',
+  'Es',
+  'Fm',
+  'Md',
+  'No',
+  'Lr',
+];
 
 function createSection(id, title, { defaultOpen = false } = {}) {
   const section = document.createElement('div');
@@ -571,139 +675,235 @@ export function buildDesktopPanel({ attachTo } = {}) {
       st.textContent = `
         #miniPeriodic { width:100%; table-layout: fixed; border-collapse: collapse; margin-top:6px; background:#232831; border:1px solid rgba(255,255,255,0.08); }
         #miniPeriodic tr { height:18px; }
-        #miniPeriodic td.pt-el { text-align:center; padding:0; height:18px; line-height:18px; font-size:10px; color: var(--text); background:#1b2027; border:1px solid rgba(255,255,255,0.08); box-sizing:border-box; }
+        #miniPeriodic td.pt-el { text-align:center; padding:0; height:18px; line-height:18px; font-size:10px; color: var(--text); background:#1b2027; border:1px solid rgba(255,255,255,0.08); box-sizing:border-box; cursor:pointer; user-select:none; }
         #miniPeriodic td.pt-el.empty { background:#232831; border:none; }
         #miniPeriodic td.pt-el.highlight { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
       `;
       document.head.appendChild(st);
     }
-    // Periods 1..7
-    const PERIOD_ROWS = [
-      // 1
-      ['H', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 'He'],
-      // 2
-      ['Li', 'Be', '', '', '', '', '', '', '', '', '', '', 'B', 'C', 'N', 'O', 'F', 'Ne'],
-      // 3
-      ['Na', 'Mg', '', '', '', '', '', '', '', '', '', '', 'Al', 'Si', 'P', 'S', 'Cl', 'Ar'],
-      // 4
-      [
-        'K',
-        'Ca',
-        'Sc',
-        'Ti',
-        'V',
-        'Cr',
-        'Mn',
-        'Fe',
-        'Co',
-        'Ni',
-        'Cu',
-        'Zn',
-        'Ga',
-        'Ge',
-        'As',
-        'Se',
-        'Br',
-        'Kr',
-      ],
-      // 5
-      [
-        'Rb',
-        'Sr',
-        'Y',
-        'Zr',
-        'Nb',
-        'Mo',
-        'Tc',
-        'Ru',
-        'Rh',
-        'Pd',
-        'Ag',
-        'Cd',
-        'In',
-        'Sn',
-        'Sb',
-        'Te',
-        'I',
-        'Xe',
-      ],
-      // 6 (La is shown in group 3; rest of lanthanides moved to separate row)
-      [
-        'Cs',
-        'Ba',
-        'La',
-        'Hf',
-        'Ta',
-        'W',
-        'Re',
-        'Os',
-        'Ir',
-        'Pt',
-        'Au',
-        'Hg',
-        'Tl',
-        'Pb',
-        'Bi',
-        'Po',
-        'At',
-        'Rn',
-      ],
-      // 7 (Ac similarly)
-      [
-        'Fr',
-        'Ra',
-        'Ac',
-        'Rf',
-        'Db',
-        'Sg',
-        'Bh',
-        'Hs',
-        'Mt',
-        'Ds',
-        'Rg',
-        'Cn',
-        'Nh',
-        'Fl',
-        'Mc',
-        'Lv',
-        'Ts',
-        'Og',
-      ],
-    ];
-    const LANTH = [
-      'La',
-      'Ce',
-      'Pr',
-      'Nd',
-      'Pm',
-      'Sm',
-      'Eu',
-      'Gd',
-      'Tb',
-      'Dy',
-      'Ho',
-      'Er',
-      'Tm',
-      'Yb',
-      'Lu',
-    ];
-    const ACTIN = [
-      'Ac',
-      'Th',
-      'Pa',
-      'U',
-      'Np',
-      'Pu',
-      'Am',
-      'Cm',
-      'Bk',
-      'Cf',
-      'Es',
-      'Fm',
-      'Md',
-      'No',
-      'Lr',
-    ];
+
+    const OMOL25_SET = new Set(OMOL25_ELEMENTS);
+    const dragAddState = {
+      active: false,
+      pointerId: null,
+      symbol: null,
+      startX: 0,
+      startY: 0,
+      currentX: 0,
+      currentY: 0,
+      dragging: false,
+      sourceCell: null,
+    };
+    const previewId = 'periodicElementPreview';
+    let previewEl = typeof document !== 'undefined' ? document.getElementById(previewId) : null;
+
+    function ensurePreview() {
+      if (previewEl) return previewEl;
+      if (typeof document === 'undefined') return null;
+      const el = document.createElement('div');
+      el.id = previewId;
+      el.style.display = 'none';
+      el.style.position = 'fixed';
+      el.style.pointerEvents = 'none';
+      el.style.zIndex = '2000';
+      el.style.transform = 'translate(-50%, -50%)';
+      el.style.padding = '6px 10px';
+      el.style.borderRadius = '999px';
+      el.style.background = 'rgba(37,44,54,0.9)';
+      el.style.color = '#f0f6ff';
+      el.style.fontSize = '12px';
+      el.style.border = '1px solid rgba(160,190,255,0.4)';
+      el.style.boxShadow = '0 4px 10px rgba(0,0,0,0.3)';
+      document.body.appendChild(el);
+      previewEl = el;
+      return previewEl;
+    }
+
+    function hidePreview() {
+      if (previewEl) previewEl.style.display = 'none';
+    }
+
+    function showPreview(sym, x, y) {
+      const el = ensurePreview();
+      if (!el) return;
+      el.textContent = sym;
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+      el.style.display = 'block';
+    }
+
+    function updatePreviewPosition(x, y) {
+      if (!previewEl) return;
+      previewEl.style.left = `${x}px`;
+      previewEl.style.top = `${y}px`;
+    }
+
+    function resetDragAddState() {
+      dragAddState.active = false;
+      dragAddState.pointerId = null;
+      dragAddState.symbol = null;
+      dragAddState.startX = 0;
+      dragAddState.startY = 0;
+      dragAddState.currentX = 0;
+      dragAddState.currentY = 0;
+      dragAddState.dragging = false;
+      dragAddState.sourceCell = null;
+    }
+
+    function projectToScene(clientX, clientY) {
+      try {
+        const api = window.viewerApi || window._viewer || null;
+        if (!api || !api.scene || !api.camera) return null;
+        const engine =
+          api.scene.getEngine && typeof api.scene.getEngine === 'function'
+            ? api.scene.getEngine()
+            : null;
+        const canvas = engine && typeof engine.getRenderingCanvas === 'function'
+          ? engine.getRenderingCanvas()
+          : null;
+        if (!canvas) return null;
+        const rect = canvas.getBoundingClientRect();
+        const inside =
+          clientX >= rect.left &&
+          clientX <= rect.right &&
+          clientY >= rect.top &&
+          clientY <= rect.bottom;
+        const px = clientX - rect.left;
+        const py = clientY - rect.top;
+        const camera = api.camera;
+        const scene = api.scene;
+        const ray = scene.createPickingRay(px, py, BABYLON.Matrix.Identity(), camera);
+        const camPos = camera.position
+          ? camera.position
+          : camera.getFrontPosition
+            ? camera.getFrontPosition(0)
+            : { x: 0, y: 0, z: -10 };
+        const target = camera.target || { x: 0, y: 0, z: 0 };
+        const normal = new BABYLON.Vector3(
+          target.x - camPos.x,
+          target.y - camPos.y,
+          target.z - camPos.z
+        );
+        if (normal.lengthSquared() < 1e-6) {
+          normal.x = 0;
+          normal.y = 1;
+          normal.z = 0;
+        }
+        normal.normalize();
+        const planePoint = new BABYLON.Vector3(target.x, target.y, target.z);
+        const denom = BABYLON.Vector3.Dot(normal, ray.direction);
+        let point = planePoint;
+        if (Math.abs(denom) >= 1e-6) {
+          const t = BABYLON.Vector3.Dot(planePoint.subtract(ray.origin), normal) / denom;
+          if (Number.isFinite(t)) {
+            point = ray.origin.add(ray.direction.scale(t));
+          }
+        }
+        return {
+          inside,
+          point: { x: point.x, y: point.y, z: point.z },
+        };
+      } catch {
+        return null;
+      }
+    }
+
+    function addAtomAtOrigin(sym) {
+      try {
+        const api = window.viewerApi || window._viewer || null;
+        if (!api) return;
+        if (typeof api.addAtomAtOrigin === 'function') {
+          Promise.resolve(api.addAtomAtOrigin(sym)).catch(() => {});
+        } else if (typeof api.addAtom === 'function') {
+          Promise.resolve(api.addAtom({ element: sym })).catch(() => {});
+        }
+      } catch {}
+    }
+
+    function addAtomAtPoint(sym, point) {
+      try {
+        const api = window.viewerApi || window._viewer || null;
+        if (!api) return;
+        if (typeof api.addAtomAtPosition === 'function') {
+          Promise.resolve(api.addAtomAtPosition(sym, point)).catch(() => {});
+        } else {
+          addAtomAtOrigin(sym);
+        }
+      } catch {}
+    }
+
+    function handleAddMove(e) {
+      if (!dragAddState.active || dragAddState.pointerId !== e.pointerId) return;
+      dragAddState.currentX = e.clientX;
+      dragAddState.currentY = e.clientY;
+      const dx = dragAddState.currentX - dragAddState.startX;
+      const dy = dragAddState.currentY - dragAddState.startY;
+      if (!dragAddState.dragging) {
+        const dist = Math.hypot(dx, dy);
+        if (dist >= 6) {
+          dragAddState.dragging = true;
+          dragAddState.sourceCell?.classList?.add('drag-source');
+          showPreview(dragAddState.symbol, dragAddState.currentX, dragAddState.currentY);
+        }
+      } else {
+        updatePreviewPosition(dragAddState.currentX, dragAddState.currentY);
+      }
+      if (typeof e?.preventDefault === 'function') e.preventDefault();
+    }
+
+    function endAddSession(e) {
+      if (!dragAddState.active || dragAddState.pointerId !== e.pointerId) return;
+      window.removeEventListener('pointermove', handleAddMove, true);
+      window.removeEventListener('pointerup', endAddSession, true);
+      window.removeEventListener('pointercancel', cancelAddSession, true);
+      dragAddState.sourceCell?.classList?.remove('drag-source');
+      hidePreview();
+      const sym = dragAddState.symbol;
+      const dragging = dragAddState.dragging;
+      const currentX = dragAddState.currentX;
+      const currentY = dragAddState.currentY;
+      resetDragAddState();
+      if (!sym) return;
+      if (!dragging) {
+        addAtomAtOrigin(sym);
+        return;
+      }
+      const projection = projectToScene(currentX, currentY);
+      if (projection && projection.inside && projection.point) {
+        addAtomAtPoint(sym, projection.point);
+      } else {
+        addAtomAtOrigin(sym);
+      }
+    }
+
+    function cancelAddSession(e) {
+      if (dragAddState.pointerId !== e.pointerId) return;
+      window.removeEventListener('pointermove', handleAddMove, true);
+      window.removeEventListener('pointerup', endAddSession, true);
+      window.removeEventListener('pointercancel', cancelAddSession, true);
+      dragAddState.sourceCell?.classList?.remove('drag-source');
+      hidePreview();
+      resetDragAddState();
+    }
+
+    function beginAddSession(e, sym, cell) {
+      if (!OMOL25_SET.has(sym)) return;
+      ensurePreview();
+      dragAddState.active = true;
+      dragAddState.pointerId = e.pointerId;
+      dragAddState.symbol = sym;
+      dragAddState.startX = e.clientX;
+      dragAddState.startY = e.clientY;
+      dragAddState.currentX = e.clientX;
+      dragAddState.currentY = e.clientY;
+      dragAddState.dragging = false;
+      dragAddState.sourceCell = cell;
+      window.addEventListener('pointermove', handleAddMove, true);
+      window.addEventListener('pointerup', endAddSession, true);
+      window.addEventListener('pointercancel', cancelAddSession, true);
+      if (typeof e?.preventDefault === 'function') e.preventDefault();
+    }
+    // Periods 1..7 layout defined at module scope (PERIOD_ROWS, LANTH, ACTIN)
     // Symbol->full name map (118). For brevity, keep names concise.
     const SYMBOL_TO_NAME = {
       H: 'Hydrogen',
@@ -966,6 +1166,13 @@ export function buildDesktopPanel({ attachTo } = {}) {
             } catch {}
             __overrideElementSym = sym;
             updateFromSelection();
+          });
+          td.addEventListener('pointerdown', (e) => {
+            const isPrimary =
+              e.isPrimary !== false &&
+              (e.button === 0 || e.button === undefined || e.button === -1);
+            if (!isPrimary) return;
+            beginAddSession(e, sym, td);
           });
         } else {
           td.textContent = '';
@@ -1810,6 +2017,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
       const api = getApi();
       api && api.state && api.state.bus && api.state.bus.on('cellChanged', prefill);
     } catch {}
+
   }
 
   // XR fixed widget (top-right)

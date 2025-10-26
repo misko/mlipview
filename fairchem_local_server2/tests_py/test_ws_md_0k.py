@@ -92,6 +92,7 @@ async def _run_md_0k(
         for _ in Z:
             vv.coords.extend([0.0, 0.0, 0.0])
         ui.velocities.CopyFrom(vv)
+        ui.full_update = True
         init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
 

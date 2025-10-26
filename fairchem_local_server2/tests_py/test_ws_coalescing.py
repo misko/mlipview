@@ -40,6 +40,7 @@ async def _run_coalescing(uri: str, updates: int = 30) -> tuple[int, int]:
             ]
         )
         ui.positions.CopyFrom(r_delta)
+        ui.full_update = True
         init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
 
@@ -93,6 +94,7 @@ async def _run_coalescing(uri: str, updates: int = 30) -> tuple[int, int]:
                 ]
             )
             ui2.positions.CopyFrom(r_delta2)
+            ui2.full_update = False
             msg.user_interaction.CopyFrom(ui2)
             try:
                 msg.user_interaction_count = i + 1

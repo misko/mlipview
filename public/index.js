@@ -15,7 +15,7 @@ import { __count } from './util/funcCount.js';
 import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS, MAX_STEP } from './util/constants.js';
 import { getWS } from './fairchem_ws_client.js';
 import { showErrorBanner, hideErrorBanner } from './ui/errorBanner.js';
-import { SYMBOL_TO_Z } from './data/periodicTable.js';
+import { SYMBOL_TO_Z, Z_TO_SYMBOL, OMOL25_ELEMENTS } from './data/periodicTable.js';
 
 /* ──────────────────────────────────────────────────────────────────────────
    Tunables & Defaults
@@ -43,6 +43,8 @@ const reconnectState = {
   countdownTimer: null,
   bannerVisible: false,
 };
+
+const OMOL25_SET = new Set(Array.from(OMOL25_ELEMENTS || []));
 
 const pendingResume = { kind: null, opts: null };
 const lastContinuousOpts = { md: null, relax: null };
@@ -197,6 +199,39 @@ const applyTriples = (state, triples, { exclude } = {}) => {
       const [x, y, z] = triples[i]; const tp = state.positions[i]; tp.x = x; tp.y = y; tp.z = z;
     }
   }
+};
+
+const toSymbol = (el) => {
+  const str = typeof el === 'string' ? el.trim() : '';
+  if (str && SYMBOL_TO_Z[str]) return str;
+  const num = Number(el);
+  if (Number.isFinite(num) && Z_TO_SYMBOL[num]) return Z_TO_SYMBOL[num];
+  throw new Error(`Unknown element: ${el}`);
+};
+
+const assertAllowedSymbol = (sym) => {
+  if (!OMOL25_SET.has(sym)) {
+    throw new Error(`Element ${sym} not supported by OMol25`);
+  }
+};
+
+const toVec3 = (value, fallback = { x: 0, y: 0, z: 0 }) => {
+  if (!value) return { ...fallback };
+  if (Array.isArray(value)) {
+    return {
+      x: Number(value[0]) || 0,
+      y: Number(value[1]) || 0,
+      z: Number(value[2]) || 0,
+    };
+  }
+  if (typeof value === 'object') {
+    return {
+      x: Number(value.x) || 0,
+      y: Number(value.y) || 0,
+      z: Number(value.z) || 0,
+    };
+  }
+  return { ...fallback };
 };
 
 function clampVectorToRadius(pos, radius) {
@@ -524,6 +559,183 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (env.apiOn()) dbg.log('[forces-cache]', reason, { n: effectiveForces.length, E: state.forceCache.energy });
   };
 
+  const velocitiesToArray = (vels, count) => {
+    if (!Array.isArray(vels) || count <= 0) return undefined;
+    const out = new Array(count);
+    for (let i = 0; i < count; i++) {
+      const v = vels[i];
+      if (!v) {
+        out[i] = [0, 0, 0];
+        continue;
+      }
+      if (Array.isArray(v)) {
+        out[i] = [Number(v[0]) || 0, Number(v[1]) || 0, Number(v[2]) || 0];
+      } else {
+        out[i] = [Number(v.x) || 0, Number(v.y) || 0, Number(v.z) || 0];
+      }
+    }
+    return out;
+  };
+
+  const resetInteractionCachesAfterSnapshot = () => {
+    modifiedByVersion.clear();
+    draggingAtoms.clear();
+    rotatingAtoms.clear();
+    latchedUntil.clear();
+    clearBondLatch({ sendFinal: false });
+  };
+
+  const buildCellObject = (cellMatrix) => {
+    if (!Array.isArray(cellMatrix) || cellMatrix.length !== 3) return null;
+    const safe = cellMatrix.map((row) => (Array.isArray(row) ? row : [0, 0, 0]));
+    return {
+      a: { x: Number(safe[0][0]) || 0, y: Number(safe[0][1]) || 0, z: Number(safe[0][2]) || 0 },
+      b: { x: Number(safe[1][0]) || 0, y: Number(safe[1][1]) || 0, z: Number(safe[1][2]) || 0 },
+      c: { x: Number(safe[2][0]) || 0, y: Number(safe[2][1]) || 0, z: Number(safe[2][2]) || 0 },
+      enabled: true,
+      originOffset: { x: 0, y: 0, z: 0 },
+    };
+  };
+
+  const updateCellFromMatrix = (matrix) => {
+    if (!Array.isArray(matrix) || matrix.length !== 3) return;
+    const obj = buildCellObject(matrix);
+    if (!obj) return;
+    state.cell ||= obj;
+    state.cell.a = obj.a;
+    state.cell.b = obj.b;
+    state.cell.c = obj.c;
+    state.cell.enabled = obj.enabled;
+    state.cell.originOffset = obj.originOffset;
+    state.markCellChanged?.();
+  };
+
+  const applyFullSnapshot = async ({ elements, positions, velocities, cell } = {}) => {
+    const nextElements = Array.isArray(elements) && elements.length
+      ? elements.map(toSymbol)
+      : (state.elements || []).slice();
+    const nextPositions = Array.isArray(positions) && positions.length
+      ? positions.map((p) => toVec3(p))
+      : (state.positions || []).map((p) => ({ x: p.x, y: p.y, z: p.z }));
+
+    if (nextElements.length !== nextPositions.length) {
+      throw new Error('Elements and positions length mismatch');
+    }
+
+    const natoms = nextElements.length;
+    const nextVelocities = velocitiesToArray(velocities, natoms);
+
+    state.elements = nextElements.slice();
+    state.positions = nextPositions.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    state.__initialPositions = state.positions.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    state.forceCache && (state.forceCache.stale = true);
+
+    state.dynamics ||= {};
+    if (nextVelocities) {
+      state.dynamics.velocities = nextVelocities.map((v) => [v[0], v[1], v[2]]);
+    } else if (state.dynamics.velocities) {
+      delete state.dynamics.velocities;
+    }
+
+    if (Array.isArray(cell) && cell.length === 3) {
+      updateCellFromMatrix(cell);
+      state.__initialCellSnapshot = {
+        a: { ...state.cell.a },
+        b: { ...state.cell.b },
+        c: { ...state.cell.c },
+        originOffset: { ...(state.cell.originOffset || { x: 0, y: 0, z: 0 }) },
+      };
+    }
+
+    state.selection = { kind: null, data: null };
+    state.markSelectionChanged?.();
+    resetInteractionCachesAfterSnapshot();
+
+    bumpUser('fullSnapshotLocal');
+    state.markPositionsChanged();
+
+    __wsState.inited = false;
+    const ok = await ensureWsInit({ allowOffline: false });
+    if (!ok) throw new Error('WS connection unavailable for full snapshot');
+    __wsState.inited = true;
+    __wsState.lastAtomCount = natoms;
+    __wsState.lastCellKey = cellKey();
+    return natoms;
+  };
+
+  const addAtom = async ({ element = 'H', position, velocity } = {}) => {
+    const elements = (state.elements || []).slice();
+    const positions = (state.positions || []).map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    const symbol = toSymbol(element);
+    assertAllowedSymbol(symbol);
+    elements.push(symbol);
+    positions.push(toVec3(position, { x: 0, y: 0, z: 0 }));
+
+    let velocities = undefined;
+    if (state.dynamics?.velocities) {
+      velocities = state.dynamics.velocities.map((v) => {
+        if (Array.isArray(v)) {
+          return [Number(v[0]) || 0, Number(v[1]) || 0, Number(v[2]) || 0];
+        }
+        return [Number(v?.x) || 0, Number(v?.y) || 0, Number(v?.z) || 0];
+      });
+    }
+    if (velocity) {
+      velocities ||= Array.from({ length: elements.length }, () => [0, 0, 0]);
+      velocities[velocities.length - 1] = Array.isArray(velocity)
+        ? [Number(velocity[0]) || 0, Number(velocity[1]) || 0, Number(velocity[2]) || 0]
+        : [Number(velocity.x) || 0, Number(velocity.y) || 0, Number(velocity.z) || 0];
+    } else if (velocities) {
+      velocities.push([0, 0, 0]);
+    }
+
+    const cellArray = stateCellToArray(state.cell);
+    await applyFullSnapshot({ elements, positions, velocities, cell: cellArray });
+  };
+
+  const addAtomAtPosition = async (element, position, velocity) => {
+    const symbol = toSymbol(element);
+    assertAllowedSymbol(symbol);
+    return addAtom({ element: symbol, position, velocity });
+  };
+
+  const addAtomAtOrigin = async (element) => addAtomAtPosition(element, { x: 0, y: 0, z: 0 });
+
+  const removeAtoms = async (indices = []) => {
+    const idx = Array.from(new Set(indices.map((n) => Number(n)))).filter((n) => Number.isInteger(n) && n >= 0);
+    if (!idx.length) return;
+    const sorted = idx.sort((a, b) => b - a);
+    const elements = (state.elements || []).slice();
+    const positions = (state.positions || []).map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    let velocities = state.dynamics?.velocities
+      ? state.dynamics.velocities.map((v) => {
+          if (Array.isArray(v)) {
+            return [Number(v[0]) || 0, Number(v[1]) || 0, Number(v[2]) || 0];
+          }
+          return [Number(v?.x) || 0, Number(v?.y) || 0, Number(v?.z) || 0];
+        })
+      : undefined;
+
+    for (const i of sorted) {
+      if (i < elements.length) {
+        elements.splice(i, 1);
+        positions.splice(i, 1);
+        velocities && velocities.splice(i, 1);
+      }
+    }
+
+    const cellArray = stateCellToArray(state.cell);
+    await applyFullSnapshot({ elements, positions, velocities, cell: cellArray });
+  };
+
+  const removeAtomByIndex = async (index) => {
+    if (!Number.isInteger(index) || index < 0) return false;
+    const before = state.elements?.length || 0;
+    await removeAtoms([index]);
+    const after = state.elements?.length || 0;
+    return after !== before;
+  };
+
   const getVelocitiesIfFresh = () => {
     const v = state.dynamics?.velocities;
     if (!Array.isArray(v) || v.length !== state.elements.length) return null;
@@ -591,12 +803,14 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
             cell: !!cell,
           });
         }
+        ws.setCounters?.({ userInteractionCount: userInteractionVersion });
         seq = ws.userInteraction({
           natoms: nat,
           atomic_numbers,
           positions: positionsTriples,
           velocities: v || undefined,
           cell,
+          full_update: true,
         });
       } catch (err) {
         resetWsInitState();
@@ -1720,6 +1934,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       dbg.log('[config] posEnergyDebounceMs =', w.__MLIP_CONFIG.posEnergyDebounceMs);
       return w.__MLIP_CONFIG.posEnergyDebounceMs;
     };
+    w.applyFullSnapshot = applyFullSnapshot;
+    w.addAtom = addAtom;
+    w.addAtomAtOrigin = addAtomAtOrigin;
+    w.addAtomAtPosition = addAtomAtPosition;
+    w.removeAtoms = removeAtoms;
+    w.removeAtomByIndex = removeAtomByIndex;
   });
 
   function setForceProvider() { return 'uma'; }
@@ -1738,6 +1958,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     view,
     picking,
     vr,
+    applyFullSnapshot,
+    addAtom,
+    removeAtoms,
     recomputeBonds,
     relaxStep,
     mdStep,
@@ -1754,6 +1977,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     engine,
     camera,
     baselineEnergy,
+    addAtomAtOrigin,
+    addAtomAtPosition,
+    removeAtomByIndex,
     setForceVectorsEnabled,
     getForceCacheVersion,
     getVersionInfo,

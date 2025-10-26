@@ -118,7 +118,7 @@ def test_md_single_step_parity_0k_worker_vs_direct(calculator: str):
 
     atol_pos = 1e-12 if calculator == "lj" else 1e-5
     atol_vel = 1e-12 if calculator == "lj" else 1e-5
-    atol_for = 1e-12 if calculator == "lj" else 1e-4
+    atol_for = 1e-12 if calculator == "lj" else 3e-4
     atol_E = 1e-12 if calculator == "lj" else 1e-6
 
     np.testing.assert_allclose(

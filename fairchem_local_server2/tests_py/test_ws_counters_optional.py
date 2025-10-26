@@ -72,6 +72,7 @@ async def _recv_one(uri: str):
             ]
         )
         ui.positions.CopyFrom(r_delta)
+        ui.full_update = True
         init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
 

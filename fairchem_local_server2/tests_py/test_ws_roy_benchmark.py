@@ -117,6 +117,7 @@ async def _run_ws_md_frames(
         for p in xyz:
             vr.coords.extend([float(p[0]), float(p[1]), float(p[2])])
         ui.positions.CopyFrom(vr)
+        ui.full_update = True
         init.user_interaction.CopyFrom(ui)
         await ws.send(init.SerializeToString())
 
