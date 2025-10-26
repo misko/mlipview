@@ -78,6 +78,39 @@ export async function setupVR(engine, scene, picking) {
       disableTeleportation: true,
       useStablePlugins: false,
     });
+    // Remove Babylon's default floating XR button; we expose XR entry via in-app controls instead.
+    try {
+      const suppressDefaultButton = () => {
+        try {
+          const overlay = document.querySelector('.xr-button-overlay');
+          if (overlay?.parentElement) overlay.parentElement.removeChild(overlay);
+        } catch {}
+        try {
+          const icon = document.querySelector('.babylonVRicon');
+          if (icon?.parentElement) icon.parentElement.removeChild(icon);
+        } catch {}
+      };
+      suppressDefaultButton();
+      setTimeout(suppressDefaultButton, 0);
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => suppressDefaultButton());
+      }
+      if (xrHelper?.baseExperience?.enterExitUI) {
+        try {
+          xrHelper.baseExperience.enterExitUI.setEnabled?.(false);
+          xrHelper.baseExperience.enterExitUI.useCustomButtons = true;
+        } catch {}
+      }
+      if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined') {
+        const observer = new MutationObserver(() => suppressDefaultButton());
+        try {
+          observer.observe(document.body, { childList: true, subtree: true });
+        } catch {}
+        if (typeof window !== 'undefined' && Array.isArray(window.__MLIPVIEW_CLEANUP)) {
+          window.__MLIPVIEW_CLEANUP.push(() => observer.disconnect());
+        }
+      }
+    } catch {}
     try {
       if (xrHelper?.pointerSelection) {
         console.log('[XR][Input] pointerSelection already present');

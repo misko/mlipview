@@ -1919,6 +1919,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   onWin(w => {
     w.__MLIPVIEW_CLEANUP ||= [];
     w.__MLIPVIEW_CLEANUP.push(() => {
+      try {
+        if (engine?.__mlipviewResizeHandler) {
+          w.removeEventListener('resize', engine.__mlipviewResizeHandler);
+          engine.__mlipviewResizeHandler = null;
+        }
+      } catch {}
       try { engine?.stopRenderLoop?.(); } catch { }
       try { scene?.dispose?.(); } catch { }
     });

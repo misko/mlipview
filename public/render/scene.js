@@ -57,5 +57,17 @@ export async function createScene(canvas) {
   );
   camera.attachControl(canvas, true);
   attachConsistentLighting(scene, camera, { ambientIntensity: 0.2, directionalIntensity: 0.9 });
+  if (typeof window !== 'undefined') {
+    const resizeHandler = () => {
+      try {
+        engine.resize();
+      } catch {}
+    };
+    window.addEventListener('resize', resizeHandler, { passive: true });
+    engine.__mlipviewResizeHandler = resizeHandler;
+    try {
+      engine.resize();
+    } catch {}
+  }
   return { engine, scene, camera };
 }
