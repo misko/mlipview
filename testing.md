@@ -1,3 +1,31 @@
+# Running the Test Suites
+
+- **Backend (pytest)**  
+  ```bash
+  ./mlipview_venv/bin/python -m pytest -q
+  ```
+  Use `MLIPVIEW_FORCE_CPU=1` if you need to stay off CUDA.
+
+- **Frontend unit/integration (Jest)**  
+  ```bash
+  npm test -- --runInBand          # full run
+  npm run test:fast                # skips WS harness for quicker loops
+  npm run test:integration         # proto/WS integration focus
+  ```
+
+- **Playwright end-to-end**  
+  ```bash
+  npm run test:e2e                 # full suite (builds Vite dist first)
+  npm run test:e2e:smoke           # lightweight subset
+  npx playwright test <file> -g "<name>" --config=playwright.config.js
+  ```
+  The E2E harness starts the backend automatically via `tests-e2e/global-setup.js`, so ensure CUDA access or set `MLIPVIEW_FORCE_CPU=1` if needed.
+
+- **Combined shortcut**  
+  ```bash
+  npm run test:py && npm test -- --runInBand && npm run test:e2e
+  ```
+
 # Ported Test Catalogue
 
 This catalogue tracks only the suites that are fully ported to the protobuf/WebSocket stack. Entries are grouped hierarchically so related coverage is easy to locate. For each test, the intent captures what the suite safeguards, and the implementation notes summarise how the current code exercises that behaviour.
@@ -18,6 +46,9 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
 - **Cell Stress & Parameter Updates**
   - `ws-cell-stress.spec.js`: Starts a relax run against UMA, collects streamed frames, and ensures stress tensors feed through to the HUD alongside force-arrow updates.
   - `ws-live-md-param-updates.spec.js`: Adjusts MD temperature/friction mid-run, monitors outbound ClientActions, and confirms the following server frames echo the new parameters.
+
+- **Timeline DVR & Playback**
+  - `ws-timeline-dvr.spec.js`: Exercises the hidden timeline rail end to end — scrubbing applies stored frames, bonds continue rendering, playback honours the 20 fps cadence, slider alignment stays consistent, rapid scrubs remain under 200 ms per frame, and cell visibility is round-tripped (both the default “periodic off” case and scenarios where the lattice is enabled before scrubbing).
 
 - **Counters, Interaction Echo, and UI Control**
   - `ws-counters-echo.spec.js`: Drags an atom, pauses, and begins MD while logging the HUD counters; validates server echoes track the viewer’s `userInteractionVersion` and total-interaction counts.

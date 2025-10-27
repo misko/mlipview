@@ -126,9 +126,10 @@ class _PredictDeploy:  # runs on GPU replica
                 n = pos.shape[0] if pos is not None else -1
                 print(
                     f"[UMA][input] item={idx} natoms={n} ",
-                    # f"pos={pos} cell={cell} ",
+                    f"pos={pos} cell={cell} ",
                     flush=True,
                 )
+                time.sleep(0.1)
         try:
             # update simple metrics
             self._predict_calls += 1
@@ -352,7 +353,9 @@ def health_snapshot():
                 snap["replica_stats_calls"] = stats.get("calls")
                 snap["replica_stats_items"] = stats.get("items")
                 if replica_dev:
-                    snap["cuda_available"] = bool(replica_dev == "cuda") and not force_cpu
+                    snap["cuda_available"] = (
+                        bool(replica_dev == "cuda") and not force_cpu
+                    )
     except Exception as e:  # pragma: no cover - best-effort health path
         snap["replica_error"] = str(e)
     print("[health_snapshot] " + str(snap), flush=True)

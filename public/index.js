@@ -16,13 +16,17 @@ import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS, MAX_STEP } from './u
 import { getWS } from './fairchem_ws_client.js';
 import { showErrorBanner, hideErrorBanner } from './ui/errorBanner.js';
 import { SYMBOL_TO_Z, Z_TO_SYMBOL, OMOL25_ELEMENTS } from './data/periodicTable.js';
+import { createTimelineStore, expandFloat32Triples } from './core/timelineStore.js';
+import { createTimelineController } from './core/timelineController.js';
+import { installTimelineOverlay } from './ui/timelineOverlay.js';
+import { getSharedStateStore } from './core/stateStore.js';
 
 /* ──────────────────────────────────────────────────────────────────────────
    Tunables & Defaults
    ────────────────────────────────────────────────────────────────────────── */
 
 const DEFAULTS = {
-  DRAG_THROTTLE_MS: 25,
+  DRAG_THROTTLE_MS: 60,
   POS_ENERGY_DEBOUNCE_MS: 50,
   LATCH_AFTER_DRAG_MS: 600,
   LATCH_AFTER_VR_MS: 800,
@@ -896,18 +900,54 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   const __origMarkPositionsChanged = state.markPositionsChanged?.bind(state) || null;
   const bondService = createBondService(state);
   const recomputeBonds = (reason = 'manual') => {
+    const debug = env.apiOn();
+    const t0 = debug ? env.now() : 0;
     __count('index#recomputeBonds');
     const bonds = bondService.recomputeAndStore();
     try { view.rebuildBonds(bonds); } catch { }
     if (reason !== 'markPositionsChanged') recordInteraction('rebonds');
-    if (env.apiOn()) dbg.log(`[bonds] recomputed after ${reason} (count=${bonds ? bonds.length : 0})`);
+    if (debug) {
+      const t1 = env.now();
+      dbg.log('[bonds] recomputed', {
+        reason,
+        count: bonds ? bonds.length : 0,
+        durationMs: Math.round((t1 - t0) * 1000) / 1000,
+      });
+    }
     return bonds;
   };
+  state.__skipBondRecomputeOnce = false;
+  state.__reuseBondsOnce = false;
+  state.__skipSafeSphereOnce = false;
   state.markPositionsChanged = (...a) => {
-    enforceSafeSphere(state);
+    const skipSafeSphere = !!state.__skipSafeSphereOnce;
+    state.__skipSafeSphereOnce = false;
+    if (!skipSafeSphere) enforceSafeSphere(state);
     structureVersion++;
     if (state.forceCache) { state.forceCache.stale = true; state.forceCache.version = structureVersion; }
+    const skipBonds = !!state.__skipBondRecomputeOnce;
+    const reuseBonds = !skipBonds && !!state.__reuseBondsOnce;
+    state.__skipBondRecomputeOnce = false;
+    state.__reuseBondsOnce = false;
     const r = __origMarkPositionsChanged ? __origMarkPositionsChanged(...a) : undefined;
+    if (skipBonds) {
+      if (env.apiOn()) dbg.log('[bonds][skip] recompute skipped (timeline frame)');
+      return r;
+    }
+    if (reuseBonds && Array.isArray(state.bonds) && state.bonds.length > 0) {
+      const debug = env.apiOn();
+      const t0 = debug ? env.now() : 0;
+      try { view.rebuildBonds(state.bonds); } catch { }
+      if (debug) {
+        const t1 = env.now();
+        dbg.log('[bonds] refreshed', {
+          reason: 'wsFrame',
+          count: state.bonds.length,
+          durationMs: Math.round((t1 - t0) * 1000) / 1000,
+        });
+      }
+      return r;
+    }
     try { recomputeBonds('markPositionsChanged'); } catch { }
     return r;
   };
@@ -949,6 +989,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   // Interactions log
   const interactions = [];
   let __suppressNextPosChange = false;
+  let __dragUpdateActive = false;
   const recordInteraction = (kind) => {
     const E = state.dynamics?.energy ?? 0;
     const i = interactions.length; interactions.push({ i, kind, E });
@@ -991,7 +1032,13 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       return ok;
     },
     updateDrag: (...a) => {
-      const r = manipulation.updateDrag?.(...a);
+      __dragUpdateActive = true;
+      let r;
+      try {
+        r = manipulation.updateDrag?.(...a);
+      } finally {
+        __dragUpdateActive = false;
+      }
       if (r) {
         bumpUser('dragMove');
         const idx = selectedAtomIndex(); if (idx != null) { modifiedByVersion.get(userInteractionVersion) || modifiedByVersion.set(userInteractionVersion, new Set()); modifiedByVersion.get(userInteractionVersion).add(idx); currentDraggedAtom.idx = idx; draggingAtoms.add(idx); }
@@ -1010,7 +1057,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
           modifiedByVersion.get(userInteractionVersion) || modifiedByVersion.set(userInteractionVersion, new Set());
           modifiedByVersion.get(userInteractionVersion).add(idx);
           draggingAtoms.delete(idx);
-          if (dragSource === 'vr') latchAtom(idx, TUNABLES.LATCH_AFTER_VR_MS);
+          const latchMs = dragSource === 'vr' ? TUNABLES.LATCH_AFTER_VR_MS : TUNABLES.LATCH_AFTER_DRAG_MS;
+          latchAtom(idx, latchMs);
         }
         try { const ws = getWS(); ws.setCounters?.({ userInteractionCount: userInteractionVersion }); ws.userInteraction?.({ positions: posToTriples(state) }); } catch { }
         currentDraggedAtom.idx = null;
@@ -1039,6 +1087,245 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   };
   try { wrappedManipulation._debug = manipulation._debug; } catch { }
   try { Object.defineProperty(wrappedManipulation, '__isWrappedManipulation', { value: true }); } catch { wrappedManipulation.__isWrappedManipulation = true; }
+
+  const timelineStore = createTimelineStore({ capacity: 500 });
+  let timelineController = null;
+  let timelineResumeInfo = null;
+  let timelineOverlay = null;
+  let lastTimelineScrubIndex = null;
+  let ignoreStreamFrames = false;
+  const timelineMetrics = {
+    playStartedAt: null,
+    playbackCompleteAt: null,
+    resumeStartedAt: null,
+  };
+
+  const normalizeTriples = (src, count) => {
+    if (!src) return null;
+    if (ArrayBuffer.isView(src)) return expandFloat32Triples(src);
+    if (Array.isArray(src)) {
+      if (!src.length) return [];
+      if (Array.isArray(src[0])) {
+        return src.map((row) => [
+          Number(row[0]) || 0,
+          Number(row[1]) || 0,
+          Number(row[2]) || 0,
+        ]);
+      }
+      if (count && src.length === count * 3) {
+        const out = new Array(count);
+        for (let i = 0, k = 0; i < count; i++) {
+          out[i] = [Number(src[k++]) || 0, Number(src[k++]) || 0, Number(src[k++]) || 0];
+        }
+        return out;
+      }
+      return src.map((val) => {
+        const v = val || { x: 0, y: 0, z: 0 };
+        return [Number(v.x) || 0, Number(v.y) || 0, Number(v.z) || 0];
+      });
+    }
+    if (typeof src === 'object') {
+      const out = [];
+      const vals = Object.values(src);
+      for (let i = 0; i < vals.length; i++) {
+        const row = vals[i];
+        if (Array.isArray(row)) out.push([Number(row[0]) || 0, Number(row[1]) || 0, Number(row[2]) || 0]);
+      }
+      return out.length ? out : null;
+    }
+    return null;
+  };
+
+  const captureCellForTimeline = (cell) => {
+    const c = cell || state.cell;
+    if (!c) return null;
+    if (Array.isArray(c)) {
+      return { matrix: c, originOffset: [0, 0, 0], enabled: true };
+    }
+    return {
+      matrix: [
+        [Number(c.a?.x) || 0, Number(c.a?.y) || 0, Number(c.a?.z) || 0],
+        [Number(c.b?.x) || 0, Number(c.b?.y) || 0, Number(c.b?.z) || 0],
+        [Number(c.c?.x) || 0, Number(c.c?.y) || 0, Number(c.c?.z) || 0],
+      ],
+      originOffset: [
+        Number(c.originOffset?.x) || 0,
+        Number(c.originOffset?.y) || 0,
+        Number(c.originOffset?.z) || 0,
+      ],
+      enabled: !!c.enabled,
+    };
+  };
+
+  const recordTimelineFrame = (kind, frame = {}) => {
+    const debug = env.apiOn();
+    const t0 = debug ? env.now() : 0;
+    try {
+      if (!timelineStore) return;
+      const count = state.positions?.length || 0;
+      if (!count) return;
+      const positions =
+        (Array.isArray(frame.positions) && frame.positions.length === count)
+          ? normalizeTriples(frame.positions, count)
+          : posToTriples(state);
+      if (!positions || positions.length !== count) return;
+      const velocities =
+        Array.isArray(frame.velocities)
+          ? normalizeTriples(frame.velocities, count)
+          : velocitiesToArray(state.dynamics?.velocities, count);
+      const forces =
+        Array.isArray(frame.forces)
+          ? normalizeTriples(frame.forces, count)
+          : Array.isArray(state.forces) ? state.forces : null;
+      const energy =
+        typeof frame.energy === 'number' && Number.isFinite(frame.energy)
+          ? frame.energy
+          : state.dynamics?.energy;
+      const temperature =
+        typeof frame.temperature === 'number' && Number.isFinite(frame.temperature)
+          ? frame.temperature
+          : state.dynamics?.temperature;
+      const cellSnapshot = captureCellForTimeline(frame.cell);
+      const bondSnapshot = Array.isArray(state.bonds)
+        ? state.bonds.map((b) => ({
+            i: b.i,
+            j: b.j,
+            length: typeof b.length === 'number' ? b.length : 0,
+            opacity: typeof b.opacity === 'number' ? b.opacity : 1,
+            crossing: !!b.crossing,
+          }))
+        : undefined;
+      const added = timelineStore.add({
+        kind,
+        simStep: Number.isFinite(frame.simStep) ? frame.simStep : Number(frame.step),
+        userInteractionCount: Number.isFinite(frame.userInteractionCount)
+          ? frame.userInteractionCount
+          : userInteractionVersion,
+        stateVersion: {
+          userInteraction: userInteractionVersion,
+          totalInteraction: totalInteractionVersion,
+        },
+        payload: {
+          positions,
+          velocities,
+          forces,
+          energy,
+          temperature,
+          cell: cellSnapshot,
+          stress: Array.isArray(frame.stress) ? frame.stress : state.forceCache?.stress,
+          bonds: bondSnapshot,
+        },
+        timestamp: env.now(),
+        receivedAt: Date.now(),
+      });
+      if (debug) {
+        const t1 = env.now();
+        const info = typeof timelineStore.getInfo === 'function' ? timelineStore.getInfo() : null;
+        dbg.log('[timeline][store]', {
+          kind,
+          size: info?.size ?? null,
+          durationMs: Math.round((t1 - t0) * 1000) / 1000,
+          simStep: added?.simStep ?? null,
+        });
+      }
+    } catch (err) {
+      if (env.apiOn()) dbg.warn('[timeline] record failed', err?.message || err);
+    }
+  };
+
+  const applyTimelineFrame = (frame, { reason } = {}) => {
+    const debug = env.apiOn();
+    const t0 = debug ? env.now() : 0;
+    if (!frame || !frame.payload || !frame.payload.positions) return false;
+    const count = state.positions?.length || 0;
+    const triples = expandFloat32Triples(frame.payload.positions);
+    if (!triples || triples.length !== count) return false;
+    const tApply0 = debug ? env.now() : 0;
+    applyTriples(state, triples, { exclude: null });
+    const tApply1 = debug ? env.now() : 0;
+    __suppressNextPosChange = true;
+    const tMark0 = debug ? env.now() : 0;
+    const hasBondSnapshot = Array.isArray(frame.payload.bonds) && frame.payload.bonds.length;
+    if (hasBondSnapshot) state.__skipBondRecomputeOnce = true;
+    state.markPositionsChanged?.();
+    const tMark1 = debug ? env.now() : 0;
+
+    if (frame.payload.cell) {
+      const matrix = [
+        frame.payload.cell.a || [0, 0, 0],
+        frame.payload.cell.b || [0, 0, 0],
+        frame.payload.cell.c || [0, 0, 0],
+      ];
+      const prevEnabled = state.cell ? !!state.cell.enabled : null;
+      const enabledFlag =
+        frame.payload.cell.enabled === false
+          ? false
+          : frame.payload.cell.enabled === true
+            ? true
+            : null;
+      updateCellFromMatrix(matrix);
+      if (state.cell) {
+        state.cell.originOffset = {
+          x: frame.payload.cell.originOffset?.[0] || 0,
+          y: frame.payload.cell.originOffset?.[1] || 0,
+          z: frame.payload.cell.originOffset?.[2] || 0,
+        };
+        if (enabledFlag !== null) {
+          state.cell.enabled = enabledFlag;
+          if (prevEnabled !== enabledFlag) {
+            try { state.markCellChanged?.(); } catch { }
+          }
+        }
+      }
+    }
+
+    if (frame.payload.velocities) {
+      const velocities = expandFloat32Triples(frame.payload.velocities);
+      if (velocities && velocities.length === count) {
+        state.dynamics ||= {};
+        state.dynamics.velocities = velocities;
+      }
+    }
+
+    const forces = frame.payload.forces ? expandFloat32Triples(frame.payload.forces) : null;
+    const energy = typeof frame.payload.energy === 'number' ? frame.payload.energy : undefined;
+    const tEnergy0 = debug ? env.now() : 0;
+    updateEnergyForces({
+      energy,
+      forces: forces || undefined,
+      stress: Array.isArray(frame.payload.stress) ? frame.payload.stress : null,
+      reason: reason || 'timelineReplay',
+    });
+    const tEnergy1 = debug ? env.now() : 0;
+    if (typeof frame.payload.temperature === 'number' && Number.isFinite(frame.payload.temperature)) {
+      state.dynamics ||= {};
+      state.dynamics.temperature = frame.payload.temperature;
+      setText('instTemp', `T: ${frame.payload.temperature.toFixed(1)} K`);
+    }
+    if (debug) {
+      const t1 = env.now();
+      dbg.log('[timeline][apply-frame]', {
+        reason,
+        index: timelineController?.getPlaybackIndex?.(),
+        durationMs: Math.round((t1 - t0) * 1000) / 1000,
+        applyMs: Math.round((tApply1 - tApply0) * 1000) / 1000,
+        markMs: Math.round((tMark1 - tMark0) * 1000) / 1000,
+        energyMs: Math.round((tEnergy1 - tEnergy0) * 1000) / 1000,
+        bondsRestored: hasBondSnapshot,
+      });
+    }
+    if (hasBondSnapshot) {
+      state.bonds = frame.payload.bonds.map((b) => ({
+        i: b.i,
+        j: b.j,
+        length: b.length,
+        opacity: b.opacity,
+        crossing: !!b.crossing,
+      }));
+      try { view.rebuildBonds(state.bonds); } catch { }
+    }
+    return true;
+  };
 
   // Picking with energy hook
   const selectionService = createSelectionService(state);
@@ -1071,6 +1358,16 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       bondScrollStep: TUNABLES.BOND_SCROLL_STEP_RAD,
     },
   ));
+
+  timelineController = createTimelineController({
+    store: timelineStore,
+    applyFrame: applyTimelineFrame,
+    setInteractionsEnabled: (enabled) => {
+      try {
+        if (picking?.setEnabled) picking.setEnabled(enabled !== false);
+      } catch { }
+    },
+  });
 
   // VR support
   let vrPicker = null; try { vrPicker = createVRPicker({ scene, view }); } catch (e) { dbg.warn('[VR] vrPicker init failed', e?.message || e); }
@@ -1125,7 +1422,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   let posTickScheduled = false;
   state.bus.on('positionsChanged', () => {
     const dragging = draggingAtoms.size > 0 || currentDraggedAtom.idx != null;
-    if (dragging) { emitDuringDrag(); return; }
+    if (dragging) {
+      if (!__dragUpdateActive) emitDuringDrag();
+      return;
+    }
     if (posTickScheduled) return;
     posTickScheduled = true;
     setTimeout(() => {
@@ -1188,7 +1488,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (Array.isArray(r.positions) && r.positions.length === state.positions.length) {
       const exclude = buildExcludeSet();
       applyTriples(state, r.positions, { exclude });
-      __suppressNextPosChange = true; state.markPositionsChanged(); bumpSim(kind === 'md' ? 'mdStepApply' : 'relaxStepApply');
+      __suppressNextPosChange = true;
+      state.markPositionsChanged();
+      bumpSim(kind === 'md' ? 'mdStepApply' : 'relaxStepApply');
     }
     updateEnergyForces({ energy: r.energy, forces: r.forces, stress: r.stress || null, reason: kind });
     if (kind === 'md') {
@@ -1200,6 +1502,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
         setText('instTemp', 'T: ' + r.temperature.toFixed(1) + ' K');
       }
     }
+    recordTimelineFrame(kind, r);
     return { applied: true, energy: r.energy, stepType: kind, netMs: 0, parseMs: 0 };
   }
 
@@ -1233,6 +1536,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
      ──────────────────────────────────────────────────────────────────────── */
 
   function handleStreamFrame(kind, ws, r) {
+    const debug = env.apiOn();
+    const t0 = debug ? env.now() : 0;
     const uic = Number.isFinite(r.userInteractionCount) ? (r.userInteractionCount | 0) : 0;
     if (uic > 0 && uic < lastAppliedUIC) {
       if (env.apiOn()) dbg.log(`[${kind}WS][discard-stale-applied]`, { server: uic, lastAppliedUIC });
@@ -1240,32 +1545,75 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     }
     try { const seq = Number(r.seq) || 0; if (seq > 0) ws.ack(seq); } catch { }
 
-    const exclude = buildExcludeSet();
-    if (Array.isArray(r.positions) && r.positions.length === state.positions.length) {
+    recordTimelineFrame(kind, r);
+
+    const timelineMode = timelineController?.getMode?.() || 'live';
+    const isInjected = !!(r && r.__injected);
+    const shouldApply = (!ignoreStreamFrames || isInjected) && timelineMode === 'live';
+    if (ignoreStreamFrames && debug) {
+      dbg.log('[timeline][drop-frame]', {
+        seq: Number(r.seq) || 0,
+        kind,
+        mode: timelineMode,
+        running: running.kind,
+      });
+    }
+
+    if (shouldApply && Array.isArray(r.positions) && r.positions.length === state.positions.length) {
+      const exclude = buildExcludeSet();
+      state.__reuseBondsOnce = true;
       applyTriples(state, r.positions, { exclude });
-      __suppressNextPosChange = true; state.markPositionsChanged(); bumpSim(kind === 'md' ? 'mdWS' : (kind === 'relax' ? 'relaxWS' : 'idleWS'));
+      if (debug) {
+        const excludeList = exclude && exclude.size ? Array.from(exclude).slice(0, 12) : [];
+        dbg.log('[timeline][apply]', {
+          seq: Number(r.seq) || 0,
+          uic: Number(r.userInteractionCount) || 0,
+          exclude: excludeList,
+          excludeSize: exclude?.size || 0,
+        });
+      }
+      __suppressNextPosChange = true;
+      if (isInjected) ignoreStreamFrames = true;
+      state.markPositionsChanged();
+      bumpSim(kind === 'md' ? 'mdWS' : (kind === 'relax' ? 'relaxWS' : 'idleWS'));
     }
+
     const E = (typeof r.energy === 'number') ? r.energy : state.dynamics?.energy;
-    updateEnergyForces({ energy: E, forces: r.forces?.length ? r.forces : undefined, reason: kind + 'WS' });
-    if (kind === 'md') {
-      if (Array.isArray(r.velocities) && r.velocities.length === state.elements.length) {
-        state.dynamics ||= {}; state.dynamics.velocities = r.velocities;
-      }
-      if (typeof r.temperature === 'number' && isFinite(r.temperature)) {
-        state.dynamics ||= {}; state.dynamics.temperature = r.temperature;
-        setText('instTemp', 'T: ' + r.temperature.toFixed(1) + ' K');
-      }
-      try {
-        const tm = typeof window !== 'undefined' && !!window.__MLIPVIEW_TEST_MODE;
-        const haveV = Array.isArray(state.dynamics?.velocities) && state.dynamics.velocities.length === state.elements.length;
-        if (tm && !haveV && state.positions?.length === state.elements.length) {
-          state.dynamics ||= {}; state.dynamics.velocities = state.positions.map(() => [0, 0, 0]);
+
+    if (shouldApply) {
+      updateEnergyForces({ energy: E, forces: r.forces?.length ? r.forces : undefined, reason: kind + 'WS' });
+      if (kind === 'md') {
+        if (Array.isArray(r.velocities) && r.velocities.length === state.elements.length) {
+          state.dynamics ||= {}; state.dynamics.velocities = r.velocities;
         }
-      } catch { }
+        if (typeof r.temperature === 'number' && isFinite(r.temperature)) {
+          state.dynamics ||= {}; state.dynamics.temperature = r.temperature;
+          setText('instTemp', 'T: ' + r.temperature.toFixed(1) + ' K');
+        }
+        try {
+          const tm = typeof window !== 'undefined' && !!window.__MLIPVIEW_TEST_MODE;
+          const haveV = Array.isArray(state.dynamics?.velocities) && state.dynamics.velocities.length === state.elements.length;
+          if (tm && !haveV && state.positions?.length === state.elements.length) {
+            state.dynamics ||= {}; state.dynamics.velocities = state.positions.map(() => [0, 0, 0]);
+          }
+        } catch { }
+      }
+      energyPlot.push(E, kind);
+      if (uic > lastAppliedUIC) lastAppliedUIC = uic;
     }
-    energyPlot.push(E, kind);
+
     noteReqDone();
-    if (uic > lastAppliedUIC) lastAppliedUIC = uic;
+    if (debug) {
+      const t1 = env.now();
+      dbg.log('[timeline][stream-frame]', {
+        kind,
+        applied: shouldApply,
+        durationMs: Math.round((t1 - t0) * 1000) / 1000,
+        seq: Number(r.seq) || 0,
+        ignoreStreamFrames,
+        mode: timelineMode,
+      });
+    }
   }
 
   function clearReconnectCountdown() {
@@ -1614,6 +1962,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
         : { calculator: 'uma', fmax: state?.optimizer?.fmax || 0.05, max_step: MAX_STEP, optimizer: 'bfgs' },
     });
     if (env.apiOn()) dbg.log(`[${kind}WS][start]`, isMD ? { temperature, timestep_fs: opts.timestep_fs ?? 1.0 } : {});
+    ignoreStreamFrames = false;
+    timelineResumeInfo = {
+      kind: isMD ? 'md' : 'relax',
+      opts: { ...(lastContinuousOpts[isMD ? 'md' : 'relax'] || {}) },
+    };
     return { streaming: true };
   }
 
@@ -1622,10 +1975,285 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   function stopSimulation() {
     try { const ws = getWS(); ws.stopSimulation(); } catch { }
-    clearMdStreamListener();
-    clearRelaxStreamListener();
-    setMode(Mode.Idle); resetRPS();
+   clearMdStreamListener();
+   clearRelaxStreamListener();
+   setMode(Mode.Idle); resetRPS();
   }
+
+  const sharedTimelineStateStore = (() => {
+    try { return getSharedStateStore(); } catch { return null; }
+  })();
+
+  async function resumeTimelineSimulation({ fallbackKind = null } = {}) {
+    const info = timelineResumeInfo;
+    const requestedKind = info?.kind || null;
+    const kind = requestedKind || fallbackKind;
+    if (!kind) {
+      if (env.apiOn()) {
+        dbg.log('[timeline][resume][skipped]', {
+          requestedKind,
+          fallbackKind,
+        });
+      }
+      return false;
+    }
+    const baseOpts =
+      info?.opts && Object.keys(info.opts).length ? info.opts : lastContinuousOpts[kind] || {};
+    const opts = { ...baseOpts };
+    timelineResumeInfo = { kind, opts: { ...opts } };
+    const debug = env.apiOn();
+    const tResume0 = debug ? env.now() : 0;
+    if (debug) {
+      timelineMetrics.resumeStartedAt = tResume0;
+      dbg.log('[timeline][resume][begin]', {
+        requestedKind,
+        fallbackKind,
+        resolvedKind: kind,
+        ignoreStreamFrames,
+      });
+    } else {
+      timelineMetrics.resumeStartedAt = null;
+    }
+    try {
+      let ensureMs = 0;
+      try {
+        resetWsInitState();
+        const tEnsure0 = debug ? env.now() : 0;
+        await ensureWsInit({ allowOffline: false });
+        if (debug) ensureMs = Math.round((env.now() - tEnsure0) * 1000) / 1000;
+      } catch (err) {
+        if (env.apiOn()) dbg.warn('[timeline] resume ensureInit failed', err?.message || err);
+      }
+      if (kind === 'md') {
+        await startMDContinuous(opts);
+      } else if (kind === 'relax') {
+        await startRelaxContinuous(opts);
+      } else {
+        return false;
+      }
+      ignoreStreamFrames = false;
+      if (debug) {
+        const tEnd = env.now();
+        const totalMs = Math.round((tEnd - tResume0) * 1000) / 1000;
+        const sincePlaybackMs =
+          timelineMetrics.playbackCompleteAt != null
+            ? Math.round((tEnd - timelineMetrics.playbackCompleteAt) * 1000) / 1000
+            : null;
+        timelineMetrics.resumeStartedAt = tEnd;
+        dbg.log('[timeline][resume]', {
+          kind,
+          opts: { ...opts },
+          ensureMs,
+          totalMs,
+          sincePlaybackMs,
+          ignoreStreamFrames,
+        });
+      } else {
+        timelineMetrics.resumeStartedAt = null;
+      }
+      return true;
+    } catch (err) {
+      if (env.apiOn()) dbg.warn('[timeline] resume failed', err?.message || err);
+      timelineMetrics.resumeStartedAt = null;
+      return false;
+    }
+  }
+
+  function onTimelinePlaybackComplete(evt) {
+    const now = env.now();
+    timelineMetrics.playbackCompleteAt = now;
+    timelineMetrics.resumeStartedAt = null;
+    const sincePlayMs =
+      timelineMetrics.playStartedAt != null
+        ? Math.round((now - timelineMetrics.playStartedAt) * 1000) / 1000
+        : null;
+    const playbackIndex = timelineController?.getPlaybackIndex?.();
+    const liveIndex = timelineStore?.getSnapshot?.()?.liveIndex ?? null;
+    if (evt?.resume?.lastRunningKind) {
+      const kind = evt.resume.lastRunningKind;
+      const args = evt.resume.lastStartArgs || lastContinuousOpts[kind] || {};
+      timelineResumeInfo = { kind, opts: { ...args } };
+      if (env.apiOn()) {
+        dbg.log('[timeline][playback-complete]', {
+          resumeKind: kind,
+          resumeOpts: { ...args },
+          sincePlayMs,
+          playbackIndex,
+          liveIndex,
+        });
+      }
+    } else if (env.apiOn()) {
+      dbg.log('[timeline][playback-complete]', {
+        resumeKind: null,
+        sincePlayMs,
+        playbackIndex,
+        liveIndex,
+      });
+    }
+    const fallbackKind = timelineResumeInfo?.kind || running.kind || 'md';
+    resumeTimelineSimulation({ fallbackKind }).catch(() => {});
+  }
+
+  function onTimelineModeChange({ mode: timelineMode }) {
+    if (timelineMode === 'live') {
+      try { picking?.setEnabled?.(true); } catch { }
+    }
+    if (timelineMode === 'live' || timelineMode === 'playback') {
+      lastTimelineScrubIndex = null;
+    }
+  }
+
+  function handleTimelinePause({ source = 'button', index = null } = {}) {
+    if (!timelineController) return;
+    ignoreStreamFrames = true;
+    const numericIndex = typeof index === 'number' ? index : (index != null && !Number.isNaN(Number(index)) ? Number(index) : null);
+    if (source === 'scrub') {
+      const mode = timelineController.getMode?.();
+      const currentIdx = timelineController.getPlaybackIndex?.();
+      if (mode === 'paused' && currentIdx === numericIndex && lastTimelineScrubIndex === numericIndex) return;
+      lastTimelineScrubIndex = numericIndex;
+    }
+    const runningKind = running.kind || timelineResumeInfo?.kind || null;
+    const resumeArgs = running.kind
+      ? { ...(lastContinuousOpts[running.kind] || {}) }
+      : timelineResumeInfo?.opts
+        ? { ...timelineResumeInfo.opts }
+        : (runningKind ? { ...(lastContinuousOpts[runningKind] || {}) } : null);
+    if (runningKind) timelineResumeInfo = { kind: runningKind, opts: resumeArgs ? { ...resumeArgs } : {} };
+    timelineController.beginPausedState({
+      runningKind: timelineResumeInfo?.kind || null,
+      startArgs: resumeArgs,
+    });
+    const t0 = env.apiOn() ? env.now() : 0;
+    const shouldStop = running.kind != null;
+    if (shouldStop) {
+      stopSimulation();
+    }
+    if (env.apiOn()) {
+      dbg.log('[timeline][pause]', {
+        source,
+        index: numericIndex,
+        runningKind,
+        resumeKind: timelineResumeInfo?.kind || null,
+        stopCalled: shouldStop,
+        durationMs: shouldStop ? Math.round((env.now() - t0) * 1000) / 1000 : 0,
+      });
+    }
+    if (source === 'scrub') {
+      bumpUser('timelineScrub');
+      try { sharedTimelineStateStore?.bumpUserInteraction?.('timelineScrub'); } catch { }
+    } else {
+      bumpUser('timelinePause');
+      try { sharedTimelineStateStore?.bumpUserInteraction?.('timelinePause'); } catch { }
+    }
+  }
+
+  function handleTimelineScrub(detail) {
+    const idx = typeof detail === 'number' ? detail : detail?.index;
+    handleTimelinePause({ source: 'scrub', index: idx });
+  }
+
+  function handleTimelinePlay() {
+    if (!timelineController) return;
+    if (!timelineResumeInfo?.kind) {
+      const defaultKind = running.kind || 'md';
+      const defaultOpts = lastContinuousOpts[defaultKind]
+        ? { ...lastContinuousOpts[defaultKind] }
+        : {};
+      timelineResumeInfo = { kind: defaultKind, opts: defaultOpts };
+    }
+    const playStartTs = env.now();
+    ignoreStreamFrames = true;
+    timelineMetrics.playStartedAt = playStartTs;
+    timelineMetrics.playbackCompleteAt = null;
+    timelineMetrics.resumeStartedAt = null;
+    const res = timelineController.play();
+    if (!res || res.started === false) {
+      if (res?.reason === 'already-live') {
+        timelineController.goLive();
+        ignoreStreamFrames = false;
+        timelineMetrics.playStartedAt = null;
+        if (env.apiOn()) {
+          dbg.log('[timeline][play]', {
+            started: false,
+            reason: res.reason,
+            resumeKind: timelineResumeInfo?.kind || null,
+            ignoreStreamFrames,
+          });
+        }
+      } else {
+        ignoreStreamFrames = false;
+        timelineMetrics.playStartedAt = null;
+        if (env.apiOn()) {
+          dbg.log('[timeline][play]', {
+            started: false,
+            reason: res?.reason || 'no-buffer',
+            resumeKind: timelineResumeInfo?.kind || null,
+            ignoreStreamFrames,
+          });
+        }
+      }
+      return;
+    }
+    if (env.apiOn()) {
+      dbg.log('[timeline][play]', {
+        started: true,
+        startIndex: timelineController.getPlaybackIndex?.(),
+        liveIndex: timelineStore.getSnapshot?.()?.liveIndex ?? null,
+        resumeKind: timelineResumeInfo?.kind || null,
+        ignoreStreamFrames,
+      });
+    }
+  }
+
+  function handleTimelineLive() {
+    if (!timelineController) return;
+    timelineController.goLive();
+    if (!timelineResumeInfo?.kind) {
+      const defaultKind = running.kind || 'md';
+      const defaultOpts = lastContinuousOpts[defaultKind] ? { ...lastContinuousOpts[defaultKind] } : {};
+      timelineResumeInfo = { kind: defaultKind, opts: defaultOpts };
+    }
+    if (env.apiOn()) dbg.log('[timeline][live]', { resumeKind: timelineResumeInfo?.kind, index: timelineController.getPlaybackIndex?.() });
+    resumeTimelineSimulation({ fallbackKind: timelineResumeInfo?.kind || 'md' }).catch(() => {});
+  }
+
+  const timelineOffs = [];
+  if (timelineController?.on) {
+    timelineOffs.push(timelineController.on('mode', onTimelineModeChange));
+    timelineOffs.push(timelineController.on('playback-complete', onTimelinePlaybackComplete));
+  }
+
+  try {
+    const overlayHost =
+      (typeof document !== 'undefined' && document.getElementById('app')) ||
+      (canvas && canvas.parentElement) ||
+      (typeof document !== 'undefined' ? document.body : null);
+    if (overlayHost && timelineController) {
+      timelineOverlay = installTimelineOverlay({
+        container: overlayHost,
+        controller: timelineController,
+        onPause: handleTimelinePause,
+        onPlay: handleTimelinePlay,
+        onLive: handleTimelineLive,
+        onScrub: handleTimelineScrub,
+      });
+    }
+  } catch (err) {
+    if (env.apiOn()) dbg.warn('[timeline] overlay install failed', err?.message || err);
+  }
+
+  try {
+    recordTimelineFrame('idle', {
+      positions: posToTriples(state),
+      velocities: state.dynamics?.velocities,
+      forces: state.forces,
+      energy: state.dynamics?.energy,
+      temperature: state.dynamics?.temperature,
+      cell: captureCellForTimeline(state.cell),
+      stress: state.forceCache?.stress,
+    });
+  } catch { }
 
   function sendLiveMDParamsUpdate() {
     try {
@@ -1927,6 +2555,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       } catch {}
       try { engine?.stopRenderLoop?.(); } catch { }
       try { scene?.dispose?.(); } catch { }
+      try { timelineOverlay?.destroy?.(); } catch { }
+      try { timelineController?.destroy?.(); } catch { }
+      try { timelineOffs.forEach((off) => { if (typeof off === 'function') off(); }); } catch { }
+      timelineOffs.length = 0;
     });
     w.__MLIPVIEW_API_ENABLE = (on) => { w.__MLIPVIEW_DEBUG_API = !!on; dbg.log('[API] debug set to', w.__MLIPVIEW_DEBUG_API); };
 
@@ -2005,6 +2637,50 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     debugWsState,
     forceWsReconnect,
     simulateWsDrop,
+    timeline: {
+      debug: () => {
+        const controllerState = timelineController?.debug?.() || {};
+        const snapshot = timelineStore?.getSnapshot?.();
+        return {
+          ...controllerState,
+          size: snapshot?.size ?? 0,
+          capacity: snapshot?.capacity ?? 0,
+          liveIndex: snapshot?.liveIndex ?? controllerState.liveIndex ?? -1,
+        };
+      },
+      getFrameTriples: (index) => {
+        const frame = timelineStore?.get?.(Number(index) || 0);
+        return frame?.payload?.positions ? expandFloat32Triples(frame.payload.positions) : null;
+      },
+      getFrameMeta: (index) => {
+        const frame = timelineStore?.get?.(Number(index) || 0);
+        if (!frame) return null;
+        return {
+          id: frame.id,
+          kind: frame.kind,
+          simStep: frame.simStep,
+          userInteractionCount: frame.userInteractionCount,
+          timestamp: frame.timestamp,
+          receivedAt: frame.receivedAt,
+          energy: frame.payload?.energy,
+          temperature: frame.payload?.temperature,
+        };
+      },
+      play: handleTimelinePlay,
+      pause: handleTimelinePause,
+      goLive: handleTimelineLive,
+      controller: timelineController,
+      injectTestFrame: (frame) => {
+        try {
+          if (typeof window !== 'undefined' && !window.__MLIPVIEW_TEST_MODE) return false;
+          if (!frame) return false;
+          recordTimelineFrame(frame.kind || 'test', frame);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    },
   };
 }
 

@@ -842,7 +842,12 @@ export function createFairchemWS() {
   }
 
   function setTestHook(fn) { __testHook = typeof fn === 'function' ? fn : null; }
-  function injectTestResult(obj) { fanout(obj); }
+  function injectTestResult(obj) {
+    if (obj && typeof obj === 'object') {
+      try { obj.__injected = true; } catch { }
+    }
+    fanout(obj);
+  }
 
   const api = {
     connect,

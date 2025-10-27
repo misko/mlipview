@@ -40,19 +40,27 @@ async function applyRuntimeInit(page, {
   configOverrides = null,
 } = {}) {
   const mergedOverrides = { ...DEFAULT_RUNTIME_CONFIG, ...(configOverrides || {}) };
+  const stamp = Date.now() + Math.random();
   await page.addInitScript(
     (
-      { server, testMode, disableAutoMd, configOverrides }
+      { server, testMode, disableAutoMd, configOverrides, stamp }
     ) => {
-      if (server) window.__MLIPVIEW_SERVER = server;
-      if (typeof testMode === 'boolean') window.__MLIPVIEW_TEST_MODE = !!testMode;
-      if (disableAutoMd) window.__MLIPVIEW_NO_AUTO_MD = true;
-      window.__MLIP_CONFIG = window.__MLIP_CONFIG || {};
-      if (configOverrides && typeof configOverrides === 'object') {
-        Object.assign(window.__MLIP_CONFIG, configOverrides);
+      window.__MLIP_CONFIG_META = window.__MLIP_CONFIG_META || { stamp: 0 };
+      const currentStamp = window.__MLIP_CONFIG_META.stamp || 0;
+      if (!window.__MLIP_CONFIG || currentStamp < stamp) {
+        window.__MLIP_CONFIG = {};
+      }
+      if (currentStamp <= stamp) {
+        window.__MLIP_CONFIG_META.stamp = stamp;
+        if (server) window.__MLIPVIEW_SERVER = server;
+        if (typeof testMode === 'boolean') window.__MLIPVIEW_TEST_MODE = !!testMode;
+        if (disableAutoMd) window.__MLIPVIEW_NO_AUTO_MD = true;
+        if (configOverrides && typeof configOverrides === 'object') {
+          Object.assign(window.__MLIP_CONFIG, configOverrides);
+        }
       }
     },
-    { server, testMode, disableAutoMd, configOverrides: mergedOverrides }
+    { server, testMode, disableAutoMd, configOverrides: mergedOverrides, stamp }
   );
 }
 

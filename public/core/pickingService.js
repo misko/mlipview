@@ -27,6 +27,7 @@ export function createPickingService(
   let dragActive = false;
   const DBG = typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_TOUCH;
   const PDBG = typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_PICK;
+  let interactionsEnabled = true;
   // De-dupe guards
   // 1) Exact event de-dup across capture/bubble/observable paths
   const __handledPointerDownEvents = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
@@ -42,6 +43,20 @@ export function createPickingService(
     rotateSelectedBond,
     freezeCameraFrame,
     selection: selectionService.get,
+    setEnabled(on = true) {
+      const next = !!on;
+      if (!next && dragActive) {
+        const prev = interactionsEnabled;
+        interactionsEnabled = true;
+        try { handlePointerUp(); } catch { }
+        interactionsEnabled = prev;
+      }
+      interactionsEnabled = next;
+      return interactionsEnabled;
+    },
+    isEnabled() {
+      return interactionsEnabled;
+    },
   };
   // Helper to fully freeze camera even if Babylon processes some inputs (inertia or event ordering)
   function freezeCameraFrame() {
@@ -67,6 +82,7 @@ export function createPickingService(
   }
   function pickAtPointer() {
     __count('pickingService#pickAtPointer');
+    if (!interactionsEnabled) return null;
     if (PDBG) {
       try {
         console.log('[pick] at', {
@@ -99,6 +115,7 @@ export function createPickingService(
   }
   function handlePointerDown(e) {
     __count('pickingService#handlePointerDown');
+    if (!interactionsEnabled) return;
     // Hard de-dup: if we've already processed this DOM event, skip.
     try {
       if (e && __handledPointerDownEvents) {
@@ -251,6 +268,7 @@ export function createPickingService(
   }
   function handlePointerMove() {
     __count('pickingService#handlePointerMove');
+    if (!interactionsEnabled) return;
     if (!manipulation || !cameraDetachedForDrag || !dragActive) return;
     const intersector = (planePoint, planeNormal) => {
       try {
@@ -281,6 +299,7 @@ export function createPickingService(
   }
   function handlePointerUp() {
     __count('pickingService#handlePointerUp');
+    if (!interactionsEnabled) return;
     if (!manipulation || !cameraDetachedForDrag) return;
     endDrag();
     dragActive = false;

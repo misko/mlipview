@@ -103,16 +103,5 @@ class SessionState(BaseModel):
     user_interaction_count: int = 0
     sim_step: int = 0
 
-    # Pending sparse deltas
-    # (applied at top of sim loop or immediately when idle)
-    pending_z_idx: Optional[list[int]] = None
-    pending_z_values: Optional[list[int]] = None
-    pending_pos_idx: Optional[list[int]] = None
-    pending_pos_coords: Optional[list[float]] = None  # flat 3*k
-    pending_vel_idx: Optional[list[int]] = None
-    pending_vel_coords: Optional[list[float]] = None  # flat 3*k
-    pending_cell: Optional[list[float]] = None  # flat 9
-    pending_resize_to: Optional[int] = None
-    pending_idle_push: bool = False
-    pending_full_update: bool = False
-    pending_full_zero_velocities: bool = False
+    # Idle recompute hint (emit an idle frame after geometry changes while paused)
+    need_idle_emit: bool = False

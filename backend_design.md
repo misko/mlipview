@@ -9,7 +9,7 @@
 - **Calculator handle**: `_PredictDeploy` installs its Ray handle via `install_predict_handle()`. `model_runtime.get_calculator()` builds lightweight `FAIRChemCalculator` instances on demand so each worker can attach UMA to ASE `Atoms`.
 
 ## Session state and concurrency
-- **Per-connection state**: `SessionState` tracks current geometry arrays (numpy), velocities, forces, simulation parameters, counters, and staged sparse deltas for updates received while the simulation loop is running.
+- **Per-connection state**: `SessionState` tracks current geometry arrays (numpy), velocities, forces, simulation parameters, counters, and a simple `need_idle_emit` flag used to schedule idle recomputes.
 - **Concurrency model**: each WebSocket spawns three async tasks:
   1. `_reader()` to pull protobuf frames into a deque.
   2. `recv_loop()` to coalesce and dispatch messages.
@@ -25,9 +25,9 @@
 - **UMA-only guard**: `_assert_uma()` rejects non-UMA calculators for streaming paths; MD/Relax calls fail fast with `CALCULATOR_NOT_SUPPORTED`.
 
 ## User interaction & idle compute flow
-- `_stage_sparse_ui()` writes incoming sparse deltas either directly (idle) or into staged buffers (running). `_apply_pending()` flushes those buffers before each simulation step.
-- `natoms` now ships on every `UserInteractionSparse` (proto field changed from optional to scalar) so resize intent is always explicit; `_ensure_arrays_sized()` grows/shrinks arrays accordingly.
-- Full snapshots (`full_update=true`) mark `state.pending_full_update`, record the target atom count, and zero out velocities unless dense data was provided. When acknowledged, the server resets cached forces, sim step counters, and schedules an immediate idle frame.
+- `_apply_user_interaction()` applies sparse deltas immediately. Geometry edits while a simulation is running are rejected with `STRUCTURE_CHANGED`; idle sessions apply updates in place and flag `need_idle_emit`.
+- `natoms` ships on every `UserInteractionSparse` so resize intent is explicit; `_ensure_arrays_sized()` grows/shrinks arrays accordingly.
+- Full snapshots (`full_update=true`) resize to the requested atom count, zero velocities if none were provided, reset cached forces/sim-step counters, and leave the session paused until a new `START_SIMULATION` arrives. An idle recompute is queued right away.
 - When the viewer is idle (`state.running == False`) and geometry is valid, `_handle_user_interaction()` runs `ASEWorker.run_simple` to compute forces/energy. Replies include forces (shape-checked), positions/velocities echo, and optional stress.
 - If geometry is incomplete (e.g., only Z or only positions arrived), the server responds with `IDLE_WAITING_FOR_GEOMETRY` notices instead of errors.
 
@@ -53,7 +53,7 @@
 ## Error handling & cleanup
 - Compute failures in idle path send `COMPUTE_ERROR` notices with the exception string.
 - Simulation loop exceptions log to stdout and tear down the session (`stop_evt.set()`).
-- While a simulation is running, arrival of a `full_update` forcibly stops the loop, emits a `STRUCTURE_CHANGED` notice (`simulation_stopped=True`), and waits for the idle reload of geometry.
+- While a simulation is running, arrival of a `full_update` is rejected with a `STRUCTURE_CHANGED` notice (`simulation_stopped=True`); clients must pause before sending a full reset.
 - `STOP_SIMULATION` triggers a `SIMULATION_STOPPED` notice and resets cached precomputed hints.
 - WebSocket disconnects cancel all running tasks and release the worker loop.
 

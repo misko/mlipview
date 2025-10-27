@@ -37,9 +37,10 @@
   - `ff.computeForces()` delegates to the WS client’s single-step helper for one-shot `run_simple` computations on the backend, updating energy/force cache.
 - **Manual steps**: `doOneStepViaWS(kind)` ensures a position upload occurs (including velocities when fresh), calls `requestSingleStep`, applies positions from the response, and updates dynamics metadata.
 - **Continuous streaming**:
-  - `startContinuous()` sets `running.kind` (`md` or `relax`), sends `startSimulation`, and subscribes to WS frames.
-  - `handleStreamFrame(kind, ws, frame)` applies positions (respecting per-atom gating), updates forces/energy/temperature, pushes energy to the plot, acks the sequence, and updates `lastAppliedUIC`.
-  - `stopSimulation()` sends STOP, updates UI state, clears bond latches, and reinstates idle compute listeners.
+- `startContinuous()` sets `running.kind` (`md` or `relax`), sends `startSimulation`, and subscribes to WS frames.
+- `handleStreamFrame(kind, ws, frame)` applies positions (respecting per-atom gating), updates forces/energy/temperature, pushes energy to the plot, acks the sequence, and updates `lastAppliedUIC`.
+- Timeline playback reuses the same path via `applyTimelineFrame()`, which honours the stored `cell.enabled` flag so scrubbing through DVR history never re-enables periodic rendering unless the snapshot captured it on. When the viewer returns to live, `ensureWsInit()` re-uploads the current cell vectors plus the enabled/disabled bit so the backend stays aligned.
+- `stopSimulation()` sends STOP, updates UI state, clears bond latches, and reinstates idle compute listeners.
 
 ## Interaction gating & latching
 - Dragging atoms adds their indices to `draggingAtoms`; on release the viewer sends a full `positions` update and records the indices in `modifiedByVersion`.
@@ -52,6 +53,18 @@
 - Temperature display (`instTemp`) and forces toggle respond to bus events and WS frames.
 - Optional test hooks (`window.__WS_TEST_HOOK__`, `setTestHook`) allow integration and E2E tests to inspect outgoing/incoming WS messages without modifying runtime logic.
 - Reconnect banner uses `showErrorBanner` / `hideErrorBanner` to present loss-of-connection status; `reconnectNow` triggers an immediate `ensureConnected`.
+
+## Timeline DVR overlay
+- **Hidden rail UI**: `public/ui/timelineOverlay.js` injects a hover-revealed rail anchored to the canvas bottom edge. It contains an index label, discrete slider (tick labels in offsets from “live”), and `Play/Pause/Live` buttons. Pointer enter/leave animates between a 6 px hint and a 74 px expanded panel.
+- **Frame store**: `public/core/timelineStore.js` keeps a ring buffer (default capacity 500) of recent frames. Each frame stores flattened `Float32Array` payloads (positions/velocities/forces), metadata (kind, sim step, counters, timestamps), and a `cell` record that includes the `enabled` flag so periodic visibility survives playback.
+- **Controller**: `public/core/timelineController.js` exposes modes (`live`, `scrub`, `paused`, `playback`), tracks the playback index, and drives a 20 fps timeline via `requestAnimationFrame`. It emits events that the overlay and orchestrator consume to keep UI state, button disabled states, and slider bounds in sync.
+- **Playback semantics**:
+  - Scrubbing a frame transitions to `paused`, applies the stored positions/cell snapshot locally, bumps the local interaction counter, issues a `STOP_SIMULATION`, and sets `ignoreStreamFrames` so live frames are buffered but not rendered.
+  - `Play` resumes from the selected index, iterating frames until the live head. While playing the Play button disables, Pause and Live remain available, and incoming WS frames continue to queue so ack/backpressure stays healthy.
+  - Upon reaching the live frame the controller emits `playback-complete`; the orchestrator re-runs `ensureWsInit()` and restarts the remembered MD/relax mode so streaming continues seamlessly.
+  - `Live` jumps directly to the newest buffered frame, reapplies it, clears playback state, and restarts streaming immediately.
+  - `Pause` simply keeps the viewer detached while still buffering new frames.
+- **Testing**: The Playwright suite `ws-timeline-dvr.spec.js` covers scrubbing, bond retention, playback cadence, slider alignment, rapid scrub performance, and cell visibility (both default “periodic off” and lattice-on scenarios).
 
 ## Supporting modules (public/)
 - `domain` directory contains other services (eventBus, selection, manipulation).
