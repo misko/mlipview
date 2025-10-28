@@ -117,6 +117,12 @@
    - Select offset `-100`, press `Play`, ensure it lands on `-1` without throwing and remains in `Mode.Timeline` until `Live` pressed.
 5. **UI Visibility & Buttons** (DOM-focused test):
    - Ensure timeline dock is hidden without hover, becomes visible on hover, `Play`/`Pause` buttons toggle `data-state` attributes.
+6. **Control Policy Enforcement**:
+   - **Live-State Disablement**: While live streaming, assert Play and Live buttons carry `disabled` and Pause is enabled; clicking Pause transitions to timeline paused with overlay visible.
+   - **Timeline Paused Buttons**: After selecting an older frame, confirm Play and Live are enabled while Pause is disabled; clicking Live returns to live streaming and re-disables Live/Play.
+   - **Timeline Playing Buttons**: Trigger Play from a historical frame, verify Play renders disabled, Pause & Live enabled; click Pause to stop replay, then Play to resume.
+   - **Pause During Live (Regression for Pause requirement)**: With MD streaming active, click Pause and assert we enter timeline paused at `-1` with WS stopped.
+   - **Auto Resume on Replay Completion**: Start playback from a mid-buffer frame and wait for offset `-1`; verify timeline auto-resumes live (overlay hidden, all buttons in live configuration).
 
 ## Risks & Mitigations
 - **Memory Pressure**: storing full `forces` arrays multiplies footprint. Use `Float32Array` and reuse typed buffers where possible; clamp capacity to 500.
@@ -127,3 +133,12 @@
 ## Open Items
 - Confirm whether forces are required for timeline playback. Current plan stores them; if UI becomes sluggish we can drop forces from the stored payload later.
 - Determine whether we should auto-restart the exact MD/relax loop the user was running upon `Live`. Proposal mirrors existing `pendingResume` behaviour; feedback welcome before implementation.
+
+## Timeline Control Policy
+
+- **Live Streaming**: `timelineState.active=false`, `playing=false`. Buttons: Play disabled, Pause enabled (enters timeline mode at -1), Live disabled.
+- **Timeline Paused**: `active=true`, `playing=false`. WebSocket paused, overlay active. Buttons: Play enabled (resumes replay), Pause disabled (no-op), Live enabled (resume streaming).
+- **Timeline Playing**: `active=true`, `playing=true`. Buttons: Play disabled (already playing), Pause enabled (stops replay, stay paused), Live enabled (resume streaming).
+- **Auto Resume**: When replay advances to offset -1, automatically transition to Live Streaming (re-enable WS, disable overlay).
+
+Buttons should reflect these policies: disable Play in Live/Playing states, disable Pause in Live/Paused states, disable Live only while already live.

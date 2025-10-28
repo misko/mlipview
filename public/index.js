@@ -1482,7 +1482,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (!Number.isFinite(next) || next < minOffset) next = minOffset;
     if (next >= -1) {
       clearTimelinePlayback();
-      if (timelineUi) timelineUi.setMode('paused');
+      resumeLiveFromTimeline().catch(() => { });
       return;
     }
     next = Math.min(-1, next + 1);
@@ -1493,7 +1493,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     }
     if (next === -1) {
       clearTimelinePlayback();
-      if (timelineUi) timelineUi.setMode('paused');
+      resumeLiveFromTimeline().catch(() => { });
     }
   }
 
@@ -1555,6 +1555,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   }
 
   function handleTimelinePauseRequest() {
+    if (!timelineState.active) {
+      enterTimelineMode(-1);
+      return;
+    }
     pauseTimelinePlayback();
   }
 

@@ -64,15 +64,8 @@ test('timeline rewind preserves frame identity and resumes live stream', async (
   await page.click('[data-testid="timeline-play"]');
   await page.waitForFunction(() => {
     const state = window.viewerApi.timeline.getState();
-    return state.offset === -1 && !state.playing;
+    return !state.active && state.mode === 'live' && state.offset === -1;
   }, null, { timeout: 30_000 });
-
-  // Resume live streaming.
-  await page.click('[data-testid="timeline-live"]');
-  await page.waitForFunction(() => {
-    const state = window.viewerApi.timeline.getState();
-    return !state.active && state.mode === 'live';
-  }, null, { timeout: 20_000 });
 
   await page.waitForFunction(() => window.viewerApi.getMetrics().running === 'md', null, { timeout: 20_000 });
 
