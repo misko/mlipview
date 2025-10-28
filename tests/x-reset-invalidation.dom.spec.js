@@ -211,4 +211,55 @@ describe('x-reset-invalidation', () => {
     expect(Array.isArray(mdRecords) && mdRecords.length).toBeTruthy();
     expect(mdRecords[0].resolveEpoch).toBeGreaterThanOrEqual(mdRecords[0].queuedEpoch);
   });
+
+  test('reset restores baseline geometry after add/remove edits', async () => {
+    const wsBridge = jest.requireMock('../public/fairchem_ws_client.js');
+    wsBridge.__resetQueue();
+
+    setupDom();
+    const { initNewViewer } = await import('../public/index.js');
+    const { buildDesktopPanel } = await import('../public/ui/desktopPanel.js');
+
+    const viewer = await initNewViewer(document.getElementById('viewer'), {
+      elements: [{ Z: 8 }, { Z: 1 }],
+      positions: [
+        { x: 0, y: 0, z: 0 },
+        { x: 0.95, y: 0.0, z: 0.0 },
+      ],
+      bonds: [],
+    });
+    wsBridge.__setViewerStateAccessor(() => viewer.state);
+    window.viewerApi = viewer;
+    buildDesktopPanel({ attachTo: document.getElementById('app') });
+
+    const baselineElements = viewer.state.elements.slice();
+    const baselinePositions = viewer.state.positions.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    const baselineCount = baselinePositions.length;
+
+    await viewer.addAtomAtOrigin('H');
+    expect(viewer.state.positions).toHaveLength(baselineCount + 1);
+
+    await viewer.resetToInitialPositions();
+    expect(viewer.state.positions).toHaveLength(baselineCount);
+    expect(viewer.state.elements).toEqual(baselineElements);
+    viewer.state.positions.forEach((p, idx) => {
+      const base = baselinePositions[idx];
+      expect(p.x).toBeCloseTo(base.x, 6);
+      expect(p.y).toBeCloseTo(base.y, 6);
+      expect(p.z).toBeCloseTo(base.z, 6);
+    });
+
+    await viewer.removeAtomByIndex(0);
+    expect(viewer.state.positions).toHaveLength(baselineCount - 1);
+
+    await viewer.resetToInitialPositions();
+    expect(viewer.state.positions).toHaveLength(baselineCount);
+    expect(viewer.state.elements).toEqual(baselineElements);
+    viewer.state.positions.forEach((p, idx) => {
+      const base = baselinePositions[idx];
+      expect(p.x).toBeCloseTo(base.x, 6);
+      expect(p.y).toBeCloseTo(base.y, 6);
+      expect(p.z).toBeCloseTo(base.z, 6);
+    });
+  });
 });

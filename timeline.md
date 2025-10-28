@@ -86,9 +86,9 @@
   4. Resume idle listener so new frames refill the ring buffer.
 
 ### Interaction Lock
-- `blockInteractions()` inserts an absolutely positioned `div` covering the canvas with `pointer-events: auto`, `cursor: not-allowed`, and a subtle backdrop to signal read-only mode.
-- `unblockInteractions()` removes the overlay.
-- Picking/manipulation services expose `setInteractionEnabled(bool)` to gracefully reject programmatic drags; `public/index.js` toggles this based on timeline mode for internal calls.
+- `blockInteractions()` inserts an absolutely positioned `div` covering the canvas with a subtle backdrop to signal read-only mode; the overlay keeps `pointer-events: none` so camera input, touch gestures, and wheel zoom continue to hit the canvas.
+- `unblockInteractions()` removes the overlay when returning to live streaming.
+- Picking/manipulation services expose `setInteractionEnabled(bool)` to gracefully reject programmatic drags; `public/index.js` disables only manipulation while timeline mode is active so camera orbit/zoom stays responsive.
 
 ### Energy Plot & Metrics
 - While in timeline mode, freeze `energyPlot.push`. Instead update HUD labels (`instEnergy`, `instTemp`, `rps`) directly via `applyServerFrame` so the UI reflects the stored frame but the historical playback does not mutate the running energy history.

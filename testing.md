@@ -32,6 +32,12 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
   - `ws-counters-echo.spec.js`: Drags an atom, pauses, and begins MD while logging the HUD counters; validates server echoes track the viewer’s `userInteractionVersion` and total-interaction counts.
   - `ws-start-stop-idle-relax.spec.js`: Drives idle, MD, then relax via UI buttons, verifying each phase emits the correct verb and the button state/-LEDs sync with the run status.
   - `ws-ui-buttons-start-stop-idle-relax.spec.js`: Smoke-tests toolbar controls for stop/start across idle, MD, and relax, ensuring the underlying viewer flags (`isMdRunning`, `isRelaxRunning`) toggle in step.
+- **Timeline Replay & Read-only Inspection**
+  - `ws-timeline-controls.spec.js`: Validates play/pause/live button policy, ensuring mode transitions gate the correct controls.
+  - `ws-timeline-interaction-lock.spec.js`: Enters timeline mode, asserts manipulations are rejected while paused, then resumes live streaming.
+  - `ws-timeline-visibility.spec.js`: Checks hover reveal of the dock, overlay styling, and the live-resume path.
+  - `ws-timeline-replay.spec.js`: Scrubs to historical frames, verifies signatures remain stable, and confirms playback returns to live streaming.
+  - `ws-timeline-camera.spec.js`: Scrubs history, dispatches pointer and wheel gestures, and confirms camera rotation/zoom stay responsive while geometry edits remain blocked.
 
 ## Jest Suites (`tests/x-*.spec.js`)
 
@@ -130,7 +136,7 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
   - `x-ui-toggles.dom.spec.js`: Iterates the panel toggles, validating `aria-checked` and viewer flags align with button text.
   - `x-run-completion-toggles.dom.spec.js`: Starts MD/relax runs, injects completion frames, and checks toggles revert to OFF with updated labels.
   - `x-reset-button.dom.spec.js`: Clicks the reset button, ensures it disables while awaiting the `resetToInitialPositions` promise, then re-enables.
-  - `x-reset-invalidation.dom.spec.js`: Seeds caches, triggers reset, and asserts caches and HUD overlays return to defaults.
+  - `x-reset-invalidation.dom.spec.js`: Seeds caches, triggers reset, asserts caches/HUD overlays return to defaults, and verifies baseline geometry is restored after add/remove edits.
 
 - **User Interaction & Counter Handling**
   - `x-user-interaction-during-md.dom.spec.js`: Starts MD, injects stale USER_INTERACTION frames (ignored) followed by in-order frames that are applied.

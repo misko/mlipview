@@ -428,6 +428,92 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   try { enforceSafeSphere(state); } catch { }
   try { state.__initialPositions = (state.positions || []).map(p => ({ x: p.x, y: p.y, z: p.z })); } catch { }
 
+  const clonePositionList = (list) => {
+    if (!Array.isArray(list)) return [];
+    return list.map((p) => toVec3(p, { x: 0, y: 0, z: 0 }));
+  };
+  const normalizeElement = (el) => {
+    if (el && typeof el === 'object') {
+      if (typeof el.symbol === 'string') {
+        return toSymbol(el.symbol);
+      }
+      if (el.Z != null) {
+        return toSymbol(el.Z);
+      }
+    }
+    return toSymbol(el);
+  };
+  const cloneVelocityVector = (v) => {
+    if (Array.isArray(v)) {
+      return [Number(v[0]) || 0, Number(v[1]) || 0, Number(v[2]) || 0];
+    }
+    if (v && typeof v === 'object') {
+      return [Number(v.x) || 0, Number(v.y) || 0, Number(v.z) || 0];
+    }
+    return [0, 0, 0];
+  };
+  const cloneVelocityList = (list) => {
+    if (!Array.isArray(list) || !list.length) return null;
+    return list.map((v) => cloneVelocityVector(v));
+  };
+  const cloneCellSnapshot = (cell) => {
+    if (!cell || !cell.a || !cell.b || !cell.c) return null;
+    return {
+      a: toVec3(cell.a, { x: 0, y: 0, z: 0 }),
+      b: toVec3(cell.b, { x: 0, y: 0, z: 0 }),
+      c: toVec3(cell.c, { x: 0, y: 0, z: 0 }),
+      originOffset: toVec3(cell.originOffset || { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }),
+      enabled: !!cell.enabled,
+    };
+  };
+  const cellSnapshotToMatrix = (cell) => {
+    if (!cell) return null;
+    return [
+      [Number(cell.a?.x) || 0, Number(cell.a?.y) || 0, Number(cell.a?.z) || 0],
+      [Number(cell.b?.x) || 0, Number(cell.b?.y) || 0, Number(cell.b?.z) || 0],
+      [Number(cell.c?.x) || 0, Number(cell.c?.y) || 0, Number(cell.c?.z) || 0],
+    ];
+  };
+  const captureResetBaselineFromState = () => ({
+    elements: Array.isArray(state.elements) ? state.elements.map(normalizeElement) : [],
+    positions: clonePositionList(state.positions),
+    velocities: state.dynamics?.velocities ? cloneVelocityList(state.dynamics.velocities) : null,
+    cell: cloneCellSnapshot(state.cell),
+    showCell: !!state.showCell,
+    showGhostCells: !!state.showGhostCells,
+  });
+  const installResetBaseline = (baseline, meta = {}) => {
+    if (!baseline) {
+      state.__resetBaseline = null;
+      return;
+    }
+    state.__resetBaseline = {
+      elements: Array.isArray(baseline.elements) ? baseline.elements.map(normalizeElement) : [],
+      positions: clonePositionList(baseline.positions),
+      velocities: baseline.velocities ? cloneVelocityList(baseline.velocities) : null,
+      cell: cloneCellSnapshot(baseline.cell),
+      showCell: !!baseline.showCell,
+      showGhostCells: !!baseline.showGhostCells,
+    };
+    if (env.apiOn()) {
+      dbg.log('[resetBaseline] updated', {
+        reason: meta?.reason || 'unknown',
+        natoms: state.__resetBaseline.positions?.length || 0,
+      });
+    }
+  };
+  const seedResetBaseline = (reason = 'seed') => {
+    installResetBaseline(captureResetBaselineFromState(), { reason });
+    try {
+      state.__initialCellSnapshot = cloneCellSnapshot(state.cell);
+    } catch { }
+  };
+
+  try {
+    state.elements = Array.isArray(state.elements) ? state.elements.map(normalizeElement) : [];
+  } catch { }
+  seedResetBaseline('init');
+
   // Versions & caches
   state.forceCache = { version: 0, energy: NaN, forces: [], stress: null, stale: true };
   let structureVersion = 0;
@@ -557,7 +643,6 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   const bumpUser = (reason) => {
     userInteractionVersion++; totalInteractionVersion++; structureVersion++;
-    lastAppliedUIC = Math.max(lastAppliedUIC, userInteractionVersion);
     resetStepBudgetDueToInteraction(reason);
     if (state.forceCache) { state.forceCache.stale = true; state.forceCache.version = structureVersion; }
     if (env.apiOn()) dbg.log('[version][user]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
@@ -635,11 +720,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     state.markCellChanged?.();
   };
 
-  const applyFullSnapshot = async ({ elements, positions, velocities, cell } = {}) => {
+  const applyFullSnapshot = async ({ elements, positions, velocities, cell } = {}, opts = {}) => {
+    const { updateBaseline = true } = opts || {};
     if (!ensureTimelineEditable('applyFullSnapshot')) return false;
     const nextElements = Array.isArray(elements) && elements.length
-      ? elements.map(toSymbol)
-      : (state.elements || []).slice();
+      ? elements.map(normalizeElement)
+      : (state.elements || []).map(normalizeElement);
     const nextPositions = Array.isArray(positions) && positions.length
       ? positions.map((p) => toVec3(p))
       : (state.positions || []).map((p) => ({ x: p.x, y: p.y, z: p.z }));
@@ -679,6 +765,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
     bumpUser('fullSnapshotLocal');
     state.markPositionsChanged();
+    if (updateBaseline) {
+      seedResetBaseline('applyFullSnapshot');
+    }
 
     __wsState.inited = false;
     const ok = await ensureWsInit({ allowOffline: false });
@@ -691,7 +780,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   const addAtom = async ({ element = 'H', position, velocity } = {}) => {
     if (!ensureTimelineEditable('addAtom')) return false;
-    const elements = (state.elements || []).slice();
+    const elements = (state.elements || []).map(normalizeElement);
     const positions = (state.positions || []).map((p) => ({ x: p.x, y: p.y, z: p.z }));
     const symbol = toSymbol(element);
     assertAllowedSymbol(symbol);
@@ -717,7 +806,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     }
 
     const cellArray = stateCellToArray(state.cell);
-    await applyFullSnapshot({ elements, positions, velocities, cell: cellArray });
+    await applyFullSnapshot({ elements, positions, velocities, cell: cellArray }, { updateBaseline: false });
   };
 
   const addAtomAtPosition = async (element, position, velocity) => {
@@ -734,7 +823,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     const idx = Array.from(new Set(indices.map((n) => Number(n)))).filter((n) => Number.isInteger(n) && n >= 0);
     if (!idx.length) return;
     const sorted = idx.sort((a, b) => b - a);
-    const elements = (state.elements || []).slice();
+    const elements = (state.elements || []).map(normalizeElement);
     const positions = (state.positions || []).map((p) => ({ x: p.x, y: p.y, z: p.z }));
     let velocities = state.dynamics?.velocities
       ? state.dynamics.velocities.map((v) => {
@@ -754,7 +843,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     }
 
     const cellArray = stateCellToArray(state.cell);
-    await applyFullSnapshot({ elements, positions, velocities, cell: cellArray });
+    await applyFullSnapshot({ elements, positions, velocities, cell: cellArray }, { updateBaseline: false });
   };
 
   const removeAtomByIndex = async (index) => {
@@ -1156,6 +1245,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (need && state.positions?.length) {
       state.__initialPositions = state.positions.map(p => ({ x: p.x, y: p.y, z: p.z }));
       dbg.log('[Reset] baseline seeded after baselineEnergy', { count: state.__initialPositions.length });
+      if (!state.__resetBaseline || !(state.__resetBaseline.positions?.length)) {
+        seedResetBaseline('baselineEnergy');
+      }
     }
   } catch { }
 
@@ -1404,7 +1496,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     overlay.style.right = '0';
     overlay.style.top = '0';
     overlay.style.bottom = '0';
-    overlay.style.pointerEvents = 'auto';
+    overlay.style.pointerEvents = 'none';
     overlay.style.background = 'rgba(0, 0, 0, 0.02)';
     overlay.style.display = 'none';
     overlay.style.zIndex = '26';
@@ -1422,7 +1514,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   function setTimelineInteractionLock(on) {
     const allow = !on;
     try { manipulation?.setInteractionsEnabled?.(allow); } catch { }
-    try { pickingRef?.setInteractionsEnabled?.(allow); } catch { }
+    try {
+      // Keep camera navigation responsive while timeline is active.
+      pickingRef?.setInteractionsEnabled?.(true);
+    } catch { }
     try { vr?.setInteractionsEnabled?.(allow); } catch { }
   }
 
@@ -2103,6 +2198,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     };
   }
 
+  function refreshResetBaseline(reason = 'manual') {
+    seedResetBaseline(reason);
+    return state.__resetBaseline;
+  }
+
   function forceWsReconnect() {
     try {
       const ws = getWS();
@@ -2136,29 +2236,51 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       resetEpoch++; bumpUser('reset'); __suppressNextPosChange = true;
       interactions.length = 0; energyPlot.reset();
 
-      const init = Array.isArray(state.__initialPositions) ? state.__initialPositions : null;
-      if (!init || init.length !== state.positions.length) { dbg.warn('[Reset] missing or size-mismatch initial positions'); return false; }
-      for (let i = 0; i < init.length; i++) { const p = init[i], tp = state.positions[i]; tp.x = p.x; tp.y = p.y; tp.z = p.z; }
-      state.markPositionsChanged();
-      try { if (state.dynamics) state.dynamics.velocities = []; } catch { }
-
-      try {
-        state.showCell = false;
-        if (state.showGhostCells) state.showGhostCells = false;
-        if (state.__initialCellSnapshot) {
-          const c = state.__initialCellSnapshot;
-          state.cell = {
-            a: { x: c.a.x, y: c.a.y, z: c.a.z },
-            b: { x: c.b.x, y: c.b.y, z: c.b.z },
-            c: { x: c.c.x, y: c.c.y, z: c.c.z },
-            originOffset: c.originOffset ? { x: c.originOffset.x || 0, y: c.originOffset.y || 0, z: c.originOffset.z || 0 } : { x: 0, y: 0, z: 0 },
-            enabled: !!c.enabled,
-          };
-        } else {
-          state.cell = null;
-        }
+      const baseline = state.__resetBaseline;
+      let usedBaseline = false;
+      if (baseline && Array.isArray(baseline.positions) && baseline.positions.length) {
+        const baselinePositions = clonePositionList(baseline.positions);
+        const baselineVelocities = baseline.velocities ? cloneVelocityList(baseline.velocities) : null;
+        const baselineCellMatrix = baseline.cell ? cellSnapshotToMatrix(baseline.cell) : null;
+        await applyFullSnapshot({
+          elements: Array.isArray(baseline.elements) ? baseline.elements.map(normalizeElement) : [],
+          positions: baselinePositions,
+          velocities: baselineVelocities ?? undefined,
+          cell: baselineCellMatrix || undefined,
+        }, { updateBaseline: false });
+        state.showCell = !!baseline.showCell;
+        state.showGhostCells = !!baseline.showGhostCells;
         state.markCellChanged?.();
-      } catch { }
+        state.__initialPositions = clonePositionList(baseline.positions);
+        state.__initialCellSnapshot = cloneCellSnapshot(baseline.cell) || null;
+        usedBaseline = true;
+      }
+
+      if (!usedBaseline) {
+        const init = Array.isArray(state.__initialPositions) ? state.__initialPositions : null;
+        if (!init || init.length !== state.positions.length) { dbg.warn('[Reset] missing or size-mismatch initial positions'); return false; }
+        for (let i = 0; i < init.length; i++) { const p = init[i], tp = state.positions[i]; tp.x = p.x; tp.y = p.y; tp.z = p.z; }
+        state.markPositionsChanged();
+        try { if (state.dynamics) state.dynamics.velocities = []; } catch { }
+
+        try {
+          state.showCell = false;
+          if (state.showGhostCells) state.showGhostCells = false;
+          if (state.__initialCellSnapshot) {
+            const c = state.__initialCellSnapshot;
+            state.cell = {
+              a: { x: c.a.x, y: c.a.y, z: c.a.z },
+              b: { x: c.b.x, y: c.b.y, z: c.b.z },
+              c: { x: c.c.x, y: c.c.y, z: c.c.z },
+              originOffset: c.originOffset ? { x: c.originOffset.x || 0, y: c.originOffset.y || 0, z: c.originOffset.z || 0 } : { x: 0, y: 0, z: 0 },
+              enabled: !!c.enabled,
+            };
+          } else {
+            state.cell = null;
+          }
+          state.markCellChanged?.();
+        } catch { }
+      }
 
       try { await ff.computeForces({ sync: true }); } catch (e) { dbg.warn('[Reset] computeForces failed', e?.message || e); }
       energyPlot.reset();
@@ -2266,6 +2388,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     w.addAtomAtPosition = addAtomAtPosition;
     w.removeAtoms = removeAtoms;
     w.removeAtomByIndex = removeAtomByIndex;
+    w.refreshResetBaseline = refreshResetBaseline;
   });
 
   function setForceProvider() { return 'uma'; }
@@ -2296,6 +2419,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     setForceProvider,
     getMetrics,
     resetToInitialPositions,
+    refreshResetBaseline,
     debugEnergySeriesLength,
     debugRecordInteraction,
     manipulation: wrappedManipulation,

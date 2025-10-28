@@ -129,6 +129,7 @@ class _PredictDeploy:  # runs on GPU replica
                     # f"pos={pos} cell={cell} ",
                     flush=True,
                 )
+                # time.sleep(0.2)
         try:
             # update simple metrics
             self._predict_calls += 1

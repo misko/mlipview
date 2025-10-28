@@ -168,6 +168,11 @@ export function applyParsedToViewer(viewerApi, parsed) {
       } catch {}
     }
   } catch {}
+  try {
+    if (typeof viewerApi.refreshResetBaseline === 'function') {
+      viewerApi.refreshResetBaseline('moleculeLoader');
+    }
+  } catch {}
   viewerApi.recomputeBonds();
   return parsed;
 }
