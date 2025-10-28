@@ -27,51 +27,40 @@ test('timeline mode keeps camera rotation and zoom responsive', async ({ page, l
 
   await page.waitForFunction(() => window.viewerApi.timeline.getState().active, null, { timeout: 12_000 });
 
-  const rotateResult = await page.evaluate(() => {
+  const dragMeta = await page.evaluate(() => {
     const api = window.viewerApi;
     const canvas = api?.scene?.getEngine?.()?.getRenderingCanvas?.();
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
-    const startX = rect.left + rect.width / 2;
-    const startY = rect.top + rect.height / 2;
-    const endX = startX + Math.max(32, rect.width * 0.12);
-    const endY = startY + Math.max(12, rect.height * 0.06);
-    const before = { alpha: api.camera.alpha, beta: api.camera.beta };
-    const base = { bubbles: true, cancelable: true, pointerId: 42, pointerType: 'mouse' };
-    const dispatch = (type, x, y, extras = {}) => {
-      const evt = new PointerEvent(type, { ...base, clientX: x, clientY: y, ...extras });
-      canvas.dispatchEvent(evt);
+    return {
+      centerX: rect.left + rect.width / 2,
+      centerY: rect.top + rect.height / 2,
+      beforeAlpha: api.camera.alpha,
+      beforeBeta: api.camera.beta,
     };
-    dispatch('pointerdown', startX, startY, { buttons: 1 });
-    dispatch('pointermove', endX, endY, { buttons: 1 });
-    dispatch('pointerup', endX, endY, { buttons: 0 });
-    return { before, after: { alpha: api.camera.alpha, beta: api.camera.beta } };
   });
+  expect(dragMeta).toBeTruthy();
 
-  expect(rotateResult).toBeTruthy();
-  expect(Math.abs(rotateResult.after.alpha - rotateResult.before.alpha)).toBeGreaterThan(0.001);
+  const dragDx = 160;
+  const dragDy = 90;
+  await page.mouse.move(dragMeta.centerX, dragMeta.centerY);
+  await page.mouse.down();
+  await page.mouse.move(dragMeta.centerX + dragDx, dragMeta.centerY + dragDy, { steps: 15 });
+  await page.mouse.up();
+  await page.waitForTimeout(50);
 
-  const zoomResult = await page.evaluate(() => {
+  const rotateAfter = await page.evaluate(() => {
     const api = window.viewerApi;
-    const canvas = api?.scene?.getEngine?.()?.getRenderingCanvas?.();
-    if (!canvas) return null;
-    const rect = canvas.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    const before = api.camera.radius;
-    const wheel = new WheelEvent('wheel', {
-      bubbles: true,
-      cancelable: true,
-      deltaY: -240,
-      clientX: centerX,
-      clientY: centerY,
-    });
-    canvas.dispatchEvent(wheel);
-    return { before, after: api.camera.radius };
+    return { alpha: api.camera.alpha, beta: api.camera.beta };
   });
+  expect(Math.abs(rotateAfter.alpha - dragMeta.beforeAlpha)).toBeGreaterThan(0.001);
 
-  expect(zoomResult).toBeTruthy();
-  expect(Math.abs(zoomResult.after - zoomResult.before)).toBeGreaterThan(0.001);
+  const zoomBefore = await page.evaluate(() => window.viewerApi.camera.radius);
+  await page.mouse.move(dragMeta.centerX, dragMeta.centerY);
+  await page.mouse.wheel(0, -400);
+  await page.waitForTimeout(50);
+  const zoomAfter = await page.evaluate(() => window.viewerApi.camera.radius);
+  expect(Math.abs(zoomAfter - zoomBefore)).toBeGreaterThan(0.001);
 
   const dragAttempt = await page.evaluate(() => window.viewerApi.manipulation.beginDrag(
     () => ({ x: 0, y: 0, z: 0 }),
