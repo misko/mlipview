@@ -69,22 +69,59 @@ test.describe('Bond rotation isolation', () => {
 
     expect(rotationData.sideAtoms.length).toBeGreaterThan(0);
 
-    await page.evaluate(({ rotationData }) => {
+    const debugUIC = await page.evaluate(({ rotationData }) => {
       const ws = window.__fairchem_ws__;
+      ws?.pauseIncoming?.(120);
+      const beforeState = ws?.getState?.() || {};
       const positions = rotationData.positions.map((p, idx) => {
         if (rotationData.sideAtoms.includes(idx)) {
           return [p.x + 10, p.y + 10, p.z + 10];
         }
         return [p.x + 1, p.y + 1, p.z + 1];
       });
-      ws.injectTestResult({ seq: 999, client_seq: 0, userInteractionCount: 0, simStep: 0, positions });
+      const injectUIC = Number.isFinite(beforeState.userInteractionCount) ? beforeState.userInteractionCount : 0;
+      ws.injectTestResult({ seq: 999, client_seq: 0, userInteractionCount: injectUIC, simStep: 0, positions });
+      const afterState = ws?.getState?.() || {};
+      console.log('[bond-rotation:test][uic]', beforeState.userInteractionCount, afterState.userInteractionCount);
+      return { before: beforeState.userInteractionCount ?? null, after: afterState.userInteractionCount ?? null };
     }, { rotationData });
 
     await page.waitForTimeout(50);
 
-    const finalState = await page.evaluate(() => {
-      return window.viewerApi.state.positions.map((p) => ({ x: p.x, y: p.y, z: p.z }));
-    });
+    const { positions: finalState, deltas, state } = await page.evaluate(({ rotationData }) => {
+      const ws = window.__fairchem_ws__;
+      const beforeState = ws?.getState?.() || {};
+      const positions = window.viewerApi.state.positions.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+      const deltas = positions.map((after, idx) => {
+        const before = rotationData.positions[idx];
+        const dx = after.x - before.x;
+        const dy = after.y - before.y;
+        const dz = after.z - before.z;
+        return { idx, dx, dy, dz, dist: Math.hypot(dx, dy, dz), side: rotationData.sideAtoms.includes(idx) };
+      });
+      const afterState = ws?.getState?.() || {};
+      const side = new Set(rotationData.sideAtoms);
+      const formatted = delta =>
+        `idx=${delta.idx}` +
+        ` side=${side.has(delta.idx)}` +
+        ` dx=${delta.dx.toFixed(6)}` +
+        ` dy=${delta.dy.toFixed(6)}` +
+        ` dz=${delta.dz.toFixed(6)}` +
+        ` dist=${delta.dist.toFixed(6)}`;
+      const grouped = {
+        side: deltas.filter((d) => side.has(d.idx)).map(formatted),
+        other: deltas.filter((d) => !side.has(d.idx)).map(formatted),
+      };
+      console.log('[bond-rotation][delta-report]', grouped);
+      const top = deltas
+        .map((d) => ({ ...d, abs: Math.max(Math.abs(d.dx), Math.abs(d.dy), Math.abs(d.dz)) }))
+        .sort((a, b) => b.abs - a.abs)
+        .slice(0, 10)
+        .map((d) => formatted(d));
+      console.log('[bond-rotation][delta-top10]', top);
+      return { positions, deltas, state: { before: beforeState, after: afterState }, grouped, top };
+    }, { rotationData });
+    console.log('[bond-rotation][delta-summary]', { top: (state?.top ?? []), state });
 
     for (const idx of rotationData.sideAtoms) {
       const before = rotationData.positions[idx];

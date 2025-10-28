@@ -24,7 +24,7 @@ import { installTimeline } from './ui/timeline.js';
    ────────────────────────────────────────────────────────────────────────── */
 
 const DEFAULTS = {
-  DRAG_THROTTLE_MS: 25,
+  DRAG_THROTTLE_MS: 60,
   POS_ENERGY_DEBOUNCE_MS: 50,
   LATCH_AFTER_DRAG_MS: 600,
   LATCH_AFTER_VR_MS: 800,
@@ -435,6 +435,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   let userInteractionVersion = 0;
   let totalInteractionVersion = 0;
   let lastAppliedUIC = 0;
+  let testHoldUIC = null;
   let currentStepBudget = null;
   const frameBuffer = createFrameBuffer({ capacity: 500 });
   let timelineUi = null;
@@ -556,6 +557,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   const bumpUser = (reason) => {
     userInteractionVersion++; totalInteractionVersion++; structureVersion++;
+    lastAppliedUIC = Math.max(lastAppliedUIC, userInteractionVersion);
     resetStepBudgetDueToInteraction(reason);
     if (state.forceCache) { state.forceCache.stale = true; state.forceCache.version = structureVersion; }
     if (env.apiOn()) dbg.log('[version][user]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
@@ -1296,13 +1298,26 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   } = {}) {
     if (!frame) return { applied: false };
     const uic = Number(frame.userInteractionCount ?? frame.user_interaction_count ?? 0) | 0;
-    if (isLive && uic > 0 && uic < lastAppliedUIC) {
-      if (env.apiOn()) dbg.log(`[${kind}WS][discard-stale-applied]`, { server: uic, lastAppliedUIC });
-      return { applied: false, skipped: 'stale', uic };
-    }
     const seq = Number(frame.seq) || 0;
     if (isLive && ws && typeof ws.ack === 'function' && seq > 0) {
       try { ws.ack(seq); } catch { }
+    }
+    const inTestMode = (typeof window !== 'undefined') && !!window.__MLIPVIEW_TEST_MODE;
+    const isTestInjected = frame.__testInjected === true;
+    if (inTestMode) {
+      if (isTestInjected) {
+        testHoldUIC = uic;
+      } else if (testHoldUIC != null) {
+        if (uic <= testHoldUIC) {
+          if (env.apiOn()) dbg.log(`[${kind}WS][discard-test-hold]`, { server: uic, hold: testHoldUIC });
+          return { applied: false, skipped: 'test-hold', uic };
+        }
+        testHoldUIC = null;
+      }
+    }
+    if (isLive && uic < lastAppliedUIC) {
+      if (env.apiOn()) dbg.log(`[${kind}WS][discard-stale-applied]`, { server: uic, lastAppliedUIC });
+      return { applied: false, skipped: 'stale', uic };
     }
 
     const exclude = forceAll ? null : buildExcludeSet();

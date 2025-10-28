@@ -139,6 +139,7 @@ export function createFairchemWS() {
 
   // Instance-level test hook
   let __testHook = null;
+  let holdFramesUntil = 0;
 
   /** @type {Set<Function>} */
   const listeners = new Set();
@@ -151,7 +152,16 @@ export function createFairchemWS() {
   const onFrame = (fn) => subscribe((res) => { try { fn(res, lastCounters); } catch { } });
   const onResult = (fn) => subscribe((res) => { try { fn(res); } catch { } });
 
+  function nowMs() {
+    try { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }
+    catch { return Date.now(); }
+  }
+
   function fanout(obj) {
+    if (holdFramesUntil > nowMs() && !(obj && obj.__testInjected)) {
+      __log && __log('[WS][fanout][held]', { holdFramesUntil, now: nowMs() });
+      return;
+    }
     for (const fn of listeners) {
       try { fn(obj); } catch { }
     }
@@ -842,7 +852,20 @@ export function createFairchemWS() {
   }
 
   function setTestHook(fn) { __testHook = typeof fn === 'function' ? fn : null; }
-  function injectTestResult(obj) { fanout(obj); }
+  function injectTestResult(obj) {
+    const clone = obj ? { ...obj } : {};
+    const lastUIC = Number.isFinite(lastCounters.userInteractionCount) ? lastCounters.userInteractionCount : 0;
+    if (clone.userInteractionCount == null) {
+      clone.userInteractionCount = lastUIC + 1;
+    }
+    try { setCounters({ userInteractionCount: clone.userInteractionCount }); } catch { }
+    clone.__testInjected = true;
+    fanout(clone);
+  }
+  function pauseIncoming(ms = 50) {
+    const duration = Math.max(0, Number(ms) || 0);
+    holdFramesUntil = Math.max(holdFramesUntil, nowMs() + duration);
+  }
 
   const api = {
     connect,
@@ -867,6 +890,7 @@ export function createFairchemWS() {
     stopSimulation,
     setTestHook,
     injectTestResult,
+    pauseIncoming,
     reconnectNow,
     forceDisconnect,
   };

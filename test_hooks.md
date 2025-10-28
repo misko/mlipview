@@ -225,6 +225,27 @@ viewerApi.forceWsReconnect = () => {
 
 ---
 
+## `viewerApi.ws.pauseIncoming(ms = 50)`
+
+**Purpose:** Temporarily suppress inbound WebSocket frames so tests can inject synthetic results without the next live frame immediately overwriting them.
+
+**Suggested shape:**
+
+```js
+viewerApi.ws.pauseIncoming = (ms = 50) => {
+  const ws = getWS();
+  if (ws?.pauseIncoming) {
+    ws.pauseIncoming(ms);
+    return true;
+  }
+  return false;
+};
+```
+
+**Used by:** `tests-e2e/x-bond-rotation.spec.js` right before `injectTestResult`, giving the Playwright assertion ~100 ms of quiet time so the injected `+1 Å` deltas remain visible.
+
+---
+
 ## `viewerApi.simulateWsDrop({ failAttempts } = {})`
 
 **Purpose:** Forcefully close the websocket while keeping the client in auto-reconnect mode; optionally pre-program the next N reconnect attempts to fail. This lets tests emulate server restarts mid-run.

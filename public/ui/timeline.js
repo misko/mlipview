@@ -271,22 +271,7 @@ export function installTimeline({
     if (!nextMode) return;
     mode = nextMode;
     dock.dataset.mode = mode;
-    switch (mode) {
-      case MODE_PLAYING:
-        statusLabel.textContent = `Playing (${activeOffset})`;
-        break;
-      case MODE_PAUSED:
-        statusLabel.textContent = `Paused (${activeOffset})`;
-        break;
-      default:
-        statusLabel.textContent = 'Live';
-        break;
-    }
-    if (mode === MODE_LIVE) {
-      setVisible(false);
-    } else {
-      setVisible(true);
-    }
+    setVisible(mode !== MODE_LIVE);
     updateButtons();
   }
 
@@ -294,11 +279,6 @@ export function installTimeline({
     if (!Number.isFinite(offset)) return;
     activeOffset = clampOffset(offset, minOffset) ?? activeOffset;
     slider.value = String(activeOffset);
-    if (mode === MODE_PAUSED) {
-      statusLabel.textContent = `Paused (${activeOffset})`;
-    } else if (mode === MODE_PLAYING) {
-      statusLabel.textContent = `Playing (${activeOffset})`;
-    }
   }
 
   function refresh() {

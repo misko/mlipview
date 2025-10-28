@@ -352,7 +352,9 @@ def health_snapshot():
                 snap["replica_stats_calls"] = stats.get("calls")
                 snap["replica_stats_items"] = stats.get("items")
                 if replica_dev:
-                    snap["cuda_available"] = bool(replica_dev == "cuda") and not force_cpu
+                    snap["cuda_available"] = (
+                        bool(replica_dev == "cuda") and not force_cpu
+                    )
     except Exception as e:  # pragma: no cover - best-effort health path
         snap["replica_error"] = str(e)
     print("[health_snapshot] " + str(snap), flush=True)

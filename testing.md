@@ -1,3 +1,12 @@
+# Running the Test Suites
+
+```
+npm test               # Jest unit/browser suites under tests/ and tests-browser/
+npm run test:integration  # Integration target configured via jest.integration.config.js
+npm run test:py        # Python parity checks under fairchem_local_server2/tests_py
+npm run test:e2e       # Playwright WebSocket/DOM end-to-end coverage (serial execution)
+```
+
 # Ported Test Catalogue
 
 This catalogue tracks only the suites that are fully ported to the protobuf/WebSocket stack. Entries are grouped hierarchically so related coverage is easy to locate. For each test, the intent captures what the suite safeguards, and the implementation notes summarise how the current code exercises that behaviour.
