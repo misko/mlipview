@@ -186,6 +186,33 @@ viewerApi.debugGetSelection = () => selectionService.get();
 
 ---
 
+## `viewerApi.timeline`
+
+**Purpose:** Shallow timeline control surface for Playwright tests and debugging tooling.
+
+**Shape:**
+
+```js
+viewerApi.timeline = {
+  select: (offset) => handleTimelineOffsetRequest(offset),
+  play: (offset) => handleTimelinePlayRequest(offset ?? timelineState.offset),
+  pause: () => handleTimelinePauseRequest(),
+  live: () => handleTimelineLiveRequest(),
+  getState: () => ({
+    ...(timelineUi?.getState?.() || {}),
+    active: !!timelineState.active,
+    playing: !!timelineState.playing,
+    offset: timelineState.offset,
+  }),
+  getSignature: (offset) => frameBuffer.getSignature(offset ?? timelineState.offset),
+  getOffsets: () => frameBuffer.listOffsets(),
+};
+```
+
+**Used by:** Timeline Playwright suites to assert mode transitions, slider selection, energy marker behaviour, and buffer contents without reaching through DOM internals.
+
+---
+
 ## `viewerApi.debugWsState()`
 
 **Purpose:** Surface the recent websocket state transitions (connecting, reconnect scheduling, open/close, etc.) plus the reconnection banner state so tests can assert precise reconnect behaviour without scraping the DOM.

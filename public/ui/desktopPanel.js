@@ -493,6 +493,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
         #section-selection .grid { margin-top:8px; display:grid; grid-template-columns: repeat(10, 1fr); gap:4px; }
         #section-selection .pt-el { text-align:center; padding:0; border-radius:2px; border:1px solid var(--border); font-size:10px; color: var(--text); background:#171717; user-select:none; box-sizing:border-box; }
         #section-selection .pt-el.highlight { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+        #section-selection .pt-el.omol25 { background: linear-gradient(135deg, rgba(134, 174, 252, 0.32), rgba(79, 139, 255, 0.12)), #1d222b; color:#f2f6ff; border-color: rgba(134, 174, 252, 0.7); box-shadow: inset 0 0 0 1px rgba(134, 174, 252, 0.45); }
       `;
       document.head.appendChild(s);
     }
@@ -678,6 +679,12 @@ export function buildDesktopPanel({ attachTo } = {}) {
         #miniPeriodic td.pt-el { text-align:center; padding:0; height:18px; line-height:18px; font-size:10px; color: var(--text); background:#1b2027; border:1px solid rgba(255,255,255,0.08); box-sizing:border-box; cursor:pointer; user-select:none; }
         #miniPeriodic td.pt-el.empty { background:#232831; border:none; }
         #miniPeriodic td.pt-el.highlight { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+        #miniPeriodic td.pt-el.omol25 {
+          background: linear-gradient(135deg, rgba(134, 174, 252, 0.28), rgba(79, 139, 255, 0.08)) , #1f2531;
+          color: #f2f6ff;
+          border-color: rgba(134, 174, 252, 0.7);
+          box-shadow: inset 0 0 0 1px rgba(134, 174, 252, 0.45);
+        }
       `;
       document.head.appendChild(st);
     }
@@ -1159,6 +1166,10 @@ export function buildDesktopPanel({ attachTo } = {}) {
         if (sym) {
           td.setAttribute('data-symbol', sym);
           td.textContent = sym;
+          if (OMOL25_SET.has(sym)) {
+            td.classList.add('omol25');
+            td.setAttribute('title', `${sym} — available in OMol25`);
+          }
           td.addEventListener('click', () => {
             try {
               const api = getViewer();
@@ -1182,6 +1193,18 @@ export function buildDesktopPanel({ attachTo } = {}) {
       return tr;
     }
     PERIOD_ROWS.forEach((r) => miniBody.appendChild(makeRow(r)));
+    const lanthRow = new Array(18).fill('');
+    LANTH.forEach((sym, idx) => {
+      const col = idx + 2;
+      if (col < lanthRow.length) lanthRow[col] = sym;
+    });
+    const actinRow = new Array(18).fill('');
+    ACTIN.forEach((sym, idx) => {
+      const col = idx + 2;
+      if (col < actinRow.length) actinRow[col] = sym;
+    });
+    miniBody.appendChild(makeRow(lanthRow));
+    miniBody.appendChild(makeRow(actinRow));
 
     selSec.content.append(info, mini);
 

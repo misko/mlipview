@@ -356,6 +356,7 @@ function enableFeatureFlag(name, value = true) {
 const energyPlot = (() => {
   let series = []; // {i,E,kind}
   let last = undefined;
+  let markerIndex = null;
   let ctx = null, canvas = null, label = null;
 
   const init = () => {
@@ -370,30 +371,58 @@ const energyPlot = (() => {
     init(); if (!ctx) return;
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
-    if (series.length === 0) return;
-    if (series.length === 1) {
-      const p = series[0];
-      ctx.fillStyle = '#6fc2ff';       // ← restore dot color
-      ctx.beginPath();
-      ctx.arc(W / 2, H / 2, 3, 0, Math.PI * 2);
-      ctx.fill();
-      if (label) label.textContent = 'E steps=1';
+    if (series.length === 0) {
+      if (label) label.textContent = 'E steps=0';
       return;
     }
     let minE = Infinity, maxE = -Infinity;
     for (const p of series) { if (p.E < minE) minE = p.E; if (p.E > maxE) maxE = p.E; }
     if (maxE - minE < 1e-12) maxE = minE + 1e-12;
-    ctx.strokeStyle = '#6fc2ff';       // ← restore line color
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let k = 0; k < series.length; k++) {
-      const p = series[k];
-      const x = (k / (series.length - 1)) * (W - 4) + 2;
+    if (series.length === 1) {
+      const p = series[0];
+      const x = W / 2;
       const y = H - 2 - ((p.E - minE) / (maxE - minE)) * (H - 4);
-      if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      ctx.fillStyle = '#6fc2ff';
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.strokeStyle = '#6fc2ff';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let k = 0; k < series.length; k++) {
+        const p = series[k];
+        const x = (k / (series.length - 1)) * (W - 4) + 2;
+        const y = H - 2 - ((p.E - minE) / (maxE - minE)) * (H - 4);
+        if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
-    if (label) label.textContent = `E steps=${series.length} range=${(maxE - minE).toExponential(2)}`;
+    if (markerIndex != null && series.length) {
+      const idx = Math.max(0, Math.min(series.length - 1, markerIndex | 0));
+      const marker = series[idx];
+      const x = series.length === 1 ? W / 2 : (idx / (series.length - 1)) * (W - 4) + 2;
+      const y = H - 2 - ((marker.E - minE) / (maxE - minE)) * (H - 4);
+      ctx.save();
+      ctx.strokeStyle = '#ffd95e';
+      ctx.fillStyle = '#ffd95e';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 2]);
+      ctx.beginPath();
+      ctx.moveTo(x, 2);
+      ctx.lineTo(x, H - 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    if (label) {
+      const range = (maxE - minE);
+      const rangeLabel = range > 0 ? range.toExponential(2) : '0.00e+0';
+      label.textContent = `E steps=${series.length} range=${rangeLabel}`;
+    }
   };
 
   const push = (E, kind) => {
@@ -402,12 +431,28 @@ const energyPlot = (() => {
     const i = series.length; series.push({ i, E, kind }); last = E;
     setText('instEnergy', 'E: ' + E.toFixed(2));
     draw();
+    return i;
   };
 
-  const reset = () => { series = []; last = undefined; draw(); setText('instEnergy', 'E: —'); };
+  const reset = () => { series = []; last = undefined; markerIndex = null; draw(); setText('instEnergy', 'E: —'); };
   const length = () => series.length;
+  const setMarker = (idx) => {
+    if (!Number.isFinite(idx)) {
+      markerIndex = null;
+    } else {
+      markerIndex = Math.max(0, Math.min(series.length - 1, idx | 0));
+    }
+    draw();
+  };
+  const clearMarker = () => { markerIndex = null; draw(); };
+  const getMarker = () => {
+    if (markerIndex == null || !series.length) return null;
+    const idx = Math.max(0, Math.min(series.length - 1, markerIndex | 0));
+    const entry = series[idx] || {};
+    return { index: idx, energy: entry.E, length: series.length };
+  };
 
-  return { push, reset, length };
+  return { push, reset, length, setMarker, clearMarker, getMarker };
 })();
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -1414,6 +1459,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
     const exclude = forceAll ? null : buildExcludeSet();
     let applied = false;
+    let energyPlotIndex = null;
     if (Array.isArray(frame.positions) && frame.positions.length === state.positions.length) {
       applyTriples(state, frame.positions, { exclude, forceAll });
       __suppressNextPosChange = true;
@@ -1455,7 +1501,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     }
 
     if (allowEnergyPlot && typeof energyValue === 'number' && Number.isFinite(energyValue)) {
-      energyPlot.push(energyValue, kind);
+      const pushedIndex = energyPlot.push(energyValue, kind);
+      if (Number.isFinite(pushedIndex)) {
+        energyPlotIndex = pushedIndex;
+      } else if (energyPlot.length() > 0) {
+        energyPlotIndex = energyPlot.length() - 1;
+      }
     } else if (typeof energyValue === 'number' && Number.isFinite(energyValue)) {
       setText('instEnergy', 'E: ' + energyValue.toFixed(2));
     }
@@ -1463,7 +1514,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (noteFrame) noteReqDone();
     if (updateUIC && isLive && uic > lastAppliedUIC) lastAppliedUIC = uic;
 
-    return { applied: applied || Number.isFinite(energyValue), energy: energyValue, uic };
+    return { applied: applied || Number.isFinite(energyValue), energy: energyValue, uic, energyIndex: energyPlotIndex };
   }
 
   function handleStreamFrame(kind, ws, frame) {
@@ -1478,7 +1529,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       updateUIC: true,
     });
     if (result?.applied) {
-      frameBuffer.record(kind, frame);
+      frameBuffer.record(kind, frame, { energyIndex: result.energyIndex });
       if (timelineUi) timelineUi.refresh();
     }
   }
@@ -1543,7 +1594,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     const entry = frameBuffer.getByOffset(offset);
     if (!entry) return false;
     timelineState.offset = offset;
-    applyFramePayload(entry.kind || 'idle', entry, {
+    const payloadResult = applyFramePayload(entry.kind || 'idle', entry, {
       isLive: false,
       allowEnergyPlot: false,
       forceAll: true,
@@ -1551,6 +1602,13 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       noteFrame: false,
       updateUIC: false,
     });
+    if (typeof entry.energyIndex === 'number') {
+      energyPlot.setMarker(entry.energyIndex);
+    } else if (typeof payloadResult?.energyIndex === 'number') {
+      energyPlot.setMarker(payloadResult.energyIndex);
+    } else {
+      energyPlot.clearMarker();
+    }
     if (timelineUi) timelineUi.setActiveOffset(offset);
     return true;
   }
@@ -1619,6 +1677,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     timelineState.suppressEnergy = false;
     setTimelineOverlayVisible(false);
     setTimelineInteractionLock(false);
+    energyPlot.clearMarker();
     timelineState.offset = -1;
     const resumeMode = timelineState.resumeMode;
     timelineState.resumeMode = null;
@@ -1646,7 +1705,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     const clamped = clampOffsetToBuffer(offset);
     if (clamped == null) return;
     if (!timelineState.active) {
-      enterTimelineMode(clamped);
+      const entered = enterTimelineMode(clamped);
+      if (!entered) return;
+      if (timelineState.offset !== clamped) {
+        pauseTimelinePlayback();
+        applyTimelineFrame(clamped);
+      }
       return;
     }
     pauseTimelinePlayback();
@@ -2421,6 +2485,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     resetToInitialPositions,
     refreshResetBaseline,
     debugEnergySeriesLength,
+    getEnergyMarker: () => energyPlot.getMarker(),
     debugRecordInteraction,
     manipulation: wrappedManipulation,
     scene,

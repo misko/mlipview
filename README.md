@@ -1,6 +1,12 @@
 # MLIPView
 
-MLIPView is a combined frontend and backend stack for exploring molecular systems with machine-learned interatomic potentials. The Babylon.js viewer renders atoms, bonds, forces, and VR overlays in real time, while a Ray Serve powered FastAPI backend streams idle, MD, and relax frames from UMA Fairchem models.
+MLIPView is UMA Fairchem’s reference workstation for interactively steering machine-learned interatomic potential (MLIP) simulations. A Babylon.js viewer renders atoms, bonds, energies, and VR overlays in real time while a Ray Serve–backed FastAPI service streams UMA predictions, handles user edits, and records a 500-frame timeline for rewind and playback. The project targets desktop, VR, and AR displays so computational chemists can inspect trajectories, adjust structures, and validate results from a single tool.
+
+Key capabilities:
+- Real-time idle, MD, and relax streaming with per-atom gating during drags and bond rotations.
+- Timeline mode with scrubbable history, retained energy markers, and read-only camera controls for investigating prior frames.
+- VR/AR support tailored for Meta Quest, including controller pick/rotate and HUD overlays.
+- Rich debugging surface (`viewerApi`) plus exhaustive Jest, Playwright, and pytest coverage to protect behaviour.
 
 ## Repository Guides
 
@@ -55,6 +61,7 @@ Key environment variables:
 - `UMA_DEVICE=cuda|cpu` – override predictor device selection.
 
 The server exposes WebSocket `/ws` plus JSON health endpoints under `http://127.0.0.1:8000/serve`.
+The WebSocket is protobuf-only; the viewer auto-generates the required stubs via `npm run gen:proto:js`.
 
 ## Running the Frontend
 

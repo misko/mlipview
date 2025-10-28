@@ -7,9 +7,7 @@ Single-connection WebSocket API for UMA+ASE simulations.
 - `WS /ws`: single WebSocket per session
 
 ## Message protocol
-Default: JSON objects matching Pydantic models in `session_models.py`.
-Optional: Protobuf frames if client sends binary messages using `session.proto`.
-The server auto-detects: binary → protobuf, text → JSON.
+The server is protobuf-only. Clients must send binary `ClientAction` payloads encoded with `session.proto`. Text frames are ignored and logged, which matches the viewer’s streaming workload.
 
 ClientAction fields:
 - `seq` (int), `ack` (int | null), `type` ("init_system" | "update_positions" | "start_simulation" | "stop_simulation" | "ping")
@@ -33,7 +31,7 @@ python -m grpc_tools.protoc \
   fairchem_local_server2/session.proto
 ```
 
-This creates `fairchem_local_server2/session_pb2.py`. The server will use it automatically if available.
+This creates `fairchem_local_server2/session_pb2.py`. The server imports it automatically when present on the module path.
 
 ## Deploy
 Use the entrypoint:

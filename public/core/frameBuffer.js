@@ -79,7 +79,7 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
   let count = 0;
   let nextId = 1;
 
-  function record(kind, frame) {
+  function record(kind, frame, meta = {}) {
     if (!frame || !Array.isArray(frame.positions) || frame.positions.length === 0) {
       return null;
     }
@@ -101,6 +101,7 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
         ? (frame.userInteractionCount ?? frame.user_interaction_count)
         : null;
     const seq = isFiniteNumber(frame.seq) ? frame.seq : 0;
+    const energyIndex = Number.isFinite(meta.energyIndex) ? (meta.energyIndex | 0) : null;
 
     store[head] = {
       id,
@@ -116,6 +117,7 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
       temperature: isFiniteNumber(frame.temperature) ? frame.temperature : null,
       stress: Array.isArray(frame.stress) ? cloneScalars(frame.stress) : null,
       signature: toSignature(pos),
+      energyIndex,
     };
 
     return { id, offset: -1 };
@@ -151,6 +153,7 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
       temperature: entry.temperature,
       stress: entry.stress ? entry.stress.map((row) => row.slice()) : null,
       signature: entry.signature,
+      energyIndex: entry.energyIndex != null ? entry.energyIndex : null,
       positions: fromFloat32Array(entry.positions),
       velocities: entry.velocities ? fromFloat32Array(entry.velocities) : null,
       forces: entry.forces ? fromFloat32Array(entry.forces) : null,

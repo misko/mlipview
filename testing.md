@@ -38,6 +38,8 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
   - `ws-timeline-visibility.spec.js`: Checks hover reveal of the dock, overlay styling, and the live-resume path.
   - `ws-timeline-replay.spec.js`: Scrubs to historical frames, verifies signatures remain stable, and confirms playback returns to live streaming.
   - `ws-timeline-camera.spec.js`: Scrubs history, dispatches pointer and wheel gestures, and confirms camera rotation/zoom stay responsive while geometry edits remain blocked.
+  - `ws-timeline-energy-marker.spec.js`: Enters timeline playback and asserts the energy plot displays (and clears) the playback marker.
+  - `ws-timeline-slider-select.spec.js`: Clicks a single slider position and waits for timeline mode to activate on the requested offset (guards against the historical double-click requirement).
 
 ## Jest Suites (`tests/x-*.spec.js`)
 
@@ -50,6 +52,7 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
   - `x-pbc-long-bond-crossing.dom.spec.js`: Rebuilds bonds for a sample long-bond structure and checks thin-instance counts match expectations without double counting.
   - `x-pbc-long-bond-crossing-x.dom.spec.js`: Variant covering X-direction wrapping, validating midpoint diagnostics line up with wrapped coordinates.
   - `x-periodic-monoclinic-ui.dom.spec.js`: Renders the periodic section, seeds a monoclinic cell into `viewer.state`, and confirms lattice lengths/angles display correctly.
+  - `x-periodic-omol25.dom.spec.js`: Ensures all OMOL25 elements render with their highlight class inside the mini periodic table while non-eligible elements remain unstyled.
   - `x-ui-pbc-bond-break-no-artifact.dom.spec.js`: Breaks a bond under PBC and asserts the scene graph contains no stray meshes at the origin.
 
 - **Molecule Loading & Rendering**

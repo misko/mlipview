@@ -19,6 +19,7 @@
 
 ## Protocol handling
 - **Transport**: protobuf-only WebSocket (`session.proto`). Text frames are ignored. ServerResult frames contain either `frame` (positions/forces/etc.) or `notice` messages like `WAITING_FOR_ACK`.
+- **Timeline coordination**: the viewer acknowledges the latest live frame before entering timeline mode so the server does not stall on backpressure when streaming resumes.
 - **Sequencing**: every outbound frame increments `state.server_seq`. Client-provided `seq`/`ack` update `state.client_seq` and `state.client_ack`. Backpressure triggers when `server_seq - client_ack >= max_unacked` (default 10).
 - **Correlation counters**: frontend `user_interaction_count` and `sim_step` are echoed back to support per-atom gating on the client. Simulation frames capture a UIC snapshot at step start.
 - **Full snapshot flag**: `UserInteractionSparse.full_update` is a required field (explicit presence via proto oneof). Idle or running paths reject payloads that omit the flag with `PROTO_VIOLATION`.

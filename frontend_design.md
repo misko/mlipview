@@ -1,10 +1,10 @@
 # Frontend Architecture (current)
 
 ## Entry point & initialization
-- `public/index.js` exports `initNewViewer(canvas, initialData)`, which bootstraps the Babylon.js scene, Molecule state, services, and WebSocket wiring.
+- `public/index.js` exports `initNewViewer(canvas, initialData)`, which bootstraps the Babylon.js scene, Molecule state, services, the timeline dock, and WebSocket wiring.
 - On load it normalizes runtime configuration (drag throttles, min step interval, temperature defaults) via `window.__MLIP_CONFIG`.
 - `createMoleculeState()` (domain/moleculeState.js) builds the authoritative state object holding elements, position vectors, cell metadata, event bus, and version counters.
-- Initial geometry is clamped into a "safe sphere" if configured, baseline energy/forces are fetched, and optional initial cell snapshots are stored for reset.
+- Initial geometry is clamped into a "safe sphere" if configured, baseline energy/forces are fetched, timeline history is seeded, and optional initial cell snapshots are stored for reset.
 
 ## Domain services & event flow
 - **Event bus**: the Molecule state exposes `bus` with `positionsChanged`, `forcesChanged`, `bondsChanged`, `selectionChanged`, etc. All render/UI modules subscribe to these events.
@@ -38,8 +38,14 @@
 - **Manual steps**: `doOneStepViaWS(kind)` ensures a position upload occurs (including velocities when fresh), calls `requestSingleStep`, applies positions from the response, and updates dynamics metadata.
 - **Continuous streaming**:
   - `startContinuous()` sets `running.kind` (`md` or `relax`), sends `startSimulation`, and subscribes to WS frames.
-  - `handleStreamFrame(kind, ws, frame)` applies positions (respecting per-atom gating), updates forces/energy/temperature, pushes energy to the plot, acks the sequence, and updates `lastAppliedUIC`.
-  - `stopSimulation()` sends STOP, updates UI state, clears bond latches, and reinstates idle compute listeners.
+- `handleStreamFrame(kind, ws, frame)` records the frame into the timeline buffer, then applies positions (respecting per-atom gating), updates forces/energy/temperature, pushes energy to the plot, acks the sequence, and updates `lastAppliedUIC`.
+- `stopSimulation()` sends STOP, updates UI state, clears bond latches, and reinstates idle compute listeners.
+
+### Timeline controller
+- `createFrameBuffer()` powers the timeline history (bonded to a 500 frame capacity by default).
+- `installTimeline()` builds the UI dock (`timeline.js`), exposes `viewerApi.timeline`, and wires button/slider callbacks to `handleTimelineOffsetRequest`, `handleTimelinePlayRequest`, and `handleTimelineLiveRequest`.
+- Timeline mode introduces a modal state (`Mode.Timeline`) that disables molecule editing while keeping camera controls active. The overlay and manipulation facade enforce the read-only policy until `resumeLiveFromTimeline()` runs.
+- Pointer-driven scrubbing maps screen coordinates to stored offsets, ensuring one click selects the intended frame; tests cover the mapping via `ws-timeline-slider-select.spec.js`.
 
 ## Interaction gating & latching
 - Dragging atoms adds their indices to `draggingAtoms`; on release the viewer sends a full `positions` update and records the indices in `modifiedByVersion`.
@@ -50,6 +56,7 @@
 ## UI & state synchronization
 - Desktop panel controls (temperature slider, MD/Relax buttons, toggles) call into exported orchestration helpers that adjust `cfg` values, call `startContinuous`, `mdStep`, `relaxStep`, or `stopSimulation`.
 - Temperature display (`instTemp`) and forces toggle respond to bus events and WS frames.
+- Timeline controls expose `viewerApi.timeline` helpers for Playwright and debugging, including `getState()` and `getSignature(offset)`.
 - Optional test hooks (`window.__WS_TEST_HOOK__`, `setTestHook`) allow integration and E2E tests to inspect outgoing/incoming WS messages without modifying runtime logic.
 - Reconnect banner uses `showErrorBanner` / `hideErrorBanner` to present loss-of-connection status; `reconnectNow` triggers an immediate `ensureConnected`.
 

@@ -61,7 +61,7 @@ function injectStyles() {
       content: '\\23F1';
       position: relative;
       bottom: -16px;
-      font-size: 48px;
+      font-size: 36px;
       font-weight: 700;
       color: rgba(228, 236, 255, 0.65);
       text-shadow: 0 -1px 2px rgba(0, 0, 0, 0.45);
@@ -239,6 +239,10 @@ export function installTimeline({
   let mode = MODE_LIVE;
   let activeOffset = -1;
   let minOffset = -capacity;
+  let pointerScrubActive = false;
+  let offsetList = [];
+  let pendingPointerOffset = null;
+  let ignoreNextChange = false;
 
   const setVisible = (visible) => {
     dock.dataset.visible = visible ? 'true' : 'false';
@@ -288,12 +292,14 @@ export function installTimeline({
       slider.value = '-1';
       activeOffset = -1;
       minOffset = -capacity;
+      offsetList = [];
       return;
     }
     slider.disabled = false;
     minOffset = offsets[offsets.length - 1];
     slider.min = String(minOffset);
     slider.max = '-1';
+    offsetList = offsets.slice();
     const current = typeof getActiveOffset === 'function' ? getActiveOffset() : null;
     if (Number.isFinite(current)) {
       setActiveOffset(current);
@@ -311,14 +317,60 @@ export function installTimeline({
     }
   }
 
+  function offsetFromClientX(clientX) {
+    const rect = slider.getBoundingClientRect();
+    if (!rect || rect.width === 0) return Number(slider.value);
+    if (!offsetList.length) return Number(slider.value);
+    const clampedX = Math.min(rect.right, Math.max(rect.left, clientX));
+    const ratio = (clampedX - rect.left) / rect.width;
+    const idx = Math.round((offsetList.length - 1) * (1 - ratio));
+    const boundedIdx = Math.max(0, Math.min(offsetList.length - 1, idx));
+    return Number(offsetList[boundedIdx]);
+  }
+
+  slider.addEventListener('pointerdown', (evt) => {
+    pointerScrubActive = true;
+    try { slider.setPointerCapture?.(evt.pointerId); } catch { }
+    if (typeof evt.preventDefault === 'function') evt.preventDefault();
+    const nextOffset = offsetFromClientX(evt.clientX);
+    pendingPointerOffset = nextOffset;
+    slider.value = String(nextOffset);
+    handleOffsetRequest(nextOffset, { kind: 'slider-pointerdown' });
+  });
+
+  slider.addEventListener('pointermove', (evt) => {
+    if (!pointerScrubActive) return;
+    if (typeof evt.preventDefault === 'function') evt.preventDefault();
+    const nextOffset = offsetFromClientX(evt.clientX);
+    pendingPointerOffset = nextOffset;
+    slider.value = String(nextOffset);
+    handleOffsetRequest(nextOffset, { kind: 'slider-pointermove' });
+  });
+
   slider.addEventListener('change', (evt) => {
+    if (ignoreNextChange) {
+      ignoreNextChange = false;
+      return;
+    }
     const value = Number(evt.target.value);
     handleOffsetRequest(value, { kind: 'slider' });
   });
 
-  slider.addEventListener('pointerup', (evt) => {
-    const value = Number(slider.value);
+  const finishPointerScrub = (evt) => {
+    if (!pointerScrubActive) return;
+    pointerScrubActive = false;
+    try { slider.releasePointerCapture?.(evt.pointerId); } catch { }
+    if (typeof evt.preventDefault === 'function') evt.preventDefault();
+    const value = offsetFromClientX(evt.clientX ?? evt.pageX ?? 0);
+    pendingPointerOffset = null;
+    slider.value = String(value);
     handleOffsetRequest(value, { kind: 'slider-pointerup' });
+    ignoreNextChange = true;
+  };
+
+  slider.addEventListener('pointerup', finishPointerScrub);
+  slider.addEventListener('pointercancel', () => {
+    pointerScrubActive = false;
   });
 
   playBtn.addEventListener('click', () => {
