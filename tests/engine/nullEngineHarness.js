@@ -10,11 +10,31 @@ try {
 } catch (e) {
   // Fallback: use existing global BABYLON mocks if core not installed.
   if (global.BABYLON) {
-    NullEngine = class { constructor(){ this.fps=60; } runRenderLoop(cb){ cb(); } stopRenderLoop(){} getFps(){ return this.fps; } dispose(){} };
-    Scene = class { constructor(){ this.meshes=[]; } render(){} dispose(){} };
+    NullEngine = class {
+      constructor() {
+        this.fps = 60;
+      }
+      runRenderLoop(cb) {
+        cb();
+      }
+      stopRenderLoop() {}
+      getFps() {
+        return this.fps;
+      }
+      dispose() {}
+    };
+    Scene = class {
+      constructor() {
+        this.meshes = [];
+      }
+      render() {}
+      dispose() {}
+    };
     MeshBuilder = global.BABYLON.MeshBuilder;
   } else {
-    throw new Error('NullEngine harness requires either @babylonjs/core or the global BABYLON mock.');
+    throw new Error(
+      'NullEngine harness requires either @babylonjs/core or the global BABYLON mock.'
+    );
   }
 }
 

@@ -6,52 +6,69 @@ import { base64DecodeUtf8 } from '../ui/moleculeSelect.js';
 import { showErrorBanner } from '../ui/errorBanner.js';
 import { getCellParameters, isMonoclinicByParams, tryPermuteToMonoclinic } from './pbc.js';
 
-export function getRequestedMoleculeFromUrl(win){
+export function getRequestedMoleculeFromUrl(win) {
   try {
-    const w = win || (typeof globalThis!=='undefined' && globalThis.window) || (typeof window!=='undefined' ? window : undefined);
-    if(!w || !w.location) return null;
-    const q = new URLSearchParams(w.location.search||'');
+    const w =
+      win ||
+      (typeof globalThis !== 'undefined' && globalThis.window) ||
+      (typeof window !== 'undefined' ? window : undefined);
+    if (!w || !w.location) return null;
+    const q = new URLSearchParams(w.location.search || '');
     const mol = q.get('mol');
-    if(!mol) return null;
+    if (!mol) return null;
     // crude allowlist: only allow paths under molecules/
-    if(/^molecules\/[\w.-]+\.xyz$/i.test(mol)) return mol;
+    if (/^molecules\/[\w.-]+\.xyz$/i.test(mol)) return mol;
   } catch {}
   return null;
 }
 
-export function getRequestedMolXYZFromUrl(win){
+export function getRequestedMolXYZFromUrl(win) {
   try {
-    const w = win || (typeof globalThis!=='undefined' && globalThis.window) || (typeof window!=='undefined' ? window : undefined);
-    if(!w || !w.location) return null;
-    const q = new URLSearchParams(w.location.search||'');
+    const w =
+      win ||
+      (typeof globalThis !== 'undefined' && globalThis.window) ||
+      (typeof window !== 'undefined' ? window : undefined);
+    if (!w || !w.location) return null;
+    const q = new URLSearchParams(w.location.search || '');
     const b64 = q.get('molxyz');
-    if(!b64) return null;
+    if (!b64) return null;
     return b64;
   } catch {}
   return null;
 }
 
-export function getRequestedSmilesFromUrl(win){
+export function getRequestedSmilesFromUrl(win) {
   try {
-    const w = win || (typeof globalThis!=='undefined' && globalThis.window) || (typeof window!=='undefined' ? window : undefined);
-    if(!w || !w.location) return null;
-    const q = new URLSearchParams(w.location.search||'');
+    const w =
+      win ||
+      (typeof globalThis !== 'undefined' && globalThis.window) ||
+      (typeof window !== 'undefined' ? window : undefined);
+    if (!w || !w.location) return null;
+    const q = new URLSearchParams(w.location.search || '');
     const s = q.get('smiles');
-    if(!s) return null;
-    if(isLikelySmiles(s)) return s;
+    if (!s) return null;
+    if (isLikelySmiles(s)) return s;
   } catch {}
   return null;
 }
 
-function toAbsolute(url){
+function toAbsolute(url) {
   try {
     // If already absolute, new URL will succeed and return as-is
-    const origin = (typeof globalThis!=='undefined' && globalThis.window && globalThis.window.location && globalThis.window.location.origin)
-      ? globalThis.window.location.origin
-      : ((typeof window!=='undefined' && window.location && window.location.origin) ? window.location.origin : 'http://localhost');
+    const origin =
+      typeof globalThis !== 'undefined' &&
+      globalThis.window &&
+      globalThis.window.location &&
+      globalThis.window.location.origin
+        ? globalThis.window.location.origin
+        : typeof window !== 'undefined' && window.location && window.location.origin
+          ? window.location.origin
+          : 'http://localhost';
     const u = new URL(url, origin);
     return u.toString();
-  } catch { return url; }
+  } catch {
+    return url;
+  }
 }
 
 export async function fetchXYZ(url) {
@@ -70,10 +87,12 @@ export async function loadXYZIntoViewer(viewerApi, url) {
   return applyParsedToViewer(viewerApi, parsed);
 }
 
-export function applyParsedToViewer(viewerApi, parsed){
+export function applyParsedToViewer(viewerApi, parsed) {
   const valid = validateParsedXYZ(parsed);
   if (!valid.ok) {
-    try { showErrorBanner(`Load blocked: ${valid.error || 'Validation failed'}`); } catch {}
+    try {
+      showErrorBanner(`Load blocked: ${valid.error || 'Validation failed'}`);
+    } catch {}
     throw new Error(valid.error || 'Validation failed');
   }
   // Preprocess cell: ensure monoclinic (alpha=gamma=90). If not, attempt permutation; else drop with error.
@@ -87,7 +106,9 @@ export function applyParsedToViewer(viewerApi, parsed){
           toApply.cell = mono;
         } else {
           toApply = { ...toApply, cell: null };
-          try { showErrorBanner('Provided cell is not monoclinic; loading without cell'); } catch {}
+          try {
+            showErrorBanner('Provided cell is not monoclinic; loading without cell');
+          } catch {}
         }
       }
     } catch {}
@@ -98,7 +119,9 @@ export function applyParsedToViewer(viewerApi, parsed){
       // When XYZ provides a valid cell, enable the periodic cell visual and ghost images by default
       viewerApi.state.showCell = true;
       // Keep ghosts in sync with periodic visibility so adjacent images render immediately
-      try { viewerApi.state.showGhostCells = true; } catch {}
+      try {
+        viewerApi.state.showGhostCells = true;
+      } catch {}
     }
   } catch {}
   applyXYZToState(viewerApi.state, toApply);
@@ -110,8 +133,13 @@ export function applyParsedToViewer(viewerApi, parsed){
       // When a valid cell is provided by XYZ, show periodic cell by default and notify UI
       viewerApi.state.showCell = true;
       // Also ensure ghost cells are ON so ghost atoms/bonds render without user interaction
-      try { viewerApi.state.showGhostCells = true; } catch {}
-      try { if (typeof viewerApi.state.markCellChanged === 'function') viewerApi.state.markCellChanged(); } catch {}
+      try {
+        viewerApi.state.showGhostCells = true;
+      } catch {}
+      try {
+        if (typeof viewerApi.state.markCellChanged === 'function')
+          viewerApi.state.markCellChanged();
+      } catch {}
     }
   } catch {}
   // Temperature: set global and state default if provided
@@ -134,8 +162,15 @@ export function applyParsedToViewer(viewerApi, parsed){
   try {
     const st = viewerApi.state;
     if (Array.isArray(st?.positions)) {
-      st.__initialPositions = st.positions.map(p=>({ x:p.x, y:p.y, z:p.z }));
-      try { console.log('[loader] cached initial positions', { count: st.__initialPositions.length }); } catch {}
+      st.__initialPositions = st.positions.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+      try {
+        console.log('[loader] cached initial positions', { count: st.__initialPositions.length });
+      } catch {}
+    }
+  } catch {}
+  try {
+    if (typeof viewerApi.refreshResetBaseline === 'function') {
+      viewerApi.refreshResetBaseline('moleculeLoader');
     }
   } catch {}
   viewerApi.recomputeBonds();
@@ -153,7 +188,9 @@ export async function loadDefault(viewerApi) {
       applyParsedToViewer(viewerApi, parsed);
       return { file: 'inline.xyz', parsed };
     }
-  } catch (e) { console.warn('[moleculeLoader] inline molxyz failed', e); }
+  } catch (e) {
+    console.warn('[moleculeLoader] inline molxyz failed', e);
+  }
   try {
     const smi = getRequestedSmilesFromUrl();
     if (smi) {
@@ -162,7 +199,9 @@ export async function loadDefault(viewerApi) {
       applyParsedToViewer(viewerApi, parsed);
       return { file: `smiles:${smi}`, parsed };
     }
-  } catch (e) { console.warn('[moleculeLoader] smiles load failed', e); }
+  } catch (e) {
+    console.warn('[moleculeLoader] smiles load failed', e);
+  }
   // If URL requested a specific molecule file, honor it
   const requested = getRequestedMoleculeFromUrl();
   if (requested) {
@@ -174,10 +213,14 @@ export async function loadDefault(viewerApi) {
     }
   }
   // Default order: ROY then Benzene as fallback
-  const candidates = ['molecules/roy.xyz','molecules/benzene.xyz'];
+  const candidates = ['molecules/roy.xyz', 'molecules/benzene.xyz'];
   for (const c of candidates) {
-    try { const parsed = await loadXYZIntoViewer(viewerApi, c); return { file:c, parsed }; }
-    catch (e) { console.warn('[moleculeLoader] failed', c, e); }
+    try {
+      const parsed = await loadXYZIntoViewer(viewerApi, c);
+      return { file: c, parsed };
+    } catch (e) {
+      console.warn('[moleculeLoader] failed', c, e);
+    }
   }
   throw new Error('All default molecule loads failed');
 }

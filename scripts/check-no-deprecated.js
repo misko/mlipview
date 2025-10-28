@@ -9,7 +9,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const DEPRECATED = 'public_to_be_deleted';
 
-function walk(dir, acc=[]) {
+function walk(dir, acc = []) {
   for (const entry of fs.readdirSync(dir)) {
     if (entry.startsWith('.')) continue;
     const full = path.join(dir, entry);
@@ -38,7 +38,9 @@ for (const rel of walk(ROOT)) {
 }
 
 if (failed) {
-  console.error('\n[DEPRECATED GUARD] One or more references to the deprecated folder were found. Please remove them.');
+  console.error(
+    '\n[DEPRECATED GUARD] One or more references to the deprecated folder were found. Please remove them.'
+  );
   process.exit(1);
 } else {
   console.log('[DEPRECATED GUARD] OK: no references to', DEPRECATED);

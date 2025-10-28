@@ -6,7 +6,8 @@ let __hideTimer = null;
 
 function ensureBanner() {
   if (__bannerEl && __bannerEl.parentNode) return __bannerEl;
-  const host = (typeof document !== 'undefined') ? (document.getElementById('app') || document.body) : null;
+  const host =
+    typeof document !== 'undefined' ? document.getElementById('app') || document.body : null;
   if (!host) return null;
   const el = document.createElement('div');
   el.id = 'mlip-top-error-banner';
@@ -30,22 +31,52 @@ function ensureBanner() {
   return __bannerEl;
 }
 
+export function hideErrorBanner() {
+  if (!__bannerEl) return;
+  try {
+    __bannerEl.style.transform = 'translateY(-100%)';
+    __bannerEl.style.opacity = '0.0';
+    if (__hideTimer) clearTimeout(__hideTimer);
+  } catch {}
+  __hideTimer = null;
+}
+
 export function showErrorBanner(message, opts = {}) {
   try {
     const el = ensureBanner();
     if (!el) return;
-    el.textContent = String(message || 'Error');
+    if (opts.html) {
+      el.innerHTML = opts.html;
+    } else {
+      el.textContent = String(message || 'Error');
+    }
+    if (opts.className) {
+      el.className = opts.className;
+    } else {
+      el.className = '';
+    }
     // Show (slide down)
     el.style.transform = 'translateY(0)';
     el.style.opacity = '0.98';
+    if (typeof opts.onRender === 'function') {
+      try { opts.onRender(el); } catch {}
+    }
+    const persist = !!opts.persist;
     const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 4000;
     if (__hideTimer) { clearTimeout(__hideTimer); __hideTimer = null; }
-    __hideTimer = setTimeout(() => {
-      try {
-        el.style.transform = 'translateY(-100%)';
-        el.style.opacity = '0.0';
-      } catch {}
-    }, Math.max(500, timeoutMs));
+    if (!persist) {
+      __hideTimer = setTimeout(
+        () => {
+          try {
+            el.style.transform = 'translateY(-100%)';
+            el.style.opacity = '0.0';
+          } catch {}
+        },
+        Math.max(500, timeoutMs)
+      );
+    } else {
+      __hideTimer = null;
+    }
   } catch {}
 }
 
@@ -55,4 +86,6 @@ export function showInfoBanner(message, opts = {}) {
 }
 
 // Expose globally for ad-hoc use/debug
-try { if (typeof window !== 'undefined') window.showErrorBanner = showErrorBanner; } catch {}
+try {
+  if (typeof window !== 'undefined') window.showErrorBanner = showErrorBanner;
+} catch {}

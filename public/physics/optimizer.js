@@ -32,7 +32,9 @@ export function createOptimizer(simState, { forceProvider, settings = {} }) {
   function maxForceMag(flatF) {
     let m = 0;
     for (let i = 0; i < flatF.length; i += 3) {
-      const fx = flatF[i], fy = flatF[i + 1], fz = flatF[i + 2];
+      const fx = flatF[i],
+        fy = flatF[i + 1],
+        fz = flatF[i + 2];
       const mag = Math.hypot(fx, fy, fz);
       if (mag > m) m = mag;
     }
@@ -44,12 +46,19 @@ export function createOptimizer(simState, { forceProvider, settings = {} }) {
     // Build positions array for provider
     const coords = [];
     for (let i = 0; i < n; i++) coords.push([pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]]);
-    const cell = simState.box ? [
-      [simState.box.a.x, simState.box.a.y, simState.box.a.z],
-      [simState.box.b.x, simState.box.b.y, simState.box.b.z],
-      [simState.box.c.x, simState.box.c.y, simState.box.c.z],
-    ] : null;
-    const { energy, forces, stress } = await forceProvider.compute({ elements: Array.from(simState.Z), positions: coords, cell, wantStress: opts.wantStress });
+    const cell = simState.box
+      ? [
+          [simState.box.a.x, simState.box.a.y, simState.box.a.z],
+          [simState.box.b.x, simState.box.b.y, simState.box.b.z],
+          [simState.box.c.x, simState.box.c.y, simState.box.c.z],
+        ]
+      : null;
+    const { energy, forces, stress } = await forceProvider.compute({
+      elements: Array.from(simState.Z),
+      positions: coords,
+      cell,
+      wantStress: opts.wantStress,
+    });
     // Flatten forces (negative gradient of energy w.r.t positions)
     const flatF = flattenForces(forces);
     const maxF = maxForceMag(flatF);
@@ -68,9 +77,13 @@ export function createOptimizer(simState, { forceProvider, settings = {} }) {
         direction = flatF.slice();
       } else {
         // Fletcher-Reeves beta = (g_k^T g_k) / (g_{k-1}^T g_{k-1}) where g = -F; here F already acts like -grad, so use F magnitude.
-        let num = 0, denom = 0;
-        for (let i = 0; i < flatF.length; i++) { num += flatF[i] * flatF[i]; denom += prevGradient[i] * prevGradient[i]; }
-        const beta = denom > 0 ? (num / denom) : 0;
+        let num = 0,
+          denom = 0;
+        for (let i = 0; i < flatF.length; i++) {
+          num += flatF[i] * flatF[i];
+          denom += prevGradient[i] * prevGradient[i];
+        }
+        const beta = denom > 0 ? num / denom : 0;
         for (let i = 0; i < flatF.length; i++) {
           direction[i] = flatF[i] + beta * direction[i];
         }

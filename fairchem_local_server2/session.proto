@@ -1,0 +1,121 @@
+syntax = "proto3";
+package fairchem.session;
+
+// 3x3 matrix, row-major order (m[0..8] = rows concatenated)
+message Mat3 { repeated double m = 1 [packed = true]; }
+
+// Simulation parameters (all numeric fields are double for consistency)
+message SimulationParams {
+  string calculator = 1; // "uma" or "lj"
+  // MD
+  double temperature = 2;
+  double timestep_fs = 3;
+  double friction = 4;
+  // Relax
+  double fmax = 5;
+  double max_step = 6;
+  string optimizer = 7;
+}
+
+// Optional wrapper for flat arrays (row-major and packed)
+message SystemArrays {
+  // Each array represents shape (N,3), row-major flattened.
+  repeated double positions = 1 [packed = true];
+  repeated double velocities = 2 [packed = true];
+  repeated double forces = 3 [packed = true];
+}
+
+// Sparse deltas for vector fields
+message Vec3Delta {
+  repeated uint32 indices = 1; // indices of atoms updated
+  repeated double coords = 2;  // 3*len(indices) row-major triples
+}
+
+message IntDelta {
+  repeated uint32 indices = 1; // indices of atoms updated
+  repeated uint32 values = 2;  // values per index (e.g., atomic numbers)
+}
+
+// Sparse user interaction payload
+message UserInteractionSparse {
+  uint32 natoms = 1;          // total number of atoms, when resizing
+  IntDelta atomic_numbers = 2;         // per-index Z updates
+  Vec3Delta positions = 3;             // per-index position updates
+  Vec3Delta velocities = 4;            // per-index velocity updates
+  optional Mat3 cell = 5;              // full 3x3 cell matrix
+  oneof full_update_flag {
+    bool full_update = 6; // must be explicitly set (true for full snapshot, false otherwise)
+  }
+
+  // Historical compat: some codegen embeds Mat3 nested; keep shape identical
+  message Mat3 { repeated double m = 1 [packed = true]; }
+}
+
+message ClientAction {
+  // Required transport sequencing
+  uint64 seq = 1;
+  optional uint64 ack = 2;
+
+  // Frontend state correlation
+  optional uint64 user_interaction_count = 30;
+  optional uint64 sim_step = 31;
+
+  // Oneof payload for action type
+  oneof payload {
+    // Frontend-origin state change / initialization (sparse)
+    UserInteractionSparse user_interaction = 10;
+    // Start a simulation (MD/RELAX)
+    Start start = 11;
+    // Stop the running simulation
+    Stop stop = 12;
+  }
+
+  // Incremented when protocol changes; allows client/server gating
+  uint32 schema_version = 100;
+
+  message Start {
+    enum SimType { MD = 0; RELAX = 1; }
+    SimType simulation_type = 1;
+    SimulationParams simulation_params = 2;
+  }
+
+  message Stop {}
+}
+
+message ServerResult {
+  // Increasing sequence from server
+  uint64 seq = 1;
+  // Mirror last seen client seq
+  optional uint64 client_seq = 2;
+
+  // Echo/correlation fields for frontend state
+  optional uint64 user_interaction_count = 30;
+  optional uint64 sim_step = 31; // increments per produced frame
+
+  // Oneof payload for server message
+  oneof payload {
+    Frame frame = 10;   // Simulation data frame
+    Notice notice = 11; // Text/flags-only
+  }
+
+  // Incremented when protocol changes; allows client/server gating
+  uint32 schema_version = 100;
+
+  message Frame {
+    // Flat packed arrays, shape (N,3)
+    repeated double positions = 1 [packed = true];
+    repeated double velocities = 2 [packed = true];
+    repeated double forces = 3 [packed = true];
+    optional Mat3 cell = 4;
+    optional Mat3 stress = 5; // 3x3, row-major
+    optional double energy = 6;
+    // Optional instantaneous MD metrics (when applicable)
+    optional double temperature = 7; // K
+    optional double kinetic = 8;     // eV (kinetic energy)
+  }
+
+  message Notice {
+    optional string message = 1;
+    optional bool simulation_stopped = 2;
+  }
+}

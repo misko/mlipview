@@ -23,7 +23,7 @@ Then access via: `https://localhost:8443/vr.html` (instead of HTTP)
 ### 2. Meta Quest Browser Settings
 
 1. **Update Browser**: Ensure you're using the latest Oculus Browser
-2. **Enable WebXR**: 
+2. **Enable WebXR**:
    - Go to `oculus://settings` or browser settings
    - Enable "WebXR" in experimental features
    - Enable "WebGL" if not already enabled
@@ -57,12 +57,12 @@ If you can enter VR but see only black:
 
 **NEW Debug Features Added:**
 
-1. **On-Device Debug Console**: 
+1. **On-Device Debug Console**:
    - Click "Show Debug" button before entering VR
    - Press F12 or Ctrl+Shift+I to toggle debug console
    - Press Ctrl+D to run scene diagnostics
 
-2. **Debug Bookmarklets**: 
+2. **Debug Bookmarklets**:
    - Visit `https://localhost:8443/debug-bookmarklets.html`
    - Bookmark the debug tools for easy access in VR
    - Use "Emergency Lighting" if scene is too dark
@@ -133,6 +133,7 @@ The following fixes were implemented:
 ## Production Deployment
 
 For production use:
+
 1. Use proper SSL certificates from a trusted CA (Let's Encrypt, etc.)
 2. Set up proper domain with HTTPS
 3. Ensure WebXR permissions are handled correctly
@@ -141,6 +142,7 @@ For production use:
 ## Testing VR Features
 
 Once VR is working:
+
 - **Controllers**: Point and click to select bonds
 - **Rotation**: Hold trigger and rotate controller to modify molecular bonds
 - **UI**: Use squeeze button to toggle VR interface

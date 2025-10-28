@@ -1,24 +1,24 @@
 // Single Cell toggle control: toggles both cell box visibility and ghost cells.
 // Usage: initCellToggle({ getViewer })
 
-function labelFor(state){
+function labelFor(state) {
   const on = !!(state && (state.showCell || state.showGhostCells));
   return on ? 'Cell OFF' : 'Cell ON';
 }
 
-export function initCellToggle({ getViewer }){
+export function initCellToggle({ getViewer }) {
   const btn = document.getElementById('btnCell');
-  if(!btn) return;
-  function refresh(){
+  if (!btn) return;
+  function refresh() {
     try {
       const v = getViewer && getViewer();
       const st = v && v.state;
       btn.textContent = labelFor(st);
     } catch {}
   }
-  btn.addEventListener('click', ()=>{
+  btn.addEventListener('click', () => {
     const v = getViewer && getViewer();
-    if(!v) return;
+    if (!v) return;
     try {
       const st = v.state;
       // Toggle cell visibility (supports legacy or enhanced)

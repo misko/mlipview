@@ -1,0 +1,11 @@
+dist/
+build/
+coverage/
+node_modules/
+mlipview_venv/
+public/proto/
+fairchem_local_server2/js/
+public/vendor/
+fairchem_local_server2/**/*.py
+**/__pycache__/
+**/*.min.js

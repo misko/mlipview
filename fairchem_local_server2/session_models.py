@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+from enum import Enum
+from typing import List, Literal, Optional
+
+from pydantic import BaseModel, validator
+
+
+class SimType(str, Enum):
+    md = "md"
+    relax = "relax"
+
+
+class SimulationParams(BaseModel):
+    # Common
+    calculator: Literal["uma", "lj"] = "uma"
+    # MD-specific
+    temperature: float = 298.0
+    timestep_fs: float = 1.0
+    friction: float = 0.02
+    # Relax-specific
+    fmax: float = 0.05
+    max_step: float = 0.2
+    optimizer: Optional[str] = "bfgs"
+
+
+class ClientAction(BaseModel):
+    # sequence must monotonically increase from client
+    seq: int
+    # acknowledge last server sequence processed by client
+    ack: Optional[int] = None
+    type: Literal[
+        "init_system",
+        "update_positions",
+        "start_simulation",
+        "stop_simulation",
+        "ping",
+    ]
+
+    # Common system fields
+    atomic_numbers: Optional[List[int]] = None
+    positions: Optional[List[List[float]]] = None  # N x 3
+    velocities: Optional[List[List[float]]] = None  # N x 3
+    cell: Optional[List[List[float]]] = None  # 3 x 3
+
+    # start_simulation
+    simulation_type: Optional[SimType] = None
+    simulation_params: Optional[SimulationParams] = None
+    # Correlation counters from client
+    user_interaction_count: Optional[int] = None
+    sim_step: Optional[int] = None
+
+    @validator("positions")
+    def _validate_pos(cls, v):  # type: ignore
+        if v is None:
+            return v
+        if not all(len(row) == 3 for row in v):
+            raise ValueError("positions must be Nx3")
+        return v
+
+
+class ServerResult(BaseModel):
+    # increasing sequence from server to client
+    seq: int
+    # server can optionally mirror last seen client seq
+    client_seq: Optional[int] = None
+
+    # System state outputs
+    positions: List[List[float]]
+    forces: List[List[float]]
+    velocities: List[List[float]]
+    cell: Optional[List[List[float]]] = None
+
+    # Optional metadata
+    message: Optional[str] = None
+    # Echo/correlation fields
+    user_interaction_count: Optional[int] = None
+    sim_step: Optional[int] = None
+
+
+class SessionState(BaseModel):
+    atomic_numbers: List[int] = None
+    positions: List[List[float]] = None
+    velocities: List[List[float]] = None
+    forces: List[List[float]] = None
+    cell: Optional[List[List[float]]] = None
+
+    # User input state
+    user_input_atomic_numbers: List[int] = None
+    user_input_positions: List[List[float]] = None
+    user_input_velocities: List[List[float]] = None
+    user_input_forces: List[List[float]] = None
+    user_input_cell: Optional[List[List[float]]] = None
+
+    running: bool = False
+    sim_type: Optional[SimType] = None
+    params: SimulationParams = SimulationParams()
+
+    server_seq: int = 0
+    client_seq: int = 0
+    client_ack: int = 0
+    # Frontend correlation counters (last seen)
+    user_interaction_count: int = 0
+    sim_step: int = 0
+
+    # Pending sparse deltas
+    # (applied at top of sim loop or immediately when idle)
+    pending_z_idx: Optional[list[int]] = None
+    pending_z_values: Optional[list[int]] = None
+    pending_pos_idx: Optional[list[int]] = None
+    pending_pos_coords: Optional[list[float]] = None  # flat 3*k
+    pending_vel_idx: Optional[list[int]] = None
+    pending_vel_coords: Optional[list[float]] = None  # flat 3*k
+    pending_cell: Optional[list[float]] = None  # flat 9
+    pending_resize_to: Optional[int] = None
+    pending_idle_push: bool = False
+    pending_full_update: bool = False
+    pending_full_zero_velocities: bool = False

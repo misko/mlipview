@@ -8,16 +8,25 @@ export function createEventBus() {
       return () => listeners.get(evt)?.delete(fn);
     },
     once(evt, fn) {
-      const off = this.on(evt, (...args) => { off(); fn(...args); });
+      const off = this.on(evt, (...args) => {
+        off();
+        fn(...args);
+      });
       return off;
     },
     emit(evt, payload) {
       const set = listeners.get(evt);
       if (!set) return;
       for (const fn of Array.from(set)) {
-        try { fn(payload); } catch (e) { console.warn('[eventBus] listener error', evt, e); }
+        try {
+          fn(payload);
+        } catch (e) {
+          console.warn('[eventBus] listener error', evt, e);
+        }
       }
     },
-    clear() { listeners.clear(); }
+    clear() {
+      listeners.clear();
+    },
   };
 }

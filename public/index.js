@@ -1,8 +1,9 @@
+// index.js — streamlined viewer orchestration with WS/protobuf backend
+// Refactored: unified streaming loop, idle listener, predictable throttle, lighter debounces.
+
 import { createMoleculeState } from './domain/moleculeState.js';
-import { getEndpointSync } from './api_endpoints.js';
 import { createBondService } from './domain/bondService.js';
 import { createSelectionService } from './domain/selectionService.js';
-import { createFairChemForcefield } from './fairchem_provider.js';
 import { createScene } from './render/scene.js';
 import { createMoleculeView } from './render/moleculeView.js';
 import { createPickingService } from './core/pickingService.js';
@@ -12,1255 +13,2553 @@ import { createVRSupport } from './vr/setup.js';
 import { createVRPicker } from './vr/vr-picker.js';
 import { __count } from './util/funcCount.js';
 import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS, MAX_STEP } from './util/constants.js';
+import { getWS } from './fairchem_ws_client.js';
+import { showErrorBanner, hideErrorBanner } from './ui/errorBanner.js';
+import { SYMBOL_TO_Z, Z_TO_SYMBOL, OMOL25_ELEMENTS } from './data/periodicTable.js';
+import { createFrameBuffer } from './core/frameBuffer.js';
+import { installTimeline } from './ui/timeline.js';
 
-// --- Runtime Config (pacing, etc.) ---
+/* ──────────────────────────────────────────────────────────────────────────
+   Tunables & Defaults
+   ────────────────────────────────────────────────────────────────────────── */
+
+const DEFAULTS = {
+  DRAG_THROTTLE_MS: 60,
+  POS_ENERGY_DEBOUNCE_MS: 50,
+  LATCH_AFTER_DRAG_MS: 600,
+  LATCH_AFTER_VR_MS: 800,
+  RPS_WINDOW_MS: 2000,
+  CONTINUOUS_STEPS: 1000,
+  SAFE_SPHERE_RADIUS: 20,
+  ROTATION_LATCH_MS: 600,
+  BOND_SCROLL_STEP_RAD: Math.PI / 36,
+  WS_CONNECT_TIMEOUT_MS: 15000,
+};
+
+const TEMP_PLACEHOLDER = 'T: — K';
+
+const wsStateLog = [];
+const reconnectState = {
+  attempts: 0,
+  nextAttemptAt: 0,
+  countdownTimer: null,
+  bannerVisible: false,
+};
+
+const OMOL25_SET = new Set(Array.from(OMOL25_ELEMENTS || []));
+
+const pendingResume = { kind: null, opts: null };
+const lastContinuousOpts = { md: null, relax: null };
+
+function cfgNumber(v, fallback) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+const TUNABLES = {
+  get DRAG_THROTTLE_MS() {
+    if (typeof window === 'undefined') return DEFAULTS.DRAG_THROTTLE_MS;
+    return cfgNumber(window.__MLIP_CONFIG?.dragThrottleMs, DEFAULTS.DRAG_THROTTLE_MS);
+  },
+  get POS_ENERGY_DEBOUNCE_MS() {
+    if (typeof window === 'undefined') return DEFAULTS.POS_ENERGY_DEBOUNCE_MS;
+    return cfgNumber(window.__MLIP_CONFIG?.posEnergyDebounceMs, DEFAULTS.POS_ENERGY_DEBOUNCE_MS);
+  },
+  get LATCH_AFTER_DRAG_MS() {
+    if (typeof window === 'undefined') return DEFAULTS.LATCH_AFTER_DRAG_MS;
+    return cfgNumber(window.__MLIP_CONFIG?.latchAfterDragMs, DEFAULTS.LATCH_AFTER_DRAG_MS);
+  },
+  get LATCH_AFTER_VR_MS() {
+    if (typeof window === 'undefined') return DEFAULTS.LATCH_AFTER_VR_MS;
+    return cfgNumber(window.__MLIP_CONFIG?.latchAfterVrMs, DEFAULTS.LATCH_AFTER_VR_MS);
+  },
+  get RPS_WINDOW_MS() {
+    if (typeof window === 'undefined') return DEFAULTS.RPS_WINDOW_MS;
+    return cfgNumber(window.__MLIP_CONFIG?.rpsWindowMs, DEFAULTS.RPS_WINDOW_MS);
+  },
+  get SAFE_SPHERE_RADIUS() {
+    if (typeof window === 'undefined') return DEFAULTS.SAFE_SPHERE_RADIUS;
+    return cfgNumber(window.__MLIP_CONFIG?.safeSphereRadius, DEFAULTS.SAFE_SPHERE_RADIUS);
+  },
+  get ROTATION_LATCH_MS() {
+    if (typeof window === 'undefined') return DEFAULTS.ROTATION_LATCH_MS;
+    return cfgNumber(window.__MLIP_CONFIG?.rotationLatchMs, DEFAULTS.ROTATION_LATCH_MS);
+  },
+  get BOND_SCROLL_STEP_RAD() {
+    if (typeof window === 'undefined') return DEFAULTS.BOND_SCROLL_STEP_RAD;
+    return cfgNumber(window.__MLIP_CONFIG?.bondScrollStepRad, DEFAULTS.BOND_SCROLL_STEP_RAD);
+  },
+  get WS_CONNECT_TIMEOUT_MS() {
+    if (typeof window === 'undefined') return DEFAULTS.WS_CONNECT_TIMEOUT_MS;
+    return cfgNumber(window.__MLIP_CONFIG?.wsConnectTimeoutMs, DEFAULTS.WS_CONNECT_TIMEOUT_MS);
+  },
+};
+
+const wsStateListeners = new Set();
+function addWsStateListener(fn) {
+  if (typeof fn === 'function') wsStateListeners.add(fn);
+  return () => wsStateListeners.delete(fn);
+}
+
+function dispatchWsState(evt) {
+  const snapshot = { ...(evt || {}), timestamp: Date.now() };
+  wsStateLog.push(snapshot);
+  while (wsStateLog.length > 200) wsStateLog.shift();
+  for (const fn of wsStateListeners) {
+    try { fn(snapshot); } catch { }
+  }
+}
+
+try {
+  if (typeof window !== 'undefined' && !window.__MLIPVIEW_WS_STATE_BRIDGE__) {
+    const previous = typeof window.__WS_ON_STATE__ === 'function' ? window.__WS_ON_STATE__ : null;
+    const bridged = function wsStateBridge(evt) {
+      dispatchWsState(evt || {});
+      if (previous) {
+        try { previous(evt); } catch { }
+      }
+    };
+    bridged.__MLIPVIEW_BRIDGED__ = true;
+    window.__WS_ON_STATE__ = bridged;
+    window.__MLIPVIEW_WS_STATE_BRIDGE__ = true;
+  }
+} catch { }
+
+try {
+  console.log('[config:tunables]', {
+    dragThrottleMs: TUNABLES.DRAG_THROTTLE_MS,
+    posEnergyDebounceMs: TUNABLES.POS_ENERGY_DEBOUNCE_MS,
+    latchAfterDragMs: TUNABLES.LATCH_AFTER_DRAG_MS,
+    latchAfterVrMs: TUNABLES.LATCH_AFTER_VR_MS,
+    rpsWindowMs: TUNABLES.RPS_WINDOW_MS,
+    bondScrollStepRad: TUNABLES.BOND_SCROLL_STEP_RAD,
+    wsConnectTimeoutMs: TUNABLES.WS_CONNECT_TIMEOUT_MS,
+  });
+} catch { }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Utils
+   ────────────────────────────────────────────────────────────────────────── */
+
+const env = {
+  now: () => (performance?.now?.() ?? Date.now()),
+  apiOn: () => (typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_API),
+};
+
+const dbg = {
+  log: (...a) => { try { console.log(...a); } catch { } },
+  warn: (...a) => { try { console.warn(...a); } catch { } },
+};
+
+const qbool = (key) => {
+  try {
+    const q = new URLSearchParams(window.location?.search || '');
+    const v = q.get(key);
+    return v === '1' || String(v).toLowerCase() === 'true';
+  } catch { return false; }
+};
+
+// Predictable throttle (leading + trailing)
+const throttle = (fn, wait) => {
+  let last = 0, timer = null, lastArgs = null;
+  return (...args) => {
+    const now = env.now();
+    const remaining = wait - (now - last);
+    lastArgs = args;
+    if (remaining <= 0) {
+      if (timer) { clearTimeout(timer); timer = null; }
+      last = now; fn(...lastArgs);
+    } else if (!timer) {
+      timer = setTimeout(() => { last = env.now(); timer = null; fn(...lastArgs); }, remaining);
+    }
+  };
+};
+
+const zOf = (e) =>
+  (typeof e === 'number') ? e :
+    (typeof e === 'string') ? (SYMBOL_TO_Z[e] || 0) :
+      (e?.Z || e?.atomicNumber || e?.z ||
+        SYMBOL_TO_Z[e?.symbol] || SYMBOL_TO_Z[e?.sym] || SYMBOL_TO_Z[e?.S] || 0);
+
+const posToTriples = (state) => state.positions.map(p => [p.x, p.y, p.z]);
+const triplesForIndices = (state, indices) =>
+  indices.map((idx) => {
+    const p = state.positions[idx] || { x: 0, y: 0, z: 0 };
+    return [p.x, p.y, p.z];
+  });
+
+const applyTriples = (state, triples, { exclude, forceAll = false } = {}) => {
+  const N = Math.min(state.positions.length, triples?.length || 0);
+  if (!N) return;
+  if (!forceAll && exclude?.size) {
+    for (let i = 0; i < N; i++) {
+      if (exclude.has(i)) continue;
+      const [x, y, z] = triples[i]; const tp = state.positions[i]; tp.x = x; tp.y = y; tp.z = z;
+    }
+  } else {
+    for (let i = 0; i < N; i++) {
+      const [x, y, z] = triples[i]; const tp = state.positions[i]; tp.x = x; tp.y = y; tp.z = z;
+    }
+  }
+};
+
+const toSymbol = (el) => {
+  const str = typeof el === 'string' ? el.trim() : '';
+  if (str && SYMBOL_TO_Z[str]) return str;
+  const num = Number(el);
+  if (Number.isFinite(num) && Z_TO_SYMBOL[num]) return Z_TO_SYMBOL[num];
+  throw new Error(`Unknown element: ${el}`);
+};
+
+const assertAllowedSymbol = (sym) => {
+  if (!OMOL25_SET.has(sym)) {
+    throw new Error(`Element ${sym} not supported by OMol25`);
+  }
+};
+
+const toVec3 = (value, fallback = { x: 0, y: 0, z: 0 }) => {
+  if (!value) return { ...fallback };
+  if (Array.isArray(value)) {
+    return {
+      x: Number(value[0]) || 0,
+      y: Number(value[1]) || 0,
+      z: Number(value[2]) || 0,
+    };
+  }
+  if (typeof value === 'object') {
+    return {
+      x: Number(value.x) || 0,
+      y: Number(value.y) || 0,
+      z: Number(value.z) || 0,
+    };
+  }
+  return { ...fallback };
+};
+
+function clampVectorToRadius(pos, radius) {
+  if (!pos || typeof pos !== 'object') return false;
+  const x = Number(pos.x) || 0;
+  const y = Number(pos.y) || 0;
+  const z = Number(pos.z) || 0;
+  const r2 = x * x + y * y + z * z;
+  const limit = radius * radius;
+  if (r2 === 0 || r2 <= limit) return false;
+  const r = Math.sqrt(r2);
+  if (!Number.isFinite(r) || r === 0) return false;
+  const scale = radius / r;
+  pos.x = x * scale;
+  pos.y = y * scale;
+  pos.z = z * scale;
+  return true;
+}
+
+function enforceSafeSphere(state) {
+  const radius = TUNABLES.SAFE_SPHERE_RADIUS;
+  if (!Number.isFinite(radius) || radius <= 0) return false;
+  const pts = state?.positions;
+  if (!Array.isArray(pts) || !pts.length) return false;
+  let changed = false;
+  for (const p of pts) {
+    if (clampVectorToRadius(p, radius)) changed = true;
+  }
+  if (changed && env.apiOn()) dbg.log('[safeSphere][clamp]', { radius, count: pts.length });
+  return changed;
+}
+
+const stateCellToArray = (c) => (c && c.enabled) ? [
+  [c.a.x, c.a.y, c.a.z],
+  [c.b.x, c.b.y, c.b.z],
+  [c.c.x, c.c.y, c.c.z],
+] : null;
+
+const setText = (id, txt) => { try { const el = document.getElementById(id); if (el) el.textContent = txt; } catch { } };
+
+const onWin = (fn) => { try { if (typeof window !== 'undefined') fn(window); } catch { } };
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Runtime config
+   ────────────────────────────────────────────────────────────────────────── */
+
 if (typeof window !== 'undefined') {
-  // Seed config with centralized defaults
-  window.__MLIP_CONFIG = window.__MLIP_CONFIG || { minStepIntervalMs: DEFAULT_MIN_STEP_INTERVAL_MS, mdFriction: DEFAULT_MD_FRICTION };
-  if (window.__MLIP_CONFIG.minStepIntervalMs == null) window.__MLIP_CONFIG.minStepIntervalMs = DEFAULT_MIN_STEP_INTERVAL_MS;
-  if (window.__MLIP_CONFIG.mdFriction == null) window.__MLIP_CONFIG.mdFriction = DEFAULT_MD_FRICTION;
-}
-function getConfig(){
-  // Always return a valid config object with defaults; repair globals if missing
-  if (typeof window === 'undefined') return { minStepIntervalMs: DEFAULT_MIN_STEP_INTERVAL_MS, mdFriction: DEFAULT_MD_FRICTION };
-  const cfg = window.__MLIP_CONFIG || {};
-  if (cfg.minStepIntervalMs == null || !Number.isFinite(cfg.minStepIntervalMs)) cfg.minStepIntervalMs = DEFAULT_MIN_STEP_INTERVAL_MS;
-  if (cfg.mdFriction == null || !Number.isFinite(cfg.mdFriction)) cfg.mdFriction = DEFAULT_MD_FRICTION;
-  window.__MLIP_CONFIG = cfg;
-  return cfg;
-}
-export function setMinStepInterval(ms){
-  const v = Number(ms);
-  if(!Number.isFinite(v) || v < 0) throw new Error('minStepIntervalMs must be non-negative number');
-  if (typeof window !== 'undefined') {
-    window.__MLIP_CONFIG.minStepIntervalMs = Math.max(1, Math.round(v));
-    console.log('[config] set minStepIntervalMs =', window.__MLIP_CONFIG.minStepIntervalMs);
-    return window.__MLIP_CONFIG.minStepIntervalMs;
-  }
-  return Math.max(1, Math.round(v));
-}
-export function setMdFriction(f){
-  const v = Number(f);
-  if(!Number.isFinite(v) || v < 0) throw new Error('mdFriction must be a non-negative number');
-  const clamped = Math.max(0, Math.min(5, v)); // safety clamp: [0,5]
-  if (typeof window !== 'undefined') {
-    window.__MLIP_CONFIG.mdFriction = clamped;
-    console.log('[config] set mdFriction =', window.__MLIP_CONFIG.mdFriction);
-    return window.__MLIP_CONFIG.mdFriction;
-  }
-  return clamped;
+  window.__MLIP_CONFIG ||= {};
+  if (!Number.isFinite(window.__MLIP_CONFIG.minStepIntervalMs))
+    window.__MLIP_CONFIG.minStepIntervalMs = DEFAULT_MIN_STEP_INTERVAL_MS;
+  if (!Number.isFinite(window.__MLIP_CONFIG.mdFriction))
+    window.__MLIP_CONFIG.mdFriction = DEFAULT_MD_FRICTION;
+
+  if (!Number.isFinite(window.__MLIP_CONFIG.dragThrottleMs))
+    window.__MLIP_CONFIG.dragThrottleMs = DEFAULTS.DRAG_THROTTLE_MS;
+  if (!Number.isFinite(window.__MLIP_CONFIG.posEnergyDebounceMs))
+    window.__MLIP_CONFIG.posEnergyDebounceMs = DEFAULTS.POS_ENERGY_DEBOUNCE_MS;
+  if (!Number.isFinite(window.__MLIP_CONFIG.latchAfterDragMs))
+    window.__MLIP_CONFIG.latchAfterDragMs = DEFAULTS.LATCH_AFTER_DRAG_MS;
+  if (!Number.isFinite(window.__MLIP_CONFIG.latchAfterVrMs))
+    window.__MLIP_CONFIG.latchAfterVrMs = DEFAULTS.LATCH_AFTER_VR_MS;
+  if (!Number.isFinite(window.__MLIP_CONFIG.rpsWindowMs))
+    window.__MLIP_CONFIG.rpsWindowMs = DEFAULTS.RPS_WINDOW_MS;
+  if (!Number.isFinite(window.__MLIP_CONFIG.safeSphereRadius))
+    window.__MLIP_CONFIG.safeSphereRadius = DEFAULTS.SAFE_SPHERE_RADIUS;
+
+  const autoMD = new URLSearchParams(window.location?.search || '').get('autoMD');
+  if (autoMD === '0' || String(autoMD).toLowerCase() === 'false') window.__MLIPVIEW_NO_AUTO_MD = true;
 }
 
-// Debug no-cache mode deprecated; server-side cache removed.
-function __noCacheMode(){ return true; }
+const cfg = {
+  get minStepIntervalMs() {
+    return (typeof window !== 'undefined') ? window.__MLIP_CONFIG.minStepIntervalMs : DEFAULT_MIN_STEP_INTERVAL_MS;
+  },
+  set minStepIntervalMs(v) {
+    const n = Math.max(1, Math.round(Number(v) || 0));
+    if (typeof window !== 'undefined') window.__MLIP_CONFIG.minStepIntervalMs = n;
+  },
+  get mdFriction() {
+    return (typeof window !== 'undefined') ? window.__MLIP_CONFIG.mdFriction : DEFAULT_MD_FRICTION;
+  },
+  set mdFriction(v) {
+    const n = Math.max(0, Math.min(5, Number(v) || 0));
+    if (typeof window !== 'undefined') window.__MLIP_CONFIG.mdFriction = n;
+  },
+};
 
-import { SYMBOL_TO_Z } from './data/periodicTable.js';
-function elementToZ(e){
-  if (e==null) return 0;
-  if (typeof e === 'number') return e; // already Z
-  if (typeof e === 'string') return SYMBOL_TO_Z[e] || 0;
-  return e.Z || e.atomicNumber || e.z || (SYMBOL_TO_Z[e.symbol] || SYMBOL_TO_Z[e.sym] || SYMBOL_TO_Z[e.S] || 0) || 0;
+export function setMinStepInterval(ms) {
+  cfg.minStepIntervalMs = ms;
+  onWin(w => dbg.log('[config] set minStepIntervalMs =', w.__MLIP_CONFIG.minStepIntervalMs));
+  return cfg.minStepIntervalMs;
+}
+export function setMdFriction(f) {
+  cfg.mdFriction = f;
+  onWin(w => dbg.log('[config] set mdFriction =', w.__MLIP_CONFIG.mdFriction));
+  return cfg.mdFriction;
 }
 
-// Resolve API base URL across browser + Jest (node) environments.
-function __resolveApiBase(){
-  // Browser environment: prefer explicit override, then same-origin, then test globals.
-  if (typeof window !== 'undefined') {
-    // 1. Explicit override (developer can set before viewer init): window.__MLIPVIEW_SERVER = 'https://host:port'
-    if (window.__MLIPVIEW_SERVER) return String(window.__MLIPVIEW_SERVER).replace(/\/$/, '');
-    // 2. If running in a real browser (or served via proxy) use same-origin so calls stay on the page host (avoids mixed-content & CORS).
-    try {
-      if (window.location && window.location.origin && window.location.origin !== 'null') {
-        // In jsdom this is usually 'http://localhost'. We still may want a better test base; handle below.
-        const origin = window.location.origin;
-        // If jsdom default AND a test global is provided, defer to test global.
-        if (origin === 'http://localhost' && typeof global !== 'undefined' && global.__MLIP_API_URL) {
-          return global.__MLIP_API_URL.replace(/\/$/, '');
-        }
-        return origin.replace(/\/$/, '');
-      }
-    } catch { /* ignore */ }
-    // 3. Fallback: if test harness placed API URL on global (jsdom env) use it.
-    if (typeof global !== 'undefined' && global.__MLIP_API_URL) {
-      return global.__MLIP_API_URL.replace(/\/$/, '');
+/* ──────────────────────────────────────────────────────────────────────────
+   Feature flags
+   ────────────────────────────────────────────────────────────────────────── */
+
+const FEATURES = (typeof window !== 'undefined' && (window.__MLIP_FEATURES ||= {
+  RELAX_LOOP: true,
+  MD_LOOP: true,
+  ENERGY_TRACE: true,
+  FORCE_VECTORS: true,
+})) || { RELAX_LOOP: true, MD_LOOP: true, ENERGY_TRACE: true, FORCE_VECTORS: true };
+
+function enableFeatureFlag(name, value = true) {
+  if (typeof window !== 'undefined') window.__MLIP_FEATURES[name] = value;
+  else FEATURES[name] = value;
+  return true;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Energy plot
+   ────────────────────────────────────────────────────────────────────────── */
+
+const energyPlot = (() => {
+  let series = []; // {i,E,kind}
+  let last = undefined;
+  let markerIndex = null;
+  let ctx = null, canvas = null, label = null;
+
+  const init = () => {
+    if (canvas) return;
+    canvas = document.getElementById('energyCanvas');
+    if (!canvas) return;
+    ctx = canvas.getContext('2d');
+    label = document.getElementById('energyLabel');
+  };
+
+  const draw = () => {
+    init(); if (!ctx) return;
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    if (series.length === 0) {
+      if (label) label.textContent = 'E steps=0';
+      return;
     }
-  }
-  // Node/Jest (no window) fallback: prefer globals or env vars injected by harness.
-  if (typeof global !== 'undefined') {
-    const g = global.__MLIP_API_URL || process.env.MLIP_API_URL || process.env.MLIPVIEW_SERVER;
-    if (g) return g.replace(/\/$/, '');
-  }
-  // Final hard-coded development fallback (direct Ray Serve default port)
-  return 'http://127.0.0.1:8000';
-}
-
-export async function initNewViewer(canvas, { elements, positions, bonds } ) {
-  __count('index#initNewViewer');
-  const state = createMoleculeState({ elements, positions, bonds });
-  // Cache the initial XYZ positions for VR/AR reset without page reload
-  try {
-    state.__initialPositions = (state.positions||[]).map(p=>({ x:p.x, y:p.y, z:p.z }));
-    if (state.__initialPositions.length === 0) {
-      // Will be populated by moleculeLoader.applyParsedToViewer after loadDefault.
-      try { console.log('[init] initial positions pending; will cache on load'); } catch {}
+    let minE = Infinity, maxE = -Infinity;
+    for (const p of series) { if (p.E < minE) minE = p.E; if (p.E > maxE) maxE = p.E; }
+    if (maxE - minE < 1e-12) maxE = minE + 1e-12;
+    if (series.length === 1) {
+      const p = series[0];
+      const x = W / 2;
+      const y = H - 2 - ((p.E - minE) / (maxE - minE)) * (H - 4);
+      ctx.fillStyle = '#6fc2ff';
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fill();
     } else {
-      try { console.log('[init] cached initial positions', { count: state.__initialPositions.length }); } catch {}
-    }
-  } catch {}
-  // We'll wrap markPositionsChanged after bondService + view exist so we can recompute bonds centrally.
-  const __origMarkPositionsChanged = state.markPositionsChanged ? state.markPositionsChanged.bind(state) : null;
-  const bondService = createBondService(state);
-  const selection = createSelectionService(state);
-  // Remote UMA force provider via /simple_calculate
-  let lastForceResult = { energy: NaN, forces: [] };
-  let inFlight = false;
-  // --- API debug instrumentation ---
-  if (typeof window !== 'undefined') {
-    if (window.__MLIPVIEW_DEBUG_API == null) {
-      // Default OFF; enable with ?debug=1 or ?debug=true
-      try {
-        const q = new URLSearchParams(window.location.search);
-        const dbg = q.get('debug');
-        window.__MLIPVIEW_DEBUG_API = (dbg === '1' || dbg === 'true');
-      } catch { window.__MLIPVIEW_DEBUG_API = false; }
-    }
-  }
-  // Picking debug via ?debugPick=1
-  try {
-    if (typeof window !== 'undefined') {
-      const q = new URLSearchParams(window.location.search||'');
-      const dp = q.get('debugPick');
-      window.__MLIPVIEW_DEBUG_PICK = (dp === '1' || dp === 'true');
-      if (window.__MLIPVIEW_DEBUG_PICK) console.log('[debug] pick logging enabled');
-      const ds = q.get('debugSelect');
-      window.__MLIPVIEW_DEBUG_SELECT = (ds === '1' || ds === 'true');
-      if (window.__MLIPVIEW_DEBUG_SELECT) console.log('[debug] selection logging enabled');
-      const du = q.get('debugUI');
-      window.__MLIPVIEW_DEBUG_UI = (du === '1' || du === 'true');
-      if (window.__MLIPVIEW_DEBUG_UI) console.log('[debug] UI logging enabled');
-    }
-  } catch {}
-  // Latency debugging gate comes from index.html ?debugLatency=1 wrapper
-  const __latencyOn = (typeof window!=='undefined') && !!window.__MLIP_DEBUG_LATENCY;
-  function noteLatency(kind, phase, meta){
-    if(!__latencyOn) return;
-    try {
-      const s = new Date().toISOString();
-      console.log(`[latency:${kind}] ${phase} ${s}`, meta||{});
-    } catch {}
-  }
-  let __apiSeq = (typeof window !== 'undefined' && window.__MLIPVIEW_API_SEQ) || 0;
-  function debugApi(kind, phase, meta){
-    __count('index#debugApi');
-    if(!(typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_API)) return;
-    try {
-      const stamp = new Date().toISOString();
-      // We copy a shallow subset to avoid huge spam (positions trimmed)
-      if(meta && meta.body && meta.body.coordinates && meta.body.coordinates.length>30){
-        meta = { ...meta, body: { ...meta.body, coordinates:`<${meta.body.coordinates.length} coords>` } };
+      ctx.strokeStyle = '#6fc2ff';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let k = 0; k < series.length; k++) {
+        const p = series[k];
+        const x = (k / (series.length - 1)) * (W - 4) + 2;
+        const y = H - 2 - ((p.E - minE) / (maxE - minE)) * (H - 4);
+        if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
       }
-      if(meta && meta.response && meta.response.positions && meta.response.positions.length>30){
-        meta = { ...meta, response: { ...meta.response, positions:`<${meta.response.positions.length} positions>` } };
-      }
-      // Energy summary convenience
-      if(meta && meta.response && typeof meta.response.final_energy === 'number'){
-        meta.energy = meta.response.final_energy;
-      } else if(meta && meta.response && meta.response.results && typeof meta.response.results.energy === 'number'){
-        meta.energy = meta.response.results.energy;
-      }
-      console.log(`[API][${kind}][${phase}]#${meta.seq} t=${meta.timingMs!=null?meta.timingMs+'ms':''} ${stamp}`, meta);
-    } catch(e){ /* ignore logging errors */ }
-  }
-  if (typeof window !== 'undefined') {
-    window.__MLIPVIEW_API_ENABLE = function(on){ window.__MLIPVIEW_DEBUG_API = !!on; console.log('[API] debug set to', window.__MLIPVIEW_DEBUG_API); };
-    window.__MLIPVIEW_API_SEQ = __apiSeq;
-  }
+      ctx.stroke();
+    }
+    if (markerIndex != null && series.length) {
+      const idx = Math.max(0, Math.min(series.length - 1, markerIndex | 0));
+      const marker = series[idx];
+      const x = series.length === 1 ? W / 2 : (idx / (series.length - 1)) * (W - 4) + 2;
+      const y = H - 2 - ((marker.E - minE) / (maxE - minE)) * (H - 4);
+      ctx.save();
+      ctx.strokeStyle = '#ffd95e';
+      ctx.fillStyle = '#ffd95e';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 2]);
+      ctx.beginPath();
+      ctx.moveTo(x, 2);
+      ctx.lineTo(x, H - 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    if (label) {
+      const range = (maxE - minE);
+      const rangeLabel = range > 0 ? range.toExponential(2) : '0.00e+0';
+      label.textContent = `E steps=${series.length} range=${rangeLabel}`;
+    }
+  };
 
-  // Versioned force cache: state.forceCache = { version, energy, forces, stress, stale }
-  state.forceCache = { version:0, energy:NaN, forces:[], stress:null, stale:true };
-  let structureVersion = 0; // increments when positions (or elements) change
-  // Reset epoch: increments only on explicit resets to invalidate any in-flight API responses
+  const push = (E, kind) => {
+    if (typeof E !== 'number' || !isFinite(E)) return;
+    if (E === last && !(typeof window !== 'undefined' && window.__ALLOW_DUPLICATE_ENERGY_TICKS)) return;
+    const i = series.length; series.push({ i, E, kind }); last = E;
+    setText('instEnergy', 'E: ' + E.toFixed(2));
+    draw();
+    return i;
+  };
+
+  const reset = () => { series = []; last = undefined; markerIndex = null; draw(); setText('instEnergy', 'E: —'); };
+  const length = () => series.length;
+  const setMarker = (idx) => {
+    if (!Number.isFinite(idx)) {
+      markerIndex = null;
+    } else {
+      markerIndex = Math.max(0, Math.min(series.length - 1, idx | 0));
+    }
+    draw();
+  };
+  const clearMarker = () => { markerIndex = null; draw(); };
+  const getMarker = () => {
+    if (markerIndex == null || !series.length) return null;
+    const idx = Math.max(0, Math.min(series.length - 1, markerIndex | 0));
+    const entry = series[idx] || {};
+    return { index: idx, energy: entry.E, length: series.length };
+  };
+
+  return { push, reset, length, setMarker, clearMarker, getMarker };
+})();
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Viewer initialization
+   ────────────────────────────────────────────────────────────────────────── */
+
+export async function initNewViewer(canvas, { elements, positions, bonds }) {
+  __count('index#initNewViewer');
+
+  onWin(w => {
+    if (w.__MLIPVIEW_DEBUG_API == null) w.__MLIPVIEW_DEBUG_API = qbool('debug');
+    w.__MLIPVIEW_DEBUG_PICK = qbool('debugPick');
+    w.__MLIPVIEW_DEBUG_SELECT = qbool('debugSelect');
+    w.__MLIPVIEW_DEBUG_UI = qbool('debugUI');
+  });
+
+  const state = createMoleculeState({ elements, positions, bonds });
+  try { enforceSafeSphere(state); } catch { }
+  try { state.__initialPositions = (state.positions || []).map(p => ({ x: p.x, y: p.y, z: p.z })); } catch { }
+
+  const clonePositionList = (list) => {
+    if (!Array.isArray(list)) return [];
+    return list.map((p) => toVec3(p, { x: 0, y: 0, z: 0 }));
+  };
+  const normalizeElement = (el) => {
+    if (el && typeof el === 'object') {
+      if (typeof el.symbol === 'string') {
+        return toSymbol(el.symbol);
+      }
+      if (el.Z != null) {
+        return toSymbol(el.Z);
+      }
+    }
+    return toSymbol(el);
+  };
+  const cloneVelocityVector = (v) => {
+    if (Array.isArray(v)) {
+      return [Number(v[0]) || 0, Number(v[1]) || 0, Number(v[2]) || 0];
+    }
+    if (v && typeof v === 'object') {
+      return [Number(v.x) || 0, Number(v.y) || 0, Number(v.z) || 0];
+    }
+    return [0, 0, 0];
+  };
+  const cloneVelocityList = (list) => {
+    if (!Array.isArray(list) || !list.length) return null;
+    return list.map((v) => cloneVelocityVector(v));
+  };
+  const cloneCellSnapshot = (cell) => {
+    if (!cell || !cell.a || !cell.b || !cell.c) return null;
+    return {
+      a: toVec3(cell.a, { x: 0, y: 0, z: 0 }),
+      b: toVec3(cell.b, { x: 0, y: 0, z: 0 }),
+      c: toVec3(cell.c, { x: 0, y: 0, z: 0 }),
+      originOffset: toVec3(cell.originOffset || { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }),
+      enabled: !!cell.enabled,
+    };
+  };
+  const cellSnapshotToMatrix = (cell) => {
+    if (!cell) return null;
+    return [
+      [Number(cell.a?.x) || 0, Number(cell.a?.y) || 0, Number(cell.a?.z) || 0],
+      [Number(cell.b?.x) || 0, Number(cell.b?.y) || 0, Number(cell.b?.z) || 0],
+      [Number(cell.c?.x) || 0, Number(cell.c?.y) || 0, Number(cell.c?.z) || 0],
+    ];
+  };
+  const captureResetBaselineFromState = () => ({
+    elements: Array.isArray(state.elements) ? state.elements.map(normalizeElement) : [],
+    positions: clonePositionList(state.positions),
+    velocities: state.dynamics?.velocities ? cloneVelocityList(state.dynamics.velocities) : null,
+    cell: cloneCellSnapshot(state.cell),
+    showCell: !!state.showCell,
+    showGhostCells: !!state.showGhostCells,
+  });
+  const installResetBaseline = (baseline, meta = {}) => {
+    if (!baseline) {
+      state.__resetBaseline = null;
+      return;
+    }
+    state.__resetBaseline = {
+      elements: Array.isArray(baseline.elements) ? baseline.elements.map(normalizeElement) : [],
+      positions: clonePositionList(baseline.positions),
+      velocities: baseline.velocities ? cloneVelocityList(baseline.velocities) : null,
+      cell: cloneCellSnapshot(baseline.cell),
+      showCell: !!baseline.showCell,
+      showGhostCells: !!baseline.showGhostCells,
+    };
+    if (env.apiOn()) {
+      dbg.log('[resetBaseline] updated', {
+        reason: meta?.reason || 'unknown',
+        natoms: state.__resetBaseline.positions?.length || 0,
+      });
+    }
+  };
+  const seedResetBaseline = (reason = 'seed') => {
+    installResetBaseline(captureResetBaselineFromState(), { reason });
+    try {
+      state.__initialCellSnapshot = cloneCellSnapshot(state.cell);
+    } catch { }
+  };
+
+  try {
+    state.elements = Array.isArray(state.elements) ? state.elements.map(normalizeElement) : [];
+  } catch { }
+  seedResetBaseline('init');
+
+  // Versions & caches
+  state.forceCache = { version: 0, energy: NaN, forces: [], stress: null, stale: true };
+  let structureVersion = 0;
   let resetEpoch = 0;
-  // Server-side atoms cache removed: no cache key tracking
-  // Version counters:
-  // userInteractionVersion: increments ONLY on user geometry edits (drag, bond rotate, debounced posChange)
-  // totalInteractionVersion: increments on user edits AND accepted simulation (relax/md) steps.
   let userInteractionVersion = 0;
   let totalInteractionVersion = 0;
-  // Track which atoms were modified by each user interaction version increment.
-  // Map: version -> Set(atomIndices)
-  const __modifiedAtomsByVersion = new Map();
-  // Track atoms currently being dragged (by index). Only atom-drags are considered here.
-  const __draggingAtoms = new Set();
-  // Recently interacted atoms latch (atomIndex -> expiresAt ms). Prevents in-flight MD/relax from overriding
-  // the just-dragged atom if a response lands immediately after stick release.
-  const __latchedAtomsUntil = new Map();
-  function __latchAtom(i, ms=600){
+  let lastAppliedUIC = 0;
+  let testHoldUIC = null;
+  let currentStepBudget = null;
+  const frameBuffer = createFrameBuffer({ capacity: 500 });
+  let timelineUi = null;
+  let timelineOverlay = null;
+  const timelineState = {
+    active: false,
+    playing: false,
+    offset: -1,
+    interval: null,
+    resumeMode: null,
+    suppressEnergy: false,
+  };
+  const timelineLockClass = 'timeline-readonly-overlay';
+
+  function timelineLocked() {
+    return timelineState.active;
+  }
+  function ensureTimelineEditable(reason) {
+    if (!timelineLocked()) return true;
+    if (env.apiOn()) dbg.warn('[timeline][block]', reason || '?');
+    return false;
+  }
+
+  function resetStepBudgetDueToInteraction(reason) {
+    if (!currentStepBudget) return;
+    currentStepBudget.remaining = currentStepBudget.limit;
+    currentStepBudget.overshoot = 0;
+    if (env.apiOn()) dbg.log('[stepBudget][reset]', { reason, limit: currentStepBudget.limit, kind: currentStepBudget.kind });
+  }
+
+  const modifiedByVersion = new Map();
+  const draggingAtoms = new Set();
+  const rotatingAtoms = new Map();
+  const latchedUntil = new Map();
+  const bondLatch = {
+    atoms: new Set(),
+    active: false,
+    key: null,
+    anchor: null,
+    movingRoot: null,
+  };
+  const latchAtom = (i, ms = TUNABLES.LATCH_AFTER_DRAG_MS) => {
+    const now = env.now(); latchedUntil.set(i, now + ms);
+  };
+  const markRotatingAtoms = (indices) => {
+    if (!Array.isArray(indices) || !indices.length) return;
+    const now = env.now();
+    const expiry = now + TUNABLES.ROTATION_LATCH_MS;
+    for (const idx of indices) {
+      rotatingAtoms.set(idx, expiry);
+      latchedUntil.set(idx, expiry);
+    }
+  };
+  const currentDraggedAtom = { idx: null };
+  function sendBondLatchUpdate({ bumpReason = null } = {}) {
+    if (!bondLatch.active || bondLatch.atoms.size === 0) return;
+    if (bumpReason) {
+      bumpUser(bumpReason);
+      modifiedByVersion.get(userInteractionVersion) || modifiedByVersion.set(userInteractionVersion, new Set());
+      const modSet = modifiedByVersion.get(userInteractionVersion);
+      for (const idx of bondLatch.atoms) modSet.add(idx);
+    }
+    const indices = Array.from(bondLatch.atoms);
+    const triples = triplesForIndices(state, indices);
     try {
-      const now = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
-      __latchedAtomsUntil.set(i, now + ms);
-    } catch {}
+      const ws = getWS();
+      ws.setCounters?.({ userInteractionCount: userInteractionVersion });
+      ws.userInteraction?.({ positions: { indices, triples } });
+    } catch { }
   }
-  let __currentDraggedAtomIndex = null;
-  function __addModifiedAtoms(indices){
-    if(!indices || !indices.length) return;
-    const v = userInteractionVersion;
-    let s = __modifiedAtomsByVersion.get(v);
-    if(!s){ s = new Set(); __modifiedAtomsByVersion.set(v, s); }
-    for(const i of indices){ if(Number.isInteger(i) && i>=0 && i<state.positions.length) s.add(i); }
+  function clearBondLatch({ sendFinal = false, bumpReason = 'bondRotateFinalize' } = {}) {
+    if (!bondLatch.active) return;
+    const latchedIndices = Array.from(bondLatch.atoms);
+    if (sendFinal && latchedIndices.length) {
+      sendBondLatchUpdate({ bumpReason });
+    }
+    bondLatch.atoms.clear();
+    bondLatch.active = false;
+    bondLatch.key = null;
+    bondLatch.anchor = null;
+    bondLatch.movingRoot = null;
+    for (const idx of latchedIndices) {
+      rotatingAtoms.delete(idx);
+      latchedUntil.delete(idx);
+    }
   }
-  function __modifiedSetBetween(vFromExclusive, vToInclusive){
-    const out = new Set();
-    for(let v=vFromExclusive+1; v<=vToInclusive; v++){
-      const s = __modifiedAtomsByVersion.get(v);
-      if(s) for(const i of s) out.add(i);
+  function setBondLatchFromGroup(group) {
+    if (!group || !Array.isArray(group.sideAtoms) || group.sideAtoms.length === 0) {
+      clearBondLatch({ sendFinal: true });
+      return;
+    }
+    const newKey = `${group.i}|${group.j}|${group.orientation ?? 'null'}`;
+    const same =
+      bondLatch.active &&
+      bondLatch.key === newKey &&
+      bondLatch.anchor === group.anchor &&
+      bondLatch.movingRoot === group.movingRoot &&
+      bondLatch.atoms.size === group.sideAtoms.length &&
+      group.sideAtoms.every((idx) => bondLatch.atoms.has(idx));
+    if (same) return;
+    clearBondLatch({ sendFinal: true });
+    bondLatch.atoms = new Set(group.sideAtoms);
+    bondLatch.active = bondLatch.atoms.size > 0;
+    bondLatch.key = newKey;
+    bondLatch.anchor = group.anchor;
+    bondLatch.movingRoot = group.movingRoot;
+  }
+
+  const buildExcludeSet = () => {
+    const out = new Set(draggingAtoms);
+    const now = env.now();
+    for (const [i, t] of latchedUntil) { if (t > now) out.add(i); else latchedUntil.delete(i); }
+    for (const [i, t] of rotatingAtoms) { if (t > now) out.add(i); else rotatingAtoms.delete(i); }
+    if (bondLatch.active) {
+      for (const i of bondLatch.atoms) out.add(i);
     }
     return out;
-  }
-  function bumpUserInteractionVersion(reason){
+  };
+
+  const bumpUser = (reason) => {
     userInteractionVersion++; totalInteractionVersion++; structureVersion++;
-    if(state.forceCache) state.forceCache.stale = true;
-    if(window.__MLIPVIEW_DEBUG_API) console.debug('[version][user]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
-  }
-  function bumpSimulationVersion(reason){
-    // Simulation application affects totalInteractionVersion but structureVersion already bumped via markPositionsChanged.
+    resetStepBudgetDueToInteraction(reason);
+    if (state.forceCache) { state.forceCache.stale = true; state.forceCache.version = structureVersion; }
+    if (env.apiOn()) dbg.log('[version][user]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
+  };
+  const bumpSim = (reason) => {
     totalInteractionVersion++;
-    if(window.__MLIPVIEW_DEBUG_API) console.debug('[version][sim]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
-  }
-  function __updateForces(forces, { reason }={}) {
-    const DBG = (typeof window !== 'undefined') && (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search||''));
-    try {
-      if (Array.isArray(forces) && forces.length) {
-        state.forces = forces;
-        if (DBG) console.log('[Forces][update]', reason||'?', 'len=', forces.length);
-        state.bus?.emit && state.bus.emit('forcesChanged');
-      } else if (DBG) {
-        console.warn('[Forces][update] empty set for reason', reason);
+    if (env.apiOn()) dbg.log('[version][sim]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
+  };
+
+  const updateForces = (forces, { reason } = {}) => {
+    const DBG = (typeof window !== 'undefined') && (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search || ''));
+    if (Array.isArray(forces) && forces.length) {
+      state.forces = forces;
+      state.bus?.emit?.('forcesChanged');
+      if (DBG) dbg.log('[Forces][update]', reason || '?', 'len=', forces.length);
+    }
+  };
+
+  const updateEnergyForces = ({ energy, forces, stress = null, reason }) => {
+    if (typeof energy === 'number') { state.dynamics ||= {}; state.dynamics.energy = energy; }
+    const effectiveForces = Array.isArray(forces) ? forces : (state.forces || []);
+    if (Array.isArray(forces)) updateForces(forces, { reason });
+    state.forceCache = { version: structureVersion, energy: state.dynamics?.energy, forces: effectiveForces, stress, stale: false };
+    if (env.apiOn()) dbg.log('[forces-cache]', reason, { n: effectiveForces.length, E: state.forceCache.energy });
+  };
+
+  const velocitiesToArray = (vels, count) => {
+    if (!Array.isArray(vels) || count <= 0) return undefined;
+    const out = new Array(count);
+    for (let i = 0; i < count; i++) {
+      const v = vels[i];
+      if (!v) {
+        out[i] = [0, 0, 0];
+        continue;
       }
-    } catch(e){ if (DBG) console.warn('[Forces][update] error', e); }
+      if (Array.isArray(v)) {
+        out[i] = [Number(v[0]) || 0, Number(v[1]) || 0, Number(v[2]) || 0];
+      } else {
+        out[i] = [Number(v.x) || 0, Number(v.y) || 0, Number(v.z) || 0];
+      }
+    }
+    return out;
+  };
+
+  const resetInteractionCachesAfterSnapshot = () => {
+    modifiedByVersion.clear();
+    draggingAtoms.clear();
+    rotatingAtoms.clear();
+    latchedUntil.clear();
+    clearBondLatch({ sendFinal: false });
+  };
+
+  const buildCellObject = (cellMatrix) => {
+    if (!Array.isArray(cellMatrix) || cellMatrix.length !== 3) return null;
+    const safe = cellMatrix.map((row) => (Array.isArray(row) ? row : [0, 0, 0]));
+    return {
+      a: { x: Number(safe[0][0]) || 0, y: Number(safe[0][1]) || 0, z: Number(safe[0][2]) || 0 },
+      b: { x: Number(safe[1][0]) || 0, y: Number(safe[1][1]) || 0, z: Number(safe[1][2]) || 0 },
+      c: { x: Number(safe[2][0]) || 0, y: Number(safe[2][1]) || 0, z: Number(safe[2][2]) || 0 },
+      enabled: true,
+      originOffset: { x: 0, y: 0, z: 0 },
+    };
+  };
+
+  const updateCellFromMatrix = (matrix) => {
+    if (!Array.isArray(matrix) || matrix.length !== 3) return;
+    const obj = buildCellObject(matrix);
+    if (!obj) return;
+    state.cell ||= obj;
+    state.cell.a = obj.a;
+    state.cell.b = obj.b;
+    state.cell.c = obj.c;
+    state.cell.enabled = obj.enabled;
+    state.cell.originOffset = obj.originOffset;
+    state.markCellChanged?.();
+  };
+
+  const applyFullSnapshot = async ({ elements, positions, velocities, cell } = {}, opts = {}) => {
+    const { updateBaseline = true } = opts || {};
+    if (!ensureTimelineEditable('applyFullSnapshot')) return false;
+    const nextElements = Array.isArray(elements) && elements.length
+      ? elements.map(normalizeElement)
+      : (state.elements || []).map(normalizeElement);
+    const nextPositions = Array.isArray(positions) && positions.length
+      ? positions.map((p) => toVec3(p))
+      : (state.positions || []).map((p) => ({ x: p.x, y: p.y, z: p.z }));
+
+    if (nextElements.length !== nextPositions.length) {
+      throw new Error('Elements and positions length mismatch');
+    }
+
+    const natoms = nextElements.length;
+    const nextVelocities = velocitiesToArray(velocities, natoms);
+
+    state.elements = nextElements.slice();
+    state.positions = nextPositions.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    state.__initialPositions = state.positions.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    state.forceCache && (state.forceCache.stale = true);
+
+    state.dynamics ||= {};
+    if (nextVelocities) {
+      state.dynamics.velocities = nextVelocities.map((v) => [v[0], v[1], v[2]]);
+    } else if (state.dynamics.velocities) {
+      delete state.dynamics.velocities;
+    }
+
+    if (Array.isArray(cell) && cell.length === 3) {
+      updateCellFromMatrix(cell);
+      state.__initialCellSnapshot = {
+        a: { ...state.cell.a },
+        b: { ...state.cell.b },
+        c: { ...state.cell.c },
+        originOffset: { ...(state.cell.originOffset || { x: 0, y: 0, z: 0 }) },
+      };
+    }
+
+    state.selection = { kind: null, data: null };
+    state.markSelectionChanged?.();
+    resetInteractionCachesAfterSnapshot();
+
+    bumpUser('fullSnapshotLocal');
+    state.markPositionsChanged();
+    if (updateBaseline) {
+      seedResetBaseline('applyFullSnapshot');
+    }
+
+    __wsState.inited = false;
+    const ok = await ensureWsInit({ allowOffline: false });
+    if (!ok) throw new Error('WS connection unavailable for full snapshot');
+    __wsState.inited = true;
+    __wsState.lastAtomCount = natoms;
+    __wsState.lastCellKey = cellKey();
+    return natoms;
+  };
+
+  const addAtom = async ({ element = 'H', position, velocity } = {}) => {
+    if (!ensureTimelineEditable('addAtom')) return false;
+    const elements = (state.elements || []).map(normalizeElement);
+    const positions = (state.positions || []).map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    const symbol = toSymbol(element);
+    assertAllowedSymbol(symbol);
+    elements.push(symbol);
+    positions.push(toVec3(position, { x: 0, y: 0, z: 0 }));
+
+    let velocities = undefined;
+    if (state.dynamics?.velocities) {
+      velocities = state.dynamics.velocities.map((v) => {
+        if (Array.isArray(v)) {
+          return [Number(v[0]) || 0, Number(v[1]) || 0, Number(v[2]) || 0];
+        }
+        return [Number(v?.x) || 0, Number(v?.y) || 0, Number(v?.z) || 0];
+      });
+    }
+    if (velocity) {
+      velocities ||= Array.from({ length: elements.length }, () => [0, 0, 0]);
+      velocities[velocities.length - 1] = Array.isArray(velocity)
+        ? [Number(velocity[0]) || 0, Number(velocity[1]) || 0, Number(velocity[2]) || 0]
+        : [Number(velocity.x) || 0, Number(velocity.y) || 0, Number(velocity.z) || 0];
+    } else if (velocities) {
+      velocities.push([0, 0, 0]);
+    }
+
+    const cellArray = stateCellToArray(state.cell);
+    await applyFullSnapshot({ elements, positions, velocities, cell: cellArray }, { updateBaseline: false });
+  };
+
+  const addAtomAtPosition = async (element, position, velocity) => {
+    if (!ensureTimelineEditable('addAtomAtPosition')) return false;
+    const symbol = toSymbol(element);
+    assertAllowedSymbol(symbol);
+    return addAtom({ element: symbol, position, velocity });
+  };
+
+  const addAtomAtOrigin = async (element) => addAtomAtPosition(element, { x: 0, y: 0, z: 0 });
+
+  const removeAtoms = async (indices = []) => {
+    if (!ensureTimelineEditable('removeAtoms')) return false;
+    const idx = Array.from(new Set(indices.map((n) => Number(n)))).filter((n) => Number.isInteger(n) && n >= 0);
+    if (!idx.length) return;
+    const sorted = idx.sort((a, b) => b - a);
+    const elements = (state.elements || []).map(normalizeElement);
+    const positions = (state.positions || []).map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    let velocities = state.dynamics?.velocities
+      ? state.dynamics.velocities.map((v) => {
+          if (Array.isArray(v)) {
+            return [Number(v[0]) || 0, Number(v[1]) || 0, Number(v[2]) || 0];
+          }
+          return [Number(v?.x) || 0, Number(v?.y) || 0, Number(v?.z) || 0];
+        })
+      : undefined;
+
+    for (const i of sorted) {
+      if (i < elements.length) {
+        elements.splice(i, 1);
+        positions.splice(i, 1);
+        velocities && velocities.splice(i, 1);
+      }
+    }
+
+    const cellArray = stateCellToArray(state.cell);
+    await applyFullSnapshot({ elements, positions, velocities, cell: cellArray }, { updateBaseline: false });
+  };
+
+  const removeAtomByIndex = async (index) => {
+    if (!ensureTimelineEditable('removeAtomByIndex')) return false;
+    if (!Number.isInteger(index) || index < 0) return false;
+    const before = state.elements?.length || 0;
+    await removeAtoms([index]);
+    const after = state.elements?.length || 0;
+    return after !== before;
+  };
+
+  const getVelocitiesIfFresh = () => {
+    const v = state.dynamics?.velocities;
+    if (!Array.isArray(v) || v.length !== state.elements.length) return null;
+    for (let i = 0; i < v.length; i++) {
+      const r = v[i]; if (!r || r.length !== 3) return null;
+      if (!Number.isFinite(r[0]) || !Number.isFinite(r[1]) || !Number.isFinite(r[2])) return null;
+    }
+    return v;
+  };
+
+  // WS session init guard
+  const __wsState = { inited: false, lastAtomCount: 0, lastCellKey: 'off' };
+  const cellKey = () => {
+    try {
+      const c = state.cell; const on = !!(state.showCell && c && c.enabled);
+      if (!on || !c) return 'off';
+      return [c.a.x, c.a.y, c.a.z, c.b.x, c.b.y, c.b.z, c.c.x, c.c.y, c.c.z].map(Number).map(x => x || 0).join(',');
+    } catch { return 'off'; }
+  };
+  const resetWsInitState = () => {
+    __wsState.inited = false;
+    __wsState.lastAtomCount = 0;
+    __wsState.lastCellKey = 'off';
+  };
+
+  async function ensureWsInit({ allowOffline = true, timeoutMs = TUNABLES.WS_CONNECT_TIMEOUT_MS } = {}) {
+    const ws = getWS();
+    let connected = false;
+    try {
+      connected = await ws.ensureConnected({ timeoutMs });
+    } catch (err) {
+      resetWsInitState();
+      if (!allowOffline) throw err;
+      if (env.apiOn()) dbg.warn('[WS][ensureInit][connect] failed', err?.message || err);
+      return false;
+    }
+    const wsState = (() => {
+      try { return typeof ws?.getState === 'function' ? ws.getState() : null; }
+      catch { return null; }
+    })();
+    const ready =
+      !!wsState?.connected ||
+      (typeof ws?.readyState === 'number' && ws.readyState === 1) ||
+      (!!connected);
+    if (!connected || !ws || !ready) {
+      resetWsInitState();
+      if (!allowOffline) throw new Error('WS not connected');
+      return false;
+    }
+    const nat = (state.elements || []).length;
+    const ckey = cellKey();
+    const need = !__wsState.inited || __wsState.lastAtomCount !== nat || __wsState.lastCellKey !== ckey;
+    if (need) {
+      const atomic_numbers = state.elements.map(zOf);
+      const positionsTriples = posToTriples(state);
+      const v = getVelocitiesIfFresh();
+      const cell = stateCellToArray(state.cell);
+      let seq = null;
+      try {
+        if (env.apiOn()) {
+          dbg.log('[WS][ensureInit][send]', {
+            nat,
+            zCount: Array.isArray(atomic_numbers) ? atomic_numbers.length : 0,
+            posCount: Array.isArray(positionsTriples) ? positionsTriples.length : 0,
+            cell: !!cell,
+          });
+        }
+        ws.setCounters?.({ userInteractionCount: userInteractionVersion });
+        seq = ws.userInteraction({
+          natoms: nat,
+          atomic_numbers,
+          positions: positionsTriples,
+          velocities: v || undefined,
+          cell,
+          full_update: true,
+        });
+      } catch (err) {
+        resetWsInitState();
+        if (!allowOffline) throw err;
+        if (env.apiOn()) dbg.warn('[WS][ensureInit][send] failed', err?.message || err);
+        return false;
+      }
+      const waitMs = Math.max(4000, Number(timeoutMs) || 0);
+      if (typeof ws.waitForClientSeq === 'function' && Number.isFinite(seq) && seq > 0) {
+        try {
+          await ws.waitForClientSeq(seq, { timeoutMs: waitMs });
+        } catch (err) {
+          resetWsInitState();
+          if (!allowOffline) throw err;
+          if (env.apiOn()) dbg.warn('[WS][ensureInit][wait] failed', err?.message || err);
+          return true;
+        }
+      }
+      __wsState.inited = true;
+      __wsState.lastAtomCount = nat;
+      __wsState.lastCellKey = ckey;
+      if (env.apiOn()) dbg.log('[WS][ensureInit]', { nat, v: !!v, hasCell: !!cell });
+    }
+    return true;
   }
-  async function fetchRemoteForces({ awaitResult=false }={}){
+
+  // Force provider using one-shot WS
+  let lastForceResult = { energy: NaN, forces: [] };
+  let inFlight = false;
+
+  async function fetchRemoteForces({ awaitResult = false } = {}) {
     __count('index#fetchRemoteForces');
-    if(inFlight && !awaitResult) return;
-    while(inFlight && awaitResult) { await new Promise(r=>setTimeout(r,10)); }
+    if (inFlight && !awaitResult) return;
+    while (inFlight && awaitResult) await new Promise(r => setTimeout(r, 10));
     inFlight = true;
     try {
-  // Server-side cache removed; do not short-circuit on local cache here.
-  // Skip remote call until we actually have atoms; prevents 500 errors on empty initial state
-  if(!state.elements || state.elements.length === 0){
-        return lastForceResult;
+      if (!state.elements?.length) return lastForceResult;
+      const ws = getWS();
+      const ok = await ensureWsInit({ allowOffline: true });
+      if (!ok) return lastForceResult;
+      const positions = posToTriples(state);
+      try { ws.setCounters({ userInteractionCount: userInteractionVersion }); } catch { }
+      if (env.apiOn()) dbg.log('[WS][simple] USER_INTERACTION', { n: positions.length, uic: userInteractionVersion });
+      ws.userInteraction({ positions });
+      const t0 = env.now();
+      const { energy, forces } = await ws.waitForEnergy({ timeoutMs: 5000 });
+      const timingMs = Math.round((env.now() - t0) * 100) / 100;
+      if (env.apiOn()) dbg.log('[WS][simple][recv]', { energy, forcesLen: forces?.length || 0, timingMs });
+      if (typeof energy === 'number') {
+        lastForceResult = { energy, forces: forces || [] };
+        updateEnergyForces({ energy, forces, reason: 'fetchRemoteForcesWS' });
+        energyPlot.push(energy, 'forces');
       }
-  const atomic_numbers = state.elements.map(e=> elementToZ(e));
-      const coordinates = state.positions.map(p=>[p.x,p.y,p.z]);
-      const body = { atomic_numbers, coordinates, properties:['energy','forces'], calculator:'uma' };
-      try {
-        if (state.showCell && state.cell && state.cell.enabled) {
-          body.cell = [ [state.cell.a.x, state.cell.a.y, state.cell.a.z], [state.cell.b.x, state.cell.b.y, state.cell.b.z], [state.cell.c.x, state.cell.c.y, state.cell.c.z] ];
-          body.pbc = [true,true,true];
-        }
-      } catch {}
-    const base = __resolveApiBase();
-    const url = base + getEndpointSync('simple');
-  const seq = ++__apiSeq; if (typeof window !== 'undefined') window.__MLIPVIEW_API_SEQ = __apiSeq;
-      const build0 = performance.now();
-      // payload already prepared above
-      const t0 = performance.now();
-      debugApi('simple_calculate','request',{ seq, url, body });
-  const epochAtSend = resetEpoch;
-  let resp, json;
-      try {
-  resp = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-      } catch(netErr){
-        debugApi('simple_calculate','network-error',{ seq, url, error: netErr?.message||String(netErr) });
-        throw netErr;
-      }
-      const t1 = performance.now();
-      const timingMs = Math.round((t1 - t0)*100)/100;
-      noteLatency('simple', 'network', { seq, ms: timingMs });
-      if(resp.ok){
-        try {
-          const p0=performance.now();
-          json = await resp.json();
-          const p1=performance.now(); noteLatency('simple','parse',{ seq, ms: Math.round((p1-p0)*100)/100 });
-        } catch(parseErr){ debugApi('simple_calculate','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); }
-        debugApi('simple_calculate','response',{ seq, url, timingMs, status: resp.status, response: json });
-      } else {
-        const txt = await resp.text();
-        debugApi('simple_calculate','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt });
-      }
-      if(resp.ok){
-        // Discard stale responses from a prior reset epoch
-        if (epochAtSend !== resetEpoch) {
-          if(window.__MLIPVIEW_DEBUG_API) console.debug('[forces][staleEpoch] ignoring response from prior epoch', { epochAtSend, resetEpoch });
-          return lastForceResult;
-        }
-        const res = json?.results||{};
-        if(typeof res.energy === 'number'){
-          lastForceResult = { energy: res.energy, forces: res.forces||[] };
-          state.dynamics = state.dynamics || {}; state.dynamics.energy = res.energy;
-          window.__RELAX_FORCES = res.forces||[];
-          state.forceCache = { version: structureVersion, energy: res.energy, forces: res.forces||[], stress: res.stress||null, stale:false };
-          // Server cache key removed
-          // Commit forces to state & notify renderer each successful fetch so visualization updates.
-          if (Array.isArray(res.forces) && res.forces.length) {
-            __updateForces(res.forces, { reason:'fetchRemoteForces' });
-          }
-          maybePlotEnergy('forces');
-        }
-      }
-    } catch(_e) { /* silent for now */ } finally { inFlight=false; }
+    } catch { } finally { inFlight = false; }
     return lastForceResult;
   }
-  const ff = { computeForces: ({ sync }={})=>{ if(sync) return fetchRemoteForces({ awaitResult:true }); fetchRemoteForces(); return lastForceResult; } };
 
-  // Helper: construct precomputed object if force cache is fresh and matches structure
-  function buildPrecomputedIfFresh(){
-    const fc = state.forceCache;
-    if(!fc || fc.stale) return null;
-    if(fc.version !== structureVersion) return null;
-    const n = state.elements.length;
-    if(!Array.isArray(fc.forces) || fc.forces.length !== n) return null;
-    if(!Number.isFinite(fc.energy)) return null;
-    const pre = { energy: fc.energy, forces: fc.forces };
-    if (fc.stress && Array.isArray(fc.stress) && fc.stress.length === 6) pre.stress = fc.stress;
-    return pre;
-  }
-
-  function getVelocitiesIfFresh(){
-    const dyn = state.dynamics || {};
-    const v = dyn.velocities;
-    if(!v) return null;
-    if(!Array.isArray(v) || v.length !== state.elements.length) return null;
-    // Basic finiteness check without allocating large arrays
-    for(let i=0;i<v.length;i++){ const row=v[i]; if(!row || row.length!==3) return null; for(let k=0;k<3;k++){ if(!Number.isFinite(row[k])) return null; } }
-    return v;
-  }
-
-  const dynamics = { stepMD: ()=>{}, stepRelax: ({ forceFn })=>{ forceFn(); } };
-  // --- Requests-per-second (RPS) counter for MD/Relax runs ---
-  const __rps = { samples: [], windowMs: 2000, value: 0 };
-  function __resetRPS(){
-    __rps.samples.length = 0; __rps.value = 0;
-    try { const el = document.getElementById('rpsLabel'); if (el) el.textContent = 'RPS: --'; } catch {}
-  }
-  function __noteRequestCompleted(){
-    const now = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
-    __rps.samples.push(now);
-    // Drop samples outside the window
-    while(__rps.samples.length && (now - __rps.samples[0]) > __rps.windowMs){ __rps.samples.shift(); }
-    if(__rps.samples.length >= 2){
-      const dt = (__rps.samples[__rps.samples.length-1] - __rps.samples[0]);
-      __rps.value = dt > 0 ? (__rps.samples.length - 1) * 1000 / dt : 0;
-    } else {
-      __rps.value = 0;
-    }
-    try { const el = document.getElementById('rpsLabel'); if (el) el.textContent = 'RPS: ' + __rps.value.toFixed(1); } catch {}
-  }
-  // Remote relaxation: call backend /relax
-  async function callRelaxEndpoint(steps=1){
-    __count('index#callRelaxEndpoint');
-    const pos = state.positions.map(p=>[p.x,p.y,p.z]);
-  const atomic_numbers = state.elements.map(e=> elementToZ(e));
-  const body = { atomic_numbers, coordinates: pos, steps, calculator:'uma', max_step: MAX_STEP };
-  try {
-    if (state.showCell && state.cell && state.cell.enabled) {
-      body.cell = [ [state.cell.a.x, state.cell.a.y, state.cell.a.z], [state.cell.b.x, state.cell.b.y, state.cell.b.z], [state.cell.c.x, state.cell.c.y, state.cell.c.z] ];
-      body.pbc = [true,true,true];
-    }
-  } catch {}
-  const maybePre = buildPrecomputedIfFresh();
-  if(maybePre){ body.precomputed = maybePre; debugApi('relax','precomputed-attach',{ seq: __apiSeq+1, keys:Object.keys(maybePre) }); }
-  const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion; const epochAtSend = resetEpoch;
-    const base = __resolveApiBase();
-    const url = base + getEndpointSync('relax');
-    const payload = body;
-  const seq = ++__apiSeq; if (typeof window !== 'undefined') window.__MLIPVIEW_API_SEQ = __apiSeq;
-    const build0 = performance.now();
-    const t0 = performance.now();
-  debugApi('relax','request',{ seq, url, body: payload });
-    let resp, json;
-    try {
-  resp = await fetch(url || '/relax', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(payload) });
-    } catch(netErr){
-      debugApi('relax','network-error',{ seq, url, error: netErr?.message||String(netErr) });
-      throw netErr;
-    }
-    const t1 = performance.now();
-    const timingMs = Math.round((t1 - t0)*100)/100; // network time only
-    noteLatency('relax','network',{ seq, ms: timingMs });
-    if(!resp.ok){
-      const txt = await resp.text();
-      debugApi('relax','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt });
-      throw new Error('Relax request failed '+resp.status+': '+txt);
-    }
-    let parseMs = 0;
-    try { const p0=performance.now(); json = await resp.json(); const p1=performance.now(); parseMs = Math.round((p1-p0)*100)/100; noteLatency('relax','parse',{ seq, ms: parseMs }); }
-    catch(parseErr){ debugApi('relax','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
-    debugApi('relax','response',{ seq, url, timingMs, status: resp.status, response: json });
-  // no server cache key
-    return { data: json, uivAtSend, tivAtSend, epochAtSend, netMs: timingMs, parseMs };
-  }
-  const { engine, scene, camera } = await createScene(canvas);
-  // Enable verbose touch debug if requested
-  try {
-    if (typeof window !== 'undefined') {
-      window.__MLIPVIEW_DEBUG_TOUCH = !!(window.__MLIPVIEW_DEBUG_TOUCH);
-      window.enableTouchDebug = (on)=>{ window.__MLIPVIEW_DEBUG_TOUCH = !!on; console.log('[touchDebug] set to', window.__MLIPVIEW_DEBUG_TOUCH); };
-    }
-  } catch {}
-  const view = createMoleculeView(scene, state);
-  const manipulation = createManipulationService(state, { bondService });
-  // We'll define wrappedManipulation below; temporarily pass placeholder then rebind after definition
-  let wrappedManipulationRef = null;
-  // Install custom touch controls BEFORE picking service so it can skip binding its own touch handlers.
-  // Support ?noTouch=1 flag to disable touch installation for debugging bond selection issues.
-  // Pass a proxy that will read dragActive from the picking service once created.
-  let __pickingRef = null;
-  const __pickingProxy = { _debug: { get dragActive(){ try { return !!(__pickingRef && __pickingRef._debug && __pickingRef._debug.dragActive); } catch { return false; } } } };
-  let __noTouch = false;
-  try {
-    const q = new URLSearchParams(window.location.search||'');
-    __noTouch = (q.get('noTouch') === '1' || q.get('noTouch') === 'true');
-  } catch {}
-  try {
-    if (__noTouch) {
-      window.__MLIPVIEW_NO_TOUCH = true;
-      console.warn('[touchControls] skipped by ?noTouch=1');
-    } else {
-      installTouchControls({ canvas, scene, camera, picking: __pickingProxy });
-      console.log('[touchControls] installed');
-    }
-  } catch(e) { console.warn('[touchControls] install failed', e?.message||e); }
-
-  const picking = (__pickingRef = createPickingService(scene, view, selection, {
-    manipulation: new Proxy({}, { get: (_, k) => wrappedManipulationRef?.[k] }),
-    camera,
-    // Do not trigger a standalone simple_calculate while a simulation is running;
-    // wait for the next MD/relax response to update forces and energy.
-    energyHook: ({ kind }) => {
-      try {
-        if (!running.kind) ff.computeForces();
-      } catch {}
-      recordInteraction(kind || 'drag');
+  const ff = {
+    computeForces: ({ sync } = {}) => {
+      if (sync) return fetchRemoteForces({ awaitResult: true });
+      fetchRemoteForces();
+      return lastForceResult;
     },
-  }));
-  // Attach VR semantic picker (bond-first) so VR layer can use it without legacy imports
-  let vrPicker = null;
-  try { vrPicker = createVRPicker({ scene, view }); } catch (e) { console.warn('[VR] vrPicker init failed', e?.message||e); }
-  function recomputeBonds(reason='manual') {
+  };
+
+  async function requestSimpleCalculateNow() {
+    try {
+      const ws = getWS();
+      const ok = await ensureWsInit({ allowOffline: true });
+      if (!ok) return energyPlot.length();
+      ws.setCounters?.({ userInteractionCount: userInteractionVersion });
+      ws.userInteraction?.({ positions: posToTriples(state) });
+      const { energy, forces } = await ws.waitForEnergy({ timeoutMs: 5000 });
+      if (typeof energy === 'number') {
+        updateEnergyForces({ energy, forces, reason: 'requestSimpleCalculateNow' });
+        energyPlot.push(energy, 'forces');
+      }
+      return energyPlot.length();
+    } catch { return energyPlot.length(); }
+  }
+
+  // Bonds
+  const __origMarkPositionsChanged = state.markPositionsChanged?.bind(state) || null;
+  const bondService = createBondService(state);
+  const recomputeBonds = (reason = 'manual') => {
     __count('index#recomputeBonds');
     const bonds = bondService.recomputeAndStore();
-    try { view.rebuildBonds(bonds); } catch {}
-    // Avoid inflating energy step count for internal position change cascades. When
-    // markPositionsChanged fires (e.g., during a bond rotation or drag), we already
-    // log an interaction specific to the user action (bondRotate, dragMove/dragEnd, etc.).
-    // Logging an additional 'rebonds' event creates duplicate energy steps for a single
-    // conceptual action. We still log manual or external recomputes so they appear in the
-    // trace. If future workflows need explicit bond recompute steps, this guard can be
-    // refined (e.g., per-flag) but keeps default UX clean.
-    if (reason !== 'markPositionsChanged') {
-      recordInteraction('rebonds');
-    }
-  if(window.__MLIPVIEW_DEBUG_API) console.log(`[bonds] recomputed after ${reason} (count=${bonds?bonds.length:0})`);
+    try { view.rebuildBonds(bonds); } catch { }
+    if (reason !== 'markPositionsChanged') recordInteraction('rebonds');
+    if (env.apiOn()) dbg.log(`[bonds] recomputed after ${reason} (count=${bonds ? bonds.length : 0})`);
     return bonds;
-  }
-  // Wrap markPositionsChanged now that bondService/view exist
-  state.markPositionsChanged = (...a)=>{
+  };
+  state.markPositionsChanged = (...a) => {
+    enforceSafeSphere(state);
     structureVersion++;
-    if(state.forceCache) state.forceCache.stale = true;
-    const r = __origMarkPositionsChanged? __origMarkPositionsChanged(...a): undefined;
-    // Always recompute bonds when positions change
-    try { recomputeBonds('markPositionsChanged'); } catch {}
+    if (state.forceCache) { state.forceCache.stale = true; state.forceCache.version = structureVersion; }
+    const r = __origMarkPositionsChanged ? __origMarkPositionsChanged(...a) : undefined;
+    try { recomputeBonds('markPositionsChanged'); } catch { }
     return r;
   };
-  // If no bonds yet, ensure at least a recompute so initial energy uses bond term if applicable
-  if (!state.bonds || state.bonds.length===0) {
-    try { recomputeBonds(); } catch {}
-  }
-  async function relaxStep() {
-    __count('index#relaxStep');
-    try {
-  const step0 = performance.now();
-  const { data, uivAtSend, tivAtSend, epochAtSend, netMs, parseMs } = await callRelaxEndpoint(1); // single step
-      // Discard responses from prior reset epoch entirely
-      if (epochAtSend !== resetEpoch) {
-        if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][relax] staleEpoch', { epochAtSend, resetEpoch });
-        return { stale:true, staleReason:'staleEpoch', epochAtSend, resetEpoch };
-      }
-  const netDone = performance.now();
-      // If user interactions occurred during in-flight relax, apply partial update:
-      // update only atoms NOT edited by user between send and receive.
-      let partialApplied = false;
-      let modifiedDuring = null;
-      const userChangedDuringFlight = (uivAtSend !== userInteractionVersion);
-      if(userChangedDuringFlight){
-        modifiedDuring = __modifiedSetBetween(uivAtSend, userInteractionVersion);
-      }
-      // Build exclusion set: union of modifiedDuring and currently dragged atoms
-      const exclude = new Set();
-      if(modifiedDuring) for(const i of modifiedDuring) exclude.add(i);
-      if(__draggingAtoms.size) for(const i of __draggingAtoms) exclude.add(i);
-      // Also exclude any latched atoms whose latch window has not expired
-      try {
-        const now = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
-        for(const [i, t] of __latchedAtomsUntil){ if(t > now) exclude.add(i); else __latchedAtomsUntil.delete(i); }
-      } catch {}
-      // If a newer simulation result has already applied AND there were no user edits during flight,
-      // mark this response as superseded. If user edits happened, we'll attempt a partial apply below.
-      if((tivAtSend !== totalInteractionVersion) && !userChangedDuringFlight){
-        if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][relax] supersededSimulation', { uivAtSend, userInteractionVersion, tivAtSend, totalInteractionVersion });
-        return { stale:true, staleReason:'supersededSimulation', userInteractionVersionAtSend:uivAtSend, totalInteractionVersionAtSend:tivAtSend, currentUserInteractionVersion:userInteractionVersion, currentTotalInteractionVersion: totalInteractionVersion };
-      }
-      const { positions, forces, final_energy } = data;
-      if(Array.isArray(positions) && positions.length === state.positions.length){
-        // If modifiedDuring is set, apply only for indices not in the set
-        const N = positions.length;
-        const apply0 = performance.now();
-        if(exclude && exclude.size>0){
-          for(let i=0;i<N;i++){
-            if(exclude.has(i)) continue; // keep user's current edit or drag
-            const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2];
-          }
-          partialApplied = true;
-        } else {
-          for(let i=0;i<N;i++){
-            const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2];
-          }
-        }
-        state.markPositionsChanged();
-        // Suppress the debounced generic posChange tick from counting as a user interaction
-        __suppressNextPosChange = true;
-        bumpSimulationVersion(partialApplied ? 'relaxStepApplyPartial' : 'relaxStepApply');
-        const apply1 = performance.now();
-        noteLatency('relax','apply',{ ms: Math.round((apply1-apply0)*100)/100 });
-      }
-      window.__RELAX_FORCES = forces;
-      state.dynamics = state.dynamics || {}; state.dynamics.energy = final_energy;
-      if(forces && forces.length){
-        let mergedForces = forces;
-        if(partialApplied && exclude && exclude.size>0){
-          // Merge: keep current forces for user-edited atoms if available
-          const cur = Array.isArray(state.forces) ? state.forces : null;
-          mergedForces = forces.map((f,i)=> exclude.has(i) ? (cur && cur[i] ? cur[i] : [0,0,0]) : f);
-        }
-        lastForceResult = { energy: final_energy, forces: mergedForces };
-        state.forceCache = { version: structureVersion, energy: final_energy, forces: mergedForces, stress: data.stress||null, stale:false };
-        try { __updateForces(mergedForces, { reason: partialApplied ? 'relaxStepPartial' : 'relaxStep' }); } catch {}
-      }
-      if (partialApplied) {
-        const step1 = performance.now();
-        noteLatency('relax','step-total',{ ms: Math.round((step1-step0)*100)/100 });
-        return { applied:true, partial:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'relax', netMs, parseMs };
-      }
-      { const step1 = performance.now(); noteLatency('relax','step-total',{ ms: Math.round((step1-step0)*100)/100 }); }
-      return { applied:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'relax', netMs, parseMs };
-    } catch(e){
-      console.warn('[relaxStep] failed', e);
-      return { error: e?.message||String(e) };
-    }
-  }
+  if (!state.bonds?.length) { try { recomputeBonds(); } catch { } }
 
-  // --- MD step (backend-only logic, but callable from UI) ---
-  // Track MD request ordering so concurrent responses can be resolved as latest-wins for application
-  let __mdReqCounter = 0;
-  let __mdLastApplied = 0;
-  async function callMDEndpoint({ steps=1, calculator='uma', temperature=1500, timestep_fs=1.0, friction }={}){
-    __count('index#callMDEndpoint');
-    // If temperature not explicitly provided, use global target when available
-    try {
-      if ((temperature == null || !Number.isFinite(temperature)) && typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) {
-        temperature = Number(window.__MLIP_TARGET_TEMPERATURE);
-      }
-    } catch {}
-    const pos = state.positions.map(p=>[p.x,p.y,p.z]);
-    const atomic_numbers = state.elements.map(e=> elementToZ(e));
-  const frictionFinal = (typeof friction === 'number' && Number.isFinite(friction)) ? friction : (getConfig().mdFriction ?? DEFAULT_MD_FRICTION);
-  const body = { atomic_numbers, coordinates: pos, steps, temperature, timestep_fs, friction: frictionFinal, calculator };
-  try {
-    if (typeof window !== 'undefined' && window.__MLIP_DEBUG_MD_TEMP) {
-      console.log('[MD][request] temperature', { T: temperature });
-    }
-  } catch {}
-  try {
-    if (state.showCell && state.cell && state.cell.enabled) {
-      body.cell = [ [state.cell.a.x, state.cell.a.y, state.cell.a.z], [state.cell.b.x, state.cell.b.y, state.cell.b.z], [state.cell.c.x, state.cell.c.y, state.cell.c.z] ];
-      body.pbc = [true,true,true];
-    }
-  } catch {}
-  const maybePre = buildPrecomputedIfFresh();
-  if(maybePre){ body.precomputed = maybePre; debugApi('md','precomputed-attach',{ seq: __apiSeq+1, keys:Object.keys(maybePre) }); }
-  const maybeV = getVelocitiesIfFresh();
-  if(maybeV){ body.velocities = maybeV; }
-  const uivAtSend = userInteractionVersion; const tivAtSend = totalInteractionVersion; const epochAtSend = resetEpoch;
-    const base = __resolveApiBase();
-    const url = base + getEndpointSync('md');
-    const payload = body;
-  const seq = ++__apiSeq; if (typeof window !== 'undefined') window.__MLIPVIEW_API_SEQ = __apiSeq;
-    const build0 = performance.now();
-    const t0 = performance.now();
-  debugApi('md','request',{ seq, url, body: payload });
-  let resp, json; try { resp = await fetch(url,{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) }); } catch(netErr){ debugApi('md','network-error',{ seq, url, error: netErr?.message||String(netErr) }); throw netErr; }
-    const t1 = performance.now(); const timingMs = Math.round((t1 - t0)*100)/100; // network time only
-    noteLatency('md','network',{ seq, ms: timingMs });
-    if(!resp.ok){ const txt = await resp.text(); debugApi('md','http-error',{ seq, url, timingMs, status: resp.status, statusText: resp.statusText, bodyText: txt }); throw new Error('MD request failed '+resp.status+': '+txt); }
-    let parseMs = 0; try { const p0=performance.now(); json = await resp.json(); const p1=performance.now(); parseMs = Math.round((p1-p0)*100)/100; noteLatency('md','parse',{ seq, ms: parseMs }); } catch(parseErr){ debugApi('md','parse-error',{ seq, url, timingMs, error: parseErr?.message||String(parseErr) }); throw parseErr; }
-    debugApi('md','response',{ seq, url, timingMs, status: resp.status, response: json });
-  // no server cache key
-    return { data: json, uivAtSend, tivAtSend, epochAtSend, netMs: timingMs, parseMs };
-  }
-  async function mdStep(opts={}){
-    __count('index#mdStep');
-    try {
-      const t0_step = performance.now();
-      const reqId = (++__mdReqCounter);
-      // Default temperature source: global target if not provided
-      let callOpts = { ...opts };
-      try {
-        if ((callOpts.temperature == null || !Number.isFinite(callOpts.temperature)) && typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) {
-          callOpts.temperature = Number(window.__MLIP_TARGET_TEMPERATURE);
-        }
-      } catch {}
-  const { data, uivAtSend, tivAtSend, epochAtSend, netMs, parseMs } = await callMDEndpoint({ steps:1, ...callOpts });
-      // Discard responses from prior reset epoch entirely
-      if (epochAtSend !== resetEpoch) {
-        if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][md] staleEpoch', { epochAtSend, resetEpoch });
-        return { stale:true, staleReason:'staleEpoch', epochAtSend, resetEpoch };
-      }
-      // If a newer MD result has already been applied, this one is stale regardless of other checks
-      if (reqId < __mdLastApplied) {
-        if(window.__MLIPVIEW_DEBUG_API) console.debug('[staleStep][md] superseded by newer applied req', { reqId, lastApplied: __mdLastApplied });
-        return { stale:true, staleReason:'supersededSimulation', userInteractionVersionAtSend:uivAtSend, totalInteractionVersionAtSend:tivAtSend, currentUserInteractionVersion:userInteractionVersion, currentTotalInteractionVersion: totalInteractionVersion };
-      }
-      // If user interactions occurred during in-flight MD, apply partial update for non-edited atoms.
-      let partialApplied = false; let modifiedDuring = null;
-      if(uivAtSend !== userInteractionVersion){ modifiedDuring = __modifiedSetBetween(uivAtSend, userInteractionVersion); }
-      const exclude = new Set();
-      if(modifiedDuring) for(const i of modifiedDuring) exclude.add(i);
-      if(__draggingAtoms.size) for(const i of __draggingAtoms) exclude.add(i);
-      try {
-        const now = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
-        for(const [i, t] of __latchedAtomsUntil){ if(t > now) exclude.add(i); else __latchedAtomsUntil.delete(i); }
-      } catch {}
-  const { positions, forces, final_energy, velocities, temperature: instT } = data;
-      if(Array.isArray(positions) && positions.length === state.positions.length){
-        const N = positions.length;
-        const apply0 = performance.now();
-        if(exclude && exclude.size>0){
-          for(let i=0;i<N;i++){
-            if(exclude.has(i)) continue;
-            const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2];
-          }
-          partialApplied = true;
-        } else {
-          for(let i=0;i<N;i++){
-            const p=positions[i]; const tp=state.positions[i]; tp.x=p[0]; tp.y=p[1]; tp.z=p[2];
-          }
-        }
-        state.markPositionsChanged();
-        __suppressNextPosChange = true;
-        bumpSimulationVersion(partialApplied ? 'mdStepApplyPartial' : 'mdStepApply');
-        const apply1 = performance.now();
-        noteLatency('md','apply',{ ms: Math.round((apply1-apply0)*100)/100 });
-      }
-      window.__RELAX_FORCES = forces;
-      state.dynamics = state.dynamics || {}; state.dynamics.energy = final_energy;
-      if(typeof instT === 'number' && isFinite(instT)){
-        state.dynamics.temperature = instT;
-        try { const el=document.getElementById('instTemp'); if(el) el.textContent = 'T: '+instT.toFixed(1)+' K'; } catch {}
-      }
-      if(Array.isArray(velocities) && velocities.length === state.elements.length){
-        // Shallow validate
-        let ok = true; for(let i=0;i<velocities.length && ok;i++){ const r=velocities[i]; if(!r || r.length!==3) ok=false; }
-        if(ok){
-          if(partialApplied && exclude && exclude.size>0){
-            const curV = Array.isArray(state.dynamics?.velocities) ? state.dynamics.velocities : null;
-            const mergedV = velocities.map((v,i)=> exclude.has(i) ? (curV && curV[i] ? curV[i] : [0,0,0]) : v);
-            state.dynamics.velocities = mergedV;
-          } else {
-            state.dynamics.velocities = velocities;
-          }
-        }
-      }
-      if(forces && forces.length){
-        let mergedForces = forces;
-        if(partialApplied && exclude && exclude.size>0){
-          const cur = Array.isArray(state.forces) ? state.forces : null;
-          mergedForces = forces.map((f,i)=> exclude.has(i) ? (cur && cur[i] ? cur[i] : [0,0,0]) : f);
-        }
-        lastForceResult = { energy: final_energy, forces: mergedForces };
-        state.forceCache = { version: structureVersion, energy: final_energy, forces: mergedForces, stress: null, stale:false };
-        // Commit forces so visualization updates during MD sequences
-        try { __updateForces(mergedForces, { reason: partialApplied ? 'mdStepPartial' : 'mdStep' }); } catch {}
-      }
-      // Mark this response as the latest applied
-      __mdLastApplied = Math.max(__mdLastApplied, reqId);
-      if(partialApplied) { noteLatency('md','step-total',{ ms: Math.round((performance.now()-t0_step)*100)/100 }); return { applied:true, partial:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'md', netMs, parseMs }; }
-      noteLatency('md','step-total',{ ms: Math.round((performance.now()-t0_step)*100)/100 });
-      return { applied:true, energy: final_energy, userInteractionVersion, totalInteractionVersion, stepType:'md', netMs, parseMs };
-    } catch(e){
-      console.warn('[mdStep] failed', e);
-      return { error: e?.message||String(e) };
-    }
-  }
+  // Scene & view
+  const { engine, scene, camera } = await createScene(canvas);
 
-  // Interaction & energy time series
+  const cameraControlStats = { detachCalls: 0, attachCalls: 0 };
+  if (typeof window !== 'undefined' && window.__MLIPVIEW_TEST_MODE && camera && !camera.__MLIPVIEW_CONTROL_HOOKED__) {
+    const origDetach = typeof camera.detachControl === 'function' ? camera.detachControl.bind(camera) : null;
+    const origAttach = typeof camera.attachControl === 'function' ? camera.attachControl.bind(camera) : null;
+    camera.detachControl = function (...args) {
+      cameraControlStats.detachCalls += 1;
+      return origDetach ? origDetach(...args) : undefined;
+    };
+    camera.attachControl = function (...args) {
+      cameraControlStats.attachCalls += 1;
+      return origAttach ? origAttach(...args) : undefined;
+    };
+    Object.defineProperty(camera, '__MLIPVIEW_CONTROL_HOOKED__', { value: true, configurable: true });
+  }
+  onWin(w => {
+    w.__MLIPVIEW_DEBUG_TOUCH = !!w.__MLIPVIEW_DEBUG_TOUCH;
+    w.enableTouchDebug = (on) => { w.__MLIPVIEW_DEBUG_TOUCH = !!on; dbg.log('[touchDebug] set to', w.__MLIPVIEW_DEBUG_TOUCH); };
+  });
+  const view = createMoleculeView(scene, state);
+  const manipulation = createManipulationService(state, { bondService });
+
+  // Picking & touch controls
+  let pickingRef = null;
+  const pickingProxy = { _debug: { get dragActive() { try { return !!(pickingRef?._debug?.dragActive); } catch { return false; } } } };
+  const NO_TOUCH = qbool('noTouch');
+  try {
+    if (NO_TOUCH) { onWin(w => { w.__MLIPVIEW_NO_TOUCH = true; dbg.warn('[touchControls] skipped by ?noTouch=1'); }); }
+    else { installTouchControls({ canvas, scene, camera, picking: pickingProxy }); dbg.log('[touchControls] installed'); }
+  } catch (e) { dbg.warn('[touchControls] install failed', e?.message || e); }
+
+  // Interactions log
   const interactions = [];
-  const energySeries = []; // {i,E,kind}
-  let lastPlottedEnergy = undefined;
-  function maybePlotEnergy(kind){
-    try {
-      const E = state.dynamics?.energy;
-      // Update live metrics energy label (formatted E: %0.2f)
-      try {
-        const elE = document.getElementById('instEnergy');
-        if (elE && typeof E === 'number' && isFinite(E)) {
-          elE.textContent = 'E: ' + E.toFixed(2);
-        }
-      } catch {}
-      if (typeof E !== 'number' || !isFinite(E)) return;
-      if (E === lastPlottedEnergy) return; // skip duplicate energy values
-      const idx = energySeries.length;
-      energySeries.push({ i: idx, E, kind });
-      lastPlottedEnergy = E;
-      window.__RELAX_TRACE = energySeries.map(e=>e.E);
-      drawEnergy();
-    } catch(_e) { /* ignore plot errors */ }
-  }
-  // Suppress the very next debounced generic 'posChange' interaction if a higher-level
-  // action (e.g. bondRotate) already recorded an energy step in the same logical edit.
   let __suppressNextPosChange = false;
-  // recordInteraction: central funnel for adding user/system events that should reflect
-  // a (potential) energy change. Any geometry-changing action (drag move/end, bond rotate,
-  // relax step, MD step, provider recompute) should either call recordInteraction directly
-  // or be wrapped (see wrappers below). This keeps the energy sparkline in sync without
-  // scattering plotting logic across services. We seed an initial 'init' interaction after
-  // the first force compute so a single point is drawn (dot) before any steps.
-  function recordInteraction(kind){
-    __count('index#recordInteraction');
-    const E = state.dynamics.energy ?? 0;
-    const idx = interactions.length;
-    interactions.push({ i:idx, kind, E });
-    // Energy plot no longer advances here; only API energy returns call maybePlotEnergy.
-    // Notify force visualization (now handled by moleculeView thin instances)
+  const recordInteraction = (kind) => {
+    const E = state.dynamics?.energy ?? 0;
+    const i = interactions.length; interactions.push({ i, kind, E });
     if (kind && kind !== 'dragMove') {
-      try {
-        if (state.bus.emit) {
-          const DBG = (typeof window !== 'undefined') && (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search||''));
-          if (!state.forces && window.__RELAX_FORCES && window.__RELAX_FORCES.length) {
-            __updateForces(window.__RELAX_FORCES, { reason:'lateAttachInteraction' });
-          }
-          if (DBG) console.log('[Forces][emit] forcesChanged due to interaction kind=', kind, 'haveForces=', !!state.forces);
-          state.bus.emit('forcesChanged');
-        }
-      } catch {}
+      if (!state.forces && Array.isArray(window?.__RELAX_FORCES) && window.__RELAX_FORCES.length)
+        updateForces(window.__RELAX_FORCES, { reason: 'lateAttachInteraction' });
+      state.bus?.emit?.('forcesChanged');
     }
-  }
-  async function baselineEnergy(){
-    __count('index#baselineEnergy');
-    interactions.length = 0;
-    energySeries.length = 0; // cleared; first API energy response will add first point
-    let res;
+  };
+
+  // Drag emission (throttled)
+  const emitDuringDrag = throttle(() => {
     try {
-      res = await ff.computeForces({ sync: !!window.__FORCE_SYNC_REMOTE__ });
-      state.dynamics = state.dynamics || {}; state.dynamics.energy = res.energy;
-    } catch(e){ res = { energy: NaN, forces: [] }; }
-    window.__RELAX_FORCES = res.forces||[];
-    if (res.forces && res.forces.length) {
-      __updateForces(res.forces, { reason:'baselineEnergy' });
-    } else {
-      const DBG=(typeof window!=='undefined') && (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search||''));
-      if (DBG) {
-        const synth = state.positions.map(p=>{ const r=Math.hypot(p.x,p.y,p.z)||1; return [p.x/r*0.3, p.y/r*0.3, p.z/r*0.3]; });
-        window.__RELAX_FORCES = synth;
-        __updateForces(synth, { reason:'baselineEnergySynth' });
-      }
-    }
-    // Do not create an 'init' energy tick. First real API response will create the first point.
+      enforceSafeSphere(state);
+      bumpUser('dragMove');
+      const ws = getWS();
+      ws.setCounters?.({ userInteractionCount: userInteractionVersion });
+      // Send only the currently dragged atoms (sparse delta)
+      const idxs = Array.from(draggingAtoms || []);
+      if (idxs.length === 0) return;
+      const triples = idxs.map(i => {
+        const p = state.positions[i] || { x: 0, y: 0, z: 0 };
+        return [p.x, p.y, p.z];
+      });
+      ws.userInteraction?.({ positions: { indices: idxs, triples } });
+    } catch { }
+  }, TUNABLES.DRAG_THROTTLE_MS);
+
+  // Wrapped manipulation
+  function selectedAtomIndex() {
+    try { return state.selection?.kind === 'atom' ? state.selection.data.index : null; }
+    catch { return null; }
   }
-  // Wrap atomic-changing operations (relax/MD steps already wrapped below)
-  const origRelaxStep = relaxStep; relaxStep = async ()=>{ const r = await origRelaxStep(); if(r && r.applied){ recordInteraction('relaxStep'); maybePlotEnergy('relax'); } return r; };
-  const origMdStep = mdStep; mdStep = async (o)=>{ const r = await origMdStep(o); if(r && r.applied){ recordInteraction('mdStep'); maybePlotEnergy('md'); } return r; };
-  // Wrap manipulation (drag & bond rotation) so any geometry change recomputes energy and updates plot.
-  function __selectedAtomIndex(){ try { return (state.selection && state.selection.kind==='atom') ? state.selection.data.index : null; } catch { return null; } }
   const wrappedManipulation = {
-    beginDrag: (...a)=> { const ok = manipulation.beginDrag(...a); if(ok){ const idx = __selectedAtomIndex(); if(idx!=null){ __currentDraggedAtomIndex = idx; __draggingAtoms.add(idx); } } return ok; },
-    updateDrag: (...a)=> { const r = manipulation.updateDrag(...a); if (r) { bumpUserInteractionVersion('dragMove'); const idx = __selectedAtomIndex(); if(idx!=null){ __addModifiedAtoms([idx]); __currentDraggedAtomIndex = idx; __draggingAtoms.add(idx); } if(!running.kind) ff.computeForces(); recordInteraction('dragMove'); } return r; },
-    endDrag: (...a)=> {
-      const hadDrag = (__currentDraggedAtomIndex!=null) || (__draggingAtoms.size>0);
-      // Capture drag source before underlying service clears its state
-      let dragSource = null; try { dragSource = manipulation._debug?.getDragState?.()?.source || null; } catch {}
-      const r = manipulation.endDrag(...a);
-      if(hadDrag){
-        bumpUserInteractionVersion('dragEnd');
-        const idx = (__currentDraggedAtomIndex!=null)? __currentDraggedAtomIndex : __selectedAtomIndex();
-        if(idx!=null){
-          __addModifiedAtoms([idx]);
-          __draggingAtoms.delete(idx);
-          // Latch only for VR-origin drags to prevent immediate snapback from in-flight MD/relax
-          if (dragSource === 'vr') { __latchAtom(idx, 800); }
-        }
-        // Clear current pointer
-        __currentDraggedAtomIndex = null;
+    beginDrag: (...a) => {
+      if (!ensureTimelineEditable('manipulation.beginDrag')) return false;
+      const ok = manipulation.beginDrag?.(...a);
+      if (ok) {
+        const idx = selectedAtomIndex(); if (idx != null) { currentDraggedAtom.idx = idx; draggingAtoms.add(idx); }
       }
-      if(!running.kind) ff.computeForces();
+      return ok;
+    },
+    updateDrag: (...a) => {
+      if (!ensureTimelineEditable('manipulation.updateDrag')) return false;
+      const r = manipulation.updateDrag?.(...a);
+      if (r) {
+        bumpUser('dragMove');
+        const idx = selectedAtomIndex(); if (idx != null) { modifiedByVersion.get(userInteractionVersion) || modifiedByVersion.set(userInteractionVersion, new Set()); modifiedByVersion.get(userInteractionVersion).add(idx); currentDraggedAtom.idx = idx; draggingAtoms.add(idx); }
+        emitDuringDrag(); recordInteraction('dragMove');
+      }
+      return r;
+    },
+    endDrag: (...a) => {
+      if (!ensureTimelineEditable('manipulation.endDrag')) return false;
+      const had = (currentDraggedAtom.idx != null) || draggingAtoms.size > 0;
+      let dragSource = null; try { dragSource = manipulation._debug?.getDragState?.()?.source || null; } catch { }
+      const r = manipulation.endDrag?.(...a);
+      if (had) {
+        bumpUser('dragEnd');
+        const idx = (currentDraggedAtom.idx != null) ? currentDraggedAtom.idx : selectedAtomIndex();
+        if (idx != null) {
+          modifiedByVersion.get(userInteractionVersion) || modifiedByVersion.set(userInteractionVersion, new Set());
+          modifiedByVersion.get(userInteractionVersion).add(idx);
+          draggingAtoms.delete(idx);
+          if (dragSource === 'vr') latchAtom(idx, TUNABLES.LATCH_AFTER_VR_MS);
+        }
+        try { const ws = getWS(); ws.setCounters?.({ userInteractionCount: userInteractionVersion }); ws.userInteraction?.({ positions: posToTriples(state) }); } catch { }
+        currentDraggedAtom.idx = null;
+      }
       recordInteraction('dragEnd');
       return r;
     },
-    setDragPlane: (...a)=> manipulation.setDragPlane(...a),
-    rotateBond: (...a)=> { const r = manipulation.rotateBond(...a); if (r) { // capture rotated side atoms via manipulation debug hook
-        let sideAtoms = null; try { sideAtoms = manipulation._debug?.getLastRotation?.()?.sideAtoms || null; } catch{}
-        bumpUserInteractionVersion('bondRotate'); if(Array.isArray(sideAtoms) && sideAtoms.length) __addModifiedAtoms(sideAtoms); if(!running.kind) ff.computeForces(); recordInteraction('bondRotate'); __suppressNextPosChange = true; }
-      return r; }
+    setDragPlane: (...a) => {
+      if (!ensureTimelineEditable('manipulation.setDragPlane')) return;
+      return manipulation.setDragPlane?.(...a);
+    },
+    rotateBond: (...a) => {
+      if (!ensureTimelineEditable('manipulation.rotateBond')) return false;
+      const r = manipulation.rotateBond?.(...a);
+      if (r) {
+        let sideAtoms = null; try { sideAtoms = manipulation._debug?.getLastRotation?.()?.sideAtoms || null; } catch { }
+        bumpUser('bondRotate');
+        if (Array.isArray(sideAtoms) && sideAtoms.length) {
+          modifiedByVersion.get(userInteractionVersion) || modifiedByVersion.set(userInteractionVersion, new Set());
+          for (const i of sideAtoms) modifiedByVersion.get(userInteractionVersion).add(i);
+          markRotatingAtoms(sideAtoms);
+        }
+        if (running.kind === null) ff.computeForces();
+        recordInteraction('bondRotate');
+        __suppressNextPosChange = true;
+        sendBondLatchUpdate();
+      }
+      return r;
+    },
   };
-  // Mark for debug/diagnostics so other subsystems (VR) can assert they received the wrapped instance
-  try { Object.defineProperty(wrappedManipulation, '__isWrappedManipulation', { value: true, enumerable: false }); } catch { wrappedManipulation.__isWrappedManipulation = true; }
-  wrappedManipulationRef = wrappedManipulation;
+  try { wrappedManipulation._debug = manipulation._debug; } catch { }
+  try { Object.defineProperty(wrappedManipulation, '__isWrappedManipulation', { value: true }); } catch { wrappedManipulation.__isWrappedManipulation = true; }
 
-  // Provide explicit cleanup to help Jest teardown
-  if (typeof window !== 'undefined') {
-    window.__MLIPVIEW_CLEANUP = window.__MLIPVIEW_CLEANUP || [];
-    window.__MLIPVIEW_CLEANUP.push(()=>{
-      try { engine && engine.stopRenderLoop && engine.stopRenderLoop(); } catch {}
-      try { if(scene && scene.dispose) scene.dispose(); } catch {}
+  // Picking with energy hook
+  const selectionService = createSelectionService(state);
+  try {
+    state.bus?.on?.('selectionChanged', (sel) => {
+      try {
+        if (sel && sel.kind === 'bond') {
+          const group = sel.data?.rotationGroup;
+          if (group && Array.isArray(group.sideAtoms) && group.sideAtoms.length) {
+            setBondLatchFromGroup(group);
+            return;
+          }
+        }
+        clearBondLatch({ sendFinal: true });
+      } catch { }
     });
-  }
-  // Selection or manipulation events could be hooked similarly via bus later
+  } catch { }
+  const picking = (pickingRef = createPickingService(
+    scene,
+    view,
+    selectionService,
+    {
+      manipulation: new Proxy({}, { get: (_, k) => wrappedManipulation?.[k] }),
+      camera,
+      energyHook: ({ kind }) => {
+        const dragging = draggingAtoms.size > 0 || currentDraggedAtom.idx != null;
+        if (mode === Mode.Idle) { if (dragging) emitDuringDrag(); else ff.computeForces(); }
+        recordInteraction(kind || 'drag');
+      },
+      bondScrollStep: TUNABLES.BOND_SCROLL_STEP_RAD,
+    },
+  ));
 
-  let energyCtx=null; let energyCanvas=null; let energyLabel=null;
-  function initEnergyCanvas(){
-    __count('index#initEnergyCanvas');
-    if (energyCanvas) return;
-    energyCanvas = document.getElementById('energyCanvas');
-    if (!energyCanvas) return;
-    energyCtx = energyCanvas.getContext('2d');
-    energyLabel = document.getElementById('energyLabel');
-  }
-  function drawEnergy(){
-    __count('index#drawEnergy');
-    initEnergyCanvas(); if(!energyCtx) return;
-    const W=energyCanvas.width, H=energyCanvas.height;
-    energyCtx.clearRect(0,0,W,H);
-    if (energySeries.length===0) return;
-    if (energySeries.length===1) {
-      const p=energySeries[0];
-      energyCtx.fillStyle='#6fc2ff';
-      energyCtx.beginPath();
-      energyCtx.arc(W/2, H/2, 3, 0, Math.PI*2);
-      energyCtx.fill();
-      if (energyLabel) energyLabel.textContent = 'E steps=1';
-      return;
-    }
-    let minE=Infinity,maxE=-Infinity; for(const p of energySeries){ if(p.E<minE)minE=p.E; if(p.E>maxE)maxE=p.E; }
-    if (maxE-minE < 1e-12) { maxE=minE+1e-12; }
-    energyCtx.strokeStyle='#6fc2ff'; energyCtx.lineWidth=1; energyCtx.beginPath();
-    for (let k=0;k<energySeries.length;k++){
-      const p=energySeries[k];
-      const x = (k/(energySeries.length-1))* (W-4) + 2;
-      const y = H - 2 - ((p.E - minE)/(maxE-minE))*(H-4);
-      if(k===0) energyCtx.moveTo(x,y); else energyCtx.lineTo(x,y);
-    }
-    energyCtx.stroke();
-    if (energyLabel) energyLabel.textContent = `E steps=${energySeries.length} range=${(maxE-minE).toExponential(2)}`;
+  try {
+    timelineUi = installTimeline({
+      host: typeof document !== 'undefined' ? (document.getElementById('app') || canvas?.parentElement || document.body) : null,
+      capacity: 500,
+      getOffsets: () => frameBuffer.listOffsets(),
+      getActiveOffset: () => timelineState.offset,
+      onRequestOffset: (offset) => handleTimelineOffsetRequest(offset),
+      onRequestPlay: (offset) => handleTimelinePlayRequest(offset),
+      onRequestPause: () => handleTimelinePauseRequest(),
+      onRequestLive: () => handleTimelineLiveRequest(),
+    });
+    timelineUi?.refresh?.();
+  } catch (err) {
+    if (env.apiOn()) dbg.warn('[timeline] install failed', err?.message || err);
   }
 
-  // Debounced auto energy update when any positionsChanged event fires (catch-all for drag paths)
-  let posEnergyTimer=null; let pendingPosEnergy=false;
-  state.bus.on('positionsChanged', () => {
-    pendingPosEnergy = true;
-    if (posEnergyTimer) return;
-    posEnergyTimer = setTimeout(()=>{
-      posEnergyTimer=null;
-      if (!pendingPosEnergy) return;
-      pendingPosEnergy=false;
-      // If this positionsChanged was triggered by applying a simulation step (relax/md),
-      // skip the immediate force recompute so we don't overwrite the step's returned forces.
-      if (__suppressNextPosChange) {
-        __suppressNextPosChange = false; // consume the suppression flag
-        // Intentionally do NOT call ff.computeForces or record an interaction here.
-        return;
-      }
-      try { if(!running.kind) ff.computeForces(); } catch{}
-      bumpUserInteractionVersion('posChange');
-      recordInteraction('posChange');
-    }, 50); // slight debounce to batch rapid pointer move events
+  // VR support
+  let vrPicker = null; try { vrPicker = createVRPicker({ scene, view }); } catch (e) { dbg.warn('[VR] vrPicker init failed', e?.message || e); }
+  const vr = createVRSupport(scene, {
+    picking: {
+      ...picking,
+      view,
+      vrPicker,
+      selectionService,
+      manipulation: new Proxy({}, { get: (_, k) => wrappedManipulation?.[k] }),
+      molState: state,
+    },
   });
+  try { vr.init().then(res => dbg.log(res.supported ? '[VR] support initialized (auto)' : '[VR] not supported')); } catch (e) { dbg.warn('[VR] auto init failed', e?.message || e); }
 
-  // --- Continuous simulation orchestration (relax / MD) ---
-  // Feature flags (can be toggled at build time via define plugin):
-  // Feature flags are now read dynamically each access so they can be enabled after init.
-  // Previous implementation captured a snapshot causing UI buttons to remain disabled if flags
-  // were set after viewer initialization. Use getter to always reflect current window.__MLIP_FEATURES.
-  function featureFlags(){
-    if (typeof window === 'undefined') return { RELAX_LOOP:true, MD_LOOP:true, ENERGY_TRACE:true, FORCE_VECTORS:true };
-    if(!window.__MLIP_FEATURES) window.__MLIP_FEATURES = { RELAX_LOOP:true, MD_LOOP:true, ENERGY_TRACE:true, FORCE_VECTORS:true };
-    return window.__MLIP_FEATURES;
+  // Baseline energy
+  async function baselineEnergy() {
+    __count('index#baselineEnergy');
+    interactions.length = 0; energyPlot.reset();
+    let res; try { res = await ff.computeForces({ sync: !!window?.__FORCE_SYNC_REMOTE__ }); state.dynamics ||= {}; state.dynamics.energy = res.energy; }
+    catch { res = { energy: NaN, forces: [] }; }
+    window.__RELAX_FORCES = res.forces || [];
+    if (res.forces?.length) updateForces(res.forces, { reason: 'baselineEnergy' });
   }
-  function enableFeatureFlag(name, value=true){
-    if (typeof window === 'undefined') return false;
-    if(!window.__MLIP_FEATURES) window.__MLIP_FEATURES={};
-    window.__MLIP_FEATURES[name]=value; return true;
-  }
-  let running = { kind: null, abort: null };
-  function setForceProvider(){ return 'uma'; }
-  // Continuous loops with request pacing and exponential backoff on server overload.
-  // Contract:
-  //  - Make at most one network step request per configured pacing interval (minStepIntervalMs, default 30ms) in normal operation.
-  //  - Adjustable at runtime via setMinStepInterval(ms).
-  //  - If a step returns an error (http or parse caught inside relaxStep/mdStep), apply
-  //    exponential backoff starting at 200ms (200,400,800,... up to 5s) before retrying next step.
-  //  - Abort if another simulation is already running or stopSimulation() called.
-  //  - For relax: attempt up to maxSteps (default 200) or until an error streak exceeds threshold.
-  //  - For md: run fixed number of steps unless aborted.
-  // Desktop focus helpers: only send relax/MD requests when window is focused (desktop mode)
-  function isAppFocused(){
-    try {
-      if (typeof window === 'undefined' || typeof document === 'undefined') return true; // non-browser/test
-      if (window.__MLIPVIEW_TEST_MODE) return true; // do not gate tests
-      if (document.hidden) return false;
-      if (typeof document.hasFocus === 'function') return !!document.hasFocus();
-      return true;
-    } catch { return true; }
-  }
-  function waitForFocus(){
-    return new Promise(resolve => {
-      if (isAppFocused()) return resolve();
-      function cleanup(){ try { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVis); } catch {} }
-      function onFocus(){ cleanup(); resolve(); }
-      function onVis(){ try { if (!document.hidden && isAppFocused()) { cleanup(); resolve(); } } catch { /* ignore */ } }
-      try { window.addEventListener('focus', onFocus); document.addEventListener('visibilitychange', onVis); } catch { resolve(); }
-    });
-  }
+  try { baselineEnergy().catch(() => { }); } catch { }
 
-  async function startRelaxContinuous({ maxSteps=1000 }={}) {
-  if(!featureFlags().RELAX_LOOP) { console.warn('[feature] RELAX_LOOP disabled'); return { disabled:true }; }
-    __count('index#startRelaxContinuous');
-    if (running.kind) return { ignored:true };
-    running.kind='relax';
-    __resetRPS();
-  const minInterval = getConfig().minStepIntervalMs; // ms pacing per API request (configurable)
-    let lastTime=0; // retained for focus-wait reset only
-    let backoffMs=0; // 0 means no backoff active
-    const baseBackoff=200; const maxBackoff=5000;
-    let errorStreak=0; const maxErrorStreak=10;
-    let stepsDone=0;
-  let __relaxLastResponseAt = 0;
-  while(running.kind==='relax' && stepsDone<maxSteps){
-      // Pause if app not focused (desktop). Resume on focus.
-      if (!isAppFocused()) {
-        const f0 = performance.now();
-        await waitForFocus();
-        if (running.kind!=='relax') break;
-        // reset pacing reference to avoid burst immediately after focus
-        lastTime = performance.now();
-        noteLatency('relax','focus-wait',{ ms: Math.round((lastTime - f0)*100)/100 });
-        continue;
-      }
-      if(backoffMs>0){
-        const w0 = performance.now();
-        await new Promise(r=>setTimeout(r, backoffMs));
-        noteLatency('relax','wait-backoff',{ ms: Math.round((performance.now()-w0)*100)/100, backoffMs });
-      }
-      if(running.kind!=='relax') break;
-  const __beforeReq = performance.now();
-  const res = await relaxStep();
-  const __afterResp = performance.now();
-  if(res && res.applied){ stepsDone++; __noteRequestCompleted(); } // count only applied (non-stale) steps
-      // Between-requests: time from last response to next request send
-      if (__relaxLastResponseAt > 0) {
-        const gap = Math.round((__beforeReq - __relaxLastResponseAt)*100)/100;
-        noteLatency('relax','between-requests',{ ms: gap });
-      }
-      __relaxLastResponseAt = __afterResp;
-      lastTime = performance.now();
-      // Post-request pacing: only wait if API network time was less than minInterval
-      if(!res?.error && backoffMs===0){
-        const net = Number(res?.netMs)||0;
-        const need = Math.max(0, minInterval - net);
-        if(need>0){ const w0=performance.now(); await new Promise(r=>setTimeout(r, need)); noteLatency('relax','wait-pacing',{ ms: Math.round((performance.now()-w0)*100)/100, needed: Math.round(need), netMs: net }); }
-      }
-      if(res && res.error){
-        errorStreak++;
-        if(errorStreak>=maxErrorStreak){ console.warn('[relaxRun] aborting due to error streak'); break; }
-        backoffMs = backoffMs? Math.min(backoffMs*2, maxBackoff) : baseBackoff;
-      } else {
-        errorStreak=0; backoffMs=0;
-      }
-    }
-    const converged = errorStreak===0 && stepsDone>=maxSteps; // simplistic criterion
-    running.kind=null;
-    __resetRPS();
-    return { converged, steps: stepsDone };
-  }
-  async function startMDContinuous({ steps=1000, calculator='uma', temperature=1500, timestep_fs=1.0, friction }={}){
-  if(!featureFlags().MD_LOOP){ console.warn('[feature] MD_LOOP disabled'); return { disabled:true }; }
-    if(running.kind) return { ignored:true };
-    running.kind='md';
-    __resetRPS();
-  const minInterval = getConfig().minStepIntervalMs; let lastTime=0; // retained for focus-wait reset only
-    let __mdLastResponseAt = 0;
-    let backoffMs=0; const baseBackoff=200; const maxBackoff=5000; let errorStreak=0; const maxErrorStreak=10;
-    let i=0;
-    while(i<steps && running.kind==='md'){
-      if (!isAppFocused()) {
-        const f0 = performance.now();
-        await waitForFocus();
-        if (running.kind!=='md') break;
-        lastTime = performance.now();
-        noteLatency('md','focus-wait',{ ms: Math.round((lastTime - f0)*100)/100 });
-        continue;
-      }
-  if(backoffMs>0){ const w0=performance.now(); await new Promise(r=>setTimeout(r, backoffMs)); noteLatency('md','wait-backoff',{ ms: Math.round((performance.now()-w0)*100)/100, backoffMs }); }
-  if(running.kind!=='md') break;
-      // Re-read target temperature dynamically to allow live slider adjustments mid-run.
-      let dynT = temperature; // fallback to initial argument
-      try {
-        if (typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) {
-          dynT = window.__MLIP_TARGET_TEMPERATURE;
-        }
-      } catch {}
-  // Clamp to configured slider bounds (0-3000 K)
-      if(!(Number.isFinite(dynT))) dynT = temperature;
-  if(dynT < 0) dynT = 0; else if(dynT > 3000) dynT = 3000;
-  const __beforeReq = performance.now();
-  const res = await mdStep({ calculator, temperature: dynT, timestep_fs, friction });
-  const __afterResp = performance.now();
-  try { const el=document.getElementById('instTemp'); if(el && state.dynamics && typeof state.dynamics.temperature==='number') el.textContent='T: '+state.dynamics.temperature.toFixed(1)+' K'; } catch {}
-      if (__mdLastResponseAt > 0) {
-        const gap = Math.round((__beforeReq - __mdLastResponseAt)*100)/100;
-        noteLatency('md','between-requests',{ ms: gap });
-      }
-      __mdLastResponseAt = __afterResp;
-      lastTime=performance.now();
-      // Post-request pacing: only wait if API network time was less than minInterval
-      if(!res?.error && backoffMs===0){
-        const net = Number(res?.netMs)||0;
-        const need = Math.max(0, minInterval - net);
-        if(need>0){ const w0=performance.now(); await new Promise(r=>setTimeout(r, need)); noteLatency('md','wait-pacing',{ ms: Math.round((performance.now()-w0)*100)/100, needed: Math.round(need), netMs: net }); }
-      }
-      if(res && res.error){
-        errorStreak++; if(errorStreak>=maxErrorStreak){ console.warn('[mdRun] aborting due to error streak'); break; }
-        backoffMs = backoffMs? Math.min(backoffMs*2, maxBackoff) : baseBackoff;
-      } else {
-        // Only advance step counter for applied (non-stale) MD results
-        if(res && res.applied){ i++; __noteRequestCompleted(); }
-        errorStreak=0; backoffMs=0;
-      }
-    }
-    const completed = (i>=steps && errorStreak===0);
-    running.kind=null;
-    __resetRPS();
-    return { completed, steps: i };
-  }
-  function stopSimulation(){ running.kind=null; __resetRPS(); }
-
-  const lastMetrics = { energy:null, maxForce:null, maxStress:null };
-  function getMetrics(){ __count('index#getMetrics'); return { energy: state.dynamics?.energy, running: running.kind }; }
-
-  // Reset to initial positions (no page reload): stops any running sim, restores XYZ, recomputes bonds/forces
-  async function resetToInitialPositions(){
-    const t0 = (typeof performance!=='undefined' && performance.now)? performance.now(): Date.now();
-    try { console.log('[Reset] begin VR/AR-safe reset', { when: new Date().toISOString() }); } catch {}
-    try {
-      // Stop any running loop (relax/md)
-      stopSimulation();
-      // Bump reset epoch first so any responses in flight are invalidated
-      resetEpoch++;
-      // Invalidate any in-flight simulation responses by advancing interaction versions immediately.
-      // This ensures responses captured before reset won't apply (stale by version checks).
-      try { bumpUserInteractionVersion('reset'); } catch {}
-      // Also prevent the debounced positionsChanged handler from counting this reset as a separate user edit
-      // after we restore positions and call markPositionsChanged below.
-      __suppressNextPosChange = true;
-      // Clear interaction log and energy time series before we restore positions
-  try { interactions.length = 0; } catch {}
-  try { energySeries.length = 0; lastPlottedEnergy = undefined; } catch {}
-  try { drawEnergy(); } catch {}
-  try { const elE=document.getElementById('instEnergy'); if(elE) elE.textContent='E: —'; } catch {}
-      const init = Array.isArray(state.__initialPositions) ? state.__initialPositions : null;
-      if(!init || init.length !== state.positions.length) { try { console.warn('[Reset] missing or size-mismatch initial positions'); } catch{} return false; }
-      for(let i=0;i<init.length;i++){ const p=init[i]; const tp=state.positions[i]; tp.x=p.x; tp.y=p.y; tp.z=p.z; }
-      state.markPositionsChanged();
-      // Clear velocities to avoid unexpected motion carry-over
-      try { if(state.dynamics) state.dynamics.velocities = []; } catch {}
-      // Turn off PBC and restore initial cell snapshot (if any)
-      try {
-        // Always disable PBC visibility on reset
-        state.showCell = false;
-        // Also hide ghost cells if shown
-        if (state.showGhostCells) state.showGhostCells = false;
-        // Restore the initial cell geometry captured at load
-        if (state.__initialCellSnapshot) {
-          const c = state.__initialCellSnapshot;
-          state.cell = {
-            a: { x:c.a.x, y:c.a.y, z:c.a.z },
-            b: { x:c.b.x, y:c.b.y, z:c.b.z },
-            c: { x:c.c.x, y:c.c.y, z:c.c.z },
-            originOffset: c.originOffset ? { x:c.originOffset.x||0, y:c.originOffset.y||0, z:c.originOffset.z||0 } : { x:0,y:0,z:0 },
-            enabled: !!c.enabled,
-          };
-        } else {
-          // If no initial cell, clear any active cell config
-          try { state.cell = null; } catch {}
-        }
-        // Notify downstream listeners (UI, renderer) of cell change/reset
-        try { state.markCellChanged && state.markCellChanged(); } catch {}
-      } catch {}
-      // Force recompute (sync) so forces and energy reflect reset positions promptly
-      const f0 = (typeof performance!=='undefined' && performance.now)? performance.now(): Date.now();
-      try { await ff.computeForces({ sync:true }); } catch(e){ try { console.warn('[Reset] computeForces failed', e?.message||e); } catch{} }
-      const f1 = (typeof performance!=='undefined' && performance.now)? performance.now(): Date.now();
-      // Ensure plot remains cleared after recompute
-  try { energySeries.length = 0; lastPlottedEnergy = undefined; drawEnergy(); } catch {}
-  try { const elE=document.getElementById('instEnergy'); if(elE) elE.textContent='E: —'; } catch {}
-      const t1 = (typeof performance!=='undefined' && performance.now)? performance.now(): Date.now();
-      try { console.log('[Reset] done', { totalMs: Math.round((t1-t0)*100)/100, recomputeMs: Math.round((f1-f0)*100)/100 }); } catch {}
-      return true;
-    } catch (e) { try { console.warn('[Reset] exception', e?.message||e); } catch {} return false; }
-  }
-
-  // Initial energy baseline (compute once to seed plot so first interaction can draw a segment)
-  try { await baselineEnergy(); } catch(e) { /* ignore */ }
-  // If baseline positions weren't cached by a loader yet, seed them now from the current state
+  // Seed initial positions if missing
   try {
-    const need = !state.__initialPositions || state.__initialPositions.length !== (state.positions?.length||0) || state.__initialPositions.length === 0;
-    if (need && Array.isArray(state.positions) && state.positions.length>0) {
-      state.__initialPositions = state.positions.map(p=>({ x:p.x, y:p.y, z:p.z }));
-      try { console.log('[Reset] baseline seeded after baselineEnergy', { count: state.__initialPositions.length }); } catch {}
+    const need = !state.__initialPositions?.length || state.__initialPositions.length !== (state.positions?.length || 0);
+    if (need && state.positions?.length) {
+      state.__initialPositions = state.positions.map(p => ({ x: p.x, y: p.y, z: p.z }));
+      dbg.log('[Reset] baseline seeded after baselineEnergy', { count: state.__initialPositions.length });
+      if (!state.__resetBaseline || !(state.__resetBaseline.positions?.length)) {
+        seedResetBaseline('baselineEnergy');
+      }
     }
-  } catch {}
+  } catch { }
 
-  // Capture initial cell snapshot once (for reset): use loader-provided cell if present
+  // Capture initial cell snapshot
   try {
-    if (!state.__initialCellSnapshot && state.cell && state.cell.a && state.cell.b && state.cell.c) {
+    if (!state.__initialCellSnapshot && state.cell?.a && state.cell?.b && state.cell?.c) {
       const c = state.cell;
       state.__initialCellSnapshot = {
-        a: { x:c.a.x, y:c.a.y, z:c.a.z },
-        b: { x:c.b.x, y:c.b.y, z:c.b.z },
-        c: { x:c.c.x, y:c.c.y, z:c.c.z },
-        originOffset: c.originOffset ? { x:c.originOffset.x||0, y:c.originOffset.y||0, z:c.originOffset.z||0 } : { x:0,y:0,z:0 },
+        a: { x: c.a.x, y: c.a.y, z: c.a.z },
+        b: { x: c.b.x, y: c.b.y, z: c.b.z },
+        c: { x: c.c.x, y: c.c.y, z: c.c.z },
+        originOffset: c.originOffset ? { x: c.originOffset.x || 0, y: c.originOffset.y || 0, z: c.originOffset.z || 0 } : { x: 0, y: 0, z: 0 },
         enabled: !!c.enabled,
       };
-      try { console.log('[Reset] captured initial cell snapshot'); } catch {}
+      dbg.log('[Reset] captured initial cell snapshot');
     }
-  } catch {}
+  } catch { }
 
-  // --- Auto-start MD (optional) ---
-  // Requirement: Start continuous MD automatically after the very first successful energy/force
-  // acquisition (baselineEnergy above). We only run this in normal browser mode (not test mode)
-  // and allow users/tests to opt out via window.__MLIPVIEW_NO_AUTO_MD = true before init.
-  // We trigger via the public API so UI state (run/stop button text) can reflect the run.
+  // positionsChanged debounce
+  let posTickScheduled = false;
+  state.bus.on('positionsChanged', () => {
+    const dragging = draggingAtoms.size > 0 || currentDraggedAtom.idx != null;
+    if (dragging) { emitDuringDrag(); return; }
+    if (posTickScheduled) return;
+    posTickScheduled = true;
+    setTimeout(() => {
+      posTickScheduled = false;
+      if (__suppressNextPosChange) { __suppressNextPosChange = false; return; }
+      if (mode === Mode.Idle) { bumpUser('posChange'); ff.computeForces(); recordInteraction('posChange'); }
+    }, TUNABLES.POS_ENERGY_DEBOUNCE_MS);
+  });
+
+  // RPS counter
+  const rps = { samples: [], windowMs: TUNABLES.RPS_WINDOW_MS, value: 0 };
+  const resetRPS = () => { rps.samples.length = 0; rps.value = 0; setText('rpsLabel', 'RPS: --'); };
+  const noteReqDone = () => {
+    const now = env.now();
+    rps.samples.push(now);
+    while (rps.samples.length && now - rps.samples[0] > rps.windowMs) rps.samples.shift();
+    rps.value = (rps.samples.length >= 2) ? ((rps.samples.length - 1)) * 1000 / (rps.samples[rps.samples.length - 1] - rps.samples[0]) : 0;
+    setText('rpsLabel', 'RPS: ' + rps.value.toFixed(1));
+  };
+
+  // Focus helpers (kept for completeness; not used here)
+  const isAppFocused = () => {
+    try {
+      if (typeof window === 'undefined' || typeof document === 'undefined') return true;
+      if (window.__MLIPVIEW_TEST_MODE) return true;
+      if (document.hidden) return false;
+      return typeof document.hasFocus === 'function' ? !!document.hasFocus() : true;
+    } catch { return true; }
+  };
+  const waitForFocus = () => new Promise(resolve => {
+    if (isAppFocused()) return resolve();
+    const cleanup = () => { try { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVis); } catch { } };
+    const onFocus = () => { cleanup(); resolve(); };
+    const onVis = () => { if (!document.hidden && isAppFocused()) { cleanup(); resolve(); } };
+    try { window.addEventListener('focus', onFocus); document.addEventListener('visibilitychange', onVis); } catch { resolve(); }
+  });
+
+  /* ────────────────────────────────────────────────────────────────────────
+     One-shot WS steps
+     ──────────────────────────────────────────────────────────────────────── */
+
+  async function doOneStepViaWS(kind, params) {
+    const ws = getWS();
+    await ensureWsInit({ allowOffline: false });
+    try { ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 }); } catch { }
+    try {
+      const v = getVelocitiesIfFresh();
+      const prepSeq = ws.userInteraction({ positions: posToTriples(state), velocities: v || undefined });
+      if (typeof ws.waitForClientSeq === 'function' && Number.isFinite(prepSeq) && prepSeq > 0) {
+        const waitMs = Math.max(4000, Number(TUNABLES.WS_CONNECT_TIMEOUT_MS) || 0);
+        await ws.waitForClientSeq(prepSeq, { timeoutMs: waitMs });
+      }
+    } catch (err) {
+      if (env.apiOn()) dbg.warn(`[${kind}Step][prep] failed`, err?.message || err);
+      throw err;
+    }
+    const r = await ws.requestSingleStep({ type: kind, params });
+    const epochAtSend = resetEpoch;
+    if (epochAtSend !== resetEpoch) return { stale: true, staleReason: 'staleEpoch', epochAtSend, resetEpoch };
+    if (Array.isArray(r.positions) && r.positions.length === state.positions.length) {
+      const exclude = buildExcludeSet();
+      applyTriples(state, r.positions, { exclude });
+      __suppressNextPosChange = true; state.markPositionsChanged(); bumpSim(kind === 'md' ? 'mdStepApply' : 'relaxStepApply');
+    }
+    updateEnergyForces({ energy: r.energy, forces: r.forces, stress: r.stress || null, reason: kind });
+    if (kind === 'md') {
+      if (Array.isArray(r.velocities) && r.velocities.length === state.elements.length) {
+        state.dynamics ||= {}; state.dynamics.velocities = r.velocities;
+      }
+      if (typeof r.temperature === 'number' && isFinite(r.temperature)) {
+        state.dynamics ||= {}; state.dynamics.temperature = r.temperature;
+        setText('instTemp', 'T: ' + r.temperature.toFixed(1) + ' K');
+      }
+    }
+    return { applied: true, energy: r.energy, stepType: kind, netMs: 0, parseMs: 0 };
+  }
+
+  async function relaxStep() {
+    __count('index#relaxStep');
+    if (!ensureTimelineEditable('relaxStep')) return { blocked: true };
+    try {
+      const r = await doOneStepViaWS('relax', { calculator: 'uma', fmax: state?.optimizer?.fmax || 0.05, max_step: MAX_STEP, optimizer: 'bfgs' });
+      if (r?.applied) { recordInteraction('relaxStep'); energyPlot.push(state.dynamics?.energy, 'relax'); }
+      return r;
+    } catch (e) { dbg.warn('[relaxStep] failed', e); return { error: e?.message || String(e) }; }
+  }
+
+  async function mdStep(opts = {}) {
+    __count('index#mdStep');
+    if (!ensureTimelineEditable('mdStep')) return { blocked: true };
+    try {
+      let temperature = opts.temperature;
+      try { if ((temperature == null || !Number.isFinite(temperature)) && typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) temperature = Number(window.__MLIP_TARGET_TEMPERATURE); } catch { }
+      const r = await doOneStepViaWS('md', {
+        calculator: opts.calculator || 'uma',
+        temperature,
+        timestep_fs: opts.timestep_fs,
+        friction: (Number.isFinite(opts.friction) ? opts.friction : cfg.mdFriction),
+      });
+      if (r?.applied) { recordInteraction('mdStep'); energyPlot.push(state.dynamics?.energy, 'md'); }
+      return r;
+    } catch (e) { dbg.warn('[mdStep] failed', e); return { error: e?.message || String(e) }; }
+  }
+
+  /* ────────────────────────────────────────────────────────────────────────
+     Streaming WS loops (unified)
+     ──────────────────────────────────────────────────────────────────────── */
+
+  function applyFramePayload(kind, frame, {
+    ws = null,
+    isLive = false,
+    allowEnergyPlot = true,
+    forceAll = false,
+    advanceCounters = false,
+    noteFrame = false,
+    updateUIC = false,
+  } = {}) {
+    if (!frame) return { applied: false };
+    const uic = Number(frame.userInteractionCount ?? frame.user_interaction_count ?? 0) | 0;
+    const seq = Number(frame.seq) || 0;
+    if (isLive && ws && typeof ws.ack === 'function' && seq > 0) {
+      try { ws.ack(seq); } catch { }
+    }
+    const inTestMode = (typeof window !== 'undefined') && !!window.__MLIPVIEW_TEST_MODE;
+    const isTestInjected = frame.__testInjected === true;
+    if (inTestMode) {
+      if (isTestInjected) {
+        testHoldUIC = uic;
+      } else if (testHoldUIC != null) {
+        if (uic <= testHoldUIC) {
+          if (env.apiOn()) dbg.log(`[${kind}WS][discard-test-hold]`, { server: uic, hold: testHoldUIC });
+          return { applied: false, skipped: 'test-hold', uic };
+        }
+        testHoldUIC = null;
+      }
+    }
+    if (isLive && uic < lastAppliedUIC) {
+      if (env.apiOn()) dbg.log(`[${kind}WS][discard-stale-applied]`, { server: uic, lastAppliedUIC });
+      return { applied: false, skipped: 'stale', uic };
+    }
+
+    const exclude = forceAll ? null : buildExcludeSet();
+    let applied = false;
+    let energyPlotIndex = null;
+    if (Array.isArray(frame.positions) && frame.positions.length === state.positions.length) {
+      applyTriples(state, frame.positions, { exclude, forceAll });
+      __suppressNextPosChange = true;
+      state.markPositionsChanged();
+      if (advanceCounters) {
+        bumpSim(kind === 'md' ? 'mdWS' : (kind === 'relax' ? 'relaxWS' : 'idleWS'));
+      }
+      applied = true;
+    }
+
+    const energyValue = (typeof frame.energy === 'number') ? frame.energy : state.dynamics?.energy;
+    updateEnergyForces({
+      energy: energyValue,
+      forces: Array.isArray(frame.forces) && frame.forces.length ? frame.forces : undefined,
+      stress: frame.stress || null,
+      reason: isLive ? kind + 'WS' : kind + 'Replay',
+    });
+
+    if (kind === 'md') {
+      if (Array.isArray(frame.velocities) && frame.velocities.length === state.elements.length) {
+        state.dynamics ||= {};
+        state.dynamics.velocities = frame.velocities;
+      }
+      if (typeof frame.temperature === 'number' && Number.isFinite(frame.temperature)) {
+        state.dynamics ||= {};
+        state.dynamics.temperature = frame.temperature;
+        setText('instTemp', 'T: ' + frame.temperature.toFixed(1) + ' K');
+      } else if (!isLive && typeof state.dynamics?.temperature === 'number') {
+        setText('instTemp', 'T: ' + state.dynamics.temperature.toFixed(1) + ' K');
+      }
+      try {
+        const tm = typeof window !== 'undefined' && !!window.__MLIPVIEW_TEST_MODE;
+        const haveV = Array.isArray(state.dynamics?.velocities) && state.dynamics.velocities.length === state.elements.length;
+        if (tm && !haveV && state.positions?.length === state.elements.length) {
+          state.dynamics ||= {};
+          state.dynamics.velocities = state.positions.map(() => [0, 0, 0]);
+        }
+      } catch { }
+    }
+
+    if (allowEnergyPlot && typeof energyValue === 'number' && Number.isFinite(energyValue)) {
+      const pushedIndex = energyPlot.push(energyValue, kind);
+      if (Number.isFinite(pushedIndex)) {
+        energyPlotIndex = pushedIndex;
+      } else if (energyPlot.length() > 0) {
+        energyPlotIndex = energyPlot.length() - 1;
+      }
+    } else if (typeof energyValue === 'number' && Number.isFinite(energyValue)) {
+      setText('instEnergy', 'E: ' + energyValue.toFixed(2));
+    }
+
+    if (noteFrame) noteReqDone();
+    if (updateUIC && isLive && uic > lastAppliedUIC) lastAppliedUIC = uic;
+
+    return { applied: applied || Number.isFinite(energyValue), energy: energyValue, uic, energyIndex: energyPlotIndex };
+  }
+
+  function handleStreamFrame(kind, ws, frame) {
+    const allowEnergy = !timelineState.suppressEnergy;
+    const result = applyFramePayload(kind, frame, {
+      ws,
+      isLive: true,
+      allowEnergyPlot: allowEnergy,
+      forceAll: false,
+      advanceCounters: true,
+      noteFrame: true,
+      updateUIC: true,
+    });
+    if (result?.applied) {
+      frameBuffer.record(kind, frame, { energyIndex: result.energyIndex });
+      if (timelineUi) timelineUi.refresh();
+    }
+  }
+
+  function ensureTimelineOverlay() {
+    if (typeof document === 'undefined') return;
+    if (timelineOverlay) return;
+    const host = document.getElementById('app') || canvas?.parentElement || document.body;
+    if (!host) return;
+    const overlay = document.createElement('div');
+    overlay.className = timelineLockClass;
+    overlay.dataset.testid = 'timeline-overlay';
+    overlay.style.position = 'absolute';
+    overlay.style.left = '0';
+    overlay.style.right = '0';
+    overlay.style.top = '0';
+    overlay.style.bottom = '0';
+    overlay.style.pointerEvents = 'none';
+    overlay.style.background = 'rgba(0, 0, 0, 0.02)';
+    overlay.style.display = 'none';
+    overlay.style.zIndex = '26';
+    overlay.innerHTML = '<div style="position:absolute;bottom:26px;right:26px;padding:6px 12px;border-radius:8px;background:rgba(10,16,24,0.9);color:#e4ecff;font:12px system-ui,sans-serif;pointer-events:none;">Timeline view — read only</div>';
+    host.appendChild(overlay);
+    timelineOverlay = overlay;
+  }
+
+  function setTimelineOverlayVisible(on) {
+    ensureTimelineOverlay();
+    if (!timelineOverlay) return;
+    timelineOverlay.style.display = on ? 'block' : 'none';
+  }
+
+  function setTimelineInteractionLock(on) {
+    const allow = !on;
+    try { manipulation?.setInteractionsEnabled?.(allow); } catch { }
+    try {
+      // Keep camera navigation responsive while timeline is active.
+      pickingRef?.setInteractionsEnabled?.(true);
+    } catch { }
+    try { vr?.setInteractionsEnabled?.(allow); } catch { }
+  }
+
+  function clearTimelinePlayback() {
+    if (timelineState.interval) {
+      clearInterval(timelineState.interval);
+      timelineState.interval = null;
+    }
+    timelineState.playing = false;
+  }
+
+  function clampOffsetToBuffer(offset) {
+    const offsets = frameBuffer.listOffsets();
+    if (!offsets.length) return null;
+    const minOffset = offsets[offsets.length - 1];
+    const raw = Number.isFinite(offset) ? Math.floor(offset) : -1;
+    if (raw > -1) return -1;
+    if (raw < minOffset) return minOffset;
+    return raw;
+  }
+
+  function applyTimelineFrame(offset) {
+    const entry = frameBuffer.getByOffset(offset);
+    if (!entry) return false;
+    timelineState.offset = offset;
+    const payloadResult = applyFramePayload(entry.kind || 'idle', entry, {
+      isLive: false,
+      allowEnergyPlot: false,
+      forceAll: true,
+      advanceCounters: false,
+      noteFrame: false,
+      updateUIC: false,
+    });
+    if (typeof entry.energyIndex === 'number') {
+      energyPlot.setMarker(entry.energyIndex);
+    } else if (typeof payloadResult?.energyIndex === 'number') {
+      energyPlot.setMarker(payloadResult.energyIndex);
+    } else {
+      energyPlot.clearMarker();
+    }
+    if (timelineUi) timelineUi.setActiveOffset(offset);
+    return true;
+  }
+
+  function enterTimelineMode(offset = -1) {
+    const offsets = frameBuffer.listOffsets();
+    if (!offsets.length) return false;
+    const minOffset = offsets[offsets.length - 1];
+    const target = Math.min(-1, Math.max(minOffset, Number.isFinite(offset) ? Math.floor(offset) : -1));
+    if (!timelineState.active) {
+      timelineState.resumeMode = mode;
+      timelineState.active = true;
+      timelineState.suppressEnergy = true;
+      clearTimelinePlayback();
+      setTimelineOverlayVisible(true);
+      setTimelineInteractionLock(true);
+      try { getWS().stopSimulation(); } catch { }
+      setMode(Mode.Timeline);
+    } else {
+      clearTimelinePlayback();
+    }
+    applyTimelineFrame(target);
+    if (timelineUi) {
+      timelineUi.setMode('paused');
+      timelineUi.refresh();
+    }
+    return true;
+  }
+
+  function timelineStepForward() {
+    const offsets = frameBuffer.listOffsets();
+    if (!offsets.length) {
+      clearTimelinePlayback();
+      if (timelineUi) timelineUi.setMode('paused');
+      return;
+    }
+    const minOffset = offsets[offsets.length - 1];
+    let next = timelineState.offset;
+    if (!Number.isFinite(next) || next < minOffset) next = minOffset;
+    if (next >= -1) {
+      clearTimelinePlayback();
+      resumeLiveFromTimeline().catch(() => { });
+      return;
+    }
+    next = Math.min(-1, next + 1);
+    if (!applyTimelineFrame(next)) {
+      clearTimelinePlayback();
+      if (timelineUi) timelineUi.setMode('paused');
+      return;
+    }
+    if (next === -1) {
+      clearTimelinePlayback();
+      resumeLiveFromTimeline().catch(() => { });
+    }
+  }
+
+  function pauseTimelinePlayback() {
+    clearTimelinePlayback();
+    if (timelineUi) timelineUi.setMode('paused');
+  }
+
+  async function resumeLiveFromTimeline() {
+    if (!timelineState.active) return;
+    clearTimelinePlayback();
+    timelineState.active = false;
+    timelineState.suppressEnergy = false;
+    setTimelineOverlayVisible(false);
+    setTimelineInteractionLock(false);
+    energyPlot.clearMarker();
+    timelineState.offset = -1;
+    const resumeMode = timelineState.resumeMode;
+    timelineState.resumeMode = null;
+    if (timelineUi) {
+      timelineUi.setMode('live');
+      timelineUi.setActiveOffset(-1);
+    }
+    setMode(Mode.Idle);
+    if (timelineUi) timelineUi.refresh();
+    try {
+      await ensureWsInit({ allowOffline: false });
+    } catch (err) {
+      if (env.apiOn()) dbg.warn('[timeline][resume] ensureWsInit failed', err?.message || err);
+    }
+    if (resumeMode === Mode.MD) {
+      const opts = lastContinuousOpts.md ? { ...lastContinuousOpts.md } : {};
+      startContinuous('md', opts).catch(() => { });
+    } else if (resumeMode === Mode.Relax) {
+      const opts = lastContinuousOpts.relax ? { ...lastContinuousOpts.relax } : {};
+      startContinuous('relax', opts).catch(() => { });
+    }
+  }
+
+  function handleTimelineOffsetRequest(offset) {
+    const clamped = clampOffsetToBuffer(offset);
+    if (clamped == null) return;
+    if (!timelineState.active) {
+      const entered = enterTimelineMode(clamped);
+      if (!entered) return;
+      if (timelineState.offset !== clamped) {
+        pauseTimelinePlayback();
+        applyTimelineFrame(clamped);
+      }
+      return;
+    }
+    pauseTimelinePlayback();
+    applyTimelineFrame(clamped);
+    if (timelineUi) timelineUi.setMode('paused');
+  }
+
+  function handleTimelinePlayRequest(offset) {
+    const clamped = clampOffsetToBuffer(Number.isFinite(offset) ? offset : timelineState.offset);
+    if (clamped == null) return;
+    enterTimelineMode(clamped);
+    clearTimelinePlayback();
+    timelineState.playing = true;
+    if (timelineUi) timelineUi.setMode('playing');
+    timelineState.interval = setInterval(timelineStepForward, 50);
+  }
+
+  function handleTimelinePauseRequest() {
+    if (!timelineState.active) {
+      enterTimelineMode(-1);
+      return;
+    }
+    pauseTimelinePlayback();
+  }
+
+  function handleTimelineLiveRequest() {
+    resumeLiveFromTimeline().catch(() => { });
+  }
+
+  function clearReconnectCountdown() {
+    if (reconnectState.countdownTimer) {
+      clearInterval(reconnectState.countdownTimer);
+      reconnectState.countdownTimer = null;
+    }
+  }
+
+  function hideReconnectBannerUi() {
+    if (!reconnectState.bannerVisible) return;
+    reconnectState.bannerVisible = false;
+    clearReconnectCountdown();
+    try { hideErrorBanner(); } catch { }
+  }
+
+  function updateReconnectCountdownText() {
+    if (!reconnectState.bannerVisible) return;
+    const label = typeof document !== 'undefined' ? document.getElementById('wsReconnectCountdown') : null;
+    if (!label) return;
+    const remainingMs = Math.max(0, (reconnectState.nextAttemptAt || Date.now()) - Date.now());
+    const seconds = Math.max(0, Math.ceil(remainingMs / 1000));
+    label.textContent = `Reconnecting in ${seconds}s (attempt ${Math.max(0, reconnectState.attempts)})`;
+  }
+
+  function showReconnectBannerUi(data) {
+    reconnectState.attempts = Math.max(0, data?.attempts || reconnectState.attempts || 0);
+    reconnectState.nextAttemptAt = data?.nextAttemptAt || Date.now();
+    if (reconnectState.attempts < 1) {
+      hideReconnectBannerUi();
+      return;
+    }
+    reconnectState.bannerVisible = true;
+    showErrorBanner('', {
+      persist: true,
+      className: 'ws-reconnect-banner',
+      onRender: (el) => {
+        try {
+          el.innerHTML = `
+            <span class="ws-reconnect-message">
+              Connection to the simulation server was lost.
+              <strong id="wsReconnectCountdown"></strong>
+            </span>
+            <button id="wsReconnectNow" class="ws-reconnect-button">Reconnect now</button>
+          `;
+          el.style.background = '#f8c9c9';
+          el.style.color = '#5a0000';
+          el.style.display = 'flex';
+          el.style.flexWrap = 'wrap';
+          el.style.justifyContent = 'center';
+          el.style.alignItems = 'center';
+          el.style.gap = '12px';
+          el.dataset.banner = 'ws-reconnect';
+          const btn = el.querySelector('#wsReconnectNow');
+          if (btn) {
+            btn.style.background = '#ffffff';
+            btn.style.border = '1px solid #bb3d3d';
+            btn.style.color = '#5a0000';
+            btn.style.padding = '4px 10px';
+            btn.style.cursor = 'pointer';
+            btn.onclick = () => {
+              try { getWS().reconnectNow(); } catch { }
+            };
+          }
+        } catch { }
+        updateReconnectCountdownText();
+      },
+    });
+    clearReconnectCountdown();
+    reconnectState.countdownTimer = setInterval(updateReconnectCountdownText, 500);
+  }
+
+  const Mode = Object.freeze({ Idle: 'idle', MD: 'md', Relax: 'relax', Timeline: 'timeline' });
+
+  function rememberResume(kind, opts) {
+    if (!kind) return;
+    pendingResume.kind = kind;
+    pendingResume.opts = opts ? { ...opts } : {};
+  }
+
+  function consumePendingResume() {
+    const info = { kind: pendingResume.kind, opts: pendingResume.opts ? { ...pendingResume.opts } : {} };
+    pendingResume.kind = null;
+    pendingResume.opts = null;
+    return info;
+  }
+
+  addWsStateListener((evt) => {
+    const type = evt?.type;
+    if (type === 'reconnect-scheduled') {
+      showReconnectBannerUi(evt || {});
+    } else if (type === 'open') {
+      hideReconnectBannerUi();
+      reconnectState.attempts = 0;
+      reconnectState.nextAttemptAt = 0;
+      __wsState.inited = false;
+      __wsState.lastAtomCount = 0;
+      __wsState.lastCellKey = 'off';
+      const pending = consumePendingResume();
+      Promise.resolve()
+        .then(() => ensureWsInit({ allowOffline: true }))
+        .then(() => {
+          attachIdleWSListener().catch(() => { });
+          if (pending.kind === 'md') {
+            startContinuous('md', pending.opts || {}).catch(() => { });
+          } else if (pending.kind === 'relax') {
+            startContinuous('relax', pending.opts || {}).catch(() => { });
+          }
+        })
+        .catch(() => { });
+    } else if (type === 'close') {
+      __wsState.inited = false;
+      __wsState.lastAtomCount = 0;
+      __wsState.lastCellKey = 'off';
+      const currentMode = mode;
+      if (currentMode === Mode.MD || currentMode === Mode.Relax) {
+        const kind = currentMode === Mode.MD ? 'md' : 'relax';
+        rememberResume(kind, lastContinuousOpts[kind]);
+      }
+      try { clearMdStreamListener(); } catch { }
+      try { clearRelaxStreamListener(); } catch { }
+      setMode(Mode.Idle);
+    }
+  });
+  let mode = Mode.Idle;
+  let running = { kind: null, abort: null, stepBudget: null }; // keep for API compatibility
+
+  let idleUnsub = null;
+  let mdStreamUnsub = null;
+  let relaxStreamUnsub = null;
+
+  const streamListenerStats = {
+    md: { attach: 0, detach: 0, active: 0, maxActive: 0 },
+    relax: { attach: 0, detach: 0, active: 0, maxActive: 0 },
+  };
+
+  const statsFor = (kind) => (kind === 'relax' ? streamListenerStats.relax : streamListenerStats.md);
+
+  function resetStreamListenerStats() {
+    for (const key of Object.keys(streamListenerStats)) {
+      const stat = streamListenerStats[key];
+      stat.attach = 0;
+      stat.detach = 0;
+      stat.active = 0;
+      stat.maxActive = 0;
+    }
+  }
+
+  function trackAttach(kind) {
+    const stat = statsFor(kind);
+    stat.attach += 1;
+    stat.active += 1;
+    if (stat.active > stat.maxActive) stat.maxActive = stat.active;
+  }
+
+  function trackDetach(kind) {
+    const stat = statsFor(kind);
+    stat.detach += 1;
+    stat.active = Math.max(0, stat.active - 1);
+  }
+
+  function makeTrackedUnsub(kind, unsub) {
+    let done = false;
+    const tracked = () => {
+      if (done) return;
+      done = true;
+      try { unsub && unsub(); } catch { }
+      trackDetach(kind);
+      if (kind === 'md' && mdStreamUnsub === tracked) mdStreamUnsub = null;
+      if (kind === 'relax' && relaxStreamUnsub === tracked) relaxStreamUnsub = null;
+    };
+    return tracked;
+  }
+
+  function clearMdStreamListener() {
+    if (typeof mdStreamUnsub === 'function') {
+      const fn = mdStreamUnsub;
+      mdStreamUnsub = null;
+      fn();
+    }
+  }
+
+  function clearRelaxStreamListener() {
+    if (typeof relaxStreamUnsub === 'function') {
+      const fn = relaxStreamUnsub;
+      relaxStreamUnsub = null;
+      fn();
+    }
+  }
+
+  function debugStreamListenerStats({ reset = false } = {}) {
+    if (reset) resetStreamListenerStats();
+    return {
+      md: { ...streamListenerStats.md },
+      relax: { ...streamListenerStats.relax },
+    };
+  }
+  async function attachIdleWSListener() {
+    const ws = getWS();
+    if (!idleUnsub) {
+      idleUnsub = ws.onResult((r) => {
+        if (mode !== Mode.Idle) return;
+        handleStreamFrame('idle', ws, r);
+      });
+    }
+    const ok = await ensureWsInit({ allowOffline: true });
+    return ok;
+  }
+  function detachIdleWSListener() { try { idleUnsub && idleUnsub(); } catch { } finally { idleUnsub = null; } }
+
+  function setMode(next) {
+    if (mode === next) return;
+    if (mode === Mode.MD && next !== Mode.MD) clearMdStreamListener();
+    if (mode === Mode.Relax && next !== Mode.Relax) clearRelaxStreamListener();
+    mode = next;
+    if (mode !== Mode.MD && mode !== Mode.Timeline) {
+      try { if (state?.dynamics) state.dynamics.temperature = undefined; } catch { }
+      setText('instTemp', TEMP_PLACEHOLDER);
+    }
+    if (mode === Mode.Idle) {
+      running.kind = null;
+      running.stepBudget = null;
+      currentStepBudget = null;
+      timelineState.suppressEnergy = false;
+      attachIdleWSListener().catch(() => { });
+    } else if (mode === Mode.Timeline) {
+      running.kind = null;
+      running.stepBudget = null;
+      currentStepBudget = null;
+      detachIdleWSListener();
+    } else {
+      running.kind = (mode === Mode.MD) ? 'md' : 'relax';
+      detachIdleWSListener();
+    }
+  }
+
+  async function startContinuous(kind, opts = {}) {
+    const isMD = kind === 'md';
+    if ((isMD && !FEATURES.MD_LOOP) || (!isMD && !FEATURES.RELAX_LOOP)) { dbg.warn('[feature] loop disabled', kind); return { disabled: true }; }
+    if (mode !== Mode.Idle) return { ignored: true };
+    setMode(isMD ? Mode.MD : Mode.Relax);
+    lastContinuousOpts[isMD ? 'md' : 'relax'] = { ...(opts || {}) };
+    if (pendingResume.kind) {
+      pendingResume.kind = null;
+      pendingResume.opts = null;
+    }
+
+    const ws = getWS();
+    try { await ws.ensureConnected({ timeoutMs: TUNABLES.WS_CONNECT_TIMEOUT_MS }); } catch { }
+    let initOk = false;
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2 && !initOk; attempt++) {
+      try {
+        await ensureWsInit({ allowOffline: false });
+        initOk = true;
+      } catch (err) {
+        lastErr = err;
+        if (attempt === 0) {
+          try { await ws.ensureConnected({ timeoutMs: TUNABLES.WS_CONNECT_TIMEOUT_MS }); } catch { }
+          await new Promise(resolve => setTimeout(resolve, 100));
+          continue;
+        }
+      }
+    }
+    if (!initOk) {
+      if (env.apiOn()) dbg.warn(`[${kind}WS][connect] proceeding without confirmed init`, lastErr?.message || lastErr);
+    }
+    try { if (posTickScheduled) posTickScheduled = false; } catch { }
+    try { ws.setCounters({ userInteractionCount: userInteractionVersion, simStep: 0 }); } catch { }
+    let prepSeq = null;
+    try {
+      const v = getVelocitiesIfFresh();
+      prepSeq = ws.userInteraction({ positions: posToTriples(state), velocities: v || undefined });
+      if (typeof ws.waitForClientSeq === 'function' && Number.isFinite(prepSeq) && prepSeq > 0) {
+        const waitMs = Math.max(4000, Number(TUNABLES.WS_CONNECT_TIMEOUT_MS) || 0);
+        await ws.waitForClientSeq(prepSeq, { timeoutMs: waitMs });
+      }
+    } catch (err) {
+      if (env.apiOn()) dbg.warn(`[${kind}WS][prep] failed`, err?.message || err);
+      if (typeof prepSeq === 'number' && prepSeq > 0) {
+        try { ws.ack?.(prepSeq); } catch { }
+      }
+    }
+    resetRPS();
+
+    const rawLimit = isMD ? opts.steps : opts.maxSteps;
+    const limitCandidate = Number.isFinite(rawLimit) ? Math.floor(rawLimit) : DEFAULTS.CONTINUOUS_STEPS;
+    const stepLimit = Math.max(1, limitCandidate);
+    const extraAllowance = isMD ? 5 : 0;
+
+    currentStepBudget = {
+      kind: isMD ? 'md' : 'relax',
+      limit: stepLimit,
+      remaining: stepLimit,
+      extraAllowance,
+      overshoot: 0,
+    };
+    running.stepBudget = currentStepBudget;
+
+    let unsub = null, stopped = false;
+    if (isMD) clearMdStreamListener();
+    else clearRelaxStreamListener();
+    unsub = ws.onResult((r) => {
+      if (stopped || mode !== (isMD ? Mode.MD : Mode.Relax)) return;
+      if (env.apiOn()) dbg.log(`[${kind}WS][frame]`, { seq: Number(r.seq) || 0, uic: Number(r.userInteractionCount) || 0, simStep: Number(r.simStep) || 0, have: { pos: !!r.positions, forces: !!r.forces, energy: typeof r.energy === 'number' } });
+      handleStreamFrame(kind, ws, r);
+      const budget = currentStepBudget;
+      if (!budget || budget.kind !== (isMD ? 'md' : 'relax')) return;
+      if (budget.remaining > 0) {
+        budget.remaining -= 1;
+        budget.overshoot = 0;
+        return;
+      }
+
+      if (isMD) {
+        const haveV = Array.isArray(state.dynamics?.velocities) && state.dynamics.velocities.length === state.elements.length;
+        if (haveV || budget.overshoot >= budget.extraAllowance) {
+          stopped = true; try { ws.stopSimulation(); } catch { }
+          clearMdStreamListener();
+          setMode(Mode.Idle); resetRPS();
+        } else {
+          budget.overshoot += 1;
+          return;
+        }
+      } else {
+        stopped = true; try { ws.stopSimulation(); } catch { }
+        clearRelaxStreamListener();
+        setMode(Mode.Idle); resetRPS();
+      }
+    });
+    if (isMD) {
+      trackAttach('md');
+      mdStreamUnsub = makeTrackedUnsub('md', unsub);
+    } else {
+      trackAttach('relax');
+      relaxStreamUnsub = makeTrackedUnsub('relax', unsub);
+    }
+
+    // live temperature from global target if present (MD)
+    let temperature = isMD ? (opts.temperature ?? 1500) : undefined;
+    try { if (isMD && typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) temperature = Number(window.__MLIP_TARGET_TEMPERATURE); } catch { }
+    if (isMD && Number.isFinite(temperature)) {
+      const tempValue = Number(temperature);
+      state.dynamics ||= {};
+      state.dynamics.temperature = tempValue;
+      setText('instTemp', `T: ${tempValue.toFixed(1)} K`);
+    }
+
+    ws.startSimulation({
+      type: isMD ? 'md' : 'relax',
+      params: isMD
+        ? { calculator: opts.calculator || 'uma', temperature, timestep_fs: opts.timestep_fs ?? 1.0, friction: (Number.isFinite(opts.friction) ? opts.friction : cfg.mdFriction) }
+        : { calculator: 'uma', fmax: state?.optimizer?.fmax || 0.05, max_step: MAX_STEP, optimizer: 'bfgs' },
+    });
+    if (env.apiOn()) dbg.log(`[${kind}WS][start]`, isMD ? { temperature, timestep_fs: opts.timestep_fs ?? 1.0 } : {});
+    return { streaming: true };
+  }
+
+  const startMDContinuous = (opts) => startContinuous('md', opts);
+  const startRelaxContinuous = (opts) => startContinuous('relax', opts);
+
+  function stopSimulation() {
+    try { const ws = getWS(); ws.stopSimulation(); } catch { }
+    clearMdStreamListener();
+    clearRelaxStreamListener();
+    setMode(Mode.Idle); resetRPS();
+  }
+
+  function sendLiveMDParamsUpdate() {
+    try {
+      if (mode !== Mode.MD) return;
+      const ws = getWS();
+      let T = 1500;
+      try {
+        if (typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) {
+          const tRaw = Number(window.__MLIP_TARGET_TEMPERATURE);
+          if (Number.isFinite(tRaw)) T = tRaw;
+        }
+      } catch { }
+      const fr = (typeof window !== 'undefined' && Number.isFinite(window.__MLIP_CONFIG?.mdFriction))
+        ? Number(window.__MLIP_CONFIG.mdFriction) : DEFAULT_MD_FRICTION;
+      const dt = 1.0;
+      if (Number.isFinite(T)) {
+        const tempValue = Number(T);
+        state.dynamics ||= {};
+        state.dynamics.temperature = tempValue;
+        setText('instTemp', `T: ${tempValue.toFixed(1)} K`);
+      } else {
+        setText('instTemp', TEMP_PLACEHOLDER);
+      }
+      ws.startSimulation({ type: 'md', params: { calculator: 'uma', temperature: T, timestep_fs: dt, friction: fr } });
+      if (env.apiOn()) dbg.log('[mdWS][live-update]', { temperature: T, timestep_fs: dt, friction: fr });
+    } catch { }
+  }
+
+  try {
+    if (typeof window !== 'undefined') {
+      window.addEventListener('mlip:temperature-changed', sendLiveMDParamsUpdate);
+      window.addEventListener('mlip:friction-changed', sendLiveMDParamsUpdate);
+    }
+  } catch { }
+
+  function setForceVectorsEnabled(on) {
+    try {
+      if (typeof on === 'boolean') { if (!!state.showForces !== on) state.toggleForceVectorsVisibility(); }
+      else state.toggleForceVectorsVisibility();
+    } catch { }
+  }
+
+  function getMetrics() { __count('index#getMetrics'); return { energy: state.dynamics?.energy, running: running.kind }; }
+  function debugEnergySeriesLength() { return energyPlot.length(); }
+  function debugRecordInteraction(kind) { recordInteraction(kind || 'debug'); }
+  function getForceCacheVersion() { return state.forceCache?.version; }
+  function getVersionInfo() { return { userInteractionVersion, totalInteractionVersion, resetEpoch }; }
+  function debugGhostSnapshot() {
+    const groups = view?._internals?.ghostBondGroups;
+    if (!groups || typeof groups.entries !== 'function') return { ghostBondCount: 0, ghostGroups: [] };
+    let ghostBondCount = 0;
+    const ghostGroups = [];
+    for (const [key, grp] of groups.entries()) {
+      const count = grp && grp.mats ? grp.mats.length >>> 0 : 0;
+      ghostBondCount += count;
+      ghostGroups.push({ key, count });
+    }
+    return { ghostBondCount, ghostGroups };
+  }
+  function debugHighlightState() {
+    const hi = view?._internals?.highlight;
+    return {
+      atomVisible: !!hi?.atom?.isVisible,
+      bondVisible: !!hi?.bond?.isVisible,
+    };
+  }
+  function debugCameraControls({ reset = false } = {}) {
+    if (reset) {
+      cameraControlStats.detachCalls = 0;
+      cameraControlStats.attachCalls = 0;
+    }
+    return { detachCalls: cameraControlStats.detachCalls, attachCalls: cameraControlStats.attachCalls };
+  }
+  function debugBondMetrics() {
+    const bonds = Array.isArray(state.bonds) ? state.bonds : [];
+    const positions = Array.isArray(state.positions) ? state.positions : [];
+    const elements = Array.isArray(state.elements) ? state.elements : [];
+    const distance = (a, b) => {
+      if (!a || !b) return NaN;
+      const dx = (a.x || 0) - (b.x || 0);
+      const dy = (a.y || 0) - (b.y || 0);
+      const dz = (a.z || 0) - (b.z || 0);
+      return Math.hypot(dx, dy, dz);
+    };
+    return bonds.map((bond, idx) => {
+      const i = bond?.i ?? 0;
+      const j = bond?.j ?? 0;
+      return {
+        index: idx,
+        i,
+        j,
+        elements: [elements[i] ?? null, elements[j] ?? null],
+        length: distance(positions[i], positions[j]),
+        opacity: typeof bond?.opacity === 'number' ? bond.opacity : 1,
+      };
+    });
+  }
+  function setTestAutoSelectFallback(on = true) {
+    if (view?._internals) {
+      view._internals._debugAutoSelectFirstOnEmpty = !!on;
+      return true;
+    }
+    return false;
+  }
+  function debugSelectAtom(index) {
+    try {
+      const idx = Number(index);
+      selectionService.clickAtom(idx);
+      return selectionService.get();
+    } catch {
+      return null;
+    }
+  }
+  function debugSelectBond(ref) {
+    try {
+      if (!ref || typeof ref !== 'object') return null;
+      const i = Number(ref.i);
+      const j = Number(ref.j);
+      if (!Number.isInteger(i) || !Number.isInteger(j)) return null;
+      const payload = {
+        i,
+        j,
+        index: ref.index != null ? ref.index : 0,
+        key: ref.key != null ? ref.key : `${i}-${j}`,
+      };
+      selectionService.clickBond(payload);
+      if (ref.orientation != null && state.selection?.kind === 'bond') {
+        state.selection.data.orientation = ref.orientation;
+      }
+      if (ref.side && state.selection?.kind === 'bond') {
+        state.selection.data.orientation = ref.side === 'i' ? 1 : 0;
+      }
+      return selectionService.get();
+    } catch {
+      return null;
+    }
+  }
+  function debugGetSelection() {
+    try {
+      return selectionService.get();
+    } catch {
+      return null;
+    }
+  }
+
+  function debugWsState() {
+    return {
+      reconnect: {
+        attempts: reconnectState.attempts,
+        nextAttemptAt: reconnectState.nextAttemptAt,
+        bannerVisible: reconnectState.bannerVisible,
+      },
+      pendingResume: pendingResume.kind ? { kind: pendingResume.kind, opts: pendingResume.opts ? { ...pendingResume.opts } : {} } : null,
+      log: wsStateLog.map((entry) => ({ ...entry })),
+    };
+  }
+
+  function refreshResetBaseline(reason = 'manual') {
+    seedResetBaseline(reason);
+    return state.__resetBaseline;
+  }
+
+  function forceWsReconnect() {
+    try {
+      const ws = getWS();
+      ws.reconnectNow?.();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function simulateWsDrop({ failAttempts } = {}) {
+    try {
+      if (typeof failAttempts === 'number' && Number.isFinite(failAttempts)) {
+        if (typeof window !== 'undefined') window.__MLIPVIEW_WS_FAIL_ATTEMPTS = Math.max(0, failAttempts | 0);
+      }
+    } catch { }
+    try {
+      const ws = getWS();
+      ws.forceDisconnect?.('test-drop');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function resetToInitialPositions() {
+    const t0 = env.now();
+    dbg.log('[Reset] begin VR/AR-safe reset', { when: new Date().toISOString() });
+    try {
+      stopSimulation();
+      resetEpoch++; bumpUser('reset'); __suppressNextPosChange = true;
+      interactions.length = 0; energyPlot.reset();
+
+      const baseline = state.__resetBaseline;
+      let usedBaseline = false;
+      if (baseline && Array.isArray(baseline.positions) && baseline.positions.length) {
+        const baselinePositions = clonePositionList(baseline.positions);
+        const baselineVelocities = baseline.velocities ? cloneVelocityList(baseline.velocities) : null;
+        const baselineCellMatrix = baseline.cell ? cellSnapshotToMatrix(baseline.cell) : null;
+        await applyFullSnapshot({
+          elements: Array.isArray(baseline.elements) ? baseline.elements.map(normalizeElement) : [],
+          positions: baselinePositions,
+          velocities: baselineVelocities ?? undefined,
+          cell: baselineCellMatrix || undefined,
+        }, { updateBaseline: false });
+        state.showCell = !!baseline.showCell;
+        state.showGhostCells = !!baseline.showGhostCells;
+        state.markCellChanged?.();
+        state.__initialPositions = clonePositionList(baseline.positions);
+        state.__initialCellSnapshot = cloneCellSnapshot(baseline.cell) || null;
+        usedBaseline = true;
+      }
+
+      if (!usedBaseline) {
+        const init = Array.isArray(state.__initialPositions) ? state.__initialPositions : null;
+        if (!init || init.length !== state.positions.length) { dbg.warn('[Reset] missing or size-mismatch initial positions'); return false; }
+        for (let i = 0; i < init.length; i++) { const p = init[i], tp = state.positions[i]; tp.x = p.x; tp.y = p.y; tp.z = p.z; }
+        state.markPositionsChanged();
+        try { if (state.dynamics) state.dynamics.velocities = []; } catch { }
+
+        try {
+          state.showCell = false;
+          if (state.showGhostCells) state.showGhostCells = false;
+          if (state.__initialCellSnapshot) {
+            const c = state.__initialCellSnapshot;
+            state.cell = {
+              a: { x: c.a.x, y: c.a.y, z: c.a.z },
+              b: { x: c.b.x, y: c.b.y, z: c.b.z },
+              c: { x: c.c.x, y: c.c.y, z: c.c.z },
+              originOffset: c.originOffset ? { x: c.originOffset.x || 0, y: c.originOffset.y || 0, z: c.originOffset.z || 0 } : { x: 0, y: 0, z: 0 },
+              enabled: !!c.enabled,
+            };
+          } else {
+            state.cell = null;
+          }
+          state.markCellChanged?.();
+        } catch { }
+      }
+
+      try { await ff.computeForces({ sync: true }); } catch (e) { dbg.warn('[Reset] computeForces failed', e?.message || e); }
+      energyPlot.reset();
+
+      const t1 = env.now();
+      dbg.log('[Reset] done', { totalMs: Math.round((t1 - t0) * 100) / 100 });
+      return true;
+    } catch (e) { dbg.warn('[Reset] exception', e?.message || e); return false; }
+  }
+
+  // Auto-start MD once (unless disabled or tests)
   try {
     const autoOk = (typeof window !== 'undefined') && !window.__MLIPVIEW_TEST_MODE && !window.__MLIPVIEW_NO_AUTO_MD;
     if (autoOk) {
-      // Defer a tick to allow index.html script (buttons & handlers) to finish wiring viewerApi
-      setTimeout(()=>{
-        try {
-          // Avoid starting if another loop already active
-            if(!window.viewerApi) return; // safety
-            const m = window.viewerApi.getMetrics();
-            if(m.running) return; // already running something
-            // Start MD with default parameters; UI interval/metrics loop will update status label.
-            window.viewerApi.startMDContinuous({}).then(()=>{
-              try {
-                const btn = document.getElementById && document.getElementById('btnMDRun');
-                if(btn && btn.textContent === 'stop') btn.textContent='run';
-              } catch{}
-              if (window.__MLIPVIEW_DEBUG_API) console.log('[autoMD] completed initial MD run');
-            });
-            // Update button text immediately if present to mimic user click path.
+      const MAX_AUTO_MD_ATTEMPTS = 120;
+      const scheduleAutoMD = (attempt = 0, delayMs = 0) => {
+        if (attempt > MAX_AUTO_MD_ATTEMPTS) return;
+        setTimeout(() => {
+          try {
+            const api = window.viewerApi;
+            if (!api || typeof api.startMDContinuous !== 'function') {
+              scheduleAutoMD(attempt + 1, 75);
+              return;
+            }
+            const metrics = api.getMetrics?.();
+            if (metrics && metrics.running) return;
+
             try {
-              const btn = document.getElementById && document.getElementById('btnMDRun');
-              if(btn){ btn.textContent = 'stop'; }
-            } catch {}
-        } catch(e){ console.warn('[autoMD] start failed', e?.message||e); }
-      }, 0);
-    }
-  } catch(_e){ /* ignore auto start errors */ }
+              const btn = document.getElementById('btnMDRun');
+              if (btn) btn.textContent = 'stop';
+            } catch { }
 
-  // --- Render loop (critical for Babylon WebXR) ---
-  // NOTE: WebXR integration in Babylon expects engine.runRenderLoop to own the frame pump so it can
-  // swap to XR's requestAnimationFrame internally. Replacing it with a raw requestAnimationFrame can
-  // cause enterXRAsync to hang or never resolve. Re-introduce runRenderLoop as default, keeping a
-  // test-mode fallback for environments (like unit tests / jsdom) that lack a proper RAF or canvas.
-  let __renderActive = true;
-  const __testMode = (typeof window !== 'undefined') && !!window.__MLIPVIEW_TEST_MODE;
-  function __rafLoop(){
-    if(!__renderActive) return;
-    try { scene.render(); } catch(e){ console.warn('[Render][raf] render error', e); }
-    if(typeof requestAnimationFrame === 'function') requestAnimationFrame(__rafLoop);
-  }
+            Promise.resolve(api.startMDContinuous({}))
+              .then(() => {
+                try {
+                  const btn = document.getElementById('btnMDRun');
+                  if (btn && btn.textContent === 'stop') btn.textContent = 'run';
+                } catch { }
+                if (env.apiOn()) dbg.log('[autoMD] start invoked');
+              })
+              .catch((err) => {
+                if (env.apiOn()) dbg.warn('[autoMD] start failed', err?.message || err);
+                scheduleAutoMD(attempt + 1, 250);
+              });
+          } catch (err) {
+            if (env.apiOn()) dbg.warn('[autoMD] start error', err?.message || err);
+            scheduleAutoMD(attempt + 1, 150);
+          }
+        }, Math.max(0, delayMs | 0));
+      };
+      scheduleAutoMD();
+    }
+  } catch { }
+
+  // Render loop
+  let renderActive = true;
+  const testMode = (typeof window !== 'undefined') && !!window.__MLIPVIEW_TEST_MODE;
+  const rafLoop = () => {
+    if (!renderActive) return;
+    try { scene.render(); } catch (e) { dbg.warn('[Render][raf] render error', e); }
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(rafLoop);
+  };
   try {
-    if(!__testMode && engine?.runRenderLoop){
-      console.log('[Render] starting engine.runRenderLoop (XR compatible)');
-      engine.runRenderLoop(()=>{
-        if(!__renderActive){ return; }
-        try { scene.render(); } catch(e){ console.warn('[Render] loop error', e); }
-      });
+    if (!testMode && engine?.runRenderLoop) {
+      dbg.log('[Render] starting engine.runRenderLoop (XR compatible)');
+      engine.runRenderLoop(() => { if (!renderActive) return; try { scene.render(); } catch (e) { dbg.warn('[Render] loop error', e); } });
     } else {
-      console.log('[Render] starting requestAnimationFrame loop (test mode fallback)');
-      if(typeof requestAnimationFrame === 'function') requestAnimationFrame(__rafLoop);
-      else if(engine?.runRenderLoop){ engine.runRenderLoop(()=>{ if(!__renderActive) return; scene.render(); }); }
+      dbg.log('[Render] starting requestAnimationFrame loop (test mode fallback)');
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(rafLoop);
+      else if (engine?.runRenderLoop) engine.runRenderLoop(() => { if (!renderActive) return; scene.render(); });
     }
-  } catch(e){
-    console.warn('[Render] primary loop init failed; falling back to rAF', e);
-    if(typeof requestAnimationFrame === 'function') requestAnimationFrame(__rafLoop);
+  } catch (e) {
+    dbg.warn('[Render] primary loop init failed; falling back to rAF', e);
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(rafLoop);
   }
 
-  // Force vectors now rendered via moleculeView thin instances (see moleculeView.rebuildForces).
-  // Keep a small compatibility layer: setting true will ensure showForces=true, false hides; undefined toggles.
-  function setForceVectorsEnabled(on){
-    try {
-      if (typeof on === 'boolean') { if (!!state.showForces !== on) state.toggleForceVectorsVisibility(); }
-      else { state.toggleForceVectorsVisibility(); }
-    } catch {}
-  }
-
-  // VR support is lazy; user can call vr.init() explicitly later.
-  // IMPORTANT: Route VR interactions through the wrapped manipulation so dragged atoms are tracked
-  // and excluded from MD/relax position application while held.
-  const vr = createVRSupport(scene, { picking: { ...picking, view, vrPicker, selectionService: selection, manipulation: new Proxy({}, { get: (_, k) => wrappedManipulationRef?.[k] }), molState: state } });
-  // Auto-init VR support so controllers & debug logging are ready; actual immersive session still requires user gesture.
-  try {
-    vr.init().then(res => { if (res.supported) { console.log('[VR] support initialized (auto)'); } else { console.log('[VR] not supported'); } });
-  } catch (e) { console.warn('[VR] auto init failed', e); }
-  function debugEnergySeriesLength(){ return energySeries.length; }
-  function debugRecordInteraction(kind){ recordInteraction(kind||'debug'); }
-  function getForceCacheVersion(){ return state.forceCache?.version; }
-  function getVersionInfo(){ return { userInteractionVersion, totalInteractionVersion, resetEpoch }; }
-  function shutdown(){ __renderActive=false; try{ engine.stopRenderLoop && engine.stopRenderLoop(); }catch{} }
-  return { state, bondService, selection, ff, dynamics, view, picking, vr, recomputeBonds, relaxStep, mdStep, startRelaxContinuous, startMDContinuous, stopSimulation, setForceProvider, getMetrics, resetToInitialPositions, debugEnergySeriesLength, debugRecordInteraction, manipulation: wrappedManipulation, scene, engine, camera, baselineEnergy, setForceVectorsEnabled, getForceCacheVersion, getVersionInfo, shutdown, enableFeatureFlag, setMinStepInterval };
-}
-
-// Ensure global viewerApi for tests if not already set
-if (typeof window !== 'undefined') {
-  try {
-    if (!window.viewerApi && typeof initNewViewer === 'function') {
-      // Will be assigned after user calls initNewViewer; patch the function to set it.
-      const __origInit = initNewViewer;
-      // Redefine only once
-      Object.defineProperty(window, 'initNewViewer', { value: async function(...args){
-        const api = await __origInit(...args);
-        window.viewerApi = api; // expose globally for tests & debug inspector
-        return api;
-      }, configurable: true });
-    }
-  } catch(_) { /* ignore */ }
-}
-
-// Debug / test helpers injected after definition (non-enumerable minimal surface impact)
-try {
-  if (typeof window !== 'undefined') {
-    Object.defineProperty(window, '__dumpCurrentAtoms', { value: function(){
+  // Cleanup & dev helpers
+  onWin(w => {
+    w.__MLIPVIEW_CLEANUP ||= [];
+    w.__MLIPVIEW_CLEANUP.push(() => {
       try {
-        if(!window.viewerApi) return null;
-        const st = window.viewerApi.state;
-        return {
-          elements: st.elements.map(e=> e.symbol||e.sym||e.S||e.Z||e.atomicNumber||'?'),
-          atomic_numbers: st.elements.map(e=> (typeof e==='string'? (SYMBOL_TO_Z[e]||0) : (e && (e.Z||e.atomicNumber||e.z|| (SYMBOL_TO_Z[e.symbol]||SYMBOL_TO_Z[e.sym]||SYMBOL_TO_Z[e.S]||0))) || 0)),
-          positions: st.positions.map(p=> [p.x,p.y,p.z]),
-          energy: st.dynamics?.energy
-        };
-      } catch(e){ return { error: e?.message||String(e) }; }
-    }, writable:false });
-  }
-} catch(_) { /* ignore non-browser env */ }
+        if (engine?.__mlipviewResizeHandler) {
+          w.removeEventListener('resize', engine.__mlipviewResizeHandler);
+          engine.__mlipviewResizeHandler = null;
+        }
+      } catch {}
+      try { engine?.stopRenderLoop?.(); } catch { }
+      try { scene?.dispose?.(); } catch { }
+    });
+    w.__MLIPVIEW_API_ENABLE = (on) => { w.__MLIPVIEW_DEBUG_API = !!on; dbg.log('[API] debug set to', w.__MLIPVIEW_DEBUG_API); };
+
+    w.setDragThrottleMs = (ms) => {
+      w.__MLIP_CONFIG.dragThrottleMs = Number(ms) || DEFAULTS.DRAG_THROTTLE_MS;
+      dbg.log('[config] dragThrottleMs =', w.__MLIP_CONFIG.dragThrottleMs);
+      return w.__MLIP_CONFIG.dragThrottleMs;
+    };
+    w.setPosEnergyDebounceMs = (ms) => {
+      w.__MLIP_CONFIG.posEnergyDebounceMs = Number(ms) || DEFAULTS.POS_ENERGY_DEBOUNCE_MS;
+      dbg.log('[config] posEnergyDebounceMs =', w.__MLIP_CONFIG.posEnergyDebounceMs);
+      return w.__MLIP_CONFIG.posEnergyDebounceMs;
+    };
+    w.applyFullSnapshot = applyFullSnapshot;
+    w.addAtom = addAtom;
+    w.addAtomAtOrigin = addAtomAtOrigin;
+    w.addAtomAtPosition = addAtomAtPosition;
+    w.removeAtoms = removeAtoms;
+    w.removeAtomByIndex = removeAtomByIndex;
+    w.refreshResetBaseline = refreshResetBaseline;
+  });
+
+  function setForceProvider() { return 'uma'; }
+  function shutdown() { renderActive = false; try { engine?.stopRenderLoop?.(); } catch { } }
+
+  // Attach idle listener for idle mode
+  try { attachIdleWSListener().catch(() => { }); } catch { }
+
+  return {
+    state,
+    bondService,
+    selection: selectionService,
+    selectionService,
+    ff,
+    dynamics: { stepMD: () => { }, stepRelax: ({ forceFn }) => forceFn && forceFn() },
+    view,
+    picking,
+    vr,
+    applyFullSnapshot,
+    addAtom,
+    removeAtoms,
+    recomputeBonds,
+    relaxStep,
+    mdStep,
+    startRelaxContinuous,
+    startMDContinuous,
+    stopSimulation,
+    setForceProvider,
+    getMetrics,
+    resetToInitialPositions,
+    refreshResetBaseline,
+    debugEnergySeriesLength,
+    getEnergyMarker: () => energyPlot.getMarker(),
+    debugRecordInteraction,
+    manipulation: wrappedManipulation,
+    scene,
+    engine,
+    camera,
+    baselineEnergy,
+    addAtomAtOrigin,
+    addAtomAtPosition,
+    removeAtomByIndex,
+    setForceVectorsEnabled,
+    getForceCacheVersion,
+    getVersionInfo,
+    shutdown,
+    enableFeatureFlag,
+    setMinStepInterval,
+    requestSimpleCalculateNow,
+      debugGhostSnapshot,
+      debugHighlightState,
+      debugStreamListenerStats,
+      debugCameraControls,
+    debugBondMetrics,
+    setTestAutoSelectFallback,
+    debugSelectAtom,
+    debugSelectBond,
+    debugGetSelection,
+    debugWsState,
+    forceWsReconnect,
+    simulateWsDrop,
+    timeline: {
+      select: (offset) => { handleTimelineOffsetRequest(offset); return timelineState.offset; },
+      play: (offset) => { handleTimelinePlayRequest(offset ?? timelineState.offset); return timelineState.offset; },
+      pause: () => { handleTimelinePauseRequest(); return timelineState.offset; },
+      live: () => { handleTimelineLiveRequest(); return timelineState.offset; },
+      getState: () => ({ ...(timelineUi?.getState?.() || {}), active: !!timelineState.active, playing: !!timelineState.playing, offset: timelineState.offset }),
+      getSignature: (offset) => frameBuffer.getSignature(offset ?? timelineState.offset),
+      bufferStats: () => frameBuffer.stats(),
+      getOffsets: () => frameBuffer.listOffsets(),
+    },
+  };
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Global viewerApi bootstrap
+   ────────────────────────────────────────────────────────────────────────── */
+
+onWin(w => {
+  try {
+    if (!w.viewerApi && typeof initNewViewer === 'function') {
+      const __orig = initNewViewer;
+      Object.defineProperty(w, 'initNewViewer', {
+        value: async function (...args) {
+          const api = await __orig(...args);
+          w.viewerApi = api;
+          return api;
+        },
+        configurable: true,
+      });
+    }
+  } catch { }
+  try {
+    Object.defineProperty(w, '__dumpCurrentAtoms', {
+      value: function () {
+        try {
+          if (!w.viewerApi) return null;
+          const st = w.viewerApi.state;
+          return {
+            elements: st.elements.map(e => e.symbol || e.sym || e.S || e.Z || e.atomicNumber || '?'),
+            atomic_numbers: st.elements.map(zOf),
+            positions: st.positions.map(p => [p.x, p.y, p.z]),
+            energy: st.dynamics?.energy,
+          };
+        } catch (e) { return { error: e?.message || String(e) }; }
+      },
+      writable: false,
+    });
+  } catch { }
+});
