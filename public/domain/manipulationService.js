@@ -19,6 +19,7 @@ export function createManipulationService(molState, { bondService } = {}) {
   const MAX_DRAG_RADIUS = 50; // configurable constant; previously 5x farthest initial atom
   // Debug instrumentation (re-added to surface desktop drag logs after migration).
   const DRAG_LOG = false; // silenced (set to true locally if detailed drag diagnostics needed)
+  let interactionsEnabled = true;
 
   function getAtomPosition(i) {
     return molState.positions[i];
@@ -31,6 +32,7 @@ export function createManipulationService(molState, { bondService } = {}) {
 
   function beginDrag(intersector, opts = {}) {
     __count('manipulationService#beginDrag');
+    if (!interactionsEnabled) return false;
     if (dragState) return false;
     if (!molState.selection || molState.selection.kind !== 'atom') return false;
     const atomIndex = molState.selection.data.index;
@@ -59,13 +61,13 @@ export function createManipulationService(molState, { bondService } = {}) {
   }
   function setDragPlane(point, normal) {
     __count('manipulationService#setDragPlane');
-    if (!dragState) return;
+    if (!interactionsEnabled || !dragState) return;
     dragState.planePoint = { ...point };
     dragState.planeNormal = { ...normal };
   }
   function updateDrag(intersector) {
     __count('manipulationService#updateDrag');
-    if (!dragState) return false;
+    if (!interactionsEnabled || !dragState) return false;
     const hit = intersector(dragState.planePoint, dragState.planeNormal);
     if (!hit) return false;
     const prev = { ...molState.positions[dragState.atomIndex] };
@@ -98,6 +100,7 @@ export function createManipulationService(molState, { bondService } = {}) {
   }
   function endDrag() {
     __count('manipulationService#endDrag');
+    if (!interactionsEnabled && !dragState) return;
     if (!dragState) return;
     // Capture whether the atom actually moved (compare to startPos)
     const { atomIndex, startPos } = dragState;
@@ -127,7 +130,7 @@ export function createManipulationService(molState, { bondService } = {}) {
   // Bond rotation: rotate all atoms on one side around axis defined by bond i-j passing through atom i (if side==='j') or j (if side==='i').
   function rotateBond(deltaAngle, sideOverride) {
     __count('manipulationService#rotateBond');
-    if (!molState.selection || molState.selection.kind !== 'bond') return false;
+    if (!interactionsEnabled || !molState.selection || molState.selection.kind !== 'bond') return false;
     const { i, j, orientation } = molState.selection.data;
     const side = sideOverride || orientationToSide(orientation); // 'i' or 'j'
     let group = molState.selection.data.rotationGroup;
@@ -188,5 +191,19 @@ export function createManipulationService(molState, { bondService } = {}) {
         ? { ...lastRotationDebug, sideAtoms: [...lastRotationDebug.sideAtoms] }
         : null,
   };
-  return { beginDrag, updateDrag, endDrag, setDragPlane, rotateBond, _debug };
+  return {
+    beginDrag,
+    updateDrag,
+    endDrag,
+    setDragPlane,
+    rotateBond,
+    setInteractionsEnabled(on = true) {
+      interactionsEnabled = !!on;
+      if (!interactionsEnabled) {
+        try { endDrag(); } catch { }
+      }
+      return interactionsEnabled;
+    },
+    _debug,
+  };
 }

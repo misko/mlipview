@@ -16,6 +16,8 @@ import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS, MAX_STEP } from './u
 import { getWS } from './fairchem_ws_client.js';
 import { showErrorBanner, hideErrorBanner } from './ui/errorBanner.js';
 import { SYMBOL_TO_Z, Z_TO_SYMBOL, OMOL25_ELEMENTS } from './data/periodicTable.js';
+import { createFrameBuffer } from './core/frameBuffer.js';
+import { installTimeline } from './ui/timeline.js';
 
 /* ──────────────────────────────────────────────────────────────────────────
    Tunables & Defaults
@@ -186,10 +188,10 @@ const triplesForIndices = (state, indices) =>
     return [p.x, p.y, p.z];
   });
 
-const applyTriples = (state, triples, { exclude } = {}) => {
+const applyTriples = (state, triples, { exclude, forceAll = false } = {}) => {
   const N = Math.min(state.positions.length, triples?.length || 0);
   if (!N) return;
-  if (exclude?.size) {
+  if (!forceAll && exclude?.size) {
     for (let i = 0; i < N; i++) {
       if (exclude.has(i)) continue;
       const [x, y, z] = triples[i]; const tp = state.positions[i]; tp.x = x; tp.y = y; tp.z = z;
@@ -434,6 +436,27 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   let totalInteractionVersion = 0;
   let lastAppliedUIC = 0;
   let currentStepBudget = null;
+  const frameBuffer = createFrameBuffer({ capacity: 500 });
+  let timelineUi = null;
+  let timelineOverlay = null;
+  const timelineState = {
+    active: false,
+    playing: false,
+    offset: -1,
+    interval: null,
+    resumeMode: null,
+    suppressEnergy: false,
+  };
+  const timelineLockClass = 'timeline-readonly-overlay';
+
+  function timelineLocked() {
+    return timelineState.active;
+  }
+  function ensureTimelineEditable(reason) {
+    if (!timelineLocked()) return true;
+    if (env.apiOn()) dbg.warn('[timeline][block]', reason || '?');
+    return false;
+  }
 
   function resetStepBudgetDueToInteraction(reason) {
     if (!currentStepBudget) return;
@@ -611,6 +634,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   };
 
   const applyFullSnapshot = async ({ elements, positions, velocities, cell } = {}) => {
+    if (!ensureTimelineEditable('applyFullSnapshot')) return false;
     const nextElements = Array.isArray(elements) && elements.length
       ? elements.map(toSymbol)
       : (state.elements || []).slice();
@@ -664,6 +688,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   };
 
   const addAtom = async ({ element = 'H', position, velocity } = {}) => {
+    if (!ensureTimelineEditable('addAtom')) return false;
     const elements = (state.elements || []).slice();
     const positions = (state.positions || []).map((p) => ({ x: p.x, y: p.y, z: p.z }));
     const symbol = toSymbol(element);
@@ -694,6 +719,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   };
 
   const addAtomAtPosition = async (element, position, velocity) => {
+    if (!ensureTimelineEditable('addAtomAtPosition')) return false;
     const symbol = toSymbol(element);
     assertAllowedSymbol(symbol);
     return addAtom({ element: symbol, position, velocity });
@@ -702,6 +728,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   const addAtomAtOrigin = async (element) => addAtomAtPosition(element, { x: 0, y: 0, z: 0 });
 
   const removeAtoms = async (indices = []) => {
+    if (!ensureTimelineEditable('removeAtoms')) return false;
     const idx = Array.from(new Set(indices.map((n) => Number(n)))).filter((n) => Number.isInteger(n) && n >= 0);
     if (!idx.length) return;
     const sorted = idx.sort((a, b) => b - a);
@@ -729,6 +756,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   };
 
   const removeAtomByIndex = async (index) => {
+    if (!ensureTimelineEditable('removeAtomByIndex')) return false;
     if (!Number.isInteger(index) || index < 0) return false;
     const before = state.elements?.length || 0;
     await removeAtoms([index]);
@@ -984,6 +1012,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   }
   const wrappedManipulation = {
     beginDrag: (...a) => {
+      if (!ensureTimelineEditable('manipulation.beginDrag')) return false;
       const ok = manipulation.beginDrag?.(...a);
       if (ok) {
         const idx = selectedAtomIndex(); if (idx != null) { currentDraggedAtom.idx = idx; draggingAtoms.add(idx); }
@@ -991,6 +1020,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       return ok;
     },
     updateDrag: (...a) => {
+      if (!ensureTimelineEditable('manipulation.updateDrag')) return false;
       const r = manipulation.updateDrag?.(...a);
       if (r) {
         bumpUser('dragMove');
@@ -1000,6 +1030,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       return r;
     },
     endDrag: (...a) => {
+      if (!ensureTimelineEditable('manipulation.endDrag')) return false;
       const had = (currentDraggedAtom.idx != null) || draggingAtoms.size > 0;
       let dragSource = null; try { dragSource = manipulation._debug?.getDragState?.()?.source || null; } catch { }
       const r = manipulation.endDrag?.(...a);
@@ -1018,8 +1049,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       recordInteraction('dragEnd');
       return r;
     },
-    setDragPlane: (...a) => manipulation.setDragPlane?.(...a),
+    setDragPlane: (...a) => {
+      if (!ensureTimelineEditable('manipulation.setDragPlane')) return;
+      return manipulation.setDragPlane?.(...a);
+    },
     rotateBond: (...a) => {
+      if (!ensureTimelineEditable('manipulation.rotateBond')) return false;
       const r = manipulation.rotateBond?.(...a);
       if (r) {
         let sideAtoms = null; try { sideAtoms = manipulation._debug?.getLastRotation?.()?.sideAtoms || null; } catch { }
@@ -1071,6 +1106,22 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       bondScrollStep: TUNABLES.BOND_SCROLL_STEP_RAD,
     },
   ));
+
+  try {
+    timelineUi = installTimeline({
+      host: typeof document !== 'undefined' ? (document.getElementById('app') || canvas?.parentElement || document.body) : null,
+      capacity: 500,
+      getOffsets: () => frameBuffer.listOffsets(),
+      getActiveOffset: () => timelineState.offset,
+      onRequestOffset: (offset) => handleTimelineOffsetRequest(offset),
+      onRequestPlay: (offset) => handleTimelinePlayRequest(offset),
+      onRequestPause: () => handleTimelinePauseRequest(),
+      onRequestLive: () => handleTimelineLiveRequest(),
+    });
+    timelineUi?.refresh?.();
+  } catch (err) {
+    if (env.apiOn()) dbg.warn('[timeline] install failed', err?.message || err);
+  }
 
   // VR support
   let vrPicker = null; try { vrPicker = createVRPicker({ scene, view }); } catch (e) { dbg.warn('[VR] vrPicker init failed', e?.message || e); }
@@ -1205,6 +1256,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   async function relaxStep() {
     __count('index#relaxStep');
+    if (!ensureTimelineEditable('relaxStep')) return { blocked: true };
     try {
       const r = await doOneStepViaWS('relax', { calculator: 'uma', fmax: state?.optimizer?.fmax || 0.05, max_step: MAX_STEP, optimizer: 'bfgs' });
       if (r?.applied) { recordInteraction('relaxStep'); energyPlot.push(state.dynamics?.energy, 'relax'); }
@@ -1214,6 +1266,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   async function mdStep(opts = {}) {
     __count('index#mdStep');
+    if (!ensureTimelineEditable('mdStep')) return { blocked: true };
     try {
       let temperature = opts.temperature;
       try { if ((temperature == null || !Number.isFinite(temperature)) && typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) temperature = Number(window.__MLIP_TARGET_TEMPERATURE); } catch { }
@@ -1232,40 +1285,281 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
      Streaming WS loops (unified)
      ──────────────────────────────────────────────────────────────────────── */
 
-  function handleStreamFrame(kind, ws, r) {
-    const uic = Number.isFinite(r.userInteractionCount) ? (r.userInteractionCount | 0) : 0;
-    if (uic > 0 && uic < lastAppliedUIC) {
+  function applyFramePayload(kind, frame, {
+    ws = null,
+    isLive = false,
+    allowEnergyPlot = true,
+    forceAll = false,
+    advanceCounters = false,
+    noteFrame = false,
+    updateUIC = false,
+  } = {}) {
+    if (!frame) return { applied: false };
+    const uic = Number(frame.userInteractionCount ?? frame.user_interaction_count ?? 0) | 0;
+    if (isLive && uic > 0 && uic < lastAppliedUIC) {
       if (env.apiOn()) dbg.log(`[${kind}WS][discard-stale-applied]`, { server: uic, lastAppliedUIC });
-      return;
+      return { applied: false, skipped: 'stale', uic };
     }
-    try { const seq = Number(r.seq) || 0; if (seq > 0) ws.ack(seq); } catch { }
+    const seq = Number(frame.seq) || 0;
+    if (isLive && ws && typeof ws.ack === 'function' && seq > 0) {
+      try { ws.ack(seq); } catch { }
+    }
 
-    const exclude = buildExcludeSet();
-    if (Array.isArray(r.positions) && r.positions.length === state.positions.length) {
-      applyTriples(state, r.positions, { exclude });
-      __suppressNextPosChange = true; state.markPositionsChanged(); bumpSim(kind === 'md' ? 'mdWS' : (kind === 'relax' ? 'relaxWS' : 'idleWS'));
-    }
-    const E = (typeof r.energy === 'number') ? r.energy : state.dynamics?.energy;
-    updateEnergyForces({ energy: E, forces: r.forces?.length ? r.forces : undefined, reason: kind + 'WS' });
-    if (kind === 'md') {
-      if (Array.isArray(r.velocities) && r.velocities.length === state.elements.length) {
-        state.dynamics ||= {}; state.dynamics.velocities = r.velocities;
+    const exclude = forceAll ? null : buildExcludeSet();
+    let applied = false;
+    if (Array.isArray(frame.positions) && frame.positions.length === state.positions.length) {
+      applyTriples(state, frame.positions, { exclude, forceAll });
+      __suppressNextPosChange = true;
+      state.markPositionsChanged();
+      if (advanceCounters) {
+        bumpSim(kind === 'md' ? 'mdWS' : (kind === 'relax' ? 'relaxWS' : 'idleWS'));
       }
-      if (typeof r.temperature === 'number' && isFinite(r.temperature)) {
-        state.dynamics ||= {}; state.dynamics.temperature = r.temperature;
-        setText('instTemp', 'T: ' + r.temperature.toFixed(1) + ' K');
+      applied = true;
+    }
+
+    const energyValue = (typeof frame.energy === 'number') ? frame.energy : state.dynamics?.energy;
+    updateEnergyForces({
+      energy: energyValue,
+      forces: Array.isArray(frame.forces) && frame.forces.length ? frame.forces : undefined,
+      stress: frame.stress || null,
+      reason: isLive ? kind + 'WS' : kind + 'Replay',
+    });
+
+    if (kind === 'md') {
+      if (Array.isArray(frame.velocities) && frame.velocities.length === state.elements.length) {
+        state.dynamics ||= {};
+        state.dynamics.velocities = frame.velocities;
+      }
+      if (typeof frame.temperature === 'number' && Number.isFinite(frame.temperature)) {
+        state.dynamics ||= {};
+        state.dynamics.temperature = frame.temperature;
+        setText('instTemp', 'T: ' + frame.temperature.toFixed(1) + ' K');
+      } else if (!isLive && typeof state.dynamics?.temperature === 'number') {
+        setText('instTemp', 'T: ' + state.dynamics.temperature.toFixed(1) + ' K');
       }
       try {
         const tm = typeof window !== 'undefined' && !!window.__MLIPVIEW_TEST_MODE;
         const haveV = Array.isArray(state.dynamics?.velocities) && state.dynamics.velocities.length === state.elements.length;
         if (tm && !haveV && state.positions?.length === state.elements.length) {
-          state.dynamics ||= {}; state.dynamics.velocities = state.positions.map(() => [0, 0, 0]);
+          state.dynamics ||= {};
+          state.dynamics.velocities = state.positions.map(() => [0, 0, 0]);
         }
       } catch { }
     }
-    energyPlot.push(E, kind);
-    noteReqDone();
-    if (uic > lastAppliedUIC) lastAppliedUIC = uic;
+
+    if (allowEnergyPlot && typeof energyValue === 'number' && Number.isFinite(energyValue)) {
+      energyPlot.push(energyValue, kind);
+    } else if (typeof energyValue === 'number' && Number.isFinite(energyValue)) {
+      setText('instEnergy', 'E: ' + energyValue.toFixed(2));
+    }
+
+    if (noteFrame) noteReqDone();
+    if (updateUIC && isLive && uic > lastAppliedUIC) lastAppliedUIC = uic;
+
+    return { applied: applied || Number.isFinite(energyValue), energy: energyValue, uic };
+  }
+
+  function handleStreamFrame(kind, ws, frame) {
+    const allowEnergy = !timelineState.suppressEnergy;
+    const result = applyFramePayload(kind, frame, {
+      ws,
+      isLive: true,
+      allowEnergyPlot: allowEnergy,
+      forceAll: false,
+      advanceCounters: true,
+      noteFrame: true,
+      updateUIC: true,
+    });
+    if (result?.applied) {
+      frameBuffer.record(kind, frame);
+      if (timelineUi) timelineUi.refresh();
+    }
+  }
+
+  function ensureTimelineOverlay() {
+    if (typeof document === 'undefined') return;
+    if (timelineOverlay) return;
+    const host = document.getElementById('app') || canvas?.parentElement || document.body;
+    if (!host) return;
+    const overlay = document.createElement('div');
+    overlay.className = timelineLockClass;
+    overlay.dataset.testid = 'timeline-overlay';
+    overlay.style.position = 'absolute';
+    overlay.style.left = '0';
+    overlay.style.right = '0';
+    overlay.style.top = '0';
+    overlay.style.bottom = '0';
+    overlay.style.pointerEvents = 'auto';
+    overlay.style.background = 'rgba(0, 0, 0, 0.02)';
+    overlay.style.display = 'none';
+    overlay.style.zIndex = '26';
+    overlay.innerHTML = '<div style="position:absolute;bottom:26px;right:26px;padding:6px 12px;border-radius:8px;background:rgba(10,16,24,0.9);color:#e4ecff;font:12px system-ui,sans-serif;pointer-events:none;">Timeline view — read only</div>';
+    host.appendChild(overlay);
+    timelineOverlay = overlay;
+  }
+
+  function setTimelineOverlayVisible(on) {
+    ensureTimelineOverlay();
+    if (!timelineOverlay) return;
+    timelineOverlay.style.display = on ? 'block' : 'none';
+  }
+
+  function setTimelineInteractionLock(on) {
+    const allow = !on;
+    try { manipulation?.setInteractionsEnabled?.(allow); } catch { }
+    try { pickingRef?.setInteractionsEnabled?.(allow); } catch { }
+    try { vr?.setInteractionsEnabled?.(allow); } catch { }
+  }
+
+  function clearTimelinePlayback() {
+    if (timelineState.interval) {
+      clearInterval(timelineState.interval);
+      timelineState.interval = null;
+    }
+    timelineState.playing = false;
+  }
+
+  function clampOffsetToBuffer(offset) {
+    const offsets = frameBuffer.listOffsets();
+    if (!offsets.length) return null;
+    const minOffset = offsets[offsets.length - 1];
+    const raw = Number.isFinite(offset) ? Math.floor(offset) : -1;
+    if (raw > -1) return -1;
+    if (raw < minOffset) return minOffset;
+    return raw;
+  }
+
+  function applyTimelineFrame(offset) {
+    const entry = frameBuffer.getByOffset(offset);
+    if (!entry) return false;
+    timelineState.offset = offset;
+    applyFramePayload(entry.kind || 'idle', entry, {
+      isLive: false,
+      allowEnergyPlot: false,
+      forceAll: true,
+      advanceCounters: false,
+      noteFrame: false,
+      updateUIC: false,
+    });
+    if (timelineUi) timelineUi.setActiveOffset(offset);
+    return true;
+  }
+
+  function enterTimelineMode(offset = -1) {
+    const offsets = frameBuffer.listOffsets();
+    if (!offsets.length) return false;
+    const minOffset = offsets[offsets.length - 1];
+    const target = Math.min(-1, Math.max(minOffset, Number.isFinite(offset) ? Math.floor(offset) : -1));
+    if (!timelineState.active) {
+      timelineState.resumeMode = mode;
+      timelineState.active = true;
+      timelineState.suppressEnergy = true;
+      clearTimelinePlayback();
+      setTimelineOverlayVisible(true);
+      setTimelineInteractionLock(true);
+      try { getWS().stopSimulation(); } catch { }
+      setMode(Mode.Timeline);
+    } else {
+      clearTimelinePlayback();
+    }
+    applyTimelineFrame(target);
+    if (timelineUi) {
+      timelineUi.setMode('paused');
+      timelineUi.refresh();
+    }
+    return true;
+  }
+
+  function timelineStepForward() {
+    const offsets = frameBuffer.listOffsets();
+    if (!offsets.length) {
+      clearTimelinePlayback();
+      if (timelineUi) timelineUi.setMode('paused');
+      return;
+    }
+    const minOffset = offsets[offsets.length - 1];
+    let next = timelineState.offset;
+    if (!Number.isFinite(next) || next < minOffset) next = minOffset;
+    if (next >= -1) {
+      clearTimelinePlayback();
+      if (timelineUi) timelineUi.setMode('paused');
+      return;
+    }
+    next = Math.min(-1, next + 1);
+    if (!applyTimelineFrame(next)) {
+      clearTimelinePlayback();
+      if (timelineUi) timelineUi.setMode('paused');
+      return;
+    }
+    if (next === -1) {
+      clearTimelinePlayback();
+      if (timelineUi) timelineUi.setMode('paused');
+    }
+  }
+
+  function pauseTimelinePlayback() {
+    clearTimelinePlayback();
+    if (timelineUi) timelineUi.setMode('paused');
+  }
+
+  async function resumeLiveFromTimeline() {
+    if (!timelineState.active) return;
+    clearTimelinePlayback();
+    timelineState.active = false;
+    timelineState.suppressEnergy = false;
+    setTimelineOverlayVisible(false);
+    setTimelineInteractionLock(false);
+    timelineState.offset = -1;
+    const resumeMode = timelineState.resumeMode;
+    timelineState.resumeMode = null;
+    if (timelineUi) {
+      timelineUi.setMode('live');
+      timelineUi.setActiveOffset(-1);
+    }
+    setMode(Mode.Idle);
+    if (timelineUi) timelineUi.refresh();
+    try {
+      await ensureWsInit({ allowOffline: false });
+    } catch (err) {
+      if (env.apiOn()) dbg.warn('[timeline][resume] ensureWsInit failed', err?.message || err);
+    }
+    if (resumeMode === Mode.MD) {
+      const opts = lastContinuousOpts.md ? { ...lastContinuousOpts.md } : {};
+      startContinuous('md', opts).catch(() => { });
+    } else if (resumeMode === Mode.Relax) {
+      const opts = lastContinuousOpts.relax ? { ...lastContinuousOpts.relax } : {};
+      startContinuous('relax', opts).catch(() => { });
+    }
+  }
+
+  function handleTimelineOffsetRequest(offset) {
+    const clamped = clampOffsetToBuffer(offset);
+    if (clamped == null) return;
+    if (!timelineState.active) {
+      enterTimelineMode(clamped);
+      return;
+    }
+    pauseTimelinePlayback();
+    applyTimelineFrame(clamped);
+    if (timelineUi) timelineUi.setMode('paused');
+  }
+
+  function handleTimelinePlayRequest(offset) {
+    const clamped = clampOffsetToBuffer(Number.isFinite(offset) ? offset : timelineState.offset);
+    if (clamped == null) return;
+    enterTimelineMode(clamped);
+    clearTimelinePlayback();
+    timelineState.playing = true;
+    if (timelineUi) timelineUi.setMode('playing');
+    timelineState.interval = setInterval(timelineStepForward, 50);
+  }
+
+  function handleTimelinePauseRequest() {
+    pauseTimelinePlayback();
+  }
+
+  function handleTimelineLiveRequest() {
+    resumeLiveFromTimeline().catch(() => { });
   }
 
   function clearReconnectCountdown() {
@@ -1338,7 +1632,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     reconnectState.countdownTimer = setInterval(updateReconnectCountdownText, 500);
   }
 
-  const Mode = Object.freeze({ Idle: 'idle', MD: 'md', Relax: 'relax' });
+  const Mode = Object.freeze({ Idle: 'idle', MD: 'md', Relax: 'relax', Timeline: 'timeline' });
 
   function rememberResume(kind, opts) {
     if (!kind) return;
@@ -1481,16 +1775,23 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (mode === Mode.MD && next !== Mode.MD) clearMdStreamListener();
     if (mode === Mode.Relax && next !== Mode.Relax) clearRelaxStreamListener();
     mode = next;
-    if (mode !== Mode.MD) {
+    if (mode !== Mode.MD && mode !== Mode.Timeline) {
       try { if (state?.dynamics) state.dynamics.temperature = undefined; } catch { }
       setText('instTemp', TEMP_PLACEHOLDER);
     }
-    running.kind = (mode === Mode.Idle) ? null : (mode === Mode.MD ? 'md' : 'relax');
     if (mode === Mode.Idle) {
+      running.kind = null;
       running.stepBudget = null;
       currentStepBudget = null;
+      timelineState.suppressEnergy = false;
       attachIdleWSListener().catch(() => { });
+    } else if (mode === Mode.Timeline) {
+      running.kind = null;
+      running.stepBudget = null;
+      currentStepBudget = null;
+      detachIdleWSListener();
     } else {
+      running.kind = (mode === Mode.MD) ? 'md' : 'relax';
       detachIdleWSListener();
     }
   }
@@ -2005,6 +2306,16 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     debugWsState,
     forceWsReconnect,
     simulateWsDrop,
+    timeline: {
+      select: (offset) => { handleTimelineOffsetRequest(offset); return timelineState.offset; },
+      play: (offset) => { handleTimelinePlayRequest(offset ?? timelineState.offset); return timelineState.offset; },
+      pause: () => { handleTimelinePauseRequest(); return timelineState.offset; },
+      live: () => { handleTimelineLiveRequest(); return timelineState.offset; },
+      getState: () => ({ ...(timelineUi?.getState?.() || {}), active: !!timelineState.active, playing: !!timelineState.playing, offset: timelineState.offset }),
+      getSignature: (offset) => frameBuffer.getSignature(offset ?? timelineState.offset),
+      bufferStats: () => frameBuffer.stats(),
+      getOffsets: () => frameBuffer.listOffsets(),
+    },
   };
 }
 

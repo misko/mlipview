@@ -25,6 +25,7 @@ export function createPickingService(
   let cameraDetachedForDrag = false;
   let cameraLock = null; // { alpha,beta,radius,target }
   let dragActive = false;
+  let interactionsEnabled = true;
   const DBG = typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_TOUCH;
   const PDBG = typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_PICK;
   // De-dupe guards
@@ -42,6 +43,13 @@ export function createPickingService(
     rotateSelectedBond,
     freezeCameraFrame,
     selection: selectionService.get,
+    setInteractionsEnabled(on = true) {
+      interactionsEnabled = !!on;
+      if (!interactionsEnabled) {
+        try { endDrag(); } catch { }
+      }
+      return interactionsEnabled;
+    },
   };
   // Helper to fully freeze camera even if Babylon processes some inputs (inertia or event ordering)
   function freezeCameraFrame() {
@@ -67,6 +75,7 @@ export function createPickingService(
   }
   function pickAtPointer() {
     __count('pickingService#pickAtPointer');
+    if (!interactionsEnabled) return null;
     if (PDBG) {
       try {
         console.log('[pick] at', {
@@ -99,6 +108,7 @@ export function createPickingService(
   }
   function handlePointerDown(e) {
     __count('pickingService#handlePointerDown');
+    if (!interactionsEnabled) return;
     // Hard de-dup: if we've already processed this DOM event, skip.
     try {
       if (e && __handledPointerDownEvents) {
@@ -452,12 +462,12 @@ export function createPickingService(
   // --- Unified interaction helpers ---
   function beginAtomDrag(intersector, opts) {
     __count('pickingService#beginAtomDrag');
-    if (!manipulation) return false;
+    if (!manipulation || !interactionsEnabled) return false;
     return manipulation.beginDrag(intersector, opts);
   }
   function updateDragFromPointer(intersector) {
     __count('pickingService#updateDragFromPointer');
-    if (!manipulation) return false;
+    if (!manipulation || !interactionsEnabled) return false;
     return manipulation.updateDrag(intersector);
   }
   function endDrag() {
@@ -467,7 +477,7 @@ export function createPickingService(
   }
   function rotateSelectedBond(deltaAngle) {
     __count('pickingService#rotateSelectedBond');
-    if (!manipulation) return false;
+    if (!manipulation || !interactionsEnabled) return false;
     return manipulation.rotateBond(deltaAngle);
   }
   // Expose consolidated API (supports existing pickAtPointer usage + new helpers)
