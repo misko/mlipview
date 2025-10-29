@@ -84,10 +84,10 @@ export async function loadXYZIntoViewer(viewerApi, url) {
   const txt = await fetchXYZ(url);
   const parsed = parseXYZ(txt);
   // Reuse common path so initial positions get cached consistently
-  return applyParsedToViewer(viewerApi, parsed);
+  return applyParsedToViewer(viewerApi, parsed, { kind: 'xyz', label: url });
 }
 
-export function applyParsedToViewer(viewerApi, parsed) {
+export function applyParsedToViewer(viewerApi, parsed, sourceMeta = null) {
   const valid = validateParsedXYZ(parsed);
   if (!valid.ok) {
     try {
@@ -174,6 +174,11 @@ export function applyParsedToViewer(viewerApi, parsed) {
     }
   } catch {}
   viewerApi.recomputeBonds();
+  try {
+    if (sourceMeta && viewerApi?.session?.noteSource) {
+      viewerApi.session.noteSource(sourceMeta);
+    }
+  } catch {}
   return parsed;
 }
 
@@ -185,7 +190,7 @@ export async function loadDefault(viewerApi) {
     if (b64) {
       const txt = base64DecodeUtf8(b64);
       const parsed = parseXYZ(txt);
-      applyParsedToViewer(viewerApi, parsed);
+      applyParsedToViewer(viewerApi, parsed, { kind: 'xyz-inline', label: 'inline.xyz' });
       return { file: 'inline.xyz', parsed };
     }
   } catch (e) {
@@ -196,7 +201,7 @@ export async function loadDefault(viewerApi) {
     if (smi) {
       const xyzText = await smilesToXYZ(smi);
       const parsed = parseXYZ(xyzText);
-      applyParsedToViewer(viewerApi, parsed);
+      applyParsedToViewer(viewerApi, parsed, { kind: 'smiles', label: smi });
       return { file: `smiles:${smi}`, parsed };
     }
   } catch (e) {

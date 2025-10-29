@@ -40,6 +40,12 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
   - `ws-timeline-camera.spec.js`: Scrubs history, dispatches pointer and wheel gestures, and confirms camera rotation/zoom stay responsive while geometry edits remain blocked.
   - `ws-timeline-energy-marker.spec.js`: Enters timeline playback and asserts the energy plot displays (and clears) the playback marker.
   - `ws-timeline-slider-select.spec.js`: Clicks a single slider position and waits for timeline mode to activate on the requested offset (guards against the historical double-click requirement).
+  - `ws-session-save-load.spec.js`: Captures a JSON snapshot, mutates geometry, loads the snapshot, verifies reset-to-last-load rehydrates the state/counters, and asserts MD runs resume after exiting timeline playback.
+
+## Session Snapshot Fixtures (manual QA)
+
+- `fixtures/sessionSnapshots/idle-water.json`: Idle water geometry with a single idle energy sample to validate baseline restores without timeline playback.
+- `fixtures/sessionSnapshots/md-benzene.json`: Benzene captured mid-MD run with resume metadata and timeline frames; load via the System panel session controls to benchmark file size and automatic MD resume behaviour.
 
 ## Jest Suites (`tests/x-*.spec.js`)
 
@@ -183,5 +189,7 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
 - **Miscellaneous Utilities**
   - `x-ar-auto-normalize.spec.js`: Runs augmented-reality auto-normalisation on various vectors and asserts values clamp within configured bounds while preserving direction.
   - `x-spherical-radial-modes.spec.js`: Exercises the spherical drag helper to verify radial displacement magnitudes and directions.
+  - `frameBuffer.serialize.spec.js`: Ensures timeline frame buffers export/import without losing metadata or coordinate fidelity.
+  - `sessionStateManager.spec.js`: Stubs the viewer/WS stack to verify snapshot capture and restoration seed counters, timeline state, and full-update syncs.
 
 > _Cross-reference_: Tests listed only once above cover all ported `x-*` suites. If you add a new suite, update this hierarchy so related coverage stays discoverable.

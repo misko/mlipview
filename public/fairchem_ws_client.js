@@ -174,6 +174,20 @@ export function createFairchemWS() {
     if (Number.isFinite(userInteractionCount)) lastCounters.userInteractionCount = userInteractionCount | 0;
     if (Number.isFinite(simStep)) lastCounters.simStep = simStep | 0;
   }
+  function seedSequencing({ nextSeq, ack, userInteractionCount, simStep } = {}) {
+    if (Number.isFinite(nextSeq)) {
+      seq = nextSeq | 0;
+    }
+    if (Number.isFinite(ack)) {
+      const ackVal = ack | 0;
+      clientAck = Math.max(clientAck, ackVal);
+      lastAckSent = Math.max(lastAckSent, ackVal);
+      highestSeq = Math.max(highestSeq, ackVal);
+      lastClientSeq = Math.max(lastClientSeq, ackVal);
+    }
+    if (Number.isFinite(userInteractionCount)) lastCounters.userInteractionCount = userInteractionCount | 0;
+    if (Number.isFinite(simStep)) lastCounters.simStep = simStep | 0;
+  }
 
   function __notifyTestHook(msg, explicitKind, meta) {
     try {
@@ -875,6 +889,7 @@ export function createFairchemWS() {
     onFrame,
     onResult,
     setCounters,
+    seedSequencing,
     nextSeq,
     setAck,
     ack,

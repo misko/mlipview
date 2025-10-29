@@ -93,7 +93,11 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
     head = (head + 1) % cap;
     count = Math.min(cap, count + 1);
 
-    const id = nextId++;
+    const id = Number.isFinite(meta.id) ? (meta.id | 0) : nextId++;
+    if (Number.isFinite(meta.id)) {
+      const candidate = (meta.id | 0) + 1;
+      if (candidate > nextId) nextId = candidate;
+    }
     const simStep = isFiniteNumber(frame.simStep) ? frame.simStep : isFiniteNumber(frame.sim_step) ? frame.sim_step : null;
     const userInteractionCount = isFiniteNumber(frame.userInteractionCount)
       ? frame.userInteractionCount
@@ -106,7 +110,7 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
     store[head] = {
       id,
       kind: normalizeKind(kind),
-      timestamp: Date.now(),
+      timestamp: Number.isFinite(meta.timestamp) ? Number(meta.timestamp) : Date.now(),
       seq,
       simStep,
       userInteractionCount,
@@ -176,6 +180,63 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
     return store[idx]?.signature ?? null;
   }
 
+  function clear() {
+    for (let i = 0; i < store.length; i++) store[i] = undefined;
+    head = -1;
+    count = 0;
+    nextId = 1;
+  }
+
+  function exportFrames() {
+    const frames = [];
+    for (let i = count - 1; i >= 0; i -= 1) {
+      let idx = head - i;
+      if (idx < 0) idx += cap;
+      const entry = store[idx];
+      if (!entry) continue;
+      frames.push({
+        id: entry.id,
+        kind: entry.kind,
+        seq: entry.seq,
+        simStep: entry.simStep != null ? entry.simStep : null,
+        userInteractionCount: entry.userInteractionCount != null ? entry.userInteractionCount : null,
+        timestamp: entry.timestamp,
+        energy: entry.energy,
+        temperature: entry.temperature,
+        stress: entry.stress ? entry.stress.map((row) => row.slice()) : null,
+        energyIndex: entry.energyIndex != null ? entry.energyIndex : null,
+        positions: fromFloat32Array(entry.positions),
+        velocities: entry.velocities ? fromFloat32Array(entry.velocities) : null,
+        forces: entry.forces ? fromFloat32Array(entry.forces) : null,
+      });
+    }
+    return frames;
+  }
+
+  function importFrames(frames = []) {
+    clear();
+    if (!Array.isArray(frames) || !frames.length) return;
+    const eligible = frames.slice(-cap);
+    for (const frame of eligible) {
+      const entry = {
+        positions: Array.isArray(frame.positions) ? frame.positions : [],
+        velocities: Array.isArray(frame.velocities) ? frame.velocities : null,
+        forces: Array.isArray(frame.forces) ? frame.forces : null,
+        simStep: frame.simStep,
+        userInteractionCount: frame.userInteractionCount,
+        seq: frame.seq,
+        energy: frame.energy,
+        temperature: frame.temperature,
+        stress: Array.isArray(frame.stress) ? frame.stress : null,
+      };
+      record(frame.kind || KIND_IDLE, entry, {
+        id: frame.id,
+        energyIndex: frame.energyIndex,
+        timestamp: frame.timestamp,
+      });
+    }
+  }
+
   function stats() {
     return {
       capacity: cap,
@@ -192,6 +253,9 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
     latestOffset,
     getByOffset,
     getSignature,
+    clear,
+    exportFrames,
+    importFrames,
   };
 }
 

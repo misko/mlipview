@@ -18,6 +18,7 @@ import { showErrorBanner, hideErrorBanner } from './ui/errorBanner.js';
 import { SYMBOL_TO_Z, Z_TO_SYMBOL, OMOL25_ELEMENTS } from './data/periodicTable.js';
 import { createFrameBuffer } from './core/frameBuffer.js';
 import { installTimeline } from './ui/timeline.js';
+import { createSessionStateManager } from './core/sessionStateManager.js';
 
 /* ──────────────────────────────────────────────────────────────────────────
    Tunables & Defaults
@@ -451,8 +452,40 @@ const energyPlot = (() => {
     const entry = series[idx] || {};
     return { index: idx, energy: entry.E, length: series.length };
   };
+  const exportSeries = () => ({
+    series: series.map(({ E, kind }) => ({ energy: E, kind })),
+    markerIndex: markerIndex != null ? markerIndex : null,
+  });
+  const importSeries = ({ series: incoming, markerIndex: marker } = {}) => {
+    series = [];
+    last = undefined;
+    markerIndex = null;
+    if (Array.isArray(incoming)) {
+      for (const entry of incoming) {
+        if (!entry) continue;
+        const energy = Number(entry.energy);
+        if (!Number.isFinite(energy)) continue;
+        const kind = entry.kind && typeof entry.kind === 'string' ? entry.kind : undefined;
+        const idx = series.length;
+        series.push({ i: idx, E: energy, kind });
+        last = energy;
+      }
+    }
+    if (Number.isFinite(marker) && series.length) {
+      markerIndex = Math.max(0, Math.min(series.length - 1, marker | 0));
+    } else {
+      markerIndex = null;
+    }
+    if (series.length) {
+      const tail = series[series.length - 1];
+      setText('instEnergy', 'E: ' + tail.E.toFixed(2));
+    } else {
+      setText('instEnergy', 'E: —');
+    }
+    draw();
+  };
 
-  return { push, reset, length, setMarker, clearMarker, getMarker };
+  return { push, reset, length, setMarker, clearMarker, getMarker, exportSeries, importSeries };
 })();
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -570,6 +603,20 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   let currentStepBudget = null;
   const frameBuffer = createFrameBuffer({ capacity: 500 });
   let timelineUi = null;
+  const timelineUiRef = { value: null };
+  let sessionStateManager = null;
+  const getInteractionCountersSnapshot = () => ({
+    user: userInteractionVersion | 0,
+    total: totalInteractionVersion | 0,
+    lastApplied: lastAppliedUIC | 0,
+  });
+  const setInteractionCountersFromSnapshot = ({ user, total, lastApplied } = {}) => {
+    if (Number.isFinite(user)) userInteractionVersion = user | 0;
+    if (Number.isFinite(total)) totalInteractionVersion = Math.max(userInteractionVersion, total | 0);
+    else totalInteractionVersion = Math.max(userInteractionVersion, totalInteractionVersion);
+    if (Number.isFinite(lastApplied)) lastAppliedUIC = lastApplied | 0;
+    else lastAppliedUIC = Math.max(lastAppliedUIC, userInteractionVersion);
+  };
   let timelineOverlay = null;
   const timelineState = {
     active: false,
@@ -1254,6 +1301,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       onRequestPause: () => handleTimelinePauseRequest(),
       onRequestLive: () => handleTimelineLiveRequest(),
     });
+    timelineUiRef.value = timelineUi;
     timelineUi?.refresh?.();
   } catch (err) {
     if (env.apiOn()) dbg.warn('[timeline] install failed', err?.message || err);
@@ -2202,6 +2250,42 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       };
     });
   }
+
+  if (!sessionStateManager) {
+    sessionStateManager = createSessionStateManager({
+      getViewerState: () => state,
+      applyFullSnapshot,
+      normalizeElement,
+      energyPlot,
+      frameBuffer,
+      captureBaselineFromState: () => captureResetBaselineFromState(),
+      installBaseline: installResetBaseline,
+      getInteractionCounters: () => getInteractionCountersSnapshot(),
+      setInteractionCounters: (counters) => setInteractionCountersFromSnapshot(counters),
+      resetWsInitState,
+      getWsClient: () => getWS(),
+      ensureWsInit,
+      posToTriples: (s) => posToTriples(s || state),
+      zOf,
+      stateCellToArray,
+      getVelocitiesForSnapshot: () => getVelocitiesIfFresh(),
+      setMode,
+      Mode,
+      timelineState,
+      timelineUiRef,
+      clearTimelinePlayback,
+      setTimelineOverlayVisible,
+      setTimelineInteractionLock,
+      applyTimelineFrame,
+      refreshTimelineUi: () => timelineUi?.refresh?.(),
+      setTimelineUiMode: (modeName) => timelineUi?.setMode?.(modeName),
+      lastContinuousOpts,
+      rememberResume,
+      stopSimulation,
+      getMode: () => mode,
+    });
+    try { sessionStateManager.setBaselineFromState({ kind: 'init' }, { includeTimeline: false }); } catch { }
+  }
   function setTestAutoSelectFallback(on = true) {
     if (view?._internals) {
       view._internals._debugAutoSelectFirstOnEmpty = !!on;
@@ -2264,6 +2348,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   function refreshResetBaseline(reason = 'manual') {
     seedResetBaseline(reason);
+    try { sessionStateManager?.setBaselineFromState({ kind: reason }, { includeTimeline: false }); } catch { }
     return state.__resetBaseline;
   }
 
@@ -2295,6 +2380,18 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   async function resetToInitialPositions() {
     const t0 = env.now();
     dbg.log('[Reset] begin VR/AR-safe reset', { when: new Date().toISOString() });
+    if (sessionStateManager) {
+      try {
+        const handled = await sessionStateManager.resetToLastSource();
+        if (handled) {
+          resetEpoch++; bumpUser('reset'); __suppressNextPosChange = true;
+          interactions.length = 0;
+          return true;
+        }
+      } catch (err) {
+        if (env.apiOn()) dbg.warn('[Reset] session snapshot restore failed', err?.message || err);
+      }
+    }
     try {
       stopSimulation();
       resetEpoch++; bumpUser('reset'); __suppressNextPosChange = true;
@@ -2514,6 +2611,15 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     debugWsState,
     forceWsReconnect,
     simulateWsDrop,
+    session: {
+      captureSnapshot: (meta) => sessionStateManager?.captureSnapshot?.(meta) ?? null,
+      saveToFile: (opts) => sessionStateManager?.saveToFile?.(opts) ?? null,
+      loadSnapshot: async (snapshot) => sessionStateManager ? sessionStateManager.loadSnapshot(snapshot) : null,
+      loadFromFile: async (file) => sessionStateManager ? sessionStateManager.loadFromFile(file) : null,
+      resetToLastLoad: () => sessionStateManager?.resetToLastSource?.() ?? false,
+      noteSource: (meta) => sessionStateManager?.noteSource?.(meta) ?? null,
+      getBaseline: () => sessionStateManager?.getBaseline?.() ?? null,
+    },
     timeline: {
       select: (offset) => { handleTimelineOffsetRequest(offset); return timelineState.offset; },
       play: (offset) => { handleTimelinePlayRequest(offset ?? timelineState.offset); return timelineState.offset; },

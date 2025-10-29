@@ -5,6 +5,7 @@ MLIPView is UMA Fairchem’s reference workstation for interactively steering ma
 Key capabilities:
 - Real-time idle, MD, and relax streaming with per-atom gating during drags and bond rotations.
 - Timeline mode with scrubbable history, retained energy markers, and read-only camera controls for investigating prior frames.
+- Session snapshots with JSON export/import so timelines, energy traces, and counters can be restored exactly across runs.
 - VR/AR support tailored for Meta Quest, including controller pick/rotate and HUD overlays.
 - Rich debugging surface (`viewerApi`) plus exhaustive Jest, Playwright, and pytest coverage to protect behaviour.
 

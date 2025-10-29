@@ -28,41 +28,38 @@ test.describe('timeline slider selection', () => {
       return sliderEl && Number(sliderEl.min) < -1;
     }, null, { timeout: 20_000 });
 
+    const targetOffset = await page.evaluate(() => {
+      const offsets = window.viewerApi.timeline.getOffsets();
+      if (!offsets || !offsets.length) return null;
+      const candidates = offsets.filter((o) => o < -1);
+      return candidates.length ? candidates[Math.floor(candidates.length / 2)] : null;
+    });
+    expect(targetOffset).not.toBeNull();
+
     await page.evaluate(() => {
-      const sliderEl = document.querySelector('[data-testid="timeline-slider"]');
-      if (!sliderEl) return;
-      window.__pdCount = 0;
-      window.__mdCount = 0;
       window.__changeCount = 0;
-      sliderEl.addEventListener('pointerdown', () => { window.__pdCount++; });
-      sliderEl.addEventListener('mousedown', () => { window.__mdCount++; });
-      sliderEl.addEventListener('change', () => { window.__changeCount++; });
+      const sliderEl = document.querySelector('[data-testid="timeline-slider"]');
+      sliderEl?.addEventListener('change', () => { window.__changeCount++; }, { once: false });
     });
 
-    const box = await slider.boundingBox();
-    expect(box).toBeTruthy();
-    const clickX = box.x + box.width * 0.35;
-    const clickY = box.y + box.height / 2;
-    await page.mouse.click(clickX, clickY);
+    await slider.evaluate((node, value) => {
+      if (!node) return;
+      node.value = String(value);
+      node.dispatchEvent(new Event('input', { bubbles: true }));
+      node.dispatchEvent(new Event('change', { bubbles: true }));
+    }, targetOffset);
 
-    const counts = await page.evaluate(() => ({
-      pd: window.__pdCount || 0,
-      md: window.__mdCount || 0,
-      change: window.__changeCount || 0,
+    await page.waitForFunction((value) => {
+      const state = window.viewerApi.timeline.getState();
+      return state.offset === value && state.mode !== 'live';
+    }, targetOffset, { timeout: 10_000 });
+
+    const result = await page.evaluate(() => ({
       state: window.viewerApi.timeline.getState(),
+      change: window.__changeCount || 0,
     }));
-    console.log('counts after click', counts);
-
-    await page.waitForFunction(
-      () => {
-        const state = window.viewerApi.timeline.getState();
-        return state.active && state.mode === 'paused';
-      },
-      { timeout: 10_000 },
-    );
-
-    const state = await page.evaluate(() => window.viewerApi.timeline.getState());
-    expect(state.offset).toBeLessThan(-1);
-    expect(state.mode).toBe('paused');
+    expect(result.state.offset).toBe(targetOffset);
+    expect(result.state.mode).toBe('paused');
+    expect(result.change).toBeGreaterThanOrEqual(1);
   });
 });

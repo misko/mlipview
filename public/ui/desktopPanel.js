@@ -1711,6 +1711,56 @@ export function buildDesktopPanel({ attachTo } = {}) {
     uploadRow.append(uploadBtn, fileInput);
     sys.content.appendChild(uploadRow);
 
+    const sessionRow = document.createElement('div');
+    sessionRow.className = 'row';
+    const loadSessionBtn = document.createElement('button');
+    loadSessionBtn.id = 'loadSessionBtn';
+    loadSessionBtn.dataset.testid = 'session-load';
+    loadSessionBtn.className = 'btn';
+    loadSessionBtn.textContent = 'Load Session';
+    const saveSessionBtn = document.createElement('button');
+    saveSessionBtn.id = 'saveSessionBtn';
+    saveSessionBtn.dataset.testid = 'session-save';
+    saveSessionBtn.className = 'btn';
+    saveSessionBtn.textContent = 'Save Session';
+    const sessionInput = document.createElement('input');
+    sessionInput.type = 'file';
+    sessionInput.accept = '.json,application/json';
+    sessionInput.style.display = 'none';
+    loadSessionBtn.addEventListener('click', () => sessionInput.click());
+    sessionInput.addEventListener('change', async (ev) => {
+      try {
+        const f = ev.target.files && ev.target.files[0];
+        if (!f) return;
+        const api = (typeof window !== 'undefined') ? window.viewerApi || window._viewer || null : null;
+        if (!api?.session?.loadFromFile) {
+          showErrorBanner('Session loading not available');
+          return;
+        }
+        await api.session.loadFromFile(f);
+      } catch (e) {
+        showErrorBanner('Session load failed');
+        console.warn?.('[sessionLoad] failed', e);
+      } finally {
+        try { ev.target.value = ''; } catch {}
+      }
+    });
+    saveSessionBtn.addEventListener('click', () => {
+      try {
+        const api = (typeof window !== 'undefined') ? window.viewerApi || window._viewer || null : null;
+        if (!api?.session?.saveToFile) {
+          showErrorBanner('Session saving not available');
+          return;
+        }
+        api.session.saveToFile();
+      } catch (e) {
+        showErrorBanner('Session save failed');
+        console.warn?.('[sessionSave] failed', e);
+      }
+    });
+    sessionRow.append(loadSessionBtn, saveSessionBtn, sessionInput);
+    sys.content.appendChild(sessionRow);
+
     // Backend select only (PBC moved)
     const backendRow = document.createElement('div');
     backendRow.className = 'row';
