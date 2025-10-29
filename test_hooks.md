@@ -206,10 +206,44 @@ viewerApi.timeline = {
   }),
   getSignature: (offset) => frameBuffer.getSignature(offset ?? timelineState.offset),
   getOffsets: () => frameBuffer.listOffsets(),
+  getFrameMeta: (offset) => {
+    const off = Number.isFinite(offset) ? offset : timelineState.offset;
+    if (!Number.isFinite(off)) return null;
+    const entry = frameBuffer.getByOffset(off);
+    if (!entry) return null;
+    return {
+      frameId: entry.id,
+      offset: off,
+      frameIndex: offsetToFrameIndex(off),
+    };
+  },
 };
 ```
 
 **Used by:** Timeline Playwright suites to assert mode transitions, slider selection, energy marker behaviour, and buffer contents without reaching through DOM internals.
+
+---
+
+## `viewerApi.timelineEditor` (edit mode only)
+
+**Purpose:** Drive the timeline control-message editor without poking DOM internals.
+
+**Shape:**
+
+```js
+viewerApi.timelineEditor = {
+  refresh: () => timelineEditorPanel.refresh(),
+  getState: () => timelineEditorPanel.getState(),
+  select: (id) => timelineEditorPanel.select(id),
+  getDraft: () => timelineEditorPanel.getCurrentDraft(),
+  status: () => ({
+    frame: editorStatusFrame,
+    selection: editorStatusSelection,
+  }),
+};
+```
+
+**Used by:** Authoring Playwright suites (`ws-timeline-editor-*.spec.js`) to add/remove messages, assert playback configuration, and verify the bottom status HUD updates as frames/selection change.
 
 ---
 

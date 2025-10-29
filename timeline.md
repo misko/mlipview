@@ -29,8 +29,15 @@ The timeline system lets users pause a live UMA Fairchem stream, inspect any of 
 - **Viewer orchestration** (`public/index.js`)
   - `handleStreamFrame` records live frames into the buffer before applying them.
   - `enterTimelineMode()` transitions into timeline mode, halts active simulations, enables the read-only overlay, and applies the requested frame.
-  - `applyTimelineFrame()` sets the active offset, applies stored positions, triggers control message side effects (callouts/opacity/speed), and updates the energy marker without emitting user interactions.
-  - `resumeLiveFromTimeline()` restores the previous continuous mode (idle/md/relax), clears overlays, and resumes incoming frames with defensive logging (`[Timeline][resumeLiveFromTimeline] …`).
+- `applyTimelineFrame()` sets the active offset, applies stored positions, triggers control message side effects (callouts/opacity/speed), and updates the energy marker without emitting user interactions.
+- `resumeLiveFromTimeline()` restores the previous continuous mode (idle/md/relax), clears overlays, and resumes incoming frames with defensive logging (`[Timeline][resumeLiveFromTimeline] …`).
+
+## Authoring Mode (`?edit=1`)
+- Append `?edit=1` to the viewer URL to unlock the timeline authoring toolkit. A right-rail editor lists all control messages, exposes their playback ranges, and renders dedicated editors for playback speed, callouts, and opacity masks.
+- The editor persists changes immediately on save: messages are written back to the control-message engine, the active frame is reapplied so callouts/opacity updates are visible straight away, and the session baseline is refreshed so JSON exports pick up new metadata.
+- Playback presets (default FPS, auto-play, loop range, start frame) are editable at the top of the panel. The editor calls into `timelinePlayback` so loop bounds and cadence update in real time without reloading.
+- A bottom status bar mirrors the currently selected frame (`Live` vs `frame-0012 · offset -4`) and highlights the active atom/bond selection. Utility buttons in the editor allow authors to pull the current frame offset or selection into range/action fields.
+- Viewer API surface: `viewerApi.timelineEditor` exposes `refresh`, `getState`, `select(id)`, `getDraft()`, and `status()` helpers for tests and automation. `viewerApi.timeline.getFrameMeta(offset)` returns `{ frameId, offset, frameIndex }` to make assertions easier.
 
 ## Mode & Control Flow
 State is tracked in `timelineState` (active, playing, offset) plus the playback controller’s runtime (effective FPS, loop bounds, start frame).

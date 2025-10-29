@@ -20,7 +20,11 @@
     "preview": "vite preview --strictPort --port 5174"
   },
   "dependencies": {
+    "@babylonjs/gui": "^8.33.4",
+    "@babylonjs/loaders": "^8.33.4",
     "babylonjs": "^7.25.0",
+    "babylonjs-gui": "^7.54.3",
+    "babylonjs-loaders": "^7.54.3",
     "express": "^4.19.2",
     "jsdom": "^22.1.0"
   },

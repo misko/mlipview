@@ -76,6 +76,7 @@ describe('SessionStateManager', () => {
     });
 
     const snapshot = manager.captureSnapshot({ kind: 'xyz', label: 'test.xyz' });
+    expect(snapshot.schemaVersion).toBe(4);
     expect(snapshot.viewer.elements).toEqual(['H', 'O']);
     expect(snapshot.energyPlot.series).toHaveLength(1);
 
@@ -122,8 +123,8 @@ describe('SessionStateManager', () => {
     await manager.loadSnapshot(loadSnapshot);
 
     expect(applyFullSnapshot).toHaveBeenCalled();
-    expect(energyPlot.importSeries).toHaveBeenCalledWith(loadSnapshot.energyPlot);
-    expect(frameBuffer.importFrames).toHaveBeenCalledWith(loadSnapshot.timeline.frames);
+    expect(energyPlot.importSeries.mock.calls[0][0]).toEqual(loadSnapshot.energyPlot);
+    expect(frameBuffer.importFrames.mock.calls[0][0]).toEqual(loadSnapshot.timeline.frames);
     expect(seedSequencing).toHaveBeenCalledWith({
       nextSeq: 21,
       ack: 18,

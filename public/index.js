@@ -22,6 +22,8 @@ import { createSessionStateManager } from './core/sessionStateManager.js';
 import { createTimelinePlaybackController } from './core/timelinePlaybackController.js';
 import { createControlMessageEngine } from './core/controlMessageEngine.js';
 import { createCalloutLayer } from './render/calloutLayer.js';
+import { createTimelineEditorPanel } from './ui/timelineEditorPanel.js';
+import { createTimelineEditorStatus } from './ui/timelineEditorStatus.js';
 
 /* ──────────────────────────────────────────────────────────────────────────
    Tunables & Defaults
@@ -162,6 +164,8 @@ const qbool = (key) => {
     return v === '1' || String(v).toLowerCase() === 'true';
   } catch { return false; }
 };
+
+const EDIT_MODE = qbool('edit');
 
 // Predictable throttle (leading + trailing)
 const throttle = (fn, wait) => {
@@ -634,6 +638,74 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     loopEnd: null,
   };
   let calloutLayer = null;
+  let timelineEditorPanel = null;
+  let timelineEditorStatus = null;
+  let editorStatusFrame = { isLive: true };
+  let editorStatusSelection = null;
+
+  function buildSelectionSnapshot() {
+    const sel = state.selection;
+    if (!sel || !sel.kind) return null;
+    if (sel.kind === 'atom') {
+      const idx = sel.data?.index;
+      if (!Number.isInteger(idx) || idx < 0 || idx >= state.positions.length) return null;
+      const pos = state.positions[idx] || { x: 0, y: 0, z: 0 };
+      const element = state.elements?.[idx] || null;
+      return {
+        kind: 'atom',
+        index: idx,
+        element,
+        position: [pos.x ?? 0, pos.y ?? 0, pos.z ?? 0],
+      };
+    }
+    if (sel.kind === 'bond') {
+      const atoms = sel.data?.atoms || sel.data?.pair || [];
+      return {
+        kind: 'bond',
+        atoms: Array.isArray(atoms) ? atoms.slice(0, 2) : [],
+        elements: Array.isArray(atoms)
+          ? atoms.slice(0, 2).map((i) => state.elements?.[i] || null)
+          : [],
+      };
+    }
+    return null;
+  }
+
+  function updateEditorStatus() {
+    if (!timelineEditorStatus) return;
+    timelineEditorStatus.update({
+      frame: editorStatusFrame,
+      selection: editorStatusSelection,
+    });
+  }
+
+  function refreshEditorSelection() {
+    editorStatusSelection = buildSelectionSnapshot();
+    updateEditorStatus();
+  }
+
+  function refreshEditorFrame(offset) {
+    if (!timelineEditorStatus) return;
+    if (!timelineState.active || !Number.isFinite(offset)) {
+      editorStatusFrame = { isLive: true };
+      updateEditorStatus();
+      return;
+    }
+    const entry = frameBuffer.getByOffset(offset);
+    if (!entry) {
+      editorStatusFrame = { isLive: true };
+      updateEditorStatus();
+      return;
+    }
+    const frameIndex = offsetToFrameIndex(offset);
+    editorStatusFrame = {
+      isLive: false,
+      frameId: entry.id,
+      offset,
+      frameIndex,
+    };
+    updateEditorStatus();
+  }
 
   const controlEngine = createControlMessageEngine({
     resolveFrameIndexById: (frameId) => frameBuffer.resolveFrameIndex(frameId),
@@ -1346,6 +1418,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
         }
         clearBondLatch({ sendFinal: true });
       } catch { }
+      if (EDIT_MODE) {
+        try { refreshEditorSelection(); } catch { }
+      }
     });
   } catch { }
   const picking = (pickingRef = createPickingService(
@@ -1379,6 +1454,65 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     timelineUi?.refresh?.();
   } catch (err) {
     if (env.apiOn()) dbg.warn('[timeline] install failed', err?.message || err);
+  }
+
+  if (EDIT_MODE) {
+    try {
+      const attachTarget = typeof document !== 'undefined' ? (document.getElementById('app') || document.body) : null;
+      if (!timelineEditorStatus) {
+        timelineEditorStatus = createTimelineEditorStatus({ attachTo: attachTarget });
+        updateEditorStatus();
+      }
+      if (!timelineEditorPanel) {
+        timelineEditorPanel = createTimelineEditorPanel({
+          attachTo: attachTarget,
+          getMessages: () => controlEngine.getSnapshot?.() || [],
+          setMessages: (messages) => controlEngine.setMessages(messages),
+          refreshControlEngine: () => {
+            controlEngine.refresh?.();
+            recomputePlaybackRuntime();
+          },
+          getPlaybackConfig: () => (timelinePlayback.getSnapshot ? timelinePlayback.getSnapshot() : timelinePlayback.getBaseConfig?.() || {}),
+          setPlaybackConfig: (cfg) => {
+            timelinePlayback.applySnapshot(cfg || {});
+            recomputePlaybackRuntime();
+            timelineUi?.refresh?.();
+          },
+          getCurrentOffset: () => timelineState.offset,
+          offsetToFrameId: (offset) => {
+            const entry = frameBuffer.getByOffset(offset);
+            return entry?.id || null;
+          },
+          offsetToIndex: (offset) => offsetToFrameIndex(offset),
+          getSelectionSnapshot: () => buildSelectionSnapshot(),
+          getCameraTarget: () => {
+            try {
+              if (!camera || !camera.target) return null;
+              return [camera.target.x ?? 0, camera.target.y ?? 0, camera.target.z ?? 0];
+            } catch {
+              return null;
+            }
+          },
+          onCommit: () => {
+            if (timelineState.active && Number.isFinite(timelineState.offset)) {
+              applyTimelineFrame(timelineState.offset);
+            }
+            timelineUi?.refresh?.();
+            try {
+              sessionStateManager?.setBaselineFromState({ kind: 'json', label: 'timeline-edit' }, { includeTimeline: true });
+            } catch { /* noop */ }
+            refreshEditorSelection();
+            refreshEditorFrame(timelineState.offset);
+          },
+        });
+      } else {
+        timelineEditorPanel.refresh();
+      }
+      refreshEditorSelection();
+      refreshEditorFrame(timelineState.offset);
+    } catch (err) {
+      if (env.apiOn()) dbg.warn('[timeline-editor] init failed', err?.message || err);
+    }
   }
 
   // VR support
@@ -1805,6 +1939,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     const controlResult = Number.isInteger(frameIndex) ? controlEngine.evaluate(frameIndex) : { speed: null, callout: null, opacity: null, activeMessages: [] };
     applyControlActions(controlResult, { frame: entry, offset, frameIndex });
     if (timelineUi) timelineUi.setActiveOffset(offset);
+    if (EDIT_MODE) {
+      try { refreshEditorFrame(offset); } catch { }
+    }
     return true;
   }
 
@@ -1939,6 +2076,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     setTimelineInteractionLock(false);
     energyPlot.clearMarker();
     timelineState.offset = -1;
+    if (EDIT_MODE) {
+      editorStatusFrame = { isLive: true };
+      updateEditorStatus();
+    }
     timelinePlayback.clearOverrides();
     activeControlState.speed = null;
     if (view?.setOpacityMask) {
@@ -2495,6 +2636,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     } else {
       pauseTimelinePlayback();
     }
+    if (EDIT_MODE) {
+      timelineEditorPanel?.refresh?.();
+      refreshEditorSelection();
+      refreshEditorFrame(timelineState.offset);
+    }
   }
 
   let libraryManifestCache = null;
@@ -2939,7 +3085,28 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       getOffsets: () => frameBuffer.listOffsets(),
       getPlaybackConfig: () => timelinePlayback.getBaseConfig(),
       getControlState: () => ({ ...activeControlState }),
+      getFrameMeta: (offset) => {
+        const off = Number.isFinite(offset) ? offset : timelineState.offset;
+        if (!Number.isFinite(off)) return null;
+        const entry = frameBuffer.getByOffset(off);
+        if (!entry) return null;
+        return {
+          frameId: entry.id,
+          offset: off,
+          frameIndex: offsetToFrameIndex(off),
+        };
+      },
     },
+    timelineEditor: EDIT_MODE ? {
+      refresh: () => { timelineEditorPanel?.refresh?.(); return true; },
+      getState: () => timelineEditorPanel?.getState?.() || null,
+      select: (id) => timelineEditorPanel?.select?.(id) ?? false,
+      getDraft: () => timelineEditorPanel?.getCurrentDraft?.() || null,
+      status: () => ({
+        frame: editorStatusFrame,
+        selection: editorStatusSelection,
+      }),
+    } : null,
   };
 }
 

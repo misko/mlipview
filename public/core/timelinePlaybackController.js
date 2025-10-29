@@ -165,11 +165,17 @@ export function createTimelinePlaybackController({
     if (!cfg || typeof cfg !== 'object') {
       return getSnapshot();
     }
+    const prev = getSnapshot();
     if (cfg.defaultFps != null) baseConfig.defaultFps = clampFps(cfg.defaultFps);
     if (typeof cfg.autoPlay === 'boolean') baseConfig.autoPlay = cfg.autoPlay;
     if (typeof cfg.loop === 'boolean') baseConfig.loop = cfg.loop;
     if (cfg.loopRange !== undefined) baseConfig.loopRange = sanitizeLoopRange(cfg.loopRange);
     if (cfg.startFrame !== undefined) baseConfig.startFrame = sanitizeStartFrame(cfg.startFrame);
+    const changedFps = prev.defaultFps !== baseConfig.defaultFps;
+    if (state.playing && changedFps) {
+      scheduleNext();
+    }
+    notifyPlaybackState();
     return getSnapshot();
   }
 
@@ -192,6 +198,11 @@ export function createTimelinePlaybackController({
     getEffectiveFps,
     setBaseConfig,
     applySnapshot: (cfg) => setBaseConfig(cfg),
+    setDefaultFps: (value) => setBaseConfig({ defaultFps: value }),
+    setAutoPlay: (value) => setBaseConfig({ autoPlay: !!value }),
+    setLoop: (value) => setBaseConfig({ loop: !!value }),
+    setLoopRange: (range) => setBaseConfig({ loopRange: range }),
+    setStartFrame: (ref) => setBaseConfig({ startFrame: ref }),
     getSnapshot,
     shouldAutoPlay: () => !!baseConfig.autoPlay,
     getBaseConfig: () => getSnapshot(),

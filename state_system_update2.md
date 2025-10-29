@@ -1,184 +1,247 @@
 # State System Update (Release V1)
 
-## Findings From Current Review
-- Timeline playback in `public/index.js` is hard-coded to a 50 ms interval (20 fps) with no hook for dynamic speed, looping, or external orchestration; control of the dock lives entirely inside `index.js`.
-- `SessionStateManager` exports `schemaVersion: 1`, zeroes counters on restore, and calls `seedSequencing` with hard-coded zeros; the saved JSON fixtures (`fixtures/sessionSnapshots/*.json`) already use schema v2, so the mismatch drops metadata during load.
-- Frontend state is still split across ad-hoc singletons (`stateStore`, timeline globals, viewer closures). Control surfaces (`viewerApi`) have no way to expose additional playback state or UI annotations.
-- Backend session state (`fairchem_local_server2/session_models.py`, `ws_app.py`) remains isolated from new timeline metadata, but the JSON loader always pushes a dense `full_update`; resuming loops after loading still depends on the client remembering `lastContinuousOpts`.
-- There is no library selector for curated sessions in `public/examples/`; sample manifest `public/examples/library.json` is unused.
+## Findings From Review
+- Timeline playback state is orchestrated inside `public/index.js#L1700` with no extension points for editing; control-message data lives solely in `createControlMessageEngine` but has no authoring UI or metadata (labels, descriptions). Editing today requires manual JSON edits.
+- `SessionStateManager` (`public/core/sessionStateManager.js`) persists timeline playback + control messages, yet it enforces `schemaVersion: 3` and drops unknown fields. Any authoring features must update this module so saves/loads remain authoritative.
+- Selection/camera/timeline HUDs are scattered: `state.selection` events are only used to manage bond latches; there is no consolidated place to surface selection metadata or the currently previewed frame, which the editing workflow needs.
+- Frontend state is still split across `stateStore`, `timelineState`, and implicit singletons; however, we have sufficient hooks (`controlEngine`, `timelinePlayback`, `frameBuffer`, `sessionStateManager`) to expose an edit surface without a wholesale rewrite.
+- Documentation (`timeline.md`, `frontend_design.md`, `backend_design.md`, `testing.md`) already assumes control messages exist but does not describe authoring; introducing an editor requires updating docs and structured regression coverage.
 
-## JSON Session Schema (v3 Proposal)
+## Proposed UI & State Flow
 
-### Top-level shape
+### Edit Mode Activation & Layout
+- Detect edit mode via `const EDIT_MODE = qbool('edit');` in `public/index.js`. When true:
+  - Mount a new fixed right-rail panel (`public/ui/timelineEditorPanel.js`) inside `#app`.
+  - Mount a bottom status HUD (`public/ui/timelineEditorStatus.js`) that mirrors the selected frame and selection metadata.
+- Expose editor helpers on `viewerApi.timelineEditor` (for tests) with methods like `getMessages()`, `setMessage(id, draft)`, `commit()`, `getPlaybackConfig()`.
 
-```json
+### Timeline Control Editor (Right Rail)
+- Panel layout:
+  1. **Playback Preset** section (loop, auto-play, default FPS).
+  2. **Control Messages** list with add/remove buttons.
+  3. **Message Editor** detail pane.
+- Messages list:
+  - Displays `label || id` plus active range summary (`frame-0010 → frame-0040`).
+  - Selecting an item loads its draft into the detail form.
+  - `Add` creates a draft with generated id (`cm-${timestamp}`), default priority 0, range spanning entire buffer.
+  - `Remove` prompts confirmation and deletes from engine.
+- Draft form fields:
+  - **Metadata:** id (read-only), label (new optional string), priority (number).
+  - **Range:** start/end inputs offering three entry modes:
+    - `Frame ID` (validated against `frameBuffer.resolveOffset`).
+    - `Offset` (numeric, e.g., `-42`).
+    - `Index` (0-based).
+    - Each input row includes "Use current frame" button to copy `timelineState.offset`.
+  - **Actions:** toggles for each supported action. Toggling off removes the action from the message.
+
+### Action-Specific Editors
+- **Playback Speed (`timeline.playbackSpeed`):**
+  - Radio buttons for `FPS` or `Speed multiplier`.
+  - Numeric input with validation (≥1 fps, >0 multiplier).
+  - Optional easing dropdown (`linear`, `ease-in`, `ease-out`) and transition duration slider (0–1000 ms).
+  - Preview chip shows resulting effective FPS.
+- **Callout (`overlay.callout`):**
+  - Multiline text area (supports `\n` line breaks).
+  - Anchor selector (`world`, `atom`, `bond`):
+    - `world`: XYZ inputs (Angstrom), "Use camera target" button.
+    - `atom`: "Use current atom selection" button; displays selected index/element fallback when no selection.
+    - `bond`: "Use current bond selection" button plus orientation radio.
+  - Panel size inputs (width/height in Å) and text size slider (0.1–2.0).
+  - Style editor (background/color inputs with alpha, optional border toggle).
+- **Opacity Focus (`visual.opacityFocus`):**
+  - Focus atoms input (comma-separated indices) with "Use current selection" button (atom adds single index, bond adds both).
+  - `includeBonds` dropdown (`none`, `connected`, `exact`).
+  - Sliders (0–1) for focus/background atom and bond opacities.
+  - Transition duration slider plus "Preview mask" button (applies without closing form).
+
+All forms validate inputs as the user types; invalid fields show inline errors and disable `Save`.
+
+### Playback Configuration Editor
+- Located at top of the panel; binds directly to `timelinePlayback`.
+- Controls:
+  - `Default FPS` number input (10–120).
+  - `Auto play` toggle.
+  - `Loop` toggle; when enabled, range inputs mirror message range widgets (with "Use current frame" convenience).
+  - `Start frame` ref; "Use oldest" and "Use current" buttons.
+- On change: call `timelinePlayback.setBaseConfig` and `recomputePlaybackRuntime()` followed by `timelinePlayback.shouldAutoPlay()` check; if auto-play newly enabled, prompt to preview (optional) but do not auto-start until user clicks play.
+
+### Selection & Frame HUD (Bottom Bar)
+- Status bar anchored bottom-center:
+  - Left chunk: `Frame` display showing `Live` or `frame-0123 (offset -5)`.
+  - Right chunk: `Selection` display:
+    - Atom: `Atom 14 (O)` plus XYZ (rounded).
+    - Bond: `Bond 12–18 (C–O)` plus orientation label.
+    - None: `No selection`.
+- HUD updates on:
+  - `applyTimelineFrame` (frame text).
+  - `state.bus.on('selectionChanged')` (selection text).
+- Provide `viewerApi.timelineEditor.getStatus()` for Playwright asserts.
+
+### Immediate State Synchronisation
+- `Save` button serialises the draft list, updates `controlEngine.setMessages`, calls `controlEngine.refresh()`, and re-applies `applyTimelineFrame(timelineState.offset)` to show effects.
+- After updates, call `sessionStateManager.setBaselineFromState({ kind: 'json', label: 'edit' }, { includeTimeline: true })` so subsequent exports include the edits.
+- Removing a message also re-applies the current frame; if the deleted message owned the active callout/opacity, `applyControlActions` clears the visuals.
+
+### SessionStateManager & Engine Updates
+- Bump schema to **v4** (`SCHEMA_VERSION = 4`).
+- Extend control-message snapshots with optional `label`, `notes`, and action-specific metadata pass-through (already supported, but ensure `sanitizeAction` retains new fields such as style colors).
+- When loading v3 snapshots (fixtures), upgrade in place:
+  - Inject default labels (id) and convert existing playback config.
+  - Mark timeline playback defaults if missing.
+- Add `timeline.playback.editor` metadata to record defaults (used by UI but optional).
+
+### Supporting Changes
+- `controlMessageEngine`:
+  - Preserve `label`/`notes` in `setMessages`/`getSnapshot`.
+  - Expose `getMessages()` to ease editor sync.
+- `timelinePlaybackController`:
+  - Add `setAutoPlay(boolean)` & `setLoopRange(range)` helpers invoked by editor.
+  - Emit `onPlaybackStateChange` callbacks when base config changes (for UI toggles).
+- `viewerApi` additions:
+  - `viewerApi.timelineEditor = { list(), select(id), setDraft(draft), commit(), remove(id), setPlayback(cfg) }`.
+  - `viewerApi.timeline.getFrameMeta(offset)` to aid tests.
+
+## JSON Session Format (schemaVersion 4)
+
+### Top-Level Structure
+```jsonc
 {
-  "schemaVersion": 3,
-  "savedAt": "2025-02-15T18:42:33.410Z",
-  "source": { "kind": "json", "label": "SN2 demo" },
-  "viewer": { "...": "unchanged geometry/cell payload" },
-  "energyPlot": { "series": [...], "markerIndex": 14 },
-  "timeline": {
-    "capacity": 500,
-    "frames": [
-      {
-        "id": "frame-0001",
-        "seq": 401,
-        "kind": "md",
-        "simStep": 1,
-        "userInteractionCount": 92,
-        "timestamp": 1761703692101,
-        "energy": -31987.19,
-        "positions": [[...]]
-      }
-      /* oldest → newest */
-    ],
-    "playback": {
-      "startFrame": { "frameId": "frame-0120", "offset": -42 },
-      "autoPlay": true,
-      "loop": true,
-      "loopRange": { "startFrameId": "frame-0080", "endFrameId": "frame-0145" },
-      "defaultFps": 20
-    },
-    "controlMessages": [
-      {
-        "id": "focus-approach",
-        "priority": 0,
-        "range": {
-          "start": { "frameId": "frame-0075" },
-          "end": { "frameId": "frame-0105", "inclusive": true }
-        },
-        "actions": [
-          { "type": "timeline.playbackSpeed", "fps": 10, "transitionMs": 150 },
-          {
-            "type": "overlay.callout",
-            "text": "Approach phase\nNucleophile forming bond",
-            "textSize": 0.5,
-            "panelSize": { "width": 1.2, "height": 0.6 },
-            "anchor": { "mode": "bond", "atoms": [2, 15], "offset": [0, 0.8, 0] },
-            "style": { "background": "rgba(12,18,32,0.85)", "color": "#f0f7ff" }
-          },
-          {
-            "type": "visual.opacityFocus",
-            "focus": { "atoms": [2, 15, 18], "includeBonds": "connected" },
-            "focusOpacity": { "atoms": 1.0, "bonds": 1.0 },
-            "backgroundOpacity": { "atoms": 0.12, "bonds": 0.05 },
-            "transitionMs": 200
-          }
-        ]
-      }
-    ]
-  },
-  "websocket": {
-    "nextSeq": 413,
-    "lastAck": 409,
-    "userInteractionCount": 37,
-    "totalInteractionCount": 51,
-    "simStep": 98
-  }
+  "schemaVersion": 4,
+  "savedAt": "2025-03-01T18:42:33.410Z",
+  "source": { "kind": "json", "label": "SN2 control walkthrough" },
+  "viewer": { ... },
+  "energyPlot": { ... },
+  "timeline": { ... },
+  "websocket": { ... }
 }
 ```
 
-### Boundary semantics
-- `timeline.frames` continue to serialize oldest → newest. Each frame gains a stable string `id` (`frame-0001`, `frame-0002`, …) so ranges stay readable and resilient; the numeric `id` is preserved for backward compatibility.
-- `timeline.playback.startFrame` accepts any combination of `frameId`, `frameIndex` (0 = oldest), or `offset` (-1 = newest). The loader resolves in that order.
-- `loopRange` defaults to the full frame list when omitted. If `loop` is false, playback stops at the newest frame and resumes live mode as today.
-- `controlMessages[].range.start|end` accept `frameId`, `frameIndex`, or `offset`. `inclusive` defaults to `true` for `end`, `false` for `start`.
-- `priority` controls action overrides when multiple messages overlap (higher wins per action type). Absent priority defaults to `0`.
+### `viewer`
+- `elements`: array of element symbols (strings).
+- `positions`: `[[x,y,z], ...]` in Å.
+- `velocities`: optional; same shape as positions.
+- `cell`: `{ a:[3], b:[3], c:[3], originOffset:[3], enabled:bool }`.
+- `showCell`, `showGhostCells`: booleans.
 
-### Action catalog
+### `energyPlot`
+- `series`: array of `{ energy: number, kind: 'idle'|'md'|'relax', label?: string }`.
+- `markerIndex`: nullable integer identifying highlighted point.
 
-| Action type                 | Fields (required → optional)                                                                                                             | Effect |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| `timeline.playbackSpeed`    | `fps` **or** `speedMultiplier`; optional `transitionMs`, `easing`                                                                         | Overrides the scheduler cadence while active; transitions are eased when provided. |
-| `overlay.callout`          | `text`, `anchor` (`mode: 'world' | 'atom' | 'bond'`, `position` or `atoms`, optional `offset`), optional `textSize`, `panelSize`, `style` | Creates or updates a billboarded mesh that always faces the active camera and renders above atoms/bonds. |
-| `visual.opacityFocus`      | `focus` (`atoms`, optional `bonds`, `includeBonds`), `focusOpacity` (`atoms`, `bonds`), `backgroundOpacity`, optional `transitionMs`      | Applies per-instance alpha buffers to highlight selected atoms/bonds while fading everything else. |
+### `timeline`
+- `capacity`: integer (buffer size).
+- `frames`: oldest → newest array with entries:
+  - `id`: string (`frame-00042`).
+  - `numericId`: integer (optional mirror of `id`).
+  - `kind`: `'idle'|'md'|'relax'`.
+  - `seq`, `simStep`, `userInteractionCount`, `timestamp`.
+  - `energy`, `temperature`, `energyIndex`.
+  - `positions`, `velocities`, `forces` (triple arrays).
+- `playback`:
+  - `defaultFps`: integer.
+  - `autoPlay`: boolean.
+  - `loop`: boolean.
+  - `startFrame`: `{ frameId?, frameIndex?, offset? }`.
+  - `loopRange`: `{ startFrameId?, endFrameId?, start?: {...}, end?: {...} }`.
+- `controlMessages`: array of messages (see below).
+- `lastLiveMode`: `'idle'|'md'|'relax'`.
+- `wasRunning`: boolean.
+- `pendingSimParams`: MD/relax parameter snapshot when `wasRunning=true`.
 
-Future actions (camera bookmarks, HUD toggles) can append to `actions` without altering the schema.
+### Control Message Format
+```jsonc
+{
+  "id": "focus-approach",
+  "label": "Approach phase",
+  "priority": 10,
+  "notes": "Slow motion over nucleophilic attack",
+  "range": {
+    "start": { "frameId": "frame-0080" },
+    "end": { "frameId": "frame-0120", "inclusive": true }
+  },
+  "actions": [
+    {
+      "type": "timeline.playbackSpeed",
+      "fps": 12,
+      "transitionMs": 150,
+      "easing": "ease-in-out"
+    },
+    {
+      "type": "overlay.callout",
+      "text": "Approach phase\nNucleophile forming bond",
+      "anchor": { "mode": "bond", "atoms": [2, 15], "orientation": "midpoint" },
+      "panelSize": { "width": 1.2, "height": 0.6 },
+      "textSize": 0.5,
+      "style": { "background": "rgba(12,18,32,0.85)", "color": "#f0f7ff" },
+      "offset": [0, 0.8, 0]
+    },
+    {
+      "type": "visual.opacityFocus",
+      "focus": { "atoms": [2, 15, 18], "includeBonds": "connected" },
+      "focusOpacity": { "atoms": 1.0, "bonds": 1.0 },
+      "backgroundOpacity": { "atoms": 0.12, "bonds": 0.05 },
+      "transitionMs": 200
+    }
+  ]
+}
+```
 
-## Frontend Design
+### `websocket`
+- `nextSeq`, `lastAck`, `userInteractionCount`, `totalInteractionCount`, `simStep`.
+- Legacy aliases (`seq`, `clientAck`) accepted on load.
 
-### Session state refactor
-- Bump `SessionStateManager.SCHEMA_VERSION` to 3 and ensure save/load round-trips include `timeline.playback` and `timeline.controlMessages`.
-- Replace the hard-coded counter reset with the persisted values (`websocket.userInteractionCount`, `totalInteractionCount`, `simStep`). Expose these via `viewerApi.session.getLastSnapshot()` for diagnostics.
-- Store `controlMessages` and `playback` in the baseline snapshot so `resetToLastSource()` restores annotations and playback policy alongside geometry.
-- Normalize inputs when loading: validate `fps`, filter control messages with invalid ranges, and emit console diagnostics tagged `[SessionManager][controlMessages]`.
+## Implementation Plan
+1. **Editor scaffolding**
+   - Create `timelineEditorPanel.js` and `timelineEditorStatus.js` with mount/unmount helpers.
+   - Detect `?edit=1` in `public/index.js` and initialise the editor with injected dependencies.
+2. **Control message data layer**
+   - Extend `controlMessageEngine` to store labels/notes and expose `list()`/`upsert()`.
+   - Add draft handling + validation utilities (`timelineEditorStore.js`).
+3. **Playback config bridging**
+   - Add setter/getter wrappers on `timelinePlayback` and integrate `recomputePlaybackRuntime` hooks.
+4. **HUD integration**
+   - Update `applyTimelineFrame` and selection listeners to feed the status HUD.
+   - Ensure timeline resume clears HUD (set to `Live`).
+5. **Session manager updates**
+   - Bump schema to 4; add migration from v3 snapshots.
+   - Ensure `captureSnapshot` persists new metadata and editor commits flush baseline.
+6. **Viewer API + tests hooks**
+   - Expose editor helpers under `viewerApi.timelineEditor`.
+   - Document new hooks in `test_hooks.md`.
+7. **Documentation refresh**
+   - Update `timeline.md`, `testing.md`, and `frontend_design.md` sections describing authoring and schema v4.
+8. **Fixtures**
+   - Prepare plan to migrate `public/examples/sn2/sn2.json` (executed after code approval per Step 7).
 
-### Timeline orchestration
-- Introduce `createTimelinePlaybackController` (new module in `public/core/timelinePlayback.js`). Responsibilities:
-  - Resolve playback start frame, initiate `enterTimelineMode`, and schedule the first frame render.
-  - Run a dynamic scheduler using `requestAnimationFrame` plus drift-aware timers so per-frame spacing adheres to the current `fps`.
-  - Apply `loop` and `loopRange`, jumping back to the loop start instead of leaving timeline mode when enabled.
-  - Surface hooks `setBaseFps`, `setSpeedOverride`, `setLoopConfig`, `setAutoPlay`, and `stop`.
-- Replace the existing `timelineState.interval` logic with the new controller. Retain legacy behaviour (resume live mode) when neither loop nor auto-play is requested.
+## Regression Testing Strategy
 
-### Control message engine
-- Add `public/core/controlMessageEngine.js` to ingest the session’s `controlMessages`, map numeric/string frame references to buffer indices, and compute per-frame active actions.
-- Expose methods:
-  - `prime({ frames, geometryAccessor })` – preprocess frame ranges and precompute any static anchors.
-  - `evaluate(frameId)` – return the set of actions active for the requested frame.
-  - `onFrameApplied(frameId, framePayload)` – invoke action handlers (speed, callouts, opacity) with the latest geometry.
-  - `onTimelineCleared()` – tear down callouts and restore baseline opacities.
-- Install the engine inside `public/index.js` alongside the timeline buffer. Whenever `applyTimelineFrame` succeeds, forward the current frame metadata to `controlEngine.onFrameApplied`.
-- Speed overrides feed into the playback controller; the controller selects the highest-priority active `timeline.playbackSpeed` action each step.
+### Jest (unit)
+- `tests/timelineEditor.store.spec.js`: draft validation, range conversions, action toggles.
+- `tests/controlMessageEngine.spec.js`: extend to cover label preservation and overlapping priority updates triggered by editor saves.
+- `tests/sessionStateManager.spec.js`: verify schema v4 round-trip, editor metadata retained, v3 upgrade path.
+- `tests/timelinePlaybackController.spec.js`: ensure new setters update snapshot + runtime.
 
-### Callout overlay layer
-- Create `public/render/calloutLayer.js` that builds/maintains billboard planes:
-  - Uses Babylon `MeshBuilder.CreatePlane` with `billboardMode = BABYLON.Mesh.BILLBOARDMODE_ALL`.
-  - Text rendered via `AdvancedDynamicTexture` (or HTML fallback in headless tests) so multi-line strings keep newline formatting.
-  - Assign `renderingGroupId` > bonds/atoms so callouts always draw last.
-  - Updates anchor coordinates each frame by reading current atom/bond positions (`moleculeView.getAtomPosition(i)` / midpoint helper).
-- Provide `controlEngine` with a thin wrapper for create/update/destroy to keep UI logic separated from geometry state.
-
-### Opacity transitions
-- Extend `moleculeView` with `setOpacityMask({ focusAtoms, focusOpacity, backgroundOpacity })` so we can apply alpha changes without mutating the underlying bond/atom collections.
-- Cache previous opacities; when no control message applies, restore the original transparency (respecting the existing "atoms render last" rule).
-- Ensure transitions interpolate alpha in the shader buffer rather than re-creating meshes; this keeps render order untouched.
-
-### System → Library dropdown
-- Read `public/examples/library.json` at startup (lazy via `fetch` when the System panel first expands). Store results in `viewerState.library`.
-- Add a `select` element labelled `Library` beneath the Load/Save buttons. Each option shows the manifest `label`; hover tooltip displays `description`.
-- Selecting an entry loads the JSON via `fetch(entry.path)` and passes the blob to `session.loadFromFile`. Handle errors with `showErrorBanner`.
-- For smoke-test compatibility, expose `viewerApi.session.loadFromLibrary(id)` so Playwright can bypass the DOM.
-
-## Backend Coordination
-- No protobuf changes required. Keep the backend oblivious to UI control metadata.
-- During snapshot load, continue to push a dense `full_update` but reuse the stored counters instead of zeroing them; this avoids unnecessary `WAITING_FOR_ACK` states.
-- Add a debug log in `ws_app.py` gated by `MLIPVIEW_RESUME_DEBUG` when a restored client re-sends a `full_update`, so we can correlate with playback-led resumes.
-
-## Regression Testing
-
-### Jest / unit
-- `tests/controlMessageEngine.spec.js`: feed synthetic frame sets and control messages, assert active actions for interior/start/end frames, overlap resolution via priority, and graceful handling of unknown frame IDs.
-- `tests/timelinePlaybackController.spec.js`: simulate time progression, verify fps overrides apply, loop restarts at the configured start, and auto-play toggles call the frame callback.
-- Extend `tests/sessionStateManager.spec.js` to assert schema v3 round-trips playback metadata, counters persist, and invalid control messages are dropped with warnings.
-- `tests/moleculeView.opacityMask.spec.js`: verify focus/background opacities update buffers without breaking render order.
-
-### Playwright
-- `ws-library-load.spec.js`: select the SN2 library entry, wait for the callout to appear, confirm auto-play kicks in, then ensure the loop repeats without returning to live mode.
-- `ws-control-messages.spec.js`: scrub into the middle of a control range, assert `viewerApi.debug.getTimelineState()` reports the overridden fps, verify opacity changes via `viewerApi.debug.getRenderState()`, and ensure callout text matches multiline expectations.
-- `ws-session-start-frame.spec.js`: load a session with `autoPlay` disabled, confirm the specified `startFrame` is displayed on load, trigger `viewerApi.timeline.play`, and ensure playback resumes from that offset.
+### Playwright (E2E)
+- `ws-timeline-editor-basic.spec.js`: launch with `?edit=1`, add message, set range via "Use current frame", verify callout/opacity apply immediately.
+- `ws-timeline-editor-playback.spec.js`: tweak playback to loop subset, play through range, confirm loop stops at end.
+- `ws-timeline-editor-selection.spec.js`: select atom/bond, assert HUD shows expected text and "Use selection" buttons populate form fields.
+- Extend `ws-session-save-load.spec.js` to ensure edited messages + playback persist after JSON export/import.
 
 ### Backend (pytest)
-- Add a smoke test that loads a v3 snapshot via the existing JSON loader helper, confirms the returned `SessionState` counters match the snapshot, and that the next MD frame is accepted without triggering backpressure.
+- `test_snapshot_schema_v4.py`: load v4 session, confirm counters + control messages are ignored by backend (no proto changes) and streaming resumes.
+- Upgrade helper test ensuring v3 → v4 conversion leaves control messages intact.
 
 ## Options & Trade-offs
-1. **Dedicated control-message engine (recommended)**  
-   - *Pros*: Encapsulates preprocessing, prioritization, and lifecycle; keeps `index.js` manageable; straightforward to unit test; future actions (camera cues) slot in cleanly.  
-   - *Cons*: Adds another moving part; requires new dependency wiring in `index.js`.
-2. **Inline control handling inside `index.js`**  
-   - *Pros*: Fewer files touched up front.  
-   - *Cons*: Exacerbates the existing mega-module, harder to compose with tests, and risks regressions when more control types arrive.
+1. **Dedicated editor module (recommended)**
+   - **Pros:** Keeps `index.js` manageable; encapsulates UI/validation; reusable in VR/desktop contexts; clear test surface.
+   - **Cons:** Introduces new modules and cross-component wiring to maintain.
+2. **Extend existing desktop panel**
+   - **Pros:** Fewer files; leverages existing panel styles.
+   - **Cons:** Overloads left panel, complicates non-edit flows, and mixing authoring controls with run controls risks accidental edits.
 
-For callout rendering we evaluated HTML overlays vs. Babylon GUI meshes. Mesh-based overlays keep depth ordering consistent with VR/AR paths; HTML overlays would require duplicate logic for XR, so we stick with the Babylon approach.
+## Risks & Follow-Ups
+- Need careful validation to prevent references to non-existent frame IDs after trimming buffer; plan to disable edits when buffer underflows and prompt to reselect range.
+- Looping + auto-play toggles may surprise users if saved sessions auto-start; include confirmation modal before enabling auto-play in editor.
+- VR/XR parity: editor is desktop-only, but control messages/callouts must still render in VR—tests should include a VR smoke run post-implementation.
+- After implementation approval, convert `public/examples/sn2/sn2.json` to schema v4 with curated control messages (Step 7).
 
-## Implementation Checklist
-1. Adjust `SessionStateManager` (schema v3, counter restore, playback/control serialization) and update fixtures.
-2. Introduce `timelinePlaybackController` and replace the interval-based loop in `public/index.js`.
-3. Add `controlMessageEngine` plus the callout/opacity helpers; wire them into timeline playback and viewer initialization.
-4. Teach the System panel about the Library manifest and add `viewerApi.session.loadFromLibrary`.
-5. Update `public/examples/sn2/sn2.json` (and other fixtures) to schema v3 with sample control messages.
-6. Extend Jest + Playwright + pytest coverage as outlined.
-7. Document the new schema and hooks in `testing.md` / `test_hooks.md` where relevant.
-
-Upon approval of this plan, we can proceed with implementation (Step 6) followed by converting `sn2.json` to the new format (Step 7).
+Pending your approval, we will proceed with the implementation (Step 6) and subsequently migrate `sn2.json`.

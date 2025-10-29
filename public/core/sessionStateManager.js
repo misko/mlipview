@@ -1,7 +1,35 @@
 // SessionStateManager centralises capture/restore of viewer, timeline, and websocket state.
 // Dependencies are injected so the manager stays agnostic of Babylon.js internals.
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
+
+function migrateSnapshotSchema(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') {
+    throw new Error('Invalid session snapshot');
+  }
+  if (snapshot.schemaVersion === SCHEMA_VERSION) {
+    return snapshot;
+  }
+  if (snapshot.schemaVersion === 3) {
+    const clone = deepClone(snapshot);
+    clone.schemaVersion = SCHEMA_VERSION;
+    if (clone.timeline && Array.isArray(clone.timeline.controlMessages)) {
+      clone.timeline.controlMessages = clone.timeline.controlMessages.map((msg, idx) => {
+        if (!msg || typeof msg !== 'object') return null;
+        const upgraded = { ...msg };
+        if (typeof upgraded.label !== 'string' || !upgraded.label) {
+          upgraded.label = typeof upgraded.id === 'string' ? upgraded.id : `control-${idx}`;
+        }
+        if (typeof upgraded.notes !== 'string') {
+          delete upgraded.notes;
+        }
+        return upgraded;
+      }).filter(Boolean);
+    }
+    return clone;
+  }
+  throw new Error(`Unsupported session snapshot schema: ${snapshot.schemaVersion}`);
+}
 
 function deepClone(obj) {
   try {
@@ -128,12 +156,6 @@ export function createSessionStateManager(deps) {
 
   function captureSnapshot(meta = {}) {
     const state = getViewerState();
-    try {
-      console.log('[SessionManager][loadSnapshot] applying viewer payload', {
-        source: snapshot.source || null,
-        frameCount: timelineFrames.length,
-      });
-    } catch { }
     const viewer = viewerToSnapshot(state);
     const energy = energyPlot?.exportSeries ? energyPlot.exportSeries() : { series: [], markerIndex: null };
     const frames = frameBuffer?.exportFrames ? frameBuffer.exportFrames() : [];
@@ -248,33 +270,32 @@ export function createSessionStateManager(deps) {
   }
 
   async function loadSnapshot(snapshot, { skipBaseline = false } = {}) {
-    if (!snapshot || snapshot.schemaVersion !== SCHEMA_VERSION) {
-      throw new Error('Unsupported session snapshot schema');
-    }
+    const normalized = migrateSnapshotSchema(deepClone(snapshot));
+    const snap = normalized;
 
-    lastSource = normalizeSource(snapshot.source || lastSource);
+    lastSource = normalizeSource(snap.source || lastSource);
     stopSimulation?.();
     deactivateTimelineUi();
 
     const viewerPayload = {
-      elements: snapshot.viewer?.elements,
-      positions: snapshot.viewer?.positions,
-      velocities: snapshot.viewer?.velocities,
-      cell: snapshot.viewer?.cell,
+      elements: snap.viewer?.elements,
+      positions: snap.viewer?.positions,
+      velocities: snap.viewer?.velocities,
+      cell: snap.viewer?.cell,
     };
     await applyFullSnapshot?.(viewerPayload, { updateBaseline: false });
 
     const state = getViewerState();
     if (state) {
-      state.showCell = !!snapshot.viewer?.showCell;
-      state.showGhostCells = !!snapshot.viewer?.showGhostCells;
+      state.showCell = !!snap.viewer?.showCell;
+      state.showGhostCells = !!snap.viewer?.showGhostCells;
       state.markCellChanged?.();
     }
 
-    energyPlot?.importSeries?.(snapshot.energyPlot || {});
-    applyTimelineImport(snapshot);
+    energyPlot?.importSeries?.(snap.energyPlot || {});
+    applyTimelineImport(snap);
 
-    const counters = snapshot.websocket || {};
+    const counters = snap.websocket || {};
     const restoreUser = safeNumber(counters.userInteractionCount, 0);
     const restoreTotal = safeNumber(counters.totalInteractionCount, restoreUser);
     const restoreLastApplied = safeNumber(counters.lastApplied ?? counters.userInteractionCount, restoreUser);
@@ -292,12 +313,12 @@ export function createSessionStateManager(deps) {
     } catch { }
 
     if (!skipBaseline) {
-      setBaseline(snapshot, { reason: snapshot.source?.kind || 'jsonLoad', includeTimeline: true });
+      setBaseline(snap, { reason: snap.source?.kind || 'jsonLoad', includeTimeline: true });
     } else {
-      setBaseline(snapshot, { reason: 'reset', includeTimeline: true });
+      setBaseline(snap, { reason: 'reset', includeTimeline: true });
     }
 
-    applyTimelinePlaybackSnapshot?.(snapshot.timeline?.playback || null);
+    applyTimelinePlaybackSnapshot?.(snap.timeline?.playback || null);
     resetWsInitState?.();
 
     try {
@@ -354,8 +375,8 @@ export function createSessionStateManager(deps) {
         timelineState.active = true;
         timelineState.suppressEnergy = true;
         timelineState.offset = -1;
-        timelineState.resumeMode = snapshot.timeline?.wasRunning
-          ? (snapshot.timeline?.lastLiveMode === 'relax' ? Mode?.Relax : Mode?.MD)
+        timelineState.resumeMode = snap.timeline?.wasRunning
+          ? (snap.timeline?.lastLiveMode === 'relax' ? Mode?.Relax : Mode?.MD)
           : null;
       }
       setMode?.(Mode?.Timeline || 'timeline');
@@ -374,24 +395,24 @@ export function createSessionStateManager(deps) {
       setMode?.(Mode?.Idle || 'idle');
     }
 
-    if (snapshot.timeline?.wasRunning) {
-      const kind = snapshot.timeline.lastLiveMode === 'relax' ? 'relax' : 'md';
+    if (snap.timeline?.wasRunning) {
+      const kind = snap.timeline.lastLiveMode === 'relax' ? 'relax' : 'md';
       if (kind === 'md') {
-        lastContinuousOpts && (lastContinuousOpts.md = deepClone(snapshot.timeline.pendingSimParams || lastContinuousOpts?.md || {}));
+        lastContinuousOpts && (lastContinuousOpts.md = deepClone(snap.timeline.pendingSimParams || lastContinuousOpts?.md || {}));
       } else {
-        lastContinuousOpts && (lastContinuousOpts.relax = deepClone(snapshot.timeline.pendingSimParams || lastContinuousOpts?.relax || {}));
+        lastContinuousOpts && (lastContinuousOpts.relax = deepClone(snap.timeline.pendingSimParams || lastContinuousOpts?.relax || {}));
       }
-      rememberResume?.(kind, deepClone(snapshot.timeline.pendingSimParams || {}));
+      rememberResume?.(kind, deepClone(snap.timeline.pendingSimParams || {}));
     }
 
-    applyControlMessageSnapshot?.(snapshot.timeline?.controlMessages || []);
+    applyControlMessageSnapshot?.(snap.timeline?.controlMessages || []);
     onSnapshotApplied?.({
-      source: snapshot.source,
-      playback: snapshot.timeline?.playback || null,
-      controlMessages: snapshot.timeline?.controlMessages || [],
+      source: snap.source,
+      playback: snap.timeline?.playback || null,
+      controlMessages: snap.timeline?.controlMessages || [],
     });
 
-    return snapshot;
+    return snap;
   }
 
   async function resetToLastSource() {
@@ -412,10 +433,10 @@ export function createSessionStateManager(deps) {
     } else {
       throw new Error('Unsupported file handle');
     }
-    const snapshot = JSON.parse(text);
-    await loadSnapshot(snapshot);
-    setBaseline(snapshot, { includeTimeline: true, reason: snapshot.source?.kind || 'jsonLoad' });
-    return snapshot;
+    const parsed = JSON.parse(text);
+    const applied = await loadSnapshot(parsed);
+    setBaseline(applied, { includeTimeline: true, reason: applied.source?.kind || 'jsonLoad' });
+    return applied;
   }
 
   function saveToFile({ filename, pretty = 2 } = {}) {

@@ -152,6 +152,8 @@ export function createControlMessageEngine(resolvers = {}) {
       resolvedMessages.push({
         id: msg.id || `control-${idx}`,
         priority: Number(msg.priority) || 0,
+        label: msg.label || null,
+        notes: msg.notes || null,
         range,
         actions,
         order: idx,
@@ -170,6 +172,8 @@ export function createControlMessageEngine(resolvers = {}) {
         const entry = {
           id: typeof msg.id === 'string' && msg.id ? msg.id : `control-${idx}`,
           priority: Number(msg.priority) || 0,
+          label: typeof msg.label === 'string' && msg.label ? msg.label : null,
+          notes: typeof msg.notes === 'string' && msg.notes ? msg.notes : null,
           range,
           actions,
         };
@@ -213,6 +217,7 @@ export function createControlMessageEngine(resolvers = {}) {
       activeMessages: sorted.map((msg) => ({
         id: msg.id,
         priority: msg.priority,
+        label: msg.label || null,
         startIndex: msg.range.startIndex,
         endIndex: msg.range.endIndex,
       })),
@@ -220,11 +225,11 @@ export function createControlMessageEngine(resolvers = {}) {
     for (const msg of sorted) {
       for (const action of msg.actions) {
         if (action.type === 'timeline.playbackSpeed' && !result.speed) {
-          result.speed = { ...action, sourceId: msg.id, priority: msg.priority };
+          result.speed = { ...action, sourceId: msg.id, priority: msg.priority, label: msg.label || null };
         } else if (action.type === 'overlay.callout' && !result.callout) {
-          result.callout = { ...action, sourceId: msg.id, priority: msg.priority };
+          result.callout = { ...action, sourceId: msg.id, priority: msg.priority, label: msg.label || null };
         } else if (action.type === 'visual.opacityFocus' && !result.opacity) {
-          result.opacity = { ...action, sourceId: msg.id, priority: msg.priority };
+          result.opacity = { ...action, sourceId: msg.id, priority: msg.priority, label: msg.label || null };
         }
       }
     }
@@ -237,6 +242,16 @@ export function createControlMessageEngine(resolvers = {}) {
     getSnapshot: () => rawMessages.map((msg) => ({
       id: msg.id,
       priority: msg.priority,
+      label: msg.label || null,
+      notes: msg.notes || null,
+      range: clone(msg.range),
+      actions: msg.actions.map((a) => clone(a)),
+    })),
+    getMessages: () => rawMessages.map((msg) => ({
+      id: msg.id,
+      priority: msg.priority,
+      label: msg.label || null,
+      notes: msg.notes || null,
       range: clone(msg.range),
       actions: msg.actions.map((a) => clone(a)),
     })),

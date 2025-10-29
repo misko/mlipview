@@ -53,9 +53,28 @@ describe('timelinePlaybackController', () => {
     expect(snapshot.loopRange.start.offset).toBe(-10);
 
     controller.applySnapshot({ defaultFps: 12, autoPlay: false });
-    const updated = controller.getSnapshot();
-    expect(updated.defaultFps).toBe(12);
-    expect(updated.autoPlay).toBe(false);
-    expect(updated.loop).toBe(true); // unchanged
+   const updated = controller.getSnapshot();
+   expect(updated.defaultFps).toBe(12);
+   expect(updated.autoPlay).toBe(false);
+   expect(updated.loop).toBe(true); // unchanged
+  });
+
+  it('updates playback config via helper setters', () => {
+    const onState = jest.fn();
+    const controller = createTimelinePlaybackController({ onPlaybackStateChange: onState });
+    controller.setDefaultFps(30);
+    expect(controller.getSnapshot().defaultFps).toBe(30);
+    expect(onState).toHaveBeenCalledWith(expect.objectContaining({ playing: false, effectiveFps: 30 }));
+
+    controller.setAutoPlay(true);
+    expect(controller.getSnapshot().autoPlay).toBe(true);
+    controller.setLoop(true);
+    controller.setLoopRange({ start: { offset: -5 }, end: { offset: -1 } });
+    const postLoop = controller.getSnapshot();
+    expect(postLoop.loop).toBe(true);
+    expect(postLoop.loopRange.start.offset).toBe(-5);
+
+    controller.setStartFrame({ frameId: 'frame-0100' });
+    expect(controller.getSnapshot().startFrame.frameId).toBe('frame-0100');
   });
 });

@@ -78,4 +78,24 @@ describe('controlMessageEngine', () => {
     expect(result.callout).toBeNull();
     expect(result.opacity).toBeNull();
   });
+
+  it('preserves labels and notes in snapshots and evaluation', () => {
+    engine.setMessages([
+      {
+        id: 'highlight',
+        label: 'Highlight atoms',
+        notes: 'Focus on nucleophilic attack',
+        range: { start: { offset: -2 }, end: { offset: -1 } },
+        actions: [{ type: 'timeline.playbackSpeed', fps: 12 }],
+      },
+    ]);
+    engine.updateFrameCount(frameCount);
+    const snapshot = engine.getSnapshot();
+    expect(snapshot[0].label).toBe('Highlight atoms');
+    expect(snapshot[0].notes).toBe('Focus on nucleophilic attack');
+    const active = engine.evaluate(offsetToIndex(-1));
+    expect(active.speed).toBeTruthy();
+    expect(active.speed.label).toBe('Highlight atoms');
+    expect(active.activeMessages[0].label).toBe('Highlight atoms');
+  });
 });
