@@ -30,7 +30,10 @@
 - `applyFullSnapshot()` is the single entry point for dense geometry changes (file load, add/remove atoms). It rewrites state, resets interaction caches, and reuses `ensureWsInit()` so the next upload is a dense `full_update` snapshot.
 - `emitDuringDrag()` throttles sparse `USER_INTERACTION` updates to the backend while dragging (indices + triple positions only). Bond rotations queue sparse updates for the affected atoms with optional latching windows.
 - Energy plot (`energyPlot` closure) records energies per step for UI display; `noteReqDone()` tracks loop rate (RPS label).
-- `SessionStateManager` mediates snapshot capture/restore, including JSON save/load, reset-to-last-load wiring, and re-seeding of WebSocket sequencing + interaction counters before issuing the post-load `full_update`.
+- `SessionStateManager` mediates snapshot capture/restore, including JSON save/load, reset-to-last-load wiring, seeding of WebSocket sequencing + interaction counters, control-message hydration, and playback presets before issuing the post-load `full_update`.
+- `controlMessageEngine` (instantiated inside `index.js`) resolves per-frame actions (speed overrides, callouts, opacity masks) which feed into the playback controller, callout layer, and molecule opacity API.
+- `timelinePlayback` (from `public/core/timelinePlaybackController.js`) owns the frame-advance cadence, loop configuration, and auto-play orchestration; it replaces the legacy `setInterval` loop.
+- `createCalloutLayer()` renders timeline annotations on a dedicated billboard layer that always faces the viewer.
 
 ## Idle vs simulation flows
 - **Initialization / idle**:
@@ -43,10 +46,11 @@
 - `stopSimulation()` sends STOP, updates UI state, clears bond latches, and reinstates idle compute listeners.
 
 ### Timeline controller
-- `createFrameBuffer()` powers the timeline history (bonded to a 500 frame capacity by default).
+- `createFrameBuffer()` powers the timeline history (bounded to a 500 frame capacity by default) and now assigns stable string IDs to each frame for JSON control-message authoring.
 - `installTimeline()` builds the UI dock (`timeline.js`), exposes `viewerApi.timeline`, and wires button/slider callbacks to `handleTimelineOffsetRequest`, `handleTimelinePlayRequest`, and `handleTimelineLiveRequest`.
-- Timeline mode introduces a modal state (`Mode.Timeline`) that disables molecule editing while keeping camera controls active. The overlay and manipulation facade enforce the read-only policy until `resumeLiveFromTimeline()` runs, which now emits debug traces and cooperates with tests that cap live resume bursts.
+- Timeline mode introduces a modal state (`Mode.Timeline`) that disables molecule editing while keeping camera controls active. The overlay and manipulation facade enforce the read-only policy until `resumeLiveFromTimeline()` runs, which emits debug traces and cooperates with tests that cap live resume bursts.
 - Pointer-driven scrubbing maps screen coordinates to stored offsets, ensuring one click selects the intended frame; tests cover the mapping via `ws-timeline-slider-select.spec.js`.
+- Control messages (from JSON snapshots or the example library) drive the playback controller, callout layer, and opacity masks while their frame ranges are active.
 
 ## Interaction gating & latching
 - Dragging atoms adds their indices to `draggingAtoms`; on release the viewer sends a full `positions` update and records the indices in `modifiedByVersion`.

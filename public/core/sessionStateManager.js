@@ -1,7 +1,7 @@
 // SessionStateManager centralises capture/restore of viewer, timeline, and websocket state.
 // Dependencies are injected so the manager stays agnostic of Babylon.js internals.
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 3;
 
 function deepClone(obj) {
   try {
@@ -16,6 +16,50 @@ function normalizeSource(meta = {}) {
   const label = typeof meta.label === 'string' ? meta.label : null;
   const params = meta.params && typeof meta.params === 'object' ? { ...meta.params } : undefined;
   return { kind, ...(label ? { label } : {}), ...(params ? { params } : {}) };
+}
+
+function safeNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizePlaybackConfig(playback = {}) {
+  if (!playback || typeof playback !== 'object') return null;
+  const cfg = {};
+  if (typeof playback.startFrame === 'object' && playback.startFrame !== null) {
+    const { frameId, offset, frameIndex } = playback.startFrame;
+    cfg.startFrame = {};
+    if (typeof frameId === 'string' && frameId) cfg.startFrame.frameId = frameId;
+    if (Number.isFinite(offset)) cfg.startFrame.offset = Math.floor(offset);
+    if (Number.isFinite(frameIndex)) cfg.startFrame.frameIndex = Math.max(0, Math.floor(frameIndex));
+    if (!Object.keys(cfg.startFrame).length) delete cfg.startFrame;
+  }
+  if (typeof playback.autoPlay === 'boolean') cfg.autoPlay = playback.autoPlay;
+  if (typeof playback.loop === 'boolean') cfg.loop = playback.loop;
+  if (playback.loopRange && typeof playback.loopRange === 'object') {
+    const { startFrameId, endFrameId, start, end } = playback.loopRange;
+    cfg.loopRange = {};
+    if (typeof startFrameId === 'string' && startFrameId) cfg.loopRange.startFrameId = startFrameId;
+    if (typeof endFrameId === 'string' && endFrameId) cfg.loopRange.endFrameId = endFrameId;
+    if (start && typeof start === 'object') {
+      cfg.loopRange.start = {};
+      if (Number.isFinite(start.offset)) cfg.loopRange.start.offset = Math.floor(start.offset);
+      if (Number.isFinite(start.frameIndex)) cfg.loopRange.start.frameIndex = Math.max(0, Math.floor(start.frameIndex));
+      if (typeof start.frameId === 'string' && start.frameId) cfg.loopRange.start.frameId = start.frameId;
+      if (!Object.keys(cfg.loopRange.start).length) delete cfg.loopRange.start;
+    }
+    if (end && typeof end === 'object') {
+      cfg.loopRange.end = {};
+      if (Number.isFinite(end.offset)) cfg.loopRange.end.offset = Math.floor(end.offset);
+      if (Number.isFinite(end.frameIndex)) cfg.loopRange.end.frameIndex = Math.max(0, Math.floor(end.frameIndex));
+      if (typeof end.frameId === 'string' && end.frameId) cfg.loopRange.end.frameId = end.frameId;
+      if (typeof end.inclusive === 'boolean') cfg.loopRange.end.inclusive = end.inclusive;
+      if (!Object.keys(cfg.loopRange.end).length) delete cfg.loopRange.end;
+    }
+    if (!Object.keys(cfg.loopRange).length) delete cfg.loopRange;
+  }
+  if (Number.isFinite(playback.defaultFps)) cfg.defaultFps = Math.max(1, Math.round(playback.defaultFps));
+  return Object.keys(cfg).length ? cfg : null;
 }
 
 export function createSessionStateManager(deps) {
@@ -49,6 +93,13 @@ export function createSessionStateManager(deps) {
     lastContinuousOpts,
     rememberResume,
     stopSimulation,
+    controlMessageEngine,
+    timelinePlayback,
+    getTimelinePlaybackSnapshot,
+    getTimelineControlSnapshot,
+    applyTimelinePlaybackSnapshot,
+    applyControlMessageSnapshot,
+    onSnapshotApplied,
   } = deps || {};
 
   let lastSource = { kind: 'init', label: 'initial' };
@@ -95,6 +146,8 @@ export function createSessionStateManager(deps) {
     } catch { }
     const mode = deps?.getMode ? deps.getMode() : undefined;
     const runningMode = mode === Mode?.MD ? 'md' : mode === Mode?.Relax ? 'relax' : 'idle';
+    const playbackSnapshot = getTimelinePlaybackSnapshot?.() ?? timelinePlayback?.getSnapshot?.();
+    const controlSnapshot = getTimelineControlSnapshot?.() ?? controlMessageEngine?.getSnapshot?.();
     const snapshot = {
       schemaVersion: SCHEMA_VERSION,
       savedAt: new Date().toISOString(),
@@ -112,6 +165,8 @@ export function createSessionStateManager(deps) {
             : runningMode === 'relax'
               ? deepClone(lastContinuousOpts?.relax || {})
               : undefined,
+        playback: playbackSnapshot ? normalizePlaybackConfig(playbackSnapshot) : null,
+        controlMessages: Array.isArray(controlSnapshot) ? deepClone(controlSnapshot) : [],
       },
       websocket: {
         seq: Number(wsInfo.seq) || 0,
@@ -220,19 +275,19 @@ export function createSessionStateManager(deps) {
     applyTimelineImport(snapshot);
 
     const counters = snapshot.websocket || {};
-    const timelineFrames = snapshot?.timeline?.frames || [];
-    const lastFrame = timelineFrames.length ? timelineFrames[timelineFrames.length - 1] : null;
-    const initialUser = 0;
+    const restoreUser = safeNumber(counters.userInteractionCount, 0);
+    const restoreTotal = safeNumber(counters.totalInteractionCount, restoreUser);
+    const restoreLastApplied = safeNumber(counters.lastApplied ?? counters.userInteractionCount, restoreUser);
     setInteractionCounters?.({
-      user: initialUser,
-      total: initialUser,
-      lastApplied: initialUser,
+      user: restoreUser,
+      total: restoreTotal,
+      lastApplied: restoreLastApplied,
     });
     try {
-      console.log('[SessionManager][loadSnapshot] counters reset', {
-        user: initialUser,
-        total: initialUser,
-        lastApplied: initialUser,
+      console.log('[SessionManager][loadSnapshot] counters restored', {
+        user: restoreUser,
+        total: restoreTotal,
+        lastApplied: restoreLastApplied,
       });
     } catch { }
 
@@ -242,23 +297,27 @@ export function createSessionStateManager(deps) {
       setBaseline(snapshot, { reason: 'reset', includeTimeline: true });
     }
 
+    applyTimelinePlaybackSnapshot?.(snapshot.timeline?.playback || null);
     resetWsInitState?.();
 
     try {
       const ws = getWsClient?.();
       if (ws?.seedSequencing) {
+        const nextSeq = safeNumber(counters.nextSeq, counters.seq != null ? counters.seq + 1 : 1);
+        const lastAck = safeNumber(counters.lastAck ?? counters.clientAck, 0);
+        const simStep = safeNumber(counters.simStep, 0);
         ws.seedSequencing({
-          nextSeq: 0,
-          ack: 0,
-          userInteractionCount: 0,
-          simStep: 0,
+          nextSeq,
+          ack: lastAck,
+          userInteractionCount: restoreUser,
+          simStep,
         });
         try {
           console.log('[SessionManager][loadSnapshot] seedSequencing applied', {
-            nextSeq: 0,
-            ack: 0,
-            userInteractionCount: 0,
-            simStep: 0,
+            nextSeq,
+            ack: lastAck,
+            userInteractionCount: restoreUser,
+            simStep,
           });
         } catch { }
       }
@@ -324,6 +383,13 @@ export function createSessionStateManager(deps) {
       }
       rememberResume?.(kind, deepClone(snapshot.timeline.pendingSimParams || {}));
     }
+
+    applyControlMessageSnapshot?.(snapshot.timeline?.controlMessages || []);
+    onSnapshotApplied?.({
+      source: snapshot.source,
+      playback: snapshot.timeline?.playback || null,
+      controlMessages: snapshot.timeline?.controlMessages || [],
+    });
 
     return snapshot;
   }

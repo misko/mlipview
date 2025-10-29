@@ -19,6 +19,9 @@ import { SYMBOL_TO_Z, Z_TO_SYMBOL, OMOL25_ELEMENTS } from './data/periodicTable.
 import { createFrameBuffer } from './core/frameBuffer.js';
 import { installTimeline } from './ui/timeline.js';
 import { createSessionStateManager } from './core/sessionStateManager.js';
+import { createTimelinePlaybackController } from './core/timelinePlaybackController.js';
+import { createControlMessageEngine } from './core/controlMessageEngine.js';
+import { createCalloutLayer } from './render/calloutLayer.js';
 
 /* ──────────────────────────────────────────────────────────────────────────
    Tunables & Defaults
@@ -622,9 +625,35 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     active: false,
     playing: false,
     offset: -1,
-    interval: null,
     resumeMode: null,
     suppressEnergy: false,
+  };
+  const playbackRuntime = {
+    startOffset: null,
+    loopStart: null,
+    loopEnd: null,
+  };
+  let calloutLayer = null;
+
+  const controlEngine = createControlMessageEngine({
+    resolveFrameIndexById: (frameId) => frameBuffer.resolveFrameIndex(frameId),
+    offsetToIndex: (offset) => offsetToFrameIndex(offset),
+    getFrameCount: () => frameBuffer.stats().size,
+  });
+
+  const timelinePlayback = createTimelinePlaybackController({
+    defaultFps: 20,
+    onStep: () => timelineStepForward(),
+    onPlaybackStateChange: ({ playing }) => {
+      timelineState.playing = !!playing;
+      if (timelineUi) timelineUi.setMode(playing ? 'playing' : 'paused');
+    },
+  });
+
+  const activeControlState = {
+    speed: null,
+    callout: null,
+    opacity: null,
   };
   const timelineLockClass = 'timeline-readonly-overlay';
 
@@ -1148,6 +1177,51 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   const view = createMoleculeView(scene, state);
   const manipulation = createManipulationService(state, { bondService });
 
+  function transformLocalToWorld(vec) {
+    if (!vec) return null;
+    const root = state?.moleculeRoot;
+    if (root?.getWorldMatrix && typeof BABYLON !== 'undefined' && BABYLON.Vector3) {
+      try {
+        const v = BABYLON.Vector3.TransformCoordinates(
+          new BABYLON.Vector3(vec.x || 0, vec.y || 0, vec.z || 0),
+          root.getWorldMatrix()
+        );
+        return { x: v.x, y: v.y, z: v.z };
+      } catch { }
+    }
+    return { x: vec.x || 0, y: vec.y || 0, z: vec.z || 0 };
+  }
+
+  function getAtomWorldPosition(idx) {
+    if (!Number.isInteger(idx) || idx < 0) return null;
+    const p = state.positions?.[idx];
+    if (!p) return null;
+    return transformLocalToWorld(p);
+  }
+
+  function getBondWorldMidpoint(i, j) {
+    const a = getAtomWorldPosition(i);
+    const b = getAtomWorldPosition(j);
+    if (!a || !b) return null;
+    return {
+      x: (a.x + b.x) / 2,
+      y: (a.y + b.y) / 2,
+      z: (a.z + b.z) / 2,
+    };
+  }
+
+  function ensureCalloutLayer() {
+    if (!calloutLayer && scene) {
+      calloutLayer = createCalloutLayer({
+        scene,
+        babylon: typeof BABYLON !== 'undefined' ? BABYLON : null,
+        getAtomPositionWorld: getAtomWorldPosition,
+        getBondMidpointWorld: getBondWorldMidpoint,
+      });
+    }
+    return calloutLayer;
+  }
+
   // Picking & touch controls
   let pickingRef = null;
   const pickingProxy = { _debug: { get dragActive() { try { return !!(pickingRef?._debug?.dragActive); } catch { return false; } } } };
@@ -1578,6 +1652,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     });
     if (result?.applied) {
       frameBuffer.record(kind, frame, { energyIndex: result.energyIndex });
+      recomputePlaybackRuntime();
       if (timelineUi) timelineUi.refresh();
     }
   }
@@ -1621,10 +1696,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   }
 
   function clearTimelinePlayback() {
-    if (timelineState.interval) {
-      clearInterval(timelineState.interval);
-      timelineState.interval = null;
-    }
+    timelinePlayback.stop();
     timelineState.playing = false;
   }
 
@@ -1636,6 +1708,78 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (raw > -1) return -1;
     if (raw < minOffset) return minOffset;
     return raw;
+  }
+
+  function getFrameCount() {
+    const stats = frameBuffer.stats();
+    return stats?.size || 0;
+  }
+
+  function offsetToFrameIndex(offset) {
+    const size = getFrameCount();
+    if (!size) return null;
+    const off = Math.floor(Number(offset));
+    if (!Number.isFinite(off)) return null;
+    if (off >= -1) return size - 1;
+    let idx = size + off;
+    if (idx < 0) idx = 0;
+    if (idx >= size) idx = size - 1;
+    return idx;
+  }
+
+  function frameIndexToOffset(index) {
+    const size = getFrameCount();
+    if (!size) return null;
+    const idx = Math.max(0, Math.min(size - 1, Math.floor(Number(index))));
+    return idx - size;
+  }
+
+  function resolveFrameReference(ref) {
+    if (!ref || typeof ref !== 'object') return null;
+    if (typeof ref.frameId === 'string' && ref.frameId) {
+      const off = frameBuffer.resolveOffset(ref.frameId);
+      if (off != null) return clampOffsetToBuffer(off);
+    }
+    if (Number.isFinite(ref.frameIndex)) {
+      const off = frameIndexToOffset(ref.frameIndex);
+      return off != null ? clampOffsetToBuffer(off) : null;
+    }
+    if (Number.isFinite(ref.offset)) {
+      return clampOffsetToBuffer(ref.offset);
+    }
+    return null;
+  }
+
+  function recomputePlaybackRuntime() {
+    const size = getFrameCount();
+    controlEngine.updateFrameCount(size);
+    if (!size) {
+      playbackRuntime.startOffset = null;
+      playbackRuntime.loopStart = null;
+      playbackRuntime.loopEnd = null;
+      return;
+    }
+    const offsets = frameBuffer.listOffsets();
+    const minOffset = offsets[offsets.length - 1];
+    const maxOffset = -1;
+    const baseConfig = timelinePlayback.getBaseConfig ? timelinePlayback.getBaseConfig() : {};
+    const startOffset = resolveFrameReference(baseConfig.startFrame) ?? maxOffset;
+    playbackRuntime.startOffset = clampOffsetToBuffer(startOffset ?? maxOffset);
+    if (baseConfig.loop) {
+      const range = baseConfig.loopRange || {};
+      const startRef = range.start || (range.startFrameId ? { frameId: range.startFrameId } : null);
+      const endRef = range.end || (range.endFrameId ? { frameId: range.endFrameId } : null);
+      let loopStart = resolveFrameReference(startRef);
+      let loopEnd = resolveFrameReference(endRef);
+      if (loopStart == null) loopStart = minOffset;
+      if (loopEnd == null) loopEnd = maxOffset;
+      if (loopStart > loopEnd) [loopStart, loopEnd] = [loopEnd, loopStart];
+      playbackRuntime.loopStart = clampOffsetToBuffer(loopStart);
+      playbackRuntime.loopEnd = clampOffsetToBuffer(loopEnd);
+    } else {
+      playbackRuntime.loopStart = null;
+      playbackRuntime.loopEnd = null;
+    }
   }
 
   function applyTimelineFrame(offset) {
@@ -1657,8 +1801,53 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     } else {
       energyPlot.clearMarker();
     }
+    const frameIndex = offsetToFrameIndex(offset);
+    const controlResult = Number.isInteger(frameIndex) ? controlEngine.evaluate(frameIndex) : { speed: null, callout: null, opacity: null, activeMessages: [] };
+    applyControlActions(controlResult, { frame: entry, offset, frameIndex });
     if (timelineUi) timelineUi.setActiveOffset(offset);
     return true;
+  }
+
+  function applyControlActions(result, meta) {
+    const speed = result?.speed || null;
+    if (speed) {
+      const prev = activeControlState.speed;
+      if (!prev || prev.fps !== speed.fps || prev.speedMultiplier !== speed.speedMultiplier || prev.sourceId !== speed.sourceId) {
+        timelinePlayback.setSpeedOverride(speed);
+        activeControlState.speed = {
+          sourceId: speed.sourceId || null,
+          fps: speed.fps ?? null,
+          speedMultiplier: speed.speedMultiplier ?? null,
+        };
+      }
+    } else if (activeControlState.speed) {
+      timelinePlayback.clearOverrides();
+      activeControlState.speed = null;
+    }
+
+    const callout = result?.callout || null;
+    if (callout) {
+      const layer = ensureCalloutLayer();
+      layer?.show(callout);
+      layer?.update();
+      activeControlState.callout = { ...callout };
+    } else {
+      if (activeControlState.callout) {
+        calloutLayer?.hide();
+      } else {
+        calloutLayer?.update?.();
+      }
+      activeControlState.callout = null;
+    }
+
+    const opacity = result?.opacity || null;
+    if (opacity) {
+      try { view?.setOpacityMask?.(opacity); } catch { }
+      activeControlState.opacity = opacity;
+    } else if (activeControlState.opacity) {
+      try { view?.setOpacityMask?.(null); } catch { }
+      activeControlState.opacity = null;
+    }
   }
 
   function enterTimelineMode(offset = -1) {
@@ -1689,28 +1878,45 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   function timelineStepForward() {
     const offsets = frameBuffer.listOffsets();
     if (!offsets.length) {
-      clearTimelinePlayback();
+      timelinePlayback.stop();
       if (timelineUi) timelineUi.setMode('paused');
-      return;
+      return false;
     }
     const minOffset = offsets[offsets.length - 1];
-    let next = timelineState.offset;
-    if (!Number.isFinite(next) || next < minOffset) next = minOffset;
-    if (next >= -1) {
-      clearTimelinePlayback();
-      resumeLiveFromTimeline().catch(() => { });
-      return;
+    const maxOffset = -1;
+    let currentOffset = timelineState.offset;
+    if (!Number.isFinite(currentOffset)) {
+      currentOffset = playbackRuntime.startOffset != null ? playbackRuntime.startOffset : maxOffset;
     }
-    next = Math.min(-1, next + 1);
+    if (currentOffset < minOffset) currentOffset = minOffset;
+    const loopEnabled =
+      timelinePlayback.getLoopConfig &&
+      timelinePlayback.getLoopConfig().loop &&
+      Number.isFinite(playbackRuntime.loopStart) &&
+      Number.isFinite(playbackRuntime.loopEnd);
+    let next = currentOffset >= maxOffset ? maxOffset : currentOffset + 1;
+    if (loopEnabled && playbackRuntime.loopStart != null && playbackRuntime.loopEnd != null) {
+      if (next > playbackRuntime.loopEnd) {
+        next = playbackRuntime.loopStart;
+      }
+    } else if (next > maxOffset) {
+      timelinePlayback.stop();
+      resumeLiveFromTimeline().catch(() => { });
+      return false;
+    }
+    next = clampOffsetToBuffer(next);
+    if (!Number.isFinite(next)) return false;
     if (!applyTimelineFrame(next)) {
-      clearTimelinePlayback();
+      timelinePlayback.stop();
       if (timelineUi) timelineUi.setMode('paused');
-      return;
+      return false;
     }
-    if (next === -1) {
-      clearTimelinePlayback();
+    if (!loopEnabled && next === maxOffset) {
+      timelinePlayback.stop();
       resumeLiveFromTimeline().catch(() => { });
+      return false;
     }
+    return true;
   }
 
   function pauseTimelinePlayback() {
@@ -1733,6 +1939,16 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     setTimelineInteractionLock(false);
     energyPlot.clearMarker();
     timelineState.offset = -1;
+    timelinePlayback.clearOverrides();
+    activeControlState.speed = null;
+    if (view?.setOpacityMask) {
+      try { view.setOpacityMask(null); } catch { }
+    }
+    activeControlState.opacity = null;
+    if (calloutLayer) {
+      try { calloutLayer.hide(); } catch { }
+    }
+    activeControlState.callout = null;
     const resumeMode = timelineState.resumeMode;
     timelineState.resumeMode = null;
     if (timelineUi) {
@@ -1788,10 +2004,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     const clamped = clampOffsetToBuffer(Number.isFinite(offset) ? offset : timelineState.offset);
     if (clamped == null) return;
     enterTimelineMode(clamped);
-    clearTimelinePlayback();
-    timelineState.playing = true;
-    if (timelineUi) timelineUi.setMode('playing');
-    timelineState.interval = setInterval(timelineStepForward, 50);
+    timelinePlayback.start();
   }
 
   function handleTimelinePauseRequest() {
@@ -2269,6 +2482,64 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     });
   }
 
+  function handleSessionSnapshotApplied(payload = {}) {
+    recomputePlaybackRuntime();
+    const hasFrames = getFrameCount() > 0;
+    if (hasFrames && Number.isFinite(playbackRuntime.startOffset) && timelineState.active) {
+      applyTimelineFrame(playbackRuntime.startOffset);
+      if (timelineUi) timelineUi.refresh();
+    }
+    const shouldAuto = timelinePlayback.shouldAutoPlay && timelinePlayback.shouldAutoPlay();
+    if (shouldAuto && hasFrames) {
+      timelinePlayback.start();
+    } else {
+      pauseTimelinePlayback();
+    }
+  }
+
+  let libraryManifestCache = null;
+  let libraryManifestPromise = null;
+
+  async function fetchLibraryManifest() {
+    if (libraryManifestCache) return libraryManifestCache;
+    if (libraryManifestPromise) return libraryManifestPromise;
+    libraryManifestPromise = (async () => {
+      const url = '/examples/library.json';
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`Library manifest fetch failed (${res.status})`);
+      const data = await res.json();
+      const normalized = Array.isArray(data)
+        ? data.map((entry) => ({
+            id: entry.id,
+            label: entry.label || entry.id,
+            description: entry.description || '',
+            path: entry.path,
+            tags: Array.isArray(entry.tags) ? entry.tags.slice() : [],
+          }))
+        : [];
+      libraryManifestCache = normalized;
+      libraryManifestPromise = null;
+      return normalized;
+    })().catch((err) => {
+      libraryManifestPromise = null;
+      throw err;
+    });
+    return libraryManifestPromise;
+  }
+
+  async function loadLibraryEntry(id) {
+    if (!id) throw new Error('Missing library id');
+    const manifest = await fetchLibraryManifest();
+    const entry = manifest.find((item) => item.id === id);
+    if (!entry) throw new Error(`Library entry not found: ${id}`);
+    const res = await fetch(entry.path, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`Library session fetch failed (${res.status})`);
+    const text = await res.text();
+    if (!sessionStateManager?.loadFromFile) throw new Error('Session manager unavailable');
+    await sessionStateManager.loadFromFile(text);
+    return true;
+  }
+
   if (!sessionStateManager) {
     sessionStateManager = createSessionStateManager({
       getViewerState: () => state,
@@ -2301,6 +2572,19 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       rememberResume,
       stopSimulation,
       getMode: () => mode,
+      controlMessageEngine: controlEngine,
+      timelinePlayback,
+      getTimelinePlaybackSnapshot: () => timelinePlayback.getSnapshot(),
+      getTimelineControlSnapshot: () => controlEngine.getSnapshot?.() || [],
+      applyTimelinePlaybackSnapshot: (cfg) => {
+        timelinePlayback.applySnapshot(cfg || {});
+        recomputePlaybackRuntime();
+      },
+      applyControlMessageSnapshot: (messages) => {
+        controlEngine.applySnapshot(messages || []);
+        controlEngine.refresh();
+      },
+      onSnapshotApplied: handleSessionSnapshotApplied,
     });
     try { sessionStateManager.setBaselineFromState({ kind: 'init' }, { includeTimeline: false }); } catch { }
   }
@@ -2571,7 +2855,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   });
 
   function setForceProvider() { return 'uma'; }
-  function shutdown() { renderActive = false; try { engine?.stopRenderLoop?.(); } catch { } }
+  function shutdown() {
+    renderActive = false;
+    try { engine?.stopRenderLoop?.(); } catch { }
+    try { calloutLayer?.dispose?.(); } catch { }
+  }
 
   // Attach idle listener for idle mode
   try { attachIdleWSListener().catch(() => { }); } catch { }
@@ -2637,6 +2925,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       resetToLastLoad: () => sessionStateManager?.resetToLastSource?.() ?? false,
       noteSource: (meta) => sessionStateManager?.noteSource?.(meta) ?? null,
       getBaseline: () => sessionStateManager?.getBaseline?.() ?? null,
+      getLibraryManifest: () => fetchLibraryManifest().then((list) => list.map((entry) => ({ ...entry }))),
+      loadFromLibrary: (id) => loadLibraryEntry(id),
     },
     timeline: {
       select: (offset) => { handleTimelineOffsetRequest(offset); return timelineState.offset; },
@@ -2647,6 +2937,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       getSignature: (offset) => frameBuffer.getSignature(offset ?? timelineState.offset),
       bufferStats: () => frameBuffer.stats(),
       getOffsets: () => frameBuffer.listOffsets(),
+      getPlaybackConfig: () => timelinePlayback.getBaseConfig(),
+      getControlState: () => ({ ...activeControlState }),
     },
   };
 }

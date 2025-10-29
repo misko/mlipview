@@ -1,4 +1,12 @@
 import { elInfo } from '../elements.js';
+
+function clampAlpha(value, fallback = 1) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return Math.min(1, Math.max(0, fallback));
+  if (n <= 0) return 0;
+  if (n >= 1) return 1;
+  return n;
+}
 import { computeBondsNoState } from '../bond_render.js';
 import { __count } from '../util/funcCount.js';
 
@@ -1303,6 +1311,171 @@ export function createMoleculeView(scene, molState) {
     }
     return null;
   }
+
+  let activeOpacityMask = null;
+
+  function clearOpacityMask() {
+    activeOpacityMask = null;
+    for (const [el, g] of atomGroups) {
+      if (!g?.master) continue;
+      const mat = g.master.material;
+      const info = elInfo(el);
+      const baseColor = info?.color || { r: 1, g: 1, b: 1 };
+      const count = g.indices.length;
+      if (!count) continue;
+      const cols = new Float32Array(count * 4);
+      for (let i = 0; i < count; i++) {
+        cols[i * 4 + 0] = baseColor.r;
+        cols[i * 4 + 1] = baseColor.g;
+        cols[i * 4 + 2] = baseColor.b;
+        cols[i * 4 + 3] = 1;
+      }
+      try { g.master.thinInstanceSetBuffer('color', cols, 4); } catch { }
+      if (mat) {
+        try {
+          mat.alpha = 1;
+          if (typeof BABYLON !== 'undefined' && BABYLON.Material) {
+            mat.transparencyMode = BABYLON.Material.MATERIAL_OPAQUE ?? null;
+          }
+        } catch { }
+      }
+    }
+    for (const [, g] of bondGroups) {
+      if (!g?.master) continue;
+      const mat = g.master.material;
+      const baseColor = mat?.diffuseColor || { r: 0.75, g: 0.78, b: 0.8 };
+      const count = g.indices.length;
+      if (!count) continue;
+      const cols = new Float32Array(count * 4);
+      for (let i = 0; i < count; i++) {
+        cols[i * 4 + 0] = baseColor.r;
+        cols[i * 4 + 1] = baseColor.g;
+        cols[i * 4 + 2] = baseColor.b;
+        cols[i * 4 + 3] = 1;
+      }
+      try { g.master.thinInstanceSetBuffer('color', cols, 4); } catch { }
+      if (mat) {
+        try {
+          mat.alpha = 1;
+          if (typeof BABYLON !== 'undefined' && BABYLON.Material) {
+            mat.transparencyMode = BABYLON.Material.MATERIAL_OPAQUE ?? null;
+          }
+        } catch { }
+      }
+    }
+  }
+
+  function applyOpacityMask(mask) {
+    if (!mask || typeof mask !== 'object') {
+      clearOpacityMask();
+      return;
+    }
+    activeOpacityMask = mask;
+    const focusAtoms = new Set();
+    if (Array.isArray(mask.focus?.atoms)) {
+      for (const idx of mask.focus.atoms) {
+        const n = Number(idx);
+        if (Number.isInteger(n) && n >= 0) focusAtoms.add(n);
+      }
+    }
+    if (Number.isInteger(mask.focus?.atom)) focusAtoms.add(mask.focus.atom | 0);
+    const focusBondKeys = new Set();
+    if (Array.isArray(mask.focus?.bonds)) {
+      for (const entry of mask.focus.bonds) {
+        if (!entry) continue;
+        let i, j;
+        if (Array.isArray(entry) && entry.length >= 2) {
+          i = Number(entry[0]);
+          j = Number(entry[1]);
+        } else if (typeof entry === 'object') {
+          i = Number(entry.i ?? entry[0]);
+          j = Number(entry.j ?? entry[1]);
+        }
+        if (Number.isInteger(i) && Number.isInteger(j)) {
+          const key = [Math.min(i, j), Math.max(i, j)].join('-');
+          focusBondKeys.add(key);
+        }
+      }
+    }
+    const includeConnected = mask.focus?.includeBonds !== 'none';
+    const focusAtomAlpha = clampAlpha(mask.focusOpacity?.atoms ?? mask.focusOpacity?.atom ?? 1, 1);
+    const focusBondAlpha = clampAlpha(mask.focusOpacity?.bonds ?? mask.focusOpacity?.bond ?? focusAtomAlpha, focusAtomAlpha);
+    const backgroundAtomAlpha = clampAlpha(mask.backgroundOpacity?.atoms ?? mask.backgroundOpacity?.atom ?? 1, 1);
+    const backgroundBondAlpha = clampAlpha(mask.backgroundOpacity?.bonds ?? mask.backgroundOpacity?.bond ?? backgroundAtomAlpha, backgroundAtomAlpha);
+
+    for (const [el, g] of atomGroups) {
+      if (!g?.master) continue;
+      const mat = g.master.material;
+      const info = elInfo(el);
+      const baseColor = info?.color || { r: 1, g: 1, b: 1 };
+      const count = g.indices.length;
+      if (!count) continue;
+      const cols = new Float32Array(count * 4);
+      let transparent = false;
+      for (let i = 0; i < count; i++) {
+        const idx = g.indices[i];
+        const alpha = focusAtoms.has(idx) ? focusAtomAlpha : backgroundAtomAlpha;
+        if (alpha < 0.999) transparent = true;
+        cols[i * 4 + 0] = baseColor.r;
+        cols[i * 4 + 1] = baseColor.g;
+        cols[i * 4 + 2] = baseColor.b;
+        cols[i * 4 + 3] = alpha;
+      }
+      try { g.master.thinInstanceSetBuffer('color', cols, 4); } catch { }
+      if (mat) {
+        try {
+          mat.alpha = 1;
+          if (typeof BABYLON !== 'undefined' && BABYLON.Material) {
+            mat.transparencyMode = transparent ? BABYLON.Material.MATERIAL_ALPHABLEND : BABYLON.Material.MATERIAL_OPAQUE;
+            mat.needDepthPrePass = transparent;
+          }
+        } catch { }
+      }
+    }
+
+    for (const [, g] of bondGroups) {
+      if (!g?.master) continue;
+      const mat = g.master.material;
+      const baseColor = mat?.diffuseColor || { r: 0.75, g: 0.78, b: 0.8 };
+      const count = g.indices.length;
+      if (!count) continue;
+      const cols = new Float32Array(count * 4);
+      let transparent = false;
+      for (let i = 0; i < count; i++) {
+        const b = g.indices[i];
+        const key = [Math.min(b.i, b.j), Math.max(b.i, b.j)].join('-');
+        const isFocus =
+          focusBondKeys.has(key) ||
+          (includeConnected && focusAtoms.has(b.i) && focusAtoms.has(b.j));
+        const alpha = isFocus ? focusBondAlpha : backgroundBondAlpha;
+        if (alpha < 0.999) transparent = true;
+        cols[i * 4 + 0] = baseColor.r;
+        cols[i * 4 + 1] = baseColor.g;
+        cols[i * 4 + 2] = baseColor.b;
+        cols[i * 4 + 3] = alpha;
+      }
+      try { g.master.thinInstanceSetBuffer('color', cols, 4); } catch { }
+      if (mat) {
+        try {
+          mat.alpha = 1;
+          if (typeof BABYLON !== 'undefined' && BABYLON.Material) {
+            mat.transparencyMode = transparent ? BABYLON.Material.MATERIAL_ALPHABLEND : BABYLON.Material.MATERIAL_OPAQUE;
+            mat.needDepthPrePass = transparent;
+          }
+        } catch { }
+      }
+    }
+  }
+
+  function setOpacityMask(mask) {
+    if (!mask && !activeOpacityMask) return;
+    if (!mask) {
+      clearOpacityMask();
+      return;
+    }
+    applyOpacityMask(mask);
+  }
+
   return {
     rebuildBonds,
     rebuildGhosts,
@@ -1317,5 +1490,6 @@ export function createMoleculeView(scene, molState) {
     },
     resolveAtomPick,
     resolveBondPick,
+    setOpacityMask,
   };
 }

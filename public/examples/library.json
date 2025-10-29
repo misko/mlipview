@@ -1,0 +1,9 @@
+[
+  {
+    "id": "sn2",
+    "label": "SN2 Reaction (Narrated)",
+    "description": "Annotated SN2 trajectory with timeline controls and UI callouts.",
+    "path": "/examples/sn2/sn2.json",
+    "tags": ["demo", "reaction", "timeline"]
+  }
+]

@@ -192,5 +192,7 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
   - `x-spherical-radial-modes.spec.js`: Exercises the spherical drag helper to verify radial displacement magnitudes and directions.
   - `frameBuffer.serialize.spec.js`: Ensures timeline frame buffers export/import without losing metadata or coordinate fidelity.
   - `sessionStateManager.spec.js`: Stubs the viewer/WS stack to verify snapshot capture and restoration seed counters, timeline state, and full-update syncs.
+  - `controlMessageEngine.spec.js`: Asserts control-message ranges resolve by priority and return the correct per-frame speed/callout/opacity actions.
+  - `timelinePlaybackController.spec.js`: Exercises the standalone playback scheduler, validating fps cadence, overrides, and snapshot persistence helpers.
 
 > _Cross-reference_: Tests listed only once above cover all ported `x-*` suites. If you add a new suite, update this hierarchy so related coverage stays discoverable.

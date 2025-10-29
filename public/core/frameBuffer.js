@@ -3,6 +3,19 @@
 
 const DEFAULT_CAPACITY = 500;
 
+function formatFrameId(numericId) {
+  const n = Number.isFinite(numericId) ? numericId : 0;
+  return `frame-${String(Math.max(0, n)).padStart(5, '0')}`;
+}
+
+function parseFrameNumeric(frameId) {
+  if (typeof frameId !== 'string') return null;
+  const match = /(\d+)$/.exec(frameId);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
 const KIND_IDLE = 'idle';
 const KIND_MD = 'md';
 const KIND_RELAX = 'relax';
@@ -78,6 +91,7 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
   let head = -1; // points at latest index
   let count = 0;
   let nextId = 1;
+  const idLookup = new Map(); // frameId -> internal index
 
   function record(kind, frame, meta = {}) {
     if (!frame || !Array.isArray(frame.positions) || frame.positions.length === 0) {
@@ -91,13 +105,29 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
     const forces = Array.isArray(frame.forces) ? toFloat32Array(frame.forces) : null;
 
     head = (head + 1) % cap;
+    const previous = store[head];
+    if (previous?.frameId) idLookup.delete(previous.frameId);
     count = Math.min(cap, count + 1);
 
-    const id = Number.isFinite(meta.id) ? (meta.id | 0) : nextId++;
-    if (Number.isFinite(meta.id)) {
-      const candidate = (meta.id | 0) + 1;
+    let numericId;
+    if (Number.isFinite(meta.numericId)) {
+      numericId = meta.numericId | 0;
+    } else if (Number.isFinite(meta.id)) {
+      numericId = meta.id | 0;
+    } else if (typeof meta.frameId === 'string') {
+      const parsed = parseFrameNumeric(meta.frameId);
+      if (parsed != null) numericId = parsed;
+    }
+    if (!Number.isFinite(numericId)) {
+      numericId = nextId++;
+    } else {
+      numericId = Number(numericId);
+      const candidate = numericId + 1;
       if (candidate > nextId) nextId = candidate;
     }
+    const frameId = typeof meta.frameId === 'string' && meta.frameId.length
+      ? meta.frameId
+      : formatFrameId(numericId);
     const simStep = isFiniteNumber(frame.simStep) ? frame.simStep : isFiniteNumber(frame.sim_step) ? frame.sim_step : null;
     const userInteractionCount = isFiniteNumber(frame.userInteractionCount)
       ? frame.userInteractionCount
@@ -108,7 +138,8 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
     const energyIndex = Number.isFinite(meta.energyIndex) ? (meta.energyIndex | 0) : null;
 
     store[head] = {
-      id,
+      frameId,
+      numericId,
       kind: normalizeKind(kind),
       timestamp: Number.isFinite(meta.timestamp) ? Number(meta.timestamp) : Date.now(),
       seq,
@@ -123,8 +154,9 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
       signature: toSignature(pos),
       energyIndex,
     };
+    idLookup.set(frameId, head);
 
-    return { id, offset: -1 };
+    return { id: frameId, numericId, offset: -1 };
   }
 
   function size() {
@@ -147,7 +179,8 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
     const entry = store[idx];
     if (!entry) return null;
     return {
-      id: entry.id,
+      id: entry.frameId,
+      numericId: entry.numericId,
       kind: entry.kind,
       seq: entry.seq,
       simStep: entry.simStep,
@@ -195,7 +228,8 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
       const entry = store[idx];
       if (!entry) continue;
       frames.push({
-        id: entry.id,
+        id: entry.frameId,
+        numericId: entry.numericId,
         kind: entry.kind,
         seq: entry.seq,
         simStep: entry.simStep != null ? entry.simStep : null,
@@ -230,11 +264,34 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
         stress: Array.isArray(frame.stress) ? frame.stress : null,
       };
       record(frame.kind || KIND_IDLE, entry, {
-        id: frame.id,
+        id: Number.isFinite(frame.numericId) ? frame.numericId : undefined,
+        numericId: Number.isFinite(frame.numericId) ? frame.numericId : undefined,
+        frameId: typeof frame.id === 'string' ? frame.id : frame.frameId,
         energyIndex: frame.energyIndex,
         timestamp: frame.timestamp,
       });
     }
+  }
+
+  function resolveFrameIndex(frameId) {
+    if (!frameId || typeof frameId !== 'string' || !count) return null;
+    const idx = idLookup.get(frameId);
+    if (idx == null) return null;
+    const entry = store[idx];
+    if (!entry) return null;
+    const rel = head >= idx ? head - idx : head + (cap - idx);
+    if (rel >= count) return null;
+    const index = count - 1 - rel;
+    return index;
+  }
+
+  function resolveOffset(frameId) {
+    if (!frameId || typeof frameId !== 'string' || !count) return null;
+    const idx = idLookup.get(frameId);
+    if (idx == null) return null;
+    const rel = head >= idx ? head - idx : head + (cap - idx);
+    if (rel >= count) return null;
+    return -(rel + 1);
   }
 
   function stats() {
@@ -256,6 +313,8 @@ export function createFrameBuffer({ capacity = DEFAULT_CAPACITY } = {}) {
     clear,
     exportFrames,
     importFrames,
+    resolveFrameIndex,
+    resolveOffset,
   };
 }
 

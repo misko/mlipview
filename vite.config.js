@@ -115,6 +115,38 @@ export default defineConfig({
         }
       },
     },
+    {
+      name: 'copy-examples-on-build',
+      closeBundle() {
+        try {
+          const src = path.resolve(__dirname, 'public', 'examples');
+          const dst = path.resolve(__dirname, 'dist', 'examples');
+          if (fs.existsSync(src)) {
+            fs.mkdirSync(dst, { recursive: true });
+            if (fs.cpSync) {
+              fs.cpSync(src, dst, { recursive: true });
+            } else {
+              for (const f of fs.readdirSync(src)) {
+                const s = path.join(src, f);
+                const d = path.join(dst, f);
+                if (fs.statSync(s).isDirectory()) {
+                  fs.mkdirSync(d, { recursive: true });
+                  for (const inner of fs.readdirSync(s)) {
+                    const si = path.join(s, inner);
+                    const di = path.join(d, inner);
+                    if (fs.statSync(si).isFile()) fs.copyFileSync(si, di);
+                  }
+                } else if (fs.statSync(s).isFile()) {
+                  fs.copyFileSync(s, d);
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('[vite][copy-examples] failed:', e?.message || e);
+        }
+      },
+    },
   ],
   optimizeDeps: {},
 });

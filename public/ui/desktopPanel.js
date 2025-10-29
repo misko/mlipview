@@ -1761,6 +1761,73 @@ export function buildDesktopPanel({ attachTo } = {}) {
     sessionRow.append(loadSessionBtn, saveSessionBtn, sessionInput);
     sys.content.appendChild(sessionRow);
 
+    const libraryRow = document.createElement('div');
+    libraryRow.className = 'row';
+    const libraryLabel = document.createElement('span');
+    libraryLabel.className = 'form-label';
+    libraryLabel.textContent = 'Library:';
+    const librarySelect = document.createElement('select');
+    librarySelect.id = 'sessionLibrarySel';
+    librarySelect.dataset.testid = 'session-library';
+    librarySelect.disabled = true;
+    librarySelect.innerHTML = '<option value="">Loading…</option>';
+    libraryRow.append(libraryLabel, librarySelect);
+    sys.content.appendChild(libraryRow);
+
+    const loadLibraryEntry = async (id) => {
+      if (!id) return;
+      const api = (typeof window !== 'undefined') ? window.viewerApi || window._viewer || null : null;
+      if (!api?.session?.loadFromLibrary) {
+        showErrorBanner('Session library not available');
+        return;
+      }
+      librarySelect.disabled = true;
+      try {
+        await api.session.loadFromLibrary(id);
+      } catch (e) {
+        showErrorBanner('Library load failed');
+        console.warn?.('[sessionLibrary] load failed', e);
+      } finally {
+        librarySelect.disabled = false;
+        librarySelect.value = '';
+      }
+    };
+
+    librarySelect.addEventListener('change', (ev) => {
+      const id = ev.target.value;
+      if (!id) return;
+      loadLibraryEntry(id);
+    });
+
+    (async () => {
+      try {
+        const api = (typeof window !== 'undefined') ? window.viewerApi || window._viewer || null : null;
+        if (!api?.session?.getLibraryManifest) {
+          librarySelect.innerHTML = '<option value="">Unavailable</option>';
+          return;
+        }
+        const entries = await api.session.getLibraryManifest();
+        if (!Array.isArray(entries) || entries.length === 0) {
+          librarySelect.innerHTML = '<option value="">No entries</option>';
+          librarySelect.disabled = true;
+          return;
+        }
+        librarySelect.innerHTML = '<option value="">Select session…</option>';
+        for (const entry of entries) {
+          const opt = document.createElement('option');
+          opt.value = entry.id;
+          opt.textContent = entry.label || entry.id;
+          if (entry.description) opt.title = entry.description;
+          librarySelect.appendChild(opt);
+        }
+        librarySelect.disabled = false;
+      } catch (e) {
+        librarySelect.innerHTML = '<option value="">Load failed</option>';
+        librarySelect.disabled = true;
+        console.warn?.('[sessionLibrary] manifest load failed', e);
+      }
+    })();
+
     // Backend select only (PBC moved)
     const backendRow = document.createElement('div');
     backendRow.className = 'row';

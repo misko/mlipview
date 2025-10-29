@@ -80,7 +80,7 @@ describe('SessionStateManager', () => {
     expect(snapshot.energyPlot.series).toHaveLength(1);
 
     const loadSnapshot = {
-      schemaVersion: 1,
+      schemaVersion: 3,
       savedAt: new Date().toISOString(),
       source: { kind: 'json', label: 'session.json' },
       viewer: {
@@ -93,6 +93,8 @@ describe('SessionStateManager', () => {
       timeline: {
         capacity: 500,
         frames: [{
+          id: 'frame-0001',
+          numericId: 1,
           kind: 'md',
           seq: 15,
           simStep: 2,
@@ -103,8 +105,18 @@ describe('SessionStateManager', () => {
         lastLiveMode: 'md',
         wasRunning: true,
         pendingSimParams: { temperature: 300 },
+        playback: { autoPlay: false, loop: false, defaultFps: 20 },
+        controlMessages: [],
       },
-      websocket: { seq: 20, clientAck: 18, userInteractionCount: 3, simStep: 2 },
+      websocket: {
+        seq: 20,
+        nextSeq: 21,
+        clientAck: 18,
+        lastAck: 18,
+        userInteractionCount: 3,
+        totalInteractionCount: 5,
+        simStep: 2,
+      },
     };
 
     await manager.loadSnapshot(loadSnapshot);
@@ -113,15 +125,15 @@ describe('SessionStateManager', () => {
     expect(energyPlot.importSeries).toHaveBeenCalledWith(loadSnapshot.energyPlot);
     expect(frameBuffer.importFrames).toHaveBeenCalledWith(loadSnapshot.timeline.frames);
     expect(seedSequencing).toHaveBeenCalledWith({
-      nextSeq: 0,
-      ack: 0,
-      userInteractionCount: 0,
-      simStep: 0,
+      nextSeq: 21,
+      ack: 18,
+      userInteractionCount: 3,
+      simStep: 2,
     });
     expect(userInteraction).toHaveBeenCalledWith(expect.objectContaining({ full_update: true }));
     expect(ensureWsInit).toHaveBeenCalled();
     expect(currentMode).toBe(Mode.Timeline);
     expect(rememberResume).toHaveBeenCalledWith('md', expect.any(Object));
-    expect(setInteractionCounters).toHaveBeenCalledWith({ user: 0, total: 0, lastApplied: 0 });
+    expect(setInteractionCounters).toHaveBeenCalledWith({ user: 3, total: 5, lastApplied: 3 });
   });
 });
