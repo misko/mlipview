@@ -4,8 +4,8 @@ MLIPView is UMA Fairchem’s reference workstation for interactively steering ma
 
 Key capabilities:
 - Real-time idle, MD, and relax streaming with per-atom gating during drags and bond rotations.
-- Timeline mode with scrubbable history, retained energy markers, and read-only camera controls for investigating prior frames.
-- Session snapshots with JSON export/import so timelines, energy traces, and counters can be restored exactly across runs.
+- Timeline mode with scrubbable history, retained energy markers, and read-only camera controls for investigating prior frames; playback now resumes live streaming with bounded frame replay so simulations rejoin the backend seamlessly.
+- Session snapshots with JSON export/import so timelines, energy traces, and counters can be restored exactly across runs (backed by the unified `SessionStateManager` interface).
 - VR/AR support tailored for Meta Quest, including controller pick/rotate and HUD overlays.
 - Rich debugging surface (`viewerApi`) plus exhaustive Jest, Playwright, and pytest coverage to protect behaviour.
 
@@ -60,6 +60,7 @@ Key environment variables:
 
 - `MLIPVIEW_FORCE_CPU=1` – force CPU execution even if CUDA is available.
 - `UMA_DEVICE=cuda|cpu` – override predictor device selection.
+- `MLIPVIEW_RESUME_DEBUG=1` – enable verbose console logging of ACK/seq bookkeeping during timeline resume debugging.
 
 The server exposes WebSocket `/ws` plus JSON health endpoints under `http://127.0.0.1:8000/serve`.
 The WebSocket is protobuf-only; the viewer auto-generates the required stubs via `npm run gen:proto:js`.
@@ -109,6 +110,7 @@ Combined convenience targets are available in `package.json` (`test:py`, `test:i
 - The repository ships sample nginx config (`nginx_routing.conf`) for proxying `/serve` to the Python API and static assets to the Vite build.
 - `server-app.js` can be used to serve the built frontend (`dist/`) behind Express if nginx is not available.
 - For VR usage, follow the headset-specific setup in `VR_SETUP_README.md` and consult `QUEST_DEBUG_CONSOLE.md` for debugging tools.
+- Timeline resume issues: run the viewer with `?debug=1` and set `MLIPVIEW_RESUME_DEBUG=1` on the backend to mirror ACK/seq flow; the Playwright regression `ws-session-playback-resume.spec.js` demonstrates a healthy JSON load → playback → live resume cycle.
 
 ## Troubleshooting & Support
 

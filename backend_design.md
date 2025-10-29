@@ -61,3 +61,4 @@
 ## Observability updates
 - `install_predict_handle()` now logs the device (`predict_unit_device=cuda|cpu`) so test runs confirm GPU usage when available.
 - Proto generation is consolidated to a single `session_pb2.py`; stale nested copies were removed to avoid drift between server and client stubs.
+- Setting `MLIPVIEW_RESUME_DEBUG=1` adds targeted `[resume-debug]` prints for ACK/seq flow while the client exits timeline mode, helping diagnose stalled resumes without turning on full WS debug logging.

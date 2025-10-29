@@ -41,6 +41,7 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
   - `ws-timeline-energy-marker.spec.js`: Enters timeline playback and asserts the energy plot displays (and clears) the playback marker.
   - `ws-timeline-slider-select.spec.js`: Clicks a single slider position and waits for timeline mode to activate on the requested offset (guards against the historical double-click requirement).
   - `ws-session-save-load.spec.js`: Captures a JSON snapshot, mutates geometry, loads the snapshot, verifies reset-to-last-load rehydrates the state/counters, and asserts MD runs resume after exiting timeline playback.
+- `ws-session-playback-resume.spec.js`: Runs MD on ROY, captures a JSON snapshot, reloads it, scrubs five frames back, then plays forward until live mode resumes—asserting at least 18 and at most 170 new MD frames arrive before the viewer reattaches to the live stream (protects against both stalls and runaway playback).
 
 ## Session Snapshot Fixtures (manual QA)
 

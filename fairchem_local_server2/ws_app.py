@@ -29,6 +29,10 @@ from .models import PrecomputedValues
 app = FastAPI(title="UMA Serve WS API", debug=True)
 
 _FORCE_CPU_ENV = "MLIPVIEW_FORCE_CPU"
+_RESUME_DEBUG = (
+    os.environ.get("MLIPVIEW_RESUME_DEBUG", "0").strip().lower()
+    in {"1", "true", "on", "yes"}
+)
 
 
 def _force_cpu_mode() -> bool:
@@ -749,6 +753,16 @@ class WSIngress:
                         if (now - stall_notice_last >= stall_notice_interval) and (
                             not backpressure_notice_sent
                         ):
+                            if _RESUME_DEBUG:
+                                print(
+                                    "[resume-debug][waiting-for-ack]",
+                                    {
+                                        "server_seq": int(state.server_seq),
+                                        "client_ack": int(state.client_ack),
+                                        "unacked": int(state.server_seq - state.client_ack),
+                                    },
+                                    flush=True,
+                                )
                             stall_notice_last = now
                             if self._ws_debug:
                                 pass
@@ -922,6 +936,16 @@ class WSIngress:
                 a = int(getattr(msg, "ack", 0) or 0)
                 if a:
                     state.client_ack = max(state.client_ack, a)
+
+            if _RESUME_DEBUG:
+                try:
+                    seq_in = int(getattr(msg, "seq", 0) or 0)
+                    ack_in = int(getattr(msg, "ack", 0) or 0)
+                except Exception:
+                    seq_in = 0
+                    ack_in = 0
+                unacked = int(state.server_seq - state.client_ack)
+                print("[resume-debug][ack]", {"seq": seq_in, "ack": ack_in, "client_seq": int(state.client_seq), "client_ack": int(state.client_ack), "unacked": unacked}, flush=True)
 
             # If we were in a backpressure episode and the client acked
             # the last WAITING seq (or higher), temporarily disable gating

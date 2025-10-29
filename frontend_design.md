@@ -30,6 +30,7 @@
 - `applyFullSnapshot()` is the single entry point for dense geometry changes (file load, add/remove atoms). It rewrites state, resets interaction caches, and reuses `ensureWsInit()` so the next upload is a dense `full_update` snapshot.
 - `emitDuringDrag()` throttles sparse `USER_INTERACTION` updates to the backend while dragging (indices + triple positions only). Bond rotations queue sparse updates for the affected atoms with optional latching windows.
 - Energy plot (`energyPlot` closure) records energies per step for UI display; `noteReqDone()` tracks loop rate (RPS label).
+- `SessionStateManager` mediates snapshot capture/restore, including JSON save/load, reset-to-last-load wiring, and re-seeding of WebSocket sequencing + interaction counters before issuing the post-load `full_update`.
 
 ## Idle vs simulation flows
 - **Initialization / idle**:
@@ -44,7 +45,7 @@
 ### Timeline controller
 - `createFrameBuffer()` powers the timeline history (bonded to a 500 frame capacity by default).
 - `installTimeline()` builds the UI dock (`timeline.js`), exposes `viewerApi.timeline`, and wires button/slider callbacks to `handleTimelineOffsetRequest`, `handleTimelinePlayRequest`, and `handleTimelineLiveRequest`.
-- Timeline mode introduces a modal state (`Mode.Timeline`) that disables molecule editing while keeping camera controls active. The overlay and manipulation facade enforce the read-only policy until `resumeLiveFromTimeline()` runs.
+- Timeline mode introduces a modal state (`Mode.Timeline`) that disables molecule editing while keeping camera controls active. The overlay and manipulation facade enforce the read-only policy until `resumeLiveFromTimeline()` runs, which now emits debug traces and cooperates with tests that cap live resume bursts.
 - Pointer-driven scrubbing maps screen coordinates to stored offsets, ensuring one click selects the intended frame; tests cover the mapping via `ws-timeline-slider-select.spec.js`.
 
 ## Interaction gating & latching

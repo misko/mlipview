@@ -20,7 +20,7 @@ The timeline system lets users pause a live UMA Fairchem stream, inspect any of 
 - **Viewer orchestration** (`public/index.js`)
   - `handleStreamFrame` records live frames into the buffer before applying them.
   - `enterTimelineMode()` transitions into timeline mode, halts active simulations, enables the read-only overlay, and applies the requested frame.
-  - `resumeLiveFromTimeline()` restores the previous continuous mode (idle/md/relax), clears overlays, and resumes incoming frames.
+  - `resumeLiveFromTimeline()` restores the previous continuous mode (idle/md/relax), clears overlays, and resumes incoming frames with defensive logging (`[Timeline][resumeLiveFromTimeline] …`) so debugging stalled resumes is straightforward.
   - `applyTimelineFrame()` sets the active offset, applies stored positions, and updates the energy marker without emitting user interactions.
 
 ## Mode & Control Flow
@@ -56,8 +56,10 @@ Key transitions:
   - `getOffsets()` for assertions on the backing buffer.
 - Additional coverage:
   - `ws-timeline-controls.spec.js`, `ws-timeline-interaction-lock.spec.js`, `ws-timeline-visibility.spec.js`, `ws-timeline-replay.spec.js`, `ws-timeline-camera.spec.js`, `ws-timeline-energy-marker.spec.js`.
+  - `ws-session-playback-resume.spec.js` – saves a JSON snapshot, reloads it, scrubs five frames back, then verifies the viewer delivers a bounded burst of fresh MD frames before handing control back to the live stream.
 
 ## Operational Notes
 - When entering timeline mode, the viewer acknowledges the latest live frame **before** stopping the simulation to avoid triggering backend backpressure.
 - Frame buffer capacity is configurable (default 500) and can be tuned via `installTimeline({ capacity })`.
 - The system tolerates sparse frame lists; when the buffer is empty the slider disables itself and the dock stays hidden.
+- Tests cap resume bursts to 170 frames (via `viewerApi.startMDContinuous` interception) so Playwright coverage remains fast while still proving the stream resumes correctly.

@@ -112,11 +112,16 @@ describe('SessionStateManager', () => {
     expect(applyFullSnapshot).toHaveBeenCalled();
     expect(energyPlot.importSeries).toHaveBeenCalledWith(loadSnapshot.energyPlot);
     expect(frameBuffer.importFrames).toHaveBeenCalledWith(loadSnapshot.timeline.frames);
-    expect(seedSequencing).toHaveBeenCalledWith(expect.objectContaining({ nextSeq: 20 }));
+    expect(seedSequencing).toHaveBeenCalledWith({
+      nextSeq: 0,
+      ack: 0,
+      userInteractionCount: 0,
+      simStep: 0,
+    });
     expect(userInteraction).toHaveBeenCalledWith(expect.objectContaining({ full_update: true }));
     expect(ensureWsInit).toHaveBeenCalled();
     expect(currentMode).toBe(Mode.Timeline);
     expect(rememberResume).toHaveBeenCalledWith('md', expect.any(Object));
-    expect(setInteractionCounters).toHaveBeenCalledWith(expect.objectContaining({ user: 3 }));
+    expect(setInteractionCounters).toHaveBeenCalledWith({ user: 0, total: 0, lastApplied: 0 });
   });
 });

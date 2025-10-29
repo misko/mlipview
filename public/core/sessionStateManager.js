@@ -77,6 +77,12 @@ export function createSessionStateManager(deps) {
 
   function captureSnapshot(meta = {}) {
     const state = getViewerState();
+    try {
+      console.log('[SessionManager][loadSnapshot] applying viewer payload', {
+        source: snapshot.source || null,
+        frameCount: timelineFrames.length,
+      });
+    } catch { }
     const viewer = viewerToSnapshot(state);
     const energy = energyPlot?.exportSeries ? energyPlot.exportSeries() : { series: [], markerIndex: null };
     const frames = frameBuffer?.exportFrames ? frameBuffer.exportFrames() : [];
@@ -216,17 +222,19 @@ export function createSessionStateManager(deps) {
     const counters = snapshot.websocket || {};
     const timelineFrames = snapshot?.timeline?.frames || [];
     const lastFrame = timelineFrames.length ? timelineFrames[timelineFrames.length - 1] : null;
-    const userCount = Number(counters.userInteractionCount);
-    const totalCount = Number(counters.totalInteractionCount);
-    const fallbackUser = Number.isFinite(userCount) ? userCount : (Number.isFinite(lastFrame?.userInteractionCount) ? lastFrame.userInteractionCount : 0);
-    const lastAppliedCount = Number.isFinite(lastFrame?.userInteractionCount)
-      ? lastFrame.userInteractionCount
-      : fallbackUser;
+    const initialUser = 0;
     setInteractionCounters?.({
-      user: fallbackUser,
-      total: Number.isFinite(totalCount) ? totalCount : fallbackUser,
-      lastApplied: lastAppliedCount,
+      user: initialUser,
+      total: initialUser,
+      lastApplied: initialUser,
     });
+    try {
+      console.log('[SessionManager][loadSnapshot] counters reset', {
+        user: initialUser,
+        total: initialUser,
+        lastApplied: initialUser,
+      });
+    } catch { }
 
     if (!skipBaseline) {
       setBaseline(snapshot, { reason: snapshot.source?.kind || 'jsonLoad', includeTimeline: true });
@@ -240,11 +248,19 @@ export function createSessionStateManager(deps) {
       const ws = getWsClient?.();
       if (ws?.seedSequencing) {
         ws.seedSequencing({
-          nextSeq: Number(counters.seq ?? counters.nextSeq) || 0,
-          ack: Number(counters.clientAck) || 0,
-          userInteractionCount: Number(counters.userInteractionCount) || 0,
-          simStep: Number(counters.simStep) || 0,
+          nextSeq: 0,
+          ack: 0,
+          userInteractionCount: 0,
+          simStep: 0,
         });
+        try {
+          console.log('[SessionManager][loadSnapshot] seedSequencing applied', {
+            nextSeq: 0,
+            ack: 0,
+            userInteractionCount: 0,
+            simStep: 0,
+          });
+        } catch { }
       }
       if (ws?.userInteraction) {
         const atomicNumbers = Array.isArray(state?.elements) ? state.elements.map(zOf) : [];
@@ -259,11 +275,19 @@ export function createSessionStateManager(deps) {
           natoms: atomicNumbers.length,
           full_update: true,
         });
+        try {
+          console.log('[SessionManager][loadSnapshot] sent full_update snapshot', {
+            natoms: atomicNumbers.length,
+          });
+        } catch { }
       }
     } catch { }
 
     try {
       await ensureWsInit?.({ allowOffline: false });
+      try {
+        console.log('[SessionManager][loadSnapshot] ensureWsInit complete');
+      } catch { }
     } catch { }
 
     if (frameBuffer && typeof frameBuffer.size === 'function' && frameBuffer.size() > 0) {

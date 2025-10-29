@@ -1720,6 +1720,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   async function resumeLiveFromTimeline() {
     if (!timelineState.active) return;
+    try {
+      console.log('[Timeline][resumeLiveFromTimeline] begin', {
+        resumeMode: timelineState.resumeMode,
+        lastOffsets: frameBuffer?.stats?.() || null,
+      });
+    } catch { }
     clearTimelinePlayback();
     timelineState.active = false;
     timelineState.suppressEnergy = false;
@@ -1737,15 +1743,27 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (timelineUi) timelineUi.refresh();
     try {
       await ensureWsInit({ allowOffline: false });
+      try {
+        console.log('[Timeline][resumeLiveFromTimeline] ensureWsInit done', {
+          resumeMode,
+          wsState: getWS()?.getState?.() || null,
+        });
+      } catch { }
     } catch (err) {
       if (env.apiOn()) dbg.warn('[timeline][resume] ensureWsInit failed', err?.message || err);
     }
     if (resumeMode === Mode.MD) {
       const opts = lastContinuousOpts.md ? { ...lastContinuousOpts.md } : {};
       startContinuous('md', opts).catch(() => { });
+      try {
+        console.log('[Timeline][resumeLiveFromTimeline] restarting MD', opts);
+      } catch { }
     } else if (resumeMode === Mode.Relax) {
       const opts = lastContinuousOpts.relax ? { ...lastContinuousOpts.relax } : {};
       startContinuous('relax', opts).catch(() => { });
+      try {
+        console.log('[Timeline][resumeLiveFromTimeline] restarting Relax', opts);
+      } catch { }
     }
   }
 
