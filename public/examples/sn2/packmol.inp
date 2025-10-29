@@ -1,0 +1,24 @@
+tolerance 2.2
+filetype xyz
+output solvated.xyz
+seed 12345
+
+# Put your solute at its current coordinates (1 copy)
+#structure sn2_reactants_d2.4_ang15.xyz
+#  number 10
+#  fixed 5. 0. 0.  0. 0. 0.
+#end structure
+
+structure sn2_reactants_d2.4_ang15.xyz
+  number 5
+  inside box -3. -3. -3.  3. 3. 3.
+end structure
+
+# Fill a water box around it
+# Box corners (Å): xmin ymin zmin  xmax ymax zmax
+# Example: a 30 Å cube centered at the origin
+#structure water.xyz
+#  number 5
+#  inside box -3.0 -3.0 -3.0  3.0 3.0 3.0
+#end structure
+

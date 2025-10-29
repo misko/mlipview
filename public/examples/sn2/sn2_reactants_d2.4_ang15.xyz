@@ -1,0 +1,9 @@
+7
+temp=80K SN2 reactants variant | O···C distance=2.40 Å | approach_angle=15° (0=backside,+z) | qualitatively: high (pre-reactive complex). C at origin; H in xy-plane; Cl at -z; O placed by (d,angle); H on O roughly perpendicular.
+C   0.000000  0.000000  0.000000
+H   1.090000  0.000000  0.000000
+H  -0.545000  0.943968  0.000000
+H  -0.545000 -0.943968  0.000000
+Cl  0.000000  0.000000 -1.780000
+O   0.621166  0.000000  2.318222
+H   1.548455  0.000000  2.069756

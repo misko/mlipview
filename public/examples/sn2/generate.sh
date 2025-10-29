@@ -1,0 +1,1 @@
+packmol < packmol.inp
