@@ -15,6 +15,23 @@ export function createBondService(molState) {
     const c = molState.cell;
     return !!(c && c.enabled && c.a && c.b && c.c);
   }
+  function normalizeImageDelta(delta) {
+    if (!delta || typeof delta !== 'object') return null;
+    const { u = 0, v = 0, w = 0 } = delta;
+    const tol = 1e-4;
+    function roundTol(val) {
+      const rounded = Math.round(val);
+      if (!Number.isFinite(rounded)) return 0;
+      if (Math.abs(val - rounded) <= tol) return rounded;
+      return 0;
+    }
+    const nu = roundTol(u);
+    const nv = roundTol(v);
+    const nw = roundTol(w);
+    if (nu === 0 && nv === 0 && nw === 0) return [0, 0, 0];
+    return [nu, nv, nw];
+  }
+
   function computePeriodicBonds() {
     __count('bondService#computePeriodicBonds');
     // Non-periodic path: preserve full opacity shaping from computeBondsNoState (legacy smooth transparency)
@@ -24,6 +41,8 @@ export function createBondService(molState) {
         j: b.j,
         length: b.length,
         opacity: b.opacity ?? 1,
+        crossing: false,
+        imageDelta: [0, 0, 0],
       }));
     const { a, b, c } = molState.cell;
     const BOND_DBG =
@@ -208,7 +227,15 @@ export function createBondService(molState) {
           });
         } catch {}
       }
-      out.push({ i, j, length: dist, opacity: crossing ? 0.0 : 1.0, crossing });
+      const imageDelta = normalizeImageDelta({ u: ndu, v: ndv, w: ndw });
+      out.push({
+        i,
+        j,
+        length: dist,
+        opacity: crossing ? 0.0 : 1.0,
+        crossing,
+        imageDelta,
+      });
     }
     // Fallback: if periodic expansion produced no bonds, fall back to non-periodic with shaped opacity
     if (!out.length) {
@@ -217,6 +244,8 @@ export function createBondService(molState) {
         j: b.j,
         length: b.length,
         opacity: b.opacity ?? 1,
+        crossing: false,
+        imageDelta: [0, 0, 0],
       }));
     }
     return out;
@@ -261,7 +290,13 @@ export function createBondService(molState) {
         console.warn('[BondService][recompute] debug log error', err);
       }
     }
-    molState.bonds = bonds.map((b) => ({ i: b.i, j: b.j, opacity: b.opacity }));
+    molState.bonds = bonds.map((b) => ({
+      i: b.i,
+      j: b.j,
+      opacity: b.opacity,
+      crossing: !!b.crossing,
+      imageDelta: Array.isArray(b.imageDelta) ? b.imageDelta.slice(0, 3) : [0, 0, 0],
+    }));
     molState.markBondsChanged();
     return bonds;
   }

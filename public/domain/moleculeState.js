@@ -14,7 +14,13 @@ export function createMoleculeState({
     bus,
     elements: elements.slice(),
     positions: positions.map((p) => ({ x: p.x, y: p.y, z: p.z })),
-    bonds: bonds.map((b) => ({ i: b.i, j: b.j })),
+    bonds: bonds.map((b) => ({
+      i: b.i,
+      j: b.j,
+      opacity: typeof b.opacity === 'number' ? b.opacity : 1,
+      crossing: !!b.crossing,
+      imageDelta: Array.isArray(b.imageDelta) ? b.imageDelta.slice(0, 3) : [0, 0, 0],
+    })),
     cell: cell || {
       a: { x: 1, y: 0, z: 0 },
       b: { x: 0, y: 1, z: 0 },

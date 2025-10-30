@@ -74,7 +74,7 @@ Key rules:
 - **Unit**
   - `tests/moleculeView.meshModes.spec.js` – ensure build assigns proper masters and migration swaps buffers without leaks.
   - `tests/controlMessageEngine.spec.js` – cover `mode.focus/mode.background` defaults and threshold derivation.
-  - `tests/sessionStateManager.spec.js` – verify schema v5 round-trips mesh assignments and upgrades v4 snapshots.
+- `tests/sessionStateManager.spec.js` – verify schema v6 round-trips mesh assignments and upgrades v4 snapshots.
 - **Playwright**
   - `ws-timeline-mesh-mode.spec.js` – confirm timeline fades move instances between solid/soft pools and return correctly.
   - `ws-ghost-periodic.spec.js` – scrape `viewerApi.debugGhostSnapshot()` ensuring ghost bonds stay soft in both live and timeline modes.
@@ -83,13 +83,17 @@ Key rules:
   - Enable `window.__MLIP_DEBUG_STRETCH = true` (or `?bondStretchDebug=1`) during live-mode drags to confirm stretched bonds migrate to the soft mesh; disable afterwards to keep logs clean.
   - Quest smoke: ensure soft masters do not overwhelm fill-rate (watch frame timing HUD).
 
-## Updated Snapshot Skeleton (schemaVersion 5)
+## Updated Snapshot Skeleton (schemaVersion 6)
 ```jsonc
 {
-  "schemaVersion": 5,
+  "schemaVersion": 6,
   "viewer": {
     "elements": ["C", "Cl", "N", "..."],
     "positions": [[-2.14, 0.03, 0.12], "..."],
+    "periodicBonds": [
+      { "i": 12, "j": 37, "opacity": 0, "imageDelta": [1, 0, -1] },
+      { "i": 5, "j": 9, "opacity": 0.18, "imageDelta": [0, 0, 0] }
+    ],
     "meshAssignments": {
       "atoms": ["solid", "solid", "soft", "..."],
       "bonds": ["solid", "soft", "..."]
@@ -136,5 +140,5 @@ Overrides store zero-based atom and bond indices. `solid` arrays are optional an
 
 ## Next Steps
 1. OK the dual-mesh plan (adjust thresholds or schema details if needed).
-2. Convert `public/examples/sn2/sn2.json` and other fixtures to schema v5 once implementation lands.
+2. Convert `public/examples/sn2/sn2.json` and other fixtures to schema v6 once implementation lands.
 3. Proceed with coding and validation after you sign off.

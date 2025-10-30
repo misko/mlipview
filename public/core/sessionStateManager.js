@@ -1,7 +1,7 @@
 // SessionStateManager centralises capture/restore of viewer, timeline, and websocket state.
 // Dependencies are injected so the manager stays agnostic of Babylon.js internals.
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const VALID_MESH_MODES = new Set(['solid', 'soft']);
 
 function migrateSnapshotSchema(snapshot) {
@@ -52,6 +52,37 @@ function migrateSnapshotSchema(snapshot) {
         }
         if (!current.render.overrides.atoms) current.render.overrides.atoms = {};
         if (!current.render.overrides.bonds) current.render.overrides.bonds = {};
+        current.schemaVersion = 5;
+        break;
+      }
+      case 5: {
+        current.viewer = current.viewer || {};
+        if (!Array.isArray(current.viewer.periodicBonds)) {
+          current.viewer.periodicBonds = [];
+        } else {
+          current.viewer.periodicBonds = current.viewer.periodicBonds
+            .map((bond) => {
+              if (!bond || typeof bond !== 'object') return null;
+              const i = Number(bond.i);
+              const j = Number(bond.j);
+              if (!Number.isInteger(i) || !Number.isInteger(j)) return null;
+              const opacity =
+                typeof bond.opacity === 'number' && Number.isFinite(bond.opacity)
+                  ? bond.opacity
+                  : 1;
+              const imageDelta = Array.isArray(bond.imageDelta)
+                ? bond.imageDelta.slice(0, 3).map((v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : 0))
+                : [0, 0, 0];
+              return {
+                i,
+                j,
+                opacity,
+                crossing: !!bond.crossing,
+                imageDelta,
+              };
+            })
+            .filter(Boolean);
+        }
         current.schemaVersion = SCHEMA_VERSION;
         break;
       }
@@ -218,6 +249,33 @@ export function createSessionStateManager(deps) {
         : [Number(v?.x) || 0, Number(v?.y) || 0, Number(v?.z) || 0])
       : undefined;
     const cell = stateCellToArray ? stateCellToArray(state?.cell) : null;
+    const periodicBonds = Array.isArray(state?.bonds)
+      ? state.bonds
+          .map((bond) => {
+            if (!bond) return null;
+            const i = Number(bond.i);
+            const j = Number(bond.j);
+            if (!Number.isInteger(i) || !Number.isInteger(j)) return null;
+            const opacity =
+              typeof bond.opacity === 'number' && Number.isFinite(bond.opacity) ? bond.opacity : 1;
+            const imageDelta = Array.isArray(bond.imageDelta)
+              ? bond.imageDelta.slice(0, 3).map((v) => {
+                  const num = Number(v);
+                  if (!Number.isFinite(num)) return 0;
+                  const rounded = Math.round(num);
+                  return Number.isFinite(rounded) ? rounded : 0;
+                })
+              : [0, 0, 0];
+            return {
+              i,
+              j,
+              opacity,
+              crossing: !!bond.crossing,
+              imageDelta,
+            };
+          })
+          .filter(Boolean)
+      : [];
     return {
       elements,
       positions,
@@ -225,6 +283,7 @@ export function createSessionStateManager(deps) {
       cell,
       showCell: !!state?.showCell,
       showGhostCells: !!state?.showGhostCells,
+      periodicBonds,
     };
   }
 
@@ -331,6 +390,23 @@ export function createSessionStateManager(deps) {
         cell: clone.viewer?.cell || null,
         showCell: !!clone.viewer?.showCell,
         showGhostCells: !!clone.viewer?.showGhostCells,
+        periodicBonds: Array.isArray(clone.viewer?.periodicBonds)
+          ? clone.viewer.periodicBonds.map((bond) => ({
+              i: Number(bond.i) || 0,
+              j: Number(bond.j) || 0,
+              opacity:
+                typeof bond.opacity === 'number' && Number.isFinite(bond.opacity) ? bond.opacity : 1,
+              crossing: !!bond.crossing,
+              imageDelta: Array.isArray(bond.imageDelta)
+                ? bond.imageDelta.slice(0, 3).map((v) => {
+                    const num = Number(v);
+                    if (!Number.isFinite(num)) return 0;
+                    const rounded = Math.round(num);
+                    return Number.isFinite(rounded) ? rounded : 0;
+                  })
+                : [0, 0, 0],
+            }))
+          : [],
       };
       installBaseline?.(baseline, { reason: reason || clone.source?.kind || 'baseline' });
     } catch { }
@@ -401,6 +477,24 @@ export function createSessionStateManager(deps) {
       state.showCell = !!snap.viewer?.showCell;
       state.showGhostCells = !!snap.viewer?.showGhostCells;
       state.markCellChanged?.();
+      if (Array.isArray(snap.viewer?.periodicBonds)) {
+        state.bonds = snap.viewer.periodicBonds.map((bond) => ({
+          i: Number(bond.i) || 0,
+          j: Number(bond.j) || 0,
+          opacity:
+            typeof bond.opacity === 'number' && Number.isFinite(bond.opacity) ? bond.opacity : 1,
+          crossing: !!bond.crossing,
+          imageDelta: Array.isArray(bond.imageDelta)
+            ? bond.imageDelta.slice(0, 3).map((v) => {
+                const num = Number(v);
+                if (!Number.isFinite(num)) return 0;
+                const rounded = Math.round(num);
+                return Number.isFinite(rounded) ? rounded : 0;
+              })
+            : [0, 0, 0],
+        }));
+        state.markBondsChanged?.();
+      }
     }
 
     clearOpacityMask?.({ refresh: true });

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 5,
+  "schemaVersion": 6,
   "savedAt": "2025-10-29T03:26:29.467Z",
   "source": {
     "kind": "xyz-inline",
@@ -400,6 +400,7 @@
     "cell": null,
     "showCell": false,
     "showGhostCells": false,
+    "periodicBonds": [],
     "meshAssignments": {
       "atoms": [
         "solid",

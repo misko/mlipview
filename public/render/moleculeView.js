@@ -1007,8 +1007,7 @@ function rebuildForces() {
     }
     if (DBG) console.log('[Forces][rebuild] complete visible=', g.mats.length > 0);
   }
-  function rebuildGhosts() {
-    __count('moleculeView#rebuildGhosts');
+  function clearGhostBuffers() {
     for (const g of ghostAtomGroups.values()) {
       g.mats.length = 0;
       g.indices.length = 0;
@@ -1023,6 +1022,265 @@ function rebuildForces() {
         g.baseGroup.ghostInstances[MODE_SOFT].length = 0;
       }
     }
+  }
+
+  function sanitizeImageDelta(raw) {
+    const out = [0, 0, 0];
+    let hasOffset = false;
+    if (Array.isArray(raw)) {
+      for (let idx = 0; idx < 3; idx++) {
+        const value = Number(raw[idx]);
+        if (!Number.isFinite(value)) continue;
+        const rounded = Math.round(value);
+        if (Math.abs(value - rounded) <= 1e-4) {
+          out[idx] = rounded;
+          if (rounded !== 0) hasOffset = true;
+        }
+      }
+    }
+    return { vector: out, hasOffset };
+  }
+
+  function rebuildGhostsWithImageDelta() {
+    const cell = molState.cell;
+    if (!cell || !cell.enabled) {
+      refreshAtomMatrices();
+      refreshBondMatrices();
+      return;
+    }
+    const { a, b, c } = cell;
+    const positions = Array.isArray(molState.positions) ? molState.positions : [];
+    const elements = Array.isArray(molState.elements) ? molState.elements : [];
+    if (!positions.length || !elements.length) {
+      refreshAtomMatrices();
+      refreshBondMatrices();
+      return;
+    }
+    const bondsArray = Array.isArray(molState.bonds) ? molState.bonds : [];
+    if (!bondsArray.length) {
+      refreshAtomMatrices();
+      refreshBondMatrices();
+      return;
+    }
+    function shiftToVector(shift) {
+      if (!Array.isArray(shift) || shift.length < 3) return { x: 0, y: 0, z: 0 };
+      const sx = Number(shift[0]) || 0;
+      const sy = Number(shift[1]) || 0;
+      const sz = Number(shift[2]) || 0;
+      const ax = a?.x || 0;
+      const ay = a?.y || 0;
+      const az = a?.z || 0;
+      const bx = b?.x || 0;
+      const by = b?.y || 0;
+      const bz = b?.z || 0;
+      const cx = c?.x || 0;
+      const cy = c?.y || 0;
+      const cz = c?.z || 0;
+      return {
+        x: sx * ax + sy * bx + sz * cx,
+        y: sx * ay + sy * by + sz * cy,
+        z: sx * az + sy * bz + sz * cz,
+      };
+    }
+    const BOND_DBG =
+      typeof window !== 'undefined' &&
+      (window.BOND_DEBUG === true || /[?&]bondDebug=1/.test(window.location?.search || ''));
+    function longThreshold() {
+      try {
+        if (molState?.cell?.enabled) {
+          const vec = {
+            x: (a?.x || 0) + (b?.x || 0) + (c?.x || 0),
+            y: (a?.y || 0) + (b?.y || 0) + (c?.y || 0),
+            z: (a?.z || 0) + (b?.z || 0) + (c?.z || 0),
+          };
+          const diag = Math.hypot(vec.x, vec.y, vec.z) || 0;
+          const mul =
+            typeof window !== 'undefined' && window.BOND_DEBUG_MULT
+              ? Number(window.BOND_DEBUG_MULT)
+              : 0.5;
+          return diag * (Number.isFinite(mul) ? mul : 0.5);
+        }
+      } catch {}
+      const fallback =
+        typeof window !== 'undefined' && window.BOND_DEBUG_MINLEN
+          ? Number(window.BOND_DEBUG_MINLEN)
+          : 6.0;
+      return Number.isFinite(fallback) ? fallback : 6.0;
+    }
+    const LONG_THR = longThreshold();
+    const baseShifts = [
+      [1, 0, 0],
+      [-1, 0, 0],
+      [0, 1, 0],
+      [0, -1, 0],
+      [0, 0, 1],
+      [0, 0, -1],
+    ];
+    const shiftSet = new Set();
+    const shiftKey = (s) => `${s[0]},${s[1]},${s[2]}`;
+    function addShift(tuple) {
+      if (!Array.isArray(tuple) || tuple.length < 3) return;
+      const sx = Math.trunc(Number(tuple[0]) || 0);
+      const sy = Math.trunc(Number(tuple[1]) || 0);
+      const sz = Math.trunc(Number(tuple[2]) || 0);
+      if (sx === 0 && sy === 0 && sz === 0) return;
+      shiftSet.add(shiftKey([sx, sy, sz]));
+    }
+    baseShifts.forEach(addShift);
+    const sanitizedBonds = [];
+    for (const bond of bondsArray) {
+      if (!bond) continue;
+      const i = bond.i;
+      const j = bond.j;
+      if (!Number.isInteger(i) || !Number.isInteger(j)) continue;
+      if (i < 0 || j < 0 || i >= positions.length || j >= positions.length) continue;
+      const { vector: deltaVec, hasOffset } = sanitizeImageDelta(bond.imageDelta);
+      if (hasOffset) {
+        addShift(deltaVec);
+        addShift(deltaVec.map((v) => -v));
+      }
+      sanitizedBonds.push({
+        bond,
+        i,
+        j,
+        delta: deltaVec,
+        hasOffset,
+      });
+    }
+    if (!sanitizedBonds.length) {
+      refreshAtomMatrices();
+      refreshBondMatrices();
+      return;
+    }
+    const shiftList = Array.from(shiftSet).map((key) =>
+      key.split(',').map((val) => Number(val) || 0)
+    );
+    shiftList.sort((lhs, rhs) => {
+      for (let idx = 0; idx < 3; idx++) {
+        if (lhs[idx] !== rhs[idx]) return lhs[idx] - rhs[idx];
+      }
+      return 0;
+    });
+    for (const shift of shiftList) {
+      const vec = shiftToVector(shift);
+      for (let idx = 0; idx < positions.length; idx++) {
+        const base = positions[idx];
+        if (!base) continue;
+        const element = elements[idx];
+        const group = ensureGhostAtomGroup(element);
+        const info = elInfo(element);
+        const scale = info.scale;
+        const pos = {
+          x: base.x + vec.x,
+          y: base.y + vec.y,
+          z: base.z + vec.z,
+        };
+        const mat = BABYLON.Matrix.Compose(
+          new BABYLON.Vector3(scale, scale, scale),
+          BABYLON.Quaternion.Identity(),
+          new BABYLON.Vector3(pos.x, pos.y, pos.z)
+        );
+        const inst = {
+          ghost: true,
+          baseIndex: idx,
+          shift: shift.slice(),
+          matrix: mat,
+        };
+        const baseGroup = group.baseGroup;
+        if (baseGroup?.ghostInstances?.[MODE_SOFT]) {
+          baseGroup.ghostInstances[MODE_SOFT].push(inst);
+        }
+        group.mats.push(mat);
+        group.indices.push({ base: idx, shift: shift.slice() });
+      }
+    }
+    const zeroShift = [0, 0, 0];
+    const seen = new Set();
+    function pushGhostBond(i, j, shiftA, shiftB) {
+      if (!Array.isArray(shiftA) || !Array.isArray(shiftB)) return;
+      if (
+        shiftA.length < 3 ||
+        shiftB.length < 3 ||
+        (shiftA[0] === 0 && shiftA[1] === 0 && shiftA[2] === 0 &&
+          shiftB[0] === 0 && shiftB[1] === 0 && shiftB[2] === 0)
+      ) {
+        return;
+      }
+      const key = `${i}|${j}|${shiftA[0]},${shiftA[1]},${shiftA[2]}|${shiftB[0]},${shiftB[1]},${shiftB[2]}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const group = ensureGhostBondGroup(keyOf(i, j));
+      const posA = positions[i];
+      const posB = positions[j];
+      if (!posA || !posB) return;
+      const vecA = shiftToVector(shiftA);
+      const vecB = shiftToVector(shiftB);
+      const pA = {
+        x: posA.x + vecA.x,
+        y: posA.y + vecA.y,
+        z: posA.z + vecA.z,
+      };
+      const pB = {
+        x: posB.x + vecB.x,
+        y: posB.y + vecB.y,
+        z: posB.z + vecB.z,
+      };
+      const mat = bondMatrix(pA, pB, 0.1);
+      const inst = {
+        ghost: true,
+        matrix: mat,
+        base: { i, j },
+        shiftA: shiftA.slice(),
+        shiftB: shiftB.slice(),
+      };
+      const baseGroup = group.baseGroup;
+      if (baseGroup?.ghostInstances?.[MODE_SOFT]) {
+        baseGroup.ghostInstances[MODE_SOFT].push(inst);
+      }
+      group.mats.push(mat);
+      group.indices.push({
+        i,
+        j,
+        shiftA: inst.shiftA,
+        shiftB: inst.shiftB,
+      });
+      if (BOND_DBG) {
+        try {
+          const L = Math.hypot(pB.x - pA.x, pB.y - pA.y, pB.z - pA.z);
+          if (L > LONG_THR) {
+            const elI = molState.elements[i];
+            const elJ = molState.elements[j];
+            console.log('[BOND-DBG-LONG][ghost][delta]', {
+              i,
+              j,
+              elements: [elI, elJ],
+              length: Number(L.toFixed(4)),
+              shiftA: inst.shiftA,
+              shiftB: inst.shiftB,
+            });
+          }
+        } catch {}
+      }
+    }
+    for (const shift of shiftList) {
+      for (const entry of sanitizedBonds) {
+        pushGhostBond(entry.i, entry.j, shift, shift);
+      }
+    }
+    for (const entry of sanitizedBonds) {
+      if (!entry.hasOffset) continue;
+      const delta = entry.delta;
+      const neg = delta.map((v) => -v);
+      pushGhostBond(entry.i, entry.j, zeroShift, delta);
+      pushGhostBond(entry.i, entry.j, neg, zeroShift);
+    }
+    refreshAtomMatrices();
+    refreshBondMatrices();
+  }
+
+  function legacyRebuildGhosts() {
+    __count('moleculeView#legacyRebuildGhosts');
+    clearGhostBuffers();
     if (!molState.showGhostCells || !molState.showCell || !molState.cell?.enabled) {
       refreshAtomMatrices();
       refreshBondMatrices();
@@ -1172,6 +1430,25 @@ function rebuildForces() {
     }
     refreshAtomMatrices();
     refreshBondMatrices();
+  }
+
+  function rebuildGhosts() {
+    __count('moleculeView#rebuildGhosts');
+    const cellReady = molState.showGhostCells && molState.showCell && molState.cell?.enabled;
+    if (!cellReady) {
+      clearGhostBuffers();
+      refreshAtomMatrices();
+      refreshBondMatrices();
+      return;
+    }
+    const bonds = Array.isArray(molState.bonds) ? molState.bonds : [];
+    const canUseImageDelta = bonds.some((b) => Array.isArray(b?.imageDelta));
+    if (canUseImageDelta) {
+      clearGhostBuffers();
+      rebuildGhostsWithImageDelta();
+    } else {
+      legacyRebuildGhosts();
+    }
   }
 
   function rebuildCellLines() {
