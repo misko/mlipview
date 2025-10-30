@@ -1,34 +1,65 @@
 // SessionStateManager centralises capture/restore of viewer, timeline, and websocket state.
 // Dependencies are injected so the manager stays agnostic of Babylon.js internals.
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
+const VALID_MESH_MODES = new Set(['solid', 'soft']);
 
 function migrateSnapshotSchema(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') {
     throw new Error('Invalid session snapshot');
   }
-  if (snapshot.schemaVersion === SCHEMA_VERSION) {
-    return snapshot;
-  }
-  if (snapshot.schemaVersion === 3) {
-    const clone = deepClone(snapshot);
-    clone.schemaVersion = SCHEMA_VERSION;
-    if (clone.timeline && Array.isArray(clone.timeline.controlMessages)) {
-      clone.timeline.controlMessages = clone.timeline.controlMessages.map((msg, idx) => {
-        if (!msg || typeof msg !== 'object') return null;
-        const upgraded = { ...msg };
-        if (typeof upgraded.label !== 'string' || !upgraded.label) {
-          upgraded.label = typeof upgraded.id === 'string' ? upgraded.id : `control-${idx}`;
+  let current = deepClone(snapshot);
+  while (current.schemaVersion !== SCHEMA_VERSION) {
+    switch (current.schemaVersion) {
+      case 3: {
+        if (current.timeline && Array.isArray(current.timeline.controlMessages)) {
+          current.timeline.controlMessages = current.timeline.controlMessages
+            .map((msg, idx) => {
+              if (!msg || typeof msg !== 'object') return null;
+              const upgraded = { ...msg };
+              if (typeof upgraded.label !== 'string' || !upgraded.label) {
+                upgraded.label = typeof upgraded.id === 'string' ? upgraded.id : `control-${idx}`;
+              }
+              if (typeof upgraded.notes !== 'string') {
+                delete upgraded.notes;
+              }
+              return upgraded;
+            })
+            .filter(Boolean);
         }
-        if (typeof upgraded.notes !== 'string') {
-          delete upgraded.notes;
+        current.schemaVersion = 4;
+        break;
+      }
+      case 4: {
+        current.viewer = current.viewer || {};
+        const atomCount = Array.isArray(current.viewer.positions) ? current.viewer.positions.length : 0;
+        if (!current.viewer.meshAssignments || typeof current.viewer.meshAssignments !== 'object') {
+          current.viewer.meshAssignments = {
+            atoms: atomCount ? new Array(atomCount).fill('solid') : [],
+            bonds: [],
+          };
+        } else {
+          if (!Array.isArray(current.viewer.meshAssignments.atoms)) {
+            current.viewer.meshAssignments.atoms = atomCount ? new Array(atomCount).fill('solid') : [];
+          }
+          if (!Array.isArray(current.viewer.meshAssignments.bonds)) {
+            current.viewer.meshAssignments.bonds = [];
+          }
         }
-        return upgraded;
-      }).filter(Boolean);
+        current.render = current.render || {};
+        if (!current.render.overrides || typeof current.render.overrides !== 'object') {
+          current.render.overrides = {};
+        }
+        if (!current.render.overrides.atoms) current.render.overrides.atoms = {};
+        if (!current.render.overrides.bonds) current.render.overrides.bonds = {};
+        current.schemaVersion = SCHEMA_VERSION;
+        break;
+      }
+      default:
+        throw new Error(`Unsupported session snapshot schema: ${current.schemaVersion}`);
     }
-    return clone;
   }
-  throw new Error(`Unsupported session snapshot schema: ${snapshot.schemaVersion}`);
+  return current;
 }
 
 function deepClone(obj) {
@@ -121,6 +152,9 @@ export function createSessionStateManager(deps) {
     lastContinuousOpts,
     rememberResume,
     stopSimulation,
+    getMeshModes,
+    applyMeshModes,
+    clearOpacityMask,
     controlMessageEngine,
     timelinePlayback,
     getTimelinePlaybackSnapshot,
@@ -132,6 +166,46 @@ export function createSessionStateManager(deps) {
 
   let lastSource = { kind: 'init', label: 'initial' };
   let baselineSnapshot = null;
+
+  function sanitizeModeArray(array, fallback = 'solid', expectedLength) {
+    if (!Array.isArray(array)) return null;
+    if (
+      typeof expectedLength === 'number' &&
+      expectedLength >= 0 &&
+      array.length !== expectedLength
+    ) {
+      return null;
+    }
+    return array.map((value) => (VALID_MESH_MODES.has(value) ? value : fallback));
+  }
+
+  function buildOverrides(defaultModes = [], currentModes = []) {
+    const overrides = { soft: [], solid: [] };
+    if (!Array.isArray(defaultModes)) return overrides;
+    for (let i = 0; i < defaultModes.length; i++) {
+      const defaultMode = VALID_MESH_MODES.has(defaultModes[i]) ? defaultModes[i] : 'solid';
+      const currentMode = VALID_MESH_MODES.has(currentModes[i]) ? currentModes[i] : defaultMode;
+      if (currentMode !== defaultMode) overrides[currentMode].push(i);
+    }
+    return overrides;
+  }
+
+  function deriveCurrentModes(defaultModes, overrides) {
+    if (!Array.isArray(defaultModes)) return null;
+    const current = defaultModes.slice();
+    if (!overrides || typeof overrides !== 'object') return current;
+    for (const [mode, indices] of Object.entries(overrides)) {
+      if (!VALID_MESH_MODES.has(mode)) continue;
+      if (!Array.isArray(indices)) continue;
+      for (const idx of indices) {
+        const n = Number(idx);
+        if (Number.isInteger(n) && n >= 0 && n < current.length) {
+          current[n] = mode;
+        }
+      }
+    }
+    return current;
+  }
 
   function viewerToSnapshot(state = getViewerState()) {
     const elements = Array.isArray(state?.elements) ? state.elements.map(normalizeElement) : [];
@@ -170,6 +244,32 @@ export function createSessionStateManager(deps) {
     const runningMode = mode === Mode?.MD ? 'md' : mode === Mode?.Relax ? 'relax' : 'idle';
     const playbackSnapshot = getTimelinePlaybackSnapshot?.() ?? timelinePlayback?.getSnapshot?.();
     const controlSnapshot = getTimelineControlSnapshot?.() ?? controlMessageEngine?.getSnapshot?.();
+    const meshModes = getMeshModes?.() || {};
+    const atomCount = viewer.positions.length;
+    const bondCount = Array.isArray(state?.bonds) ? state.bonds.length : 0;
+    const atomDefaults =
+      sanitizeModeArray(meshModes.atoms?.default, 'solid', atomCount) ||
+      (atomCount ? new Array(atomCount).fill('solid') : []);
+    const atomCurrents =
+      sanitizeModeArray(meshModes.atoms?.current, 'solid', atomCount) || atomDefaults.slice();
+    const bondDefaults =
+      sanitizeModeArray(meshModes.bonds?.default, 'solid', bondCount) ||
+      (bondCount ? new Array(bondCount).fill('solid') : []);
+    const bondCurrents =
+      sanitizeModeArray(meshModes.bonds?.current, 'solid', bondCount) || bondDefaults.slice();
+
+    const atomOverridesFull = buildOverrides(atomDefaults, atomCurrents);
+    const bondOverridesFull = buildOverrides(bondDefaults, bondCurrents);
+
+    const atomOverrides = {};
+    for (const mode of Object.keys(atomOverridesFull)) {
+      if (atomOverridesFull[mode].length) atomOverrides[mode] = atomOverridesFull[mode];
+    }
+    const bondOverrides = {};
+    for (const mode of Object.keys(bondOverridesFull)) {
+      if (bondOverridesFull[mode].length) bondOverrides[mode] = bondOverridesFull[mode];
+    }
+
     const snapshot = {
       schemaVersion: SCHEMA_VERSION,
       savedAt: new Date().toISOString(),
@@ -200,6 +300,17 @@ export function createSessionStateManager(deps) {
       },
     };
     snapshot.websocket.nextSeq = (snapshot.websocket.seq | 0) + 1;
+    snapshot.viewer.meshAssignments = {
+      atoms: atomDefaults,
+      bonds: bondDefaults,
+    };
+    if (!snapshot.render || typeof snapshot.render !== 'object') snapshot.render = {};
+    const overridesPayload = {};
+    if (Object.keys(atomOverrides).length) overridesPayload.atoms = atomOverrides;
+    if (Object.keys(bondOverrides).length) overridesPayload.bonds = bondOverrides;
+    if (Object.keys(overridesPayload).length) snapshot.render.overrides = overridesPayload;
+    else if (snapshot.render.overrides) delete snapshot.render.overrides;
+    if (snapshot.render && !Object.keys(snapshot.render).length) delete snapshot.render;
     return snapshot;
   }
 
@@ -291,6 +402,26 @@ export function createSessionStateManager(deps) {
       state.showGhostCells = !!snap.viewer?.showGhostCells;
       state.markCellChanged?.();
     }
+
+    clearOpacityMask?.({ refresh: true });
+    const meshAssignments = snap.viewer?.meshAssignments || {};
+    const overrides = snap.render?.overrides || {};
+    const atomCount = Array.isArray(snap.viewer?.positions) ? snap.viewer.positions.length : 0;
+    const bondCount = Array.isArray(meshAssignments.bonds) ? meshAssignments.bonds.length : 0;
+    const atomDefaults =
+      sanitizeModeArray(meshAssignments.atoms, 'solid', atomCount) ||
+      (atomCount ? new Array(atomCount).fill('solid') : []);
+    const bondDefaults =
+      sanitizeModeArray(meshAssignments.bonds, 'solid', bondCount) ||
+      (bondCount ? new Array(bondCount).fill('solid') : []);
+    const atomCurrents = deriveCurrentModes(atomDefaults, overrides.atoms);
+    const bondCurrents = deriveCurrentModes(bondDefaults, overrides.bonds);
+    applyMeshModes?.({
+      atomDefault: atomDefaults || undefined,
+      atomCurrent: atomCurrents || undefined,
+      bondDefault: bondDefaults || undefined,
+      bondCurrent: bondCurrents || undefined,
+    });
 
     energyPlot?.importSeries?.(snap.energyPlot || {});
     applyTimelineImport(snap);

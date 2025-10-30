@@ -61,6 +61,24 @@ function sanitizeAction(action) {
       if (action.backgroundOpacity && typeof action.backgroundOpacity === 'object') {
         payload.backgroundOpacity = clone(action.backgroundOpacity);
       }
+      const allowedModes = new Set(['solid', 'soft']);
+      if (action.mode && typeof action.mode === 'object') {
+        const cleaned = {};
+        const keys = ['focus', 'background', 'focusAtoms', 'backgroundAtoms', 'focusBonds', 'backgroundBonds'];
+        for (const key of keys) {
+          const val = action.mode[key];
+          if (typeof val === 'string' && allowedModes.has(val)) cleaned[key] = val;
+        }
+        if (Object.keys(cleaned).length) payload.mode = cleaned;
+      } else if (typeof action.mode === 'string' && allowedModes.has(action.mode)) {
+        payload.mode = { focus: action.mode, background: action.mode };
+      }
+      if (action.applyTo && typeof action.applyTo === 'object') {
+        const cleanedApply = {};
+        if (typeof action.applyTo.primaryAtoms === 'boolean') cleanedApply.primaryAtoms = action.applyTo.primaryAtoms;
+        if (typeof action.applyTo.primaryBonds === 'boolean') cleanedApply.primaryBonds = action.applyTo.primaryBonds;
+        if (Object.keys(cleanedApply).length) payload.applyTo = cleanedApply;
+      }
       if (Number.isFinite(action.transitionMs)) payload.transitionMs = Math.max(0, Math.floor(action.transitionMs));
       return { type, ...payload };
     }

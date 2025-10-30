@@ -507,6 +507,12 @@ export function createFairchemWS() {
             }
             if (typeof n.simulationStopped === 'boolean') out.simulationStopped = !!n.simulationStopped;
             console.log('[WS][notice]', out.message || '(no message)', { simulation_stopped: !!out.simulationStopped, seq: out.seq });
+            try {
+              __notifyTestHook(r, 'NOTICE', {
+                message: out.message || n.message,
+                simulationStopped: out.simulationStopped,
+              });
+            } catch { }
           } else {
             __err('[WS] Unknown payload case:', which);
             return;

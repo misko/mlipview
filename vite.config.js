@@ -147,6 +147,40 @@ export default defineConfig({
         }
       },
     },
+    {
+      name: 'copy-vendor-on-build',
+      closeBundle() {
+        try {
+          const src = path.resolve(__dirname, 'public', 'vendor');
+          const dst = path.resolve(__dirname, 'dist', 'vendor');
+          if (!fs.existsSync(src)) return;
+          fs.mkdirSync(dst, { recursive: true });
+          if (fs.cpSync) {
+            fs.cpSync(src, dst, { recursive: true });
+          } else {
+            const entries = fs.readdirSync(src);
+            for (const entry of entries) {
+              const s = path.join(src, entry);
+              const d = path.join(dst, entry);
+              const stat = fs.statSync(s);
+              if (stat.isDirectory()) {
+                fs.mkdirSync(d, { recursive: true });
+                const inner = fs.readdirSync(s);
+                for (const file of inner) {
+                  const sf = path.join(s, file);
+                  const df = path.join(d, file);
+                  if (fs.statSync(sf).isFile()) fs.copyFileSync(sf, df);
+                }
+              } else if (stat.isFile()) {
+                fs.copyFileSync(s, d);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('[vite][copy-vendor] failed:', e?.message || e);
+        }
+      },
+    },
   ],
   optimizeDeps: {},
 });

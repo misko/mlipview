@@ -226,6 +226,41 @@ export function createBondService(molState) {
     const bonds = computePeriodicBonds();
     // Store opacity for renderer so it can apply group alpha (harmless to existing logic using only i,j)
     // Preserve all bonds with per-instance opacity; renderer will hide crossing ones visually.
+    const DBG =
+      typeof window !== 'undefined' &&
+      (window.__MLIP_DEBUG_STRETCH === true || /[?&]bondStretchDebug=1/.test(window.location?.search || ''));
+    if (DBG) {
+      try {
+        let min = Number.POSITIVE_INFINITY;
+        let max = Number.NEGATIVE_INFINITY;
+        let softish = 0;
+        const samples = [];
+        for (const b of bonds) {
+          const op = typeof b.opacity === 'number' ? b.opacity : 1;
+          if (op < min) min = op;
+          if (op > max) max = op;
+          if (op < 0.99) softish++;
+        }
+        for (let i = 0; i < Math.min(6, bonds.length); i++) {
+          const b = bonds[i];
+          samples.push({
+            i: b.i,
+            j: b.j,
+            opacity: typeof b.opacity === 'number' ? Number(b.opacity.toFixed(4)) : null,
+            crossing: !!b.crossing,
+          });
+        }
+        console.log('[BondService][recompute]', {
+          count: bonds.length,
+          minOpacity: Number.isFinite(min) ? Number(min.toFixed(4)) : null,
+          maxOpacity: Number.isFinite(max) ? Number(max.toFixed(4)) : null,
+          belowThreshold: softish,
+          sample: samples,
+        });
+      } catch (err) {
+        console.warn('[BondService][recompute] debug log error', err);
+      }
+    }
     molState.bonds = bonds.map((b) => ({ i: b.i, j: b.j, opacity: b.opacity }));
     molState.markBondsChanged();
     return bonds;

@@ -76,9 +76,13 @@ describe('SessionStateManager', () => {
     });
 
     const snapshot = manager.captureSnapshot({ kind: 'xyz', label: 'test.xyz' });
-    expect(snapshot.schemaVersion).toBe(4);
+    expect(snapshot.schemaVersion).toBe(5);
     expect(snapshot.viewer.elements).toEqual(['H', 'O']);
     expect(snapshot.energyPlot.series).toHaveLength(1);
+    expect(snapshot.viewer.meshAssignments).toEqual({
+      atoms: ['solid', 'solid'],
+      bonds: [],
+    });
 
     const loadSnapshot = {
       schemaVersion: 3,

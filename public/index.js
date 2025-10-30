@@ -2731,6 +2731,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
         controlEngine.refresh();
       },
       onSnapshotApplied: handleSessionSnapshotApplied,
+      getMeshModes: () => ({
+        atoms: view?.getAtomMeshModes?.(),
+        bonds: view?.getBondMeshModes?.(),
+      }),
+      applyMeshModes: (modes) => view?.applyMeshModes?.(modes || {}),
+      clearOpacityMask: (opts) => view?.clearOpacityMask?.(opts || { refresh: true }),
     });
     try { sessionStateManager.setBaselineFromState({ kind: 'init' }, { includeTimeline: false }); } catch { }
   }

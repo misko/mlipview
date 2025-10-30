@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "savedAt": "2025-10-29T03:26:29.467Z",
   "source": {
     "kind": "xyz-inline",
@@ -399,7 +399,47 @@
     ],
     "cell": null,
     "showCell": false,
-    "showGhostCells": false
+    "showGhostCells": false,
+    "meshAssignments": {
+      "atoms": [
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid",
+        "solid"
+      ],
+      "bonds": []
+    }
   },
   "energyPlot": {
     "series": [
@@ -107351,7 +107391,11 @@
               "atoms": 0.18,
               "bonds": 0.08
             },
-            "transitionMs": 180
+            "transitionMs": 180,
+            "mode": {
+              "focus": "solid",
+              "background": "soft"
+            }
           }
         ],
         "label": "Approach Phase"
@@ -107416,7 +107460,11 @@
               "atoms": 0.15,
               "bonds": 0.05
             },
-            "transitionMs": 220
+            "transitionMs": 220,
+            "mode": {
+              "focus": "solid",
+              "background": "soft"
+            }
           }
         ],
         "label": "Leaving Group"
@@ -107431,5 +107479,15 @@
     "totalInteractionCount": 195,
     "simStep": 0,
     "lastAck": 201
+  },
+  "render": {
+    "overrides": {
+      "atoms": {
+        "soft": []
+      },
+      "bonds": {
+        "soft": []
+      }
+    }
   }
 }
