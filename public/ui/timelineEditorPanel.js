@@ -381,10 +381,16 @@ function buildActionsFromDraft(draftActions = {}) {
     const mode = draftActions.callout.anchorMode || payload.anchor.mode || 'atom';
     payload.anchor.mode = mode;
     if (mode === 'atom') {
-      const atoms = parseAtoms(draftActions.callout.anchor?.atoms || draftActions.callout.anchorAtomsText);
+      const anchorAtoms = draftActions.callout.anchor?.atoms ?? draftActions.callout.anchorAtomsText;
+      const atoms = Array.isArray(anchorAtoms)
+        ? anchorAtoms.filter((n) => Number.isInteger(n) && n >= 0)
+        : parseAtoms(anchorAtoms);
       payload.anchor.atoms = atoms;
     } else if (mode === 'bond') {
-      const atoms = parseAtoms(draftActions.callout.anchor?.atoms);
+      const anchorAtoms = draftActions.callout.anchor?.atoms;
+      const atoms = Array.isArray(anchorAtoms)
+        ? anchorAtoms.filter((n) => Number.isInteger(n) && n >= 0).slice(0, 2)
+        : parseAtoms(anchorAtoms).slice(0, 2);
       payload.anchor.atoms = atoms.slice(0, 2);
     } else if (mode === 'world' && Array.isArray(draftActions.callout.worldPosition)) {
       payload.anchor.position = draftActions.callout.worldPosition.map((v) => Number(v) || 0);

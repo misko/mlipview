@@ -724,7 +724,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   const activeControlState = {
     speed: null,
-    callout: null,
+    callouts: [],
     opacity: null,
   };
   const timelineLockClass = 'timeline-readonly-overlay';
@@ -1942,7 +1942,9 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       energyPlot.clearMarker();
     }
     const frameIndex = offsetToFrameIndex(offset);
-    const controlResult = Number.isInteger(frameIndex) ? controlEngine.evaluate(frameIndex) : { speed: null, callout: null, opacity: null, activeMessages: [] };
+    const controlResult = Number.isInteger(frameIndex)
+      ? controlEngine.evaluate(frameIndex)
+      : { speed: null, callout: null, callouts: [], opacity: null, activeMessages: [] };
     applyControlActions(controlResult, { frame: entry, offset, frameIndex });
     if (timelineUi) timelineUi.setActiveOffset(offset);
     if (EDIT_MODE) {
@@ -1968,19 +1970,20 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       activeControlState.speed = null;
     }
 
-    const callout = result?.callout || null;
-    if (callout) {
+    const callouts = Array.isArray(result?.callouts) && result.callouts.length
+      ? result.callouts
+      : result?.callout
+        ? [result.callout]
+        : [];
+    if (callouts.length) {
       const layer = ensureCalloutLayer();
-      layer?.show(callout);
-      layer?.update();
-      activeControlState.callout = { ...callout };
+      layer?.showAll?.(callouts);
+      layer?.update?.();
+      activeControlState.callouts = callouts.map((c) => ({ key: c.key, sourceId: c.sourceId }));
     } else {
-      if (activeControlState.callout) {
-        calloutLayer?.hide();
-      } else {
-        calloutLayer?.update?.();
-      }
-      activeControlState.callout = null;
+      if (activeControlState.callouts?.length) calloutLayer?.hide();
+      else calloutLayer?.update?.();
+      activeControlState.callouts = [];
     }
 
     const opacity = result?.opacity || null;
@@ -2095,7 +2098,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (calloutLayer) {
       try { calloutLayer.hide(); } catch { }
     }
-    activeControlState.callout = null;
+    activeControlState.callouts = [];
     const resumeMode = timelineState.resumeMode;
     timelineState.resumeMode = null;
     if (timelineUi) {

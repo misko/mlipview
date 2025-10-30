@@ -206,6 +206,7 @@ export function createControlMessageEngine(resolvers = {}) {
       return {
         speed: null,
         callout: null,
+        callouts: [],
         opacity: null,
         activeMessages: [],
       };
@@ -217,6 +218,7 @@ export function createControlMessageEngine(resolvers = {}) {
       return {
         speed: null,
         callout: null,
+        callouts: [],
         opacity: null,
         activeMessages: [],
       };
@@ -231,6 +233,7 @@ export function createControlMessageEngine(resolvers = {}) {
     const result = {
       speed: null,
       callout: null,
+      callouts: [],
       opacity: null,
       activeMessages: sorted.map((msg) => ({
         id: msg.id,
@@ -241,11 +244,20 @@ export function createControlMessageEngine(resolvers = {}) {
       })),
     };
     for (const msg of sorted) {
-      for (const action of msg.actions) {
+      for (let actionIdx = 0; actionIdx < msg.actions.length; actionIdx++) {
+        const action = msg.actions[actionIdx];
         if (action.type === 'timeline.playbackSpeed' && !result.speed) {
           result.speed = { ...action, sourceId: msg.id, priority: msg.priority, label: msg.label || null };
-        } else if (action.type === 'overlay.callout' && !result.callout) {
-          result.callout = { ...action, sourceId: msg.id, priority: msg.priority, label: msg.label || null };
+        } else if (action.type === 'overlay.callout') {
+          const payload = {
+            ...action,
+            sourceId: msg.id,
+            priority: msg.priority,
+            label: msg.label || null,
+            key: `${msg.id}:${actionIdx}`,
+          };
+          if (!result.callout) result.callout = payload;
+          result.callouts.push(payload);
         } else if (action.type === 'visual.opacityFocus' && !result.opacity) {
           result.opacity = { ...action, sourceId: msg.id, priority: msg.priority, label: msg.label || null };
         }

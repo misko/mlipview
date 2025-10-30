@@ -1,9 +1,12 @@
 // Callout overlay rendered above the molecule timeline playback.
 
 function toVector3(arr) {
-  if (!Array.isArray(arr)) return null;
-  if (arr.length < 3) return null;
-  return { x: Number(arr[0]) || 0, y: Number(arr[1]) || 0, z: Number(arr[2]) || 0 };
+  if (!Array.isArray(arr) || arr.length < 3) return null;
+  return {
+    x: Number(arr[0]) || 0,
+    y: Number(arr[1]) || 0,
+    z: Number(arr[2]) || 0,
+  };
 }
 
 export function createCalloutLayer({
@@ -13,80 +16,12 @@ export function createCalloutLayer({
   getAtomPositionWorld = () => null,
   getBondMidpointWorld = () => null,
 } = {}) {
-  const state = {
-    current: null,
-    mesh: null,
-    adt: null,
-    textBlock: null,
-  };
+  const entries = new Map();
 
-  function disposeVisual() {
-    try { state.adt?.dispose?.(); } catch { }
-    try { state.mesh?.dispose?.(); } catch { }
-    state.mesh = null;
-    state.adt = null;
-    state.textBlock = null;
-  }
-
-  function ensureVisual(cfg) {
-    if (!babylon || !scene) return;
-    const width = Number(cfg.panelSize?.width) > 0 ? Number(cfg.panelSize.width) : 1.4;
-    const height = Number(cfg.panelSize?.height) > 0 ? Number(cfg.panelSize.height) : 0.7;
-    if (!state.mesh) {
-      const plane = babylon.MeshBuilder?.CreatePlane
-        ? babylon.MeshBuilder.CreatePlane('timeline-callout', { width: 1, height: 1 }, scene)
-        : null;
-      if (!plane) return;
-      plane.billboardMode = babylon.Mesh.BILLBOARDMODE_ALL;
-      plane.isPickable = false;
-      plane.renderingGroupId = renderingGroupId;
-      state.mesh = plane;
-    }
-    const baseWidth = 1;
-    const baseHeight = 1;
-    state.mesh.scaling.x = width / baseWidth;
-    state.mesh.scaling.y = height / baseHeight;
-    if (!state.adt && babylon.GUI?.AdvancedDynamicTexture) {
-      state.adt = babylon.GUI.AdvancedDynamicTexture.CreateForMesh(state.mesh, 1024, 512, false);
-      state.adt.wrap = false;
-      const rect = new babylon.GUI.Rectangle('timeline-callout-rect');
-      rect.thickness = 0;
-      rect.background = 'rgba(10,14,24,0.85)';
-      rect.alpha = 1;
-      rect.width = 1;
-      rect.height = 1;
-      state.adt.addControl(rect);
-      const tb = new babylon.GUI.TextBlock('timeline-callout-text');
-      tb.textHorizontalAlignment = babylon.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
-      tb.textVerticalAlignment = babylon.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
-      tb.color = '#f0f7ff';
-      tb.textWrapping = true;
-      tb.fontFamily = 'system-ui, sans-serif';
-      rect.addControl(tb);
-      state.textBlock = tb;
-    }
-    if (state.textBlock) {
-      state.textBlock.text = cfg.text || '';
-      const size = Number(cfg.textSize);
-      state.textBlock.fontSize = Number.isFinite(size) && size > 0 ? size * 48 : 42;
-      if (cfg.style && typeof cfg.style === 'object') {
-        if (cfg.style.color) state.textBlock.color = cfg.style.color;
-        if (cfg.style.fontFamily) state.textBlock.fontFamily = cfg.style.fontFamily;
-      }
-    }
-    if (state.adt && cfg.style && typeof cfg.style === 'object') {
-      const rect = state.adt.rootContainer?.children?.[0];
-      if (rect) {
-        if (cfg.style.background) rect.background = cfg.style.background;
-        if (cfg.style.opacity != null) rect.alpha = Number(cfg.style.opacity);
-        if (cfg.style.cornerRadius != null) rect.cornerRadius = Number(cfg.style.cornerRadius);
-      }
-    }
-    if (typeof state.mesh.setEnabled === 'function') {
-      state.mesh.setEnabled(true);
-    } else {
-      state.mesh.isVisible = true;
-    }
+  function disposeEntry(entry) {
+    if (!entry) return;
+    try { entry.adt?.dispose?.(); } catch {}
+    try { entry.mesh?.dispose?.(); } catch {}
   }
 
   function computeAnchorPosition(cfg) {
@@ -107,12 +42,8 @@ export function createCalloutLayer({
       }
       case 'bond': {
         let atoms = Array.isArray(anchor.atoms) ? anchor.atoms : null;
-        if (!atoms && Number.isInteger(anchor.i) && Number.isInteger(anchor.j)) {
-          atoms = [anchor.i, anchor.j];
-        }
-        if (atoms && atoms.length >= 2) {
-          base = getBondMidpointWorld(atoms[0], atoms[1]);
-        }
+        if (!atoms && Number.isInteger(anchor.i) && Number.isInteger(anchor.j)) atoms = [anchor.i, anchor.j];
+        if (atoms && atoms.length >= 2) base = getBondMidpointWorld(atoms[0], atoms[1]);
         break;
       }
       default:
@@ -129,42 +60,119 @@ export function createCalloutLayer({
     return base;
   }
 
-  function updatePosition(cfg) {
-    if (!state.mesh || !cfg) return;
-    const pos = computeAnchorPosition(cfg);
-    if (!pos) return;
-    state.mesh.position.x = pos.x;
-    state.mesh.position.y = pos.y;
-    state.mesh.position.z = pos.z;
+  function ensureVisual(entry, cfg) {
+    if (!babylon || !scene) return;
+    const width = Number(cfg.panelSize?.width) > 0 ? Number(cfg.panelSize.width) : 1.4;
+    const height = Number(cfg.panelSize?.height) > 0 ? Number(cfg.panelSize.height) : 0.7;
+    if (!entry.mesh) {
+      const plane = babylon.MeshBuilder?.CreatePlane
+        ? babylon.MeshBuilder.CreatePlane(`timeline-callout-${entry.key}`, { width: 1, height: 1 }, scene)
+        : null;
+      if (!plane) return;
+      plane.billboardMode = babylon.Mesh.BILLBOARDMODE_ALL;
+      plane.isPickable = false;
+      plane.renderingGroupId = renderingGroupId;
+      entry.mesh = plane;
+    }
+    entry.mesh.scaling.x = width;
+    entry.mesh.scaling.y = height;
+    if (!entry.adt && babylon.GUI?.AdvancedDynamicTexture) {
+      entry.adt = babylon.GUI.AdvancedDynamicTexture.CreateForMesh(entry.mesh, 1024, 512, false);
+      entry.adt.wrap = false;
+      const rect = new babylon.GUI.Rectangle(`timeline-callout-rect-${entry.key}`);
+      rect.thickness = 0;
+      rect.background = 'rgba(10,14,24,0.85)';
+      rect.alpha = 1;
+      rect.width = 1;
+      rect.height = 1;
+      entry.adt.addControl(rect);
+      const tb = new babylon.GUI.TextBlock(`timeline-callout-text-${entry.key}`);
+      tb.textHorizontalAlignment = babylon.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
+      tb.textVerticalAlignment = babylon.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
+      tb.color = '#f0f7ff';
+      tb.textWrapping = true;
+      tb.fontFamily = 'system-ui, sans-serif';
+      rect.addControl(tb);
+      entry.textBlock = tb;
+    }
+    if (entry.textBlock) {
+      entry.textBlock.text = cfg.text || '';
+      const size = Number(cfg.textSize);
+      entry.textBlock.fontSize = Number.isFinite(size) && size > 0 ? size * 48 : 42;
+      if (cfg.style && typeof cfg.style === 'object') {
+        if (cfg.style.color) entry.textBlock.color = cfg.style.color;
+        if (cfg.style.fontFamily) entry.textBlock.fontFamily = cfg.style.fontFamily;
+      }
+    }
+    if (entry.adt && cfg.style && typeof cfg.style === 'object') {
+      const rect = entry.adt.rootContainer?.children?.[0];
+      if (rect) {
+        if (cfg.style.background) rect.background = cfg.style.background;
+        if (cfg.style.opacity != null) rect.alpha = Number(cfg.style.opacity);
+        if (cfg.style.cornerRadius != null) rect.cornerRadius = Number(cfg.style.cornerRadius);
+      }
+    }
+    if (typeof entry.mesh.setEnabled === 'function') entry.mesh.setEnabled(true);
+    else entry.mesh.isVisible = true;
   }
 
-  function clear() {
-    state.current = null;
-    if (state.mesh) {
-      if (typeof state.mesh.setEnabled === 'function') state.mesh.setEnabled(false);
-      else state.mesh.isVisible = false;
+  function updatePosition(entry) {
+    if (!entry?.mesh || !entry.config) return;
+    const pos = computeAnchorPosition(entry.config);
+    if (!pos) return;
+    entry.mesh.position.x = pos.x;
+    entry.mesh.position.y = pos.y;
+    entry.mesh.position.z = pos.z;
+  }
+
+  function showAll(configs = []) {
+    const keep = new Set();
+    configs.forEach((cfg, index) => {
+      const key = cfg.key || cfg.sourceId || `callout-${index}`;
+      let entry = entries.get(key);
+      if (!entry) {
+        entry = { key, mesh: null, adt: null, textBlock: null, config: null };
+        entries.set(key, entry);
+      }
+      entry.config = { ...cfg };
+      ensureVisual(entry, entry.config);
+      updatePosition(entry);
+      keep.add(key);
+    });
+    for (const [key, entry] of entries.entries()) {
+      if (!keep.has(key)) {
+        disposeEntry(entry);
+        entries.delete(key);
+      }
+    }
+  }
+
+  function hideAll() {
+    for (const [key, entry] of entries.entries()) {
+      disposeEntry(entry);
+      entries.delete(key);
     }
   }
 
   return {
     show(config) {
-      state.current = config ? { ...config } : null;
-      if (!state.current) {
-        clear();
-        return;
-      }
-      ensureVisual(state.current);
-      updatePosition(state.current);
+      showAll(config ? [config] : []);
     },
+    showAll,
     update() {
-      if (!state.current) return;
-      updatePosition(state.current);
+      for (const entry of entries.values()) {
+        updatePosition(entry);
+      }
     },
-    hide: clear,
-    dispose: disposeVisual,
+    hide: hideAll,
+    dispose() {
+      for (const entry of entries.values()) disposeEntry(entry);
+      entries.clear();
+    },
     getState: () => ({
-      visible: !!state.current,
-      config: state.current ? { ...state.current } : null,
+      visible: entries.size > 0,
+      count: entries.size,
+      configs: Array.from(entries.values()).map((entry) => ({ ...entry.config })),
     }),
   };
 }

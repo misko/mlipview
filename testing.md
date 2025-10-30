@@ -44,7 +44,8 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
   - `ws-timeline-energy-marker.spec.js`: Enters timeline playback and asserts the energy plot displays (and clears) the playback marker.
   - `ws-timeline-slider-select.spec.js`: Clicks a single slider position and waits for timeline mode to activate on the requested offset (guards against the historical double-click requirement).
   - `ws-session-save-load.spec.js`: Captures a JSON snapshot, mutates geometry, loads the snapshot, verifies reset-to-last-load rehydrates the state/counters, and asserts MD runs resume after exiting timeline playback.
-  - `ws-timeline-mesh-mode.spec.js`: Drives a historical selection, applies an opacity mask, and asserts atom/bond instances migrate to soft masters during the fade then return to their baseline solid/soft split when the mask clears.
+- `ws-timeline-mesh-mode.spec.js`: Drives a historical selection, applies an opacity mask, and asserts atom/bond instances migrate to soft masters during the fade then return to their baseline solid/soft split when the mask clears.
+- `timelineEditorPanel.callout.spec.js`: Exercises the authoring UI, editing anchor atoms and offsets, and confirms the saved control-message payload retains the updated values.
 - `ws-session-playback-resume.spec.js`: Runs MD on ROY, captures a JSON snapshot, reloads it, scrubs five frames back, then plays forward until live mode resumes—asserting at least 18 and at most 170 new MD frames arrive before the viewer reattaches to the live stream (protects against both stalls and runaway playback).
 
 - **Ghost & Transparency Modes**
@@ -205,3 +206,6 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
   - `timelinePlaybackController.spec.js`: Exercises the standalone playback scheduler, validating fps cadence, overrides, snapshot helpers, and the new setter utilities for auto-play/loop configuration.
 
 > _Cross-reference_: Tests listed only once above cover all ported `x-*` suites. If you add a new suite, update this hierarchy so related coverage stays discoverable.
+- `ws-library-sn2-autoplay.spec.js`: Loads the SN2 narrated session from the built-in library, verifies timeline playback kicks in, and asserts that returning to live mode resumes MD streaming (checks live WS frames continue beyond the library snapshot).
+- `ws-library-sn2-opacity.spec.js`: Loads `sn2` from the library, pauses timeline playback immediately, and walks the earliest four buffered frames to ensure every atom remains on the solid mesh (no premature translucency before the opacity control message fires).
+- `ws-library-query.spec.js`: Opens the viewer with `?library=sn2`, confirms the session auto-loads, timeline data is buffered, and the status banner reflects the library source.

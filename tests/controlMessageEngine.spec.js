@@ -67,6 +67,8 @@ describe('controlMessageEngine', () => {
     expect(result.speed.fps).toBe(4); // slow-down overrides speed-focus due to higher priority
     expect(result.callout).toBeTruthy();
     expect(result.callout.text).toContain('Window of interest');
+    expect(Array.isArray(result.callouts)).toBe(true);
+    expect(result.callouts.length).toBe(1);
     expect(result.opacity).toBeTruthy();
     expect(result.opacity.focus.atoms).toEqual([0, 1]);
   });
@@ -76,7 +78,28 @@ describe('controlMessageEngine', () => {
     const result = engine.evaluate(frameIndex);
     expect(result.speed).toBeNull();
     expect(result.callout).toBeNull();
+    expect(Array.isArray(result.callouts)).toBe(true);
+    expect(result.callouts.length).toBe(0);
     expect(result.opacity).toBeNull();
+  });
+
+  it('returns multiple callouts when defined', () => {
+    engine.setMessages([
+      {
+        id: 'multi-callout',
+        priority: 1,
+        range: { start: { offset: -2 }, end: { offset: -1 } },
+        actions: [
+          { type: 'overlay.callout', text: 'A', anchor: { mode: 'atom', atoms: [0] } },
+          { type: 'overlay.callout', text: 'B', anchor: { mode: 'atom', atoms: [1] } },
+        ],
+      },
+    ]);
+    engine.updateFrameCount(frameCount);
+    const result = engine.evaluate(offsetToIndex(-1));
+    expect(result.callouts).toHaveLength(2);
+    const texts = result.callouts.map((c) => c.text).sort();
+    expect(texts).toEqual(['A', 'B']);
   });
 
   it('preserves labels and notes in snapshots and evaluation', () => {

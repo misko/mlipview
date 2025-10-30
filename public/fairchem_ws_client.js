@@ -178,15 +178,21 @@ export function createFairchemWS() {
     if (Number.isFinite(nextSeq)) {
       seq = nextSeq | 0;
     }
+    let ackVal = null;
     if (Number.isFinite(ack)) {
-      const ackVal = ack | 0;
+      ackVal = ack | 0;
       clientAck = Math.max(clientAck, ackVal);
-      lastAckSent = Math.max(lastAckSent, ackVal);
       highestSeq = Math.max(highestSeq, ackVal);
       lastClientSeq = Math.max(lastClientSeq, ackVal);
+      if (ackVal >= lastAckSent) {
+        lastAckSent = (ackVal - 1) | 0;
+      }
     }
     if (Number.isFinite(userInteractionCount)) lastCounters.userInteractionCount = userInteractionCount | 0;
     if (Number.isFinite(simStep)) lastCounters.simStep = simStep | 0;
+    if (ackVal != null) {
+      maybeAck(ackVal);
+    }
   }
 
   function __notifyTestHook(msg, explicitKind, meta) {
@@ -763,6 +769,7 @@ export function createFairchemWS() {
     // lastAckSent on this attempt so we will retry once unblocked.
     const blocked = (typeof window !== 'undefined' && !!window.__BLOCK_ACKS__);
     if (!blocked && n <= lastAckSent) return;
+    __log('[WS][ack][flush]', { n, lastAckSent, blocked, highestSeq, clientAck });
     const msg = create(ClientActionSchema, { seq: nextSeq(), schemaVersion: 1, ack: n, payload: { case: 'ping', value: {} } });
     __notifyTestHook(msg, 'PING');
     sendBytes(toBinary(ClientActionSchema, msg));
@@ -776,6 +783,7 @@ export function createFairchemWS() {
   }
   function maybeAck(seqNum) {
     highestSeq = Math.max(highestSeq, seqNum | 0);
+    __log('[WS][ack][maybe]', { seqNum, highestSeq, lastAckSent, ackScheduled });
     if (!ackScheduled) {
       ackScheduled = true;
       (typeof requestAnimationFrame === 'function')
