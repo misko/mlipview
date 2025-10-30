@@ -132,6 +132,7 @@ export function augmentWithPeriodicImages({ atoms, cell, options = {} }) {
   );
 
   const primaryBondMap = new Map();
+  const crossingBondMap = new Map();
   const ghostBondMeta = [];
   const ghostMetaSeen = new Set();
   const LONG_THR = longThreshold(cell, options);
@@ -351,6 +352,50 @@ export function augmentWithPeriodicImages({ atoms, cell, options = {} }) {
 
     pushGhostOffset(shiftA);
     pushGhostOffset(shiftB);
+
+    if (shiftsEqual(shiftA, shiftB)) {
+      // Both endpoints live in the same translated cell; this duplicates a primary bond, skip.
+      continue;
+    }
+
+    const delta = [
+      (shiftB[0] || 0) - (shiftA[0] || 0),
+      (shiftB[1] || 0) - (shiftA[1] || 0),
+      (shiftB[2] || 0) - (shiftA[2] || 0),
+    ];
+    const deltaMagSq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
+    const shiftScore =
+      Math.abs(shiftA[0] || 0) +
+      Math.abs(shiftA[1] || 0) +
+      Math.abs(shiftA[2] || 0) +
+      Math.abs(shiftB[0] || 0) +
+      Math.abs(shiftB[1] || 0) +
+      Math.abs(shiftB[2] || 0);
+
+    const crossingKey = `${idxA}_${idxB}`;
+    const existingCross = crossingBondMap.get(crossingKey);
+    if (
+      !existingCross ||
+      deltaMagSq < existingCross.deltaMagSq ||
+      (deltaMagSq === existingCross.deltaMagSq && shiftScore < existingCross.shiftScore)
+    ) {
+      crossingBondMap.set(crossingKey, {
+        bond: {
+        i: idxA,
+        j: idxB,
+        length: minDist,
+        weight: bond.weight,
+        opacity: 0,
+        inRing: bond.inRing,
+        crossing: true,
+        imageDelta: delta,
+        cellOffsetA: shiftA.slice(),
+        cellOffsetB: shiftB.slice(),
+        },
+        deltaMagSq,
+        shiftScore,
+      });
+    }
   }
 
   const ghostAtomList = [];
@@ -369,7 +414,10 @@ export function augmentWithPeriodicImages({ atoms, cell, options = {} }) {
   }
 
   return {
-    bonds: Array.from(primaryBondMap.values()),
+    bonds: [
+      ...primaryBondMap.values(),
+      ...Array.from(crossingBondMap.values()).map((entry) => entry.bond),
+    ],
     ghostAtoms: ghostAtomList,
     ghostBondMeta,
     diagnostics: {

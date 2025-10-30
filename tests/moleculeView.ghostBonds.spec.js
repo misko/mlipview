@@ -43,7 +43,10 @@ describe('bond service periodic ghost handling', () => {
 
     baseState.cell.enabled = true;
     recompute(baseState);
-    expect(baseState.bonds).toHaveLength(1);
+    const primaryBonds = baseState.bonds.filter((b) => !b.crossing);
+    const crossingBonds = baseState.bonds.filter((b) => b.crossing);
+    expect(primaryBonds).toHaveLength(1);
+    crossingBonds.forEach((bond) => expect(bond.opacity).toBe(0));
     expect(baseState.ghostBondMeta).toHaveLength(6);
     const shifts = baseState.ghostBondMeta
       .map((meta) => `${meta.shiftA.join(',')}|${meta.shiftB.join(',')}`)
@@ -77,7 +80,11 @@ describe('bond service periodic ghost handling', () => {
 
     state.cell.enabled = true;
     recompute(state);
-    expect(state.bonds).toHaveLength(0);
+    const primaryBonds = state.bonds.filter((b) => !b.crossing);
+    const crossingBonds = state.bonds.filter((b) => b.crossing);
+    expect(primaryBonds).toHaveLength(0);
+    expect(crossingBonds.length).toBeGreaterThan(0);
+    crossingBonds.forEach((bond) => expect(bond.opacity).toBe(0));
     expect(state.ghostBondMeta).toHaveLength(2);
     const shifts = state.ghostBondMeta
       .map((meta) => `${meta.shiftA.join(',')}|${meta.shiftB.join(',')}`)
@@ -104,7 +111,11 @@ describe('bond service periodic ghost handling', () => {
 
     state.cell.enabled = true;
     recompute(state);
-    expect(state.bonds).toHaveLength(0);
+    const primaryBonds = state.bonds.filter((b) => !b.crossing);
+    const crossingBonds = state.bonds.filter((b) => b.crossing);
+    expect(primaryBonds).toHaveLength(0);
+    expect(crossingBonds.length).toBeGreaterThan(0);
+    crossingBonds.forEach((bond) => expect(bond.opacity).toBe(0));
     expect(state.ghostBondMeta).toHaveLength(2);
     const shifts = state.ghostBondMeta
       .map((meta) => `${meta.shiftA.join(',')}|${meta.shiftB.join(',')}`)

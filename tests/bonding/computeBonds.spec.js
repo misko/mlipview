@@ -82,7 +82,12 @@ describe('computeBonds', () => {
     expect(nonPeriodic.ghostBondMeta).toHaveLength(0);
 
     const periodic = computeBonds({ elements: ['C', 'C'], positions, cell });
-    expect(periodic.bonds).toHaveLength(0);
+    const crossingBonds = periodic.bonds.filter((b) => b.crossing);
+    const primaryBonds = periodic.bonds.filter((b) => !b.crossing);
+    expect(primaryBonds).toHaveLength(0);
+    expect(crossingBonds).toHaveLength(1);
+    expect(crossingBonds[0].opacity).toBe(0);
+    expect(crossingBonds[0].imageDelta.some((v) => v !== 0)).toBe(true);
     expect(periodic.ghostBondMeta).toHaveLength(2);
     const offsets = periodic.ghostBondMeta
       .map((meta) => `${meta.shiftA.join(',')}|${meta.shiftB.join(',')}`)
@@ -101,7 +106,12 @@ describe('computeBonds', () => {
     };
 
     const periodic = computeBonds({ elements: ['C', 'C'], positions, cell });
-    expect(periodic.bonds).toHaveLength(0);
+    const crossingBonds = periodic.bonds.filter((b) => b.crossing);
+    const primaryBonds = periodic.bonds.filter((b) => !b.crossing);
+    expect(primaryBonds).toHaveLength(0);
+    expect(crossingBonds).toHaveLength(1);
+    expect(crossingBonds[0].opacity).toBe(0);
+    expect(crossingBonds[0].imageDelta.some((v) => v !== 0)).toBe(true);
     expect(periodic.ghostBondMeta).toHaveLength(2);
     const offsets = periodic.ghostBondMeta
       .map((meta) => `${meta.shiftA.join(',')}|${meta.shiftB.join(',')}`)
