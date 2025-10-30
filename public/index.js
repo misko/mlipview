@@ -1215,12 +1215,18 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (env.apiOn()) dbg.log(`[bonds] recomputed after ${reason} (count=${bonds ? bonds.length : 0})`);
     return bonds;
   };
+  const __origMarkCellChanged = state.markCellChanged?.bind(state) || null;
   state.markPositionsChanged = (...a) => {
     enforceSafeSphere(state);
     structureVersion++;
     if (state.forceCache) { state.forceCache.stale = true; state.forceCache.version = structureVersion; }
     const r = __origMarkPositionsChanged ? __origMarkPositionsChanged(...a) : undefined;
     try { recomputeBonds('markPositionsChanged'); } catch { }
+    return r;
+  };
+  state.markCellChanged = (...a) => {
+    const r = __origMarkCellChanged ? __origMarkCellChanged(...a) : undefined;
+    try { recomputeBonds('cellChanged'); } catch { }
     return r;
   };
   if (!state.bonds?.length) { try { recomputeBonds(); } catch { } }

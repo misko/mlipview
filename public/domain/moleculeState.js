@@ -20,6 +20,8 @@ export function createMoleculeState({
       opacity: typeof b.opacity === 'number' ? b.opacity : 1,
       crossing: !!b.crossing,
       imageDelta: Array.isArray(b.imageDelta) ? b.imageDelta.slice(0, 3) : [0, 0, 0],
+      cellOffsetA: Array.isArray(b.cellOffsetA) ? b.cellOffsetA.slice(0, 3) : [0, 0, 0],
+      cellOffsetB: Array.isArray(b.cellOffsetB) ? b.cellOffsetB.slice(0, 3) : [0, 0, 0],
     })),
     cell: cell || {
       a: { x: 1, y: 0, z: 0 },
@@ -31,6 +33,7 @@ export function createMoleculeState({
     // Ghost atoms: mapping from base atom index to array of ghost image objects { shift:[nx,ny,nz], pos:{x,y,z} }
     // For now just a placeholder container to avoid future shape changes in state.
     ghostImages: [],
+    ghostBondMeta: [],
     showCell: false,
     showGhostCells: false,
     // Forces visualization toggle: OFF by default, but enable automatically in test mode for visualization tests

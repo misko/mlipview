@@ -90,9 +90,25 @@ Key rules:
   "viewer": {
     "elements": ["C", "Cl", "N", "..."],
     "positions": [[-2.14, 0.03, 0.12], "..."],
-    "periodicBonds": [
-      { "i": 12, "j": 37, "opacity": 0, "imageDelta": [1, 0, -1] },
-      { "i": 5, "j": 9, "opacity": 0.18, "imageDelta": [0, 0, 0] }
+    "bonds": {
+      "atomIndexA": [12, 5, "..."],
+      "atomIndexB": [37, 9, "..."],
+      "cellOffsetA": [[0, 0, 0], [0, 0, 0], "..."],
+      "cellOffsetB": [[1, 0, -1], [0, 0, 0], "..."],
+      "opacity": [0.0, 0.18, "..."],
+      "length": [1.41, 1.09, "..."],
+      "flags": { "inRing": [1, 0, "..."], "crossing": [1, 0, "..."] }
+    },
+    "ghostAtoms": [
+      { "atomIndex": 12, "shift": [1, 0, 0], "position": [4.36, 0.03, 0.12] }
+    ],
+    "ghostBondMeta": [
+      {
+        "base": { "i": 12, "j": 37 },
+        "shiftA": [1, 0, 0],
+        "shiftB": [0, 0, 0],
+        "imageDelta": [1, 0, -1]
+      }
     ],
     "meshAssignments": {
       "atoms": ["solid", "solid", "soft", "..."],

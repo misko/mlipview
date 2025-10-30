@@ -71,7 +71,9 @@ function migrateSnapshotSchema(snapshot) {
                   ? bond.opacity
                   : 1;
               const imageDelta = Array.isArray(bond.imageDelta)
-                ? bond.imageDelta.slice(0, 3).map((v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : 0))
+                ? bond.imageDelta.slice(0, 3).map((v) =>
+                    Number.isFinite(Number(v)) ? Math.round(Number(v)) : 0
+                  )
                 : [0, 0, 0];
               return {
                 i,
@@ -83,6 +85,39 @@ function migrateSnapshotSchema(snapshot) {
             })
             .filter(Boolean);
         }
+        if (!Array.isArray(current.viewer.ghostAtoms)) {
+          current.viewer.ghostAtoms = [];
+        }
+        if (!Array.isArray(current.viewer.ghostBondMeta)) {
+          current.viewer.ghostBondMeta = [];
+        }
+        current.schemaVersion = 6;
+        break;
+      }
+      case 6: {
+        current.viewer = current.viewer || {};
+        const fallbackBonds = Array.isArray(current.viewer.periodicBonds)
+          ? current.viewer.periodicBonds
+          : [];
+        current.viewer.bonds = fallbackBonds.map((bond) => ({
+          i: Number(bond.i) || 0,
+          j: Number(bond.j) || 0,
+          length: typeof bond.length === 'number' ? bond.length : null,
+          weight:
+            typeof bond.weight === 'number' && Number.isFinite(bond.weight) ? bond.weight : null,
+          opacity:
+            typeof bond.opacity === 'number' && Number.isFinite(bond.opacity) ? bond.opacity : 1,
+          inRing: !!bond.inRing,
+          crossing: !!bond.crossing,
+          imageDelta: Array.isArray(bond.imageDelta)
+            ? bond.imageDelta.slice(0, 3).map((v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : 0))
+            : [0, 0, 0],
+          cellOffsetA: [0, 0, 0],
+          cellOffsetB: Array.isArray(bond.imageDelta)
+            ? bond.imageDelta.slice(0, 3).map((v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : 0))
+            : [0, 0, 0],
+        }));
+        delete current.viewer.periodicBonds;
         current.schemaVersion = SCHEMA_VERSION;
         break;
       }
@@ -249,7 +284,7 @@ export function createSessionStateManager(deps) {
         : [Number(v?.x) || 0, Number(v?.y) || 0, Number(v?.z) || 0])
       : undefined;
     const cell = stateCellToArray ? stateCellToArray(state?.cell) : null;
-    const periodicBonds = Array.isArray(state?.bonds)
+    const bonds = Array.isArray(state?.bonds)
       ? state.bonds
           .map((bond) => {
             if (!bond) return null;
@@ -266,12 +301,72 @@ export function createSessionStateManager(deps) {
                   return Number.isFinite(rounded) ? rounded : 0;
                 })
               : [0, 0, 0];
-            return {
+            const entry = {
               i,
               j,
+              length: typeof bond.length === 'number' ? bond.length : null,
+              weight:
+                typeof bond.weight === 'number' && Number.isFinite(bond.weight) ? bond.weight : null,
               opacity,
               crossing: !!bond.crossing,
               imageDelta,
+            };
+            entry.cellOffsetA = Array.isArray(bond.cellOffsetA)
+              ? bond.cellOffsetA.slice(0, 3).map((v) => {
+                  const num = Number(v);
+                  return Number.isFinite(num) ? Math.round(num) : 0;
+                })
+              : [0, 0, 0];
+            entry.cellOffsetB = Array.isArray(bond.cellOffsetB)
+              ? bond.cellOffsetB.slice(0, 3).map((v) => {
+                  const num = Number(v);
+                  return Number.isFinite(num) ? Math.round(num) : 0;
+                })
+              : [0, 0, 0];
+            entry.inRing = !!bond.inRing;
+            return entry;
+          })
+          .filter(Boolean)
+      : [];
+    const ghostAtoms = Array.isArray(state?.ghostImages)
+      ? state.ghostImages
+          .map((ghost) => {
+            if (!ghost || !Number.isInteger(ghost.atomIndex)) return null;
+            const position = Array.isArray(ghost.position)
+              ? ghost.position.slice(0, 3).map((v) => Number(v) || 0)
+              : [
+                  Number(ghost.position?.x) || 0,
+                  Number(ghost.position?.y) || 0,
+                  Number(ghost.position?.z) || 0,
+                ];
+            return {
+              atomIndex: ghost.atomIndex,
+              shift: Array.isArray(ghost.shift)
+                ? ghost.shift.slice(0, 3).map((v) => Number(v) || 0)
+                : [0, 0, 0],
+              position,
+            };
+          })
+          .filter(Boolean)
+      : [];
+    const ghostBondMeta = Array.isArray(state?.ghostBondMeta)
+      ? state.ghostBondMeta
+          .map((meta) => {
+            if (!meta || !meta.base) return null;
+            const i = Number(meta.base.i);
+            const j = Number(meta.base.j);
+            if (!Number.isInteger(i) || !Number.isInteger(j)) return null;
+            return {
+              base: { i, j },
+              shiftA: Array.isArray(meta.shiftA)
+                ? meta.shiftA.slice(0, 3).map((v) => Number(v) || 0)
+                : [0, 0, 0],
+              shiftB: Array.isArray(meta.shiftB)
+                ? meta.shiftB.slice(0, 3).map((v) => Number(v) || 0)
+                : [0, 0, 0],
+              imageDelta: Array.isArray(meta.imageDelta)
+                ? meta.imageDelta.slice(0, 3).map((v) => Number(v) || 0)
+                : [0, 0, 0],
             };
           })
           .filter(Boolean)
@@ -283,7 +378,9 @@ export function createSessionStateManager(deps) {
       cell,
       showCell: !!state?.showCell,
       showGhostCells: !!state?.showGhostCells,
-      periodicBonds,
+      bonds,
+      ghostAtoms,
+      ghostBondMeta,
     };
   }
 
@@ -390,12 +487,16 @@ export function createSessionStateManager(deps) {
         cell: clone.viewer?.cell || null,
         showCell: !!clone.viewer?.showCell,
         showGhostCells: !!clone.viewer?.showGhostCells,
-        periodicBonds: Array.isArray(clone.viewer?.periodicBonds)
-          ? clone.viewer.periodicBonds.map((bond) => ({
+        bonds: Array.isArray(clone.viewer?.bonds)
+          ? clone.viewer.bonds.map((bond) => ({
               i: Number(bond.i) || 0,
               j: Number(bond.j) || 0,
+              length: Number(bond.length) || null,
+              weight:
+                typeof bond.weight === 'number' && Number.isFinite(bond.weight) ? bond.weight : null,
               opacity:
                 typeof bond.opacity === 'number' && Number.isFinite(bond.opacity) ? bond.opacity : 1,
+              inRing: !!bond.inRing,
               crossing: !!bond.crossing,
               imageDelta: Array.isArray(bond.imageDelta)
                 ? bond.imageDelta.slice(0, 3).map((v) => {
@@ -404,6 +505,50 @@ export function createSessionStateManager(deps) {
                     const rounded = Math.round(num);
                     return Number.isFinite(rounded) ? rounded : 0;
                   })
+                : [0, 0, 0],
+              cellOffsetA: Array.isArray(bond.cellOffsetA)
+                ? bond.cellOffsetA.slice(0, 3).map((v) => {
+                    const num = Number(v);
+                    return Number.isFinite(num) ? Math.round(num) : 0;
+                  })
+                : [0, 0, 0],
+              cellOffsetB: Array.isArray(bond.cellOffsetB)
+                ? bond.cellOffsetB.slice(0, 3).map((v) => {
+                    const num = Number(v);
+                    return Number.isFinite(num) ? Math.round(num) : 0;
+                  })
+                : [0, 0, 0],
+            }))
+          : [],
+        ghostAtoms: Array.isArray(clone.viewer?.ghostAtoms)
+          ? clone.viewer.ghostAtoms.map((ghost) => ({
+              atomIndex: Number(ghost.atomIndex) || 0,
+              shift: Array.isArray(ghost.shift)
+                ? ghost.shift.slice(0, 3).map((v) => Number(v) || 0)
+                : [0, 0, 0],
+              position: Array.isArray(ghost.position)
+                ? ghost.position.slice(0, 3).map((v) => Number(v) || 0)
+                : [
+                    Number(ghost.position?.x) || 0,
+                    Number(ghost.position?.y) || 0,
+                    Number(ghost.position?.z) || 0,
+                  ],
+            }))
+          : [],
+        ghostBondMeta: Array.isArray(clone.viewer?.ghostBondMeta)
+          ? clone.viewer.ghostBondMeta.map((meta) => ({
+              base: {
+                i: Number(meta.base?.i) || 0,
+                j: Number(meta.base?.j) || 0,
+              },
+              shiftA: Array.isArray(meta.shiftA)
+                ? meta.shiftA.slice(0, 3).map((v) => Number(v) || 0)
+                : [0, 0, 0],
+              shiftB: Array.isArray(meta.shiftB)
+                ? meta.shiftB.slice(0, 3).map((v) => Number(v) || 0)
+                : [0, 0, 0],
+              imageDelta: Array.isArray(meta.imageDelta)
+                ? meta.imageDelta.slice(0, 3).map((v) => Number(v) || 0)
                 : [0, 0, 0],
             }))
           : [],
@@ -477,12 +622,48 @@ export function createSessionStateManager(deps) {
       state.showCell = !!snap.viewer?.showCell;
       state.showGhostCells = !!snap.viewer?.showGhostCells;
       state.markCellChanged?.();
-      if (Array.isArray(snap.viewer?.periodicBonds)) {
-        state.bonds = snap.viewer.periodicBonds.map((bond) => ({
+      state.ghostImages = Array.isArray(snap.viewer?.ghostAtoms)
+        ? snap.viewer.ghostAtoms.map((ghost) => ({
+            atomIndex: Number(ghost.atomIndex) || 0,
+            shift: Array.isArray(ghost.shift)
+              ? ghost.shift.slice(0, 3).map((v) => Number(v) || 0)
+              : [0, 0, 0],
+            position: Array.isArray(ghost.position)
+              ? ghost.position.slice(0, 3).map((v) => Number(v) || 0)
+              : [
+                  Number(ghost.position?.x) || 0,
+                  Number(ghost.position?.y) || 0,
+                  Number(ghost.position?.z) || 0,
+                ],
+          }))
+        : [];
+      state.ghostBondMeta = Array.isArray(snap.viewer?.ghostBondMeta)
+        ? snap.viewer.ghostBondMeta.map((meta) => ({
+            base: {
+              i: Number(meta.base?.i) || 0,
+              j: Number(meta.base?.j) || 0,
+            },
+            shiftA: Array.isArray(meta.shiftA)
+              ? meta.shiftA.slice(0, 3).map((v) => Number(v) || 0)
+              : [0, 0, 0],
+            shiftB: Array.isArray(meta.shiftB)
+              ? meta.shiftB.slice(0, 3).map((v) => Number(v) || 0)
+              : [0, 0, 0],
+            imageDelta: Array.isArray(meta.imageDelta)
+              ? meta.imageDelta.slice(0, 3).map((v) => Number(v) || 0)
+              : [0, 0, 0],
+          }))
+        : [];
+      if (Array.isArray(snap.viewer?.bonds)) {
+        state.bonds = snap.viewer.bonds.map((bond) => ({
           i: Number(bond.i) || 0,
           j: Number(bond.j) || 0,
+          length: Number(bond.length) || null,
+          weight:
+            typeof bond.weight === 'number' && Number.isFinite(bond.weight) ? bond.weight : null,
           opacity:
             typeof bond.opacity === 'number' && Number.isFinite(bond.opacity) ? bond.opacity : 1,
+          inRing: !!bond.inRing,
           crossing: !!bond.crossing,
           imageDelta: Array.isArray(bond.imageDelta)
             ? bond.imageDelta.slice(0, 3).map((v) => {
@@ -490,6 +671,18 @@ export function createSessionStateManager(deps) {
                 if (!Number.isFinite(num)) return 0;
                 const rounded = Math.round(num);
                 return Number.isFinite(rounded) ? rounded : 0;
+              })
+            : [0, 0, 0],
+          cellOffsetA: Array.isArray(bond.cellOffsetA)
+            ? bond.cellOffsetA.slice(0, 3).map((v) => {
+                const num = Number(v);
+                return Number.isFinite(num) ? Math.round(num) : 0;
+              })
+            : [0, 0, 0],
+          cellOffsetB: Array.isArray(bond.cellOffsetB)
+            ? bond.cellOffsetB.slice(0, 3).map((v) => {
+                const num = Number(v);
+                return Number.isFinite(num) ? Math.round(num) : 0;
               })
             : [0, 0, 0],
         }));

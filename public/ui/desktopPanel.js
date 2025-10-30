@@ -2136,6 +2136,16 @@ export function buildDesktopPanel({ attachTo } = {}) {
         if (!!st.showGhostCells !== wantGhosts && typeof st.toggleGhostCells === 'function') {
           st.toggleGhostCells();
         }
+        try {
+          if (typeof api.recomputeBonds === 'function') api.recomputeBonds('desktopPanelPBC');
+        } catch {}
+        try {
+          Promise.resolve().then(() => {
+            try {
+              api.view?.rebuildGhosts?.();
+            } catch {}
+          });
+        } catch {}
         const legacy = document.getElementById('btnCell');
         if (legacy) legacy.textContent = st.showCell || st.showGhostCells ? 'on' : 'off';
         prefill();

@@ -95,6 +95,7 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
   - `x-highlight.spec.js`: Selects an atom and validates the highlight mesh translation mirrors the atom position.
   - `x-highlight-visibility.spec.js`: Ensures the highlight mesh starts hidden and becomes visible only when selection exists.
   - `x-highlight-stray-cylinder.spec.js`: Selects and clears a bond, verifying the bond highlight mesh hides and buffers zero out.
+  - `moleculeView.ghostBonds.spec.js`: Calls `createMoleculeView`, runs the bond service, and asserts `rebuildBonds()` now refreshes ghost thin instances automatically—no manual `rebuildGhosts()` calls required.
   - `x-ghost-bonds.spec.js`: Enables ghosts, rebuilds, and asserts ghost bond matrices match expected neighbour counts.
   - `x-ghost-crossing-bonds.spec.js`: Similar coverage focused on cross-cell bonds to prevent duplicate instances.
   - `x-ghost-selection.spec.js`: Picks a ghost and confirms the selection resolves to the primary atom with highlight repositioned.

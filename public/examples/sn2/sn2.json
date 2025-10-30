@@ -400,7 +400,6 @@
     "cell": null,
     "showCell": false,
     "showGhostCells": false,
-    "periodicBonds": [],
     "meshAssignments": {
       "atoms": [
         "solid",

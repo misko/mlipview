@@ -28,6 +28,16 @@ export function initCellToggle({ getViewer }) {
       const wantGhosts = !!st.showCell;
       if (!!st.showGhostCells !== wantGhosts) st.toggleGhostCells();
       document.getElementById('status').textContent = st.showCell ? 'Cell ON' : 'Cell OFF';
+      try {
+        if (typeof v.recomputeBonds === 'function') v.recomputeBonds('cellToggle');
+      } catch {}
+      try {
+        Promise.resolve().then(() => {
+          try {
+            v.view?.rebuildGhosts?.();
+          } catch {}
+        });
+      } catch {}
     } finally {
       refresh();
     }

@@ -124,6 +124,16 @@ export function buildXRControlsModel(opts) {
       const wantGhosts = !!st.showCell;
       if (!!st.showGhostCells !== wantGhosts && typeof st.toggleGhostCells === 'function')
         st.toggleGhostCells();
+      try {
+        if (typeof v.recomputeBonds === 'function') v.recomputeBonds('xrTogglePBC');
+      } catch {}
+      try {
+        Promise.resolve().then(() => {
+          try {
+            v.view?.rebuildGhosts?.();
+          } catch {}
+        });
+      } catch {}
       notify(getState(v));
       return true;
     } catch {

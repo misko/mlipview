@@ -13,6 +13,10 @@
 2. Ghost atoms still render because we clone every atom for {0, ±a, ±b, ±c}, but ghost bonds are recomputed by rerunning `computeBondsNoState` over that limited augmentation.
 3. Bonds that require a diagonal lattice shift (e.g., `a+b`) vanish: the bond service still flags them as `crossing`, yet the ghost generator never sees a close pair because the necessary shifted copy was not created. After any timestep nudges the geometry, more bonds fall into this category, so only ghost atoms remain visible.
 
+### Current Status
+- `rebuildBonds()` now triggers `rebuildGhosts()` by default (`public/render/moleculeView.js:530-610`), keeping ghost thin instances in sync the moment periodic bonds recompute.
+- `tests/moleculeView.ghostBonds.spec.js` covers the regression by constructing a periodic cell, recomputing bonds, and asserting ghost instances appear without manual viewer calls.
+
 ### Option A – Extend Bond Service With Periodic Offsets (Recommended)
 - **Implementation**
   - Teach `computePeriodicBonds()` to retain `crossing`, `du/dv/dw`, and the integer image delta used for the minimum-image recompute.
@@ -52,7 +56,7 @@ Adopt **Option A**. It centralises periodic knowledge, keeps JSON snapshots aut
 
 ## State Management Touchpoints
 - **Frontend**
-  - After Option A, `SessionStateManager.captureSnapshot()` must copy `bond.imageDelta` into `snapshot.viewer.meshAssignments` (or a dedicated `viewer.periodicBonds` array) and reapply it in `loadSnapshot`.
+  - After Option A, `SessionStateManager.captureSnapshot()` must copy `bond.imageDelta` into `snapshot.viewer.meshAssignments` (or a dedicated `viewer.bonds` array) and reapply it in `loadSnapshot`.
   - `stateStore` should expose a helper to reset `latchedUntil` when rehydrating periodic modes so ghost visibility stays in sync after a load.
 - **Backend**
   - `SessionState` can optionally cache the last `imageDelta` per bond to validate client uploads or to inform future server-side ghost exports.
@@ -76,10 +80,15 @@ Adopt **Option A**. It centralises periodic knowledge, keeps JSON snapshots aut
       "atoms": ["solid", "solid", "soft", "..."],
       "bonds": ["solid", "soft", "..."]
     },
-    "periodicBonds": [
-      { "i": 12, "j": 37, "opacity": 0, "imageDelta": [1, 0, -1] },
-      { "i": 5, "j": 9, "opacity": 0.18, "imageDelta": [0, 0, 0] }
-    ]
+    "bonds": [
+      "atomIndexA": [12, 5, "..."],
+      "atomIndexB": [37, 9, "..."],
+      "cellOffsetA": [[0, 0, 0], [0, 0, 0], "..."],
+      "cellOffsetB": [[1, 0, -1], [0, 0, 0], "..."],
+      "opacity": [0.0, 0.18, "..."],
+      "length": [1.41, 1.09, "..."],
+      "flags": { "inRing": [1, 0, "..."], "crossing": [1, 0, "..."] }
+    }
   },
   "render": {
     "overrides": {
@@ -149,7 +158,7 @@ Adopt **Option A**. It centralises periodic knowledge, keeps JSON snapshots aut
 }
 ```
 
-This structure stays backward-compatible: older snapshots lacking `periodicBonds` will still load, and the renderer can regenerate ghost data via the fallback path.
+This structure stays backward-compatible: older snapshots lacking `bonds` will still load, and the renderer can regenerate ghost data via the fallback path.
 
 ## Testing & Instrumentation Plan
 - **Unit**

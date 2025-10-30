@@ -83,7 +83,7 @@ describe('SessionStateManager', () => {
       atoms: ['solid', 'solid'],
       bonds: [],
     });
-    expect(snapshot.viewer.periodicBonds).toEqual([]);
+    expect(snapshot.viewer.bonds).toEqual([]);
 
     const loadSnapshot = {
       schemaVersion: 3,
