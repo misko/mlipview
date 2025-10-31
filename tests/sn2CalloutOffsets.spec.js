@@ -103,7 +103,19 @@ describe('SN2 library callout offsets', () => {
     const basePosition = { ...plane.position };
 
     const shifted = JSON.parse(JSON.stringify(callout));
-    shifted.anchor.offset[1] += 3; // raise callout by 3 Å
+    const currentOffset = Array.isArray(shifted.offset)
+      ? shifted.offset
+      : Array.isArray(shifted.anchor?.offset)
+        ? shifted.anchor.offset
+        : [0, 0, 0];
+    const nextOffset = currentOffset.slice();
+    nextOffset[1] = (nextOffset[1] || 0) + 3; // raise callout by 3 Å
+    if (Array.isArray(shifted.offset)) {
+      shifted.offset = nextOffset;
+    } else {
+      if (!shifted.anchor) shifted.anchor = {};
+      shifted.anchor.offset = nextOffset;
+    }
     layer.show(shifted);
 
     expect(plane.position.y - basePosition.y).toBeCloseTo(3, 6);

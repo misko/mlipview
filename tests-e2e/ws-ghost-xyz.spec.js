@@ -27,6 +27,7 @@ async function waitForBondState(page) {
     const { bonds, ghostBondMeta, showGhostCells } = window.viewerApi.state;
     return {
       bondCount: Array.isArray(bonds) ? bonds.length : 0,
+      crossingCount: Array.isArray(bonds) ? bonds.filter((b) => b?.crossing).length : 0,
       ghostCount: Array.isArray(ghostBondMeta) ? ghostBondMeta.length : 0,
       ghostsVisible: !!showGhostCells,
     };
@@ -49,7 +50,8 @@ test.describe('XYZ periodic ghost bonds', () => {
     });
 
     const summary = await waitForBondState(page);
-    expect(summary.bondCount).toBe(0);
+    expect(summary.bondCount).toBe(1);
+    expect(summary.crossingCount).toBe(1);
     expect(summary.ghostCount).toBe(2);
     expect(summary.ghostsVisible).toBe(true);
   });
@@ -70,6 +72,7 @@ test.describe('XYZ periodic ghost bonds', () => {
 
     const summary = await waitForBondState(page);
     expect(summary.bondCount).toBe(1);
+    expect(summary.crossingCount).toBe(0);
     expect(summary.ghostCount).toBe(6);
     expect(summary.ghostsVisible).toBe(true);
   });
