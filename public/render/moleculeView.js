@@ -1,14 +1,62 @@
 import { elInfo } from '../elements.js';
-
-function clampAlpha(value, fallback = 1) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return Math.min(1, Math.max(0, fallback));
-  if (n <= 0) return 0;
-  if (n >= 1) return 1;
-  return n;
-}
 import { computeBondsNoState } from '../bond_render.js';
 import { __count } from '../util/funcCount.js';
+
+const MATERIAL_FALLBACKS = {
+  MATERIAL_ALPHABLEND: 2,
+  MATERIAL_OPAQUE: 0,
+};
+
+function resolveMaterialConstant(name) {
+  try {
+    const mat = typeof BABYLON !== 'undefined' ? BABYLON.Material : undefined;
+    const value = mat && typeof mat[name] === 'number' ? mat[name] : undefined;
+    if (typeof value === 'number') return value;
+  } catch {}
+  return MATERIAL_FALLBACKS[name] ?? 0;
+}
+
+export function combineOpacity(base, mask, mode = 'multiply') {
+  const clamp = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    if (n <= 0) return 0;
+    if (n >= 1) return 1;
+    return n;
+  };
+  const a = clamp(base);
+  const b = clamp(mask);
+  switch (mode) {
+    case 'override':
+      return b;
+    case 'clamp':
+      return Math.min(a, b);
+    default:
+      return a * b;
+  }
+}
+
+export function applyMaterialTransparency(mat, transparent, options = {}) {
+  if (!mat || typeof mat !== 'object') return mat;
+  const { usePrePass = true } = options;
+  if (transparent) {
+    mat.transparencyMode = resolveMaterialConstant('MATERIAL_ALPHABLEND');
+    mat.forceDepthWrite = false;
+    if (usePrePass) {
+      mat.needDepthPrePass = true;
+      mat.separateCullingPass = true;
+    } else {
+      mat.needDepthPrePass = false;
+      mat.separateCullingPass = mat.separateCullingPass === true ? mat.separateCullingPass : false;
+    }
+  } else {
+    mat.transparencyMode = resolveMaterialConstant('MATERIAL_OPAQUE');
+    mat.forceDepthWrite = false;
+    mat.needDepthPrePass = false;
+    mat.separateCullingPass = false;
+  }
+  return mat;
+}
 
 export function createMoleculeView(scene, molState) {
   __count('moleculeView#createMoleculeView');
@@ -50,7 +98,7 @@ export function createMoleculeView(scene, molState) {
     };
   }
   moleculeRoot.metadata = { role: 'moleculeRoot' };
-  const mastersRegistry = []; // array of { kind: 'atomMaster'|'bondMaster'|'forceMaster'|'ghostAtomMaster'|'ghostBondMaster', mesh }
+  const mastersRegistry = []; // array of { kind: 'atomMaster'|'atomSoftMaster'|'bondMaster'|'bondSoftMaster'|'forceMaster', mesh }
   function registerMaster(kind, mesh) {
     try {
       if (mesh && mesh.parent !== moleculeRoot) mesh.parent = moleculeRoot;
@@ -60,12 +108,107 @@ export function createMoleculeView(scene, molState) {
   // Expose for VR/services (read‑only intended):
   molState.moleculeRoot = moleculeRoot;
   molState.__masters = mastersRegistry;
-  const atomGroups = new Map();
-  const bondGroups = new Map();
+  function wrapThinInstanceBuffer(mesh) {
+    if (!mesh || mesh.__thinInstanceWrapped) return mesh;
+    const original = typeof mesh.thinInstanceSetBuffer === 'function' ? mesh.thinInstanceSetBuffer.bind(mesh) : null;
+    mesh.thinInstanceSetBuffer = function thinInstanceSetBuffer(kind, data, stride) {
+      if (original) {
+        try {
+          original(kind, data, stride);
+        } catch {
+          // ignore stub failures
+        }
+      }
+      if (this && typeof this === 'object') {
+        if (!this._buffers || typeof this._buffers !== 'object') this._buffers = {};
+        this._buffers[kind] = data;
+        this._buffersStride = this._buffersStride || {};
+        this._buffersStride[kind] = stride;
+      }
+    };
+    mesh.__thinInstanceWrapped = true;
+    return mesh;
+  }
+
+  function createIdentityMatrix() {
+    try {
+      if (BABYLON?.Matrix?.Identity) return BABYLON.Matrix.Identity();
+    } catch {}
+    if (BABYLON?.Matrix) {
+      try {
+        const mat = new BABYLON.Matrix();
+        if (typeof BABYLON.Matrix.IdentityToRef === 'function') {
+          BABYLON.Matrix.IdentityToRef(mat);
+        } else if (mat && mat.m) {
+          mat.m.fill?.(0);
+          if (mat.m.length >= 16) {
+            mat.m[0] = mat.m[5] = mat.m[10] = mat.m[15] = 1;
+          }
+        } else {
+          mat.m = Float32Array.from([
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1,
+          ]);
+        }
+        return mat;
+      } catch {}
+    }
+    return {
+      m: Float32Array.from([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+      ]),
+    };
+  }
+
+  const MODE_SOLID = 'solid';
+  const MODE_SOFT = 'soft';
+  const MODE_LIST = [MODE_SOLID, MODE_SOFT];
+  const SOFT_ATOM_ALPHA = 0.32;
+  const SOFT_BOND_ALPHA = 0.18;
+  const SOFT_MODE_THRESHOLD = 0.99;
+  const atomGroups = new Map(); // element -> dual-mode group
+  const atomMasterLookup = new Map();
+  let atomDefaultModes = [];
+  let atomCurrentModes = [];
+  const atomRenderRefs = [];
+  const bondGroups = new Map(); // key -> dual-mode group
+  const bondIndexByKey = new Map();
+  function canonicalBondKey(i, j) {
+    const a = i < j ? i : j;
+    const b = i < j ? j : i;
+    return `${a}-${b}`;
+  }
+  const bondMasterLookup = new Map();
+  let bondDefaultModes = [];
+  let bondCurrentModes = [];
+  const bondRenderRefs = [];
   // Force vectors rendered as thin instances (similar to bonds) for VR/AR consistency
   const forceGroups = new Map(); // single group keyed by 'force' currently; extensible for per-type later
   const ghostAtomGroups = new Map(); // separate to keep pickable flag false
   const ghostBondGroups = new Map();
+  let activeOpacityMask = null;
+  function bondStretchDebugEnabled() {
+    try {
+      if (typeof window === 'undefined') return false;
+      if (window.__MLIP_DEBUG_STRETCH === true) return true;
+      return /[?&]bondStretchDebug=1/.test(window.location?.search || '');
+    } catch {
+      return false;
+    }
+  }
+  function ghostDebugEnabled() {
+    try {
+      if (typeof window === 'undefined') return false;
+      return window.__MLIP_DEBUG_GHOST_BONDS === true;
+    } catch {
+      return false;
+    }
+  }
   // Geometry version stamping: increment outside (molState.geometryVersion++) when topology changes
   if (typeof molState.geometryVersion !== 'number') molState.geometryVersion = 0;
   let cachedAtomVersion = -1;
@@ -78,93 +221,138 @@ export function createMoleculeView(scene, molState) {
       b = molState.elements[j];
     return [a, b].sort().join('-');
   }
-  function ensureGroup(map, key, kind) {
-    // kind: 'atom' | 'ghostAtom' | 'bond' | 'ghostBond'
-    const store = map;
-    if (store.has(key)) return store.get(key);
-    let mat, master;
-    if (kind === 'atom') {
-      const info = elInfo(key);
-      mat = new BABYLON.StandardMaterial('mat_' + key, scene);
-      mat.diffuseColor = info.color.clone();
-      mat.emissiveColor = info.color.scale(0.06);
-      master = BABYLON.MeshBuilder.CreateSphere(
-        'atom_' + key,
-        { diameter: 1, segments: 24 },
-        scene
-      );
-      master.isPickable = true;
-      master.thinInstanceEnablePicking = true;
-      if (typeof master.setEnabled === 'function') master.setEnabled(true);
-      else master.isVisible = true;
-      registerMaster('atomMaster', master);
-    } else if (kind === 'ghostAtom') {
-      const info = elInfo(key);
-      mat = new BABYLON.StandardMaterial('ghost_atom_' + key, scene);
-      mat.diffuseColor = info.color.clone();
-      mat.emissiveColor = info.color.scale(0.02);
-      mat.alpha = 0.35;
-      master = BABYLON.MeshBuilder.CreateSphere(
-        'ghost_atom_' + key,
-        { diameter: 1, segments: 16 },
-        scene
-      );
-      master.isPickable = false;
-      master.thinInstanceEnablePicking = false;
-      // Initialize disabled; will be enabled when thin instances are populated
-      if (typeof master.setEnabled === 'function') master.setEnabled(false);
-      else master.isVisible = false;
-      registerMaster('ghostAtomMaster', master);
-    } else if (kind === 'ghostBond') {
-      mat = new BABYLON.StandardMaterial('ghost_bond_' + key, scene);
-      mat.diffuseColor = new BABYLON.Color3(0.55, 0.58, 0.6);
-      mat.emissiveColor = mat.diffuseColor.scale(0.02);
-      mat.alpha = 0.25;
-      master = BABYLON.MeshBuilder.CreateCylinder(
-        'ghost_bond_' + key,
-        { height: 1, diameter: 1, tessellation: 12 },
-        scene
-      );
-      master.isPickable = false;
-      master.thinInstanceEnablePicking = false;
-      // Initialize disabled; will be enabled when thin instances are populated
-      if (typeof master.setEnabled === 'function') master.setEnabled(false);
-      else master.isVisible = false;
-      registerMaster('ghostBondMaster', master);
-    } else if (kind === 'bond') {
-      mat = new BABYLON.StandardMaterial('bond_' + key, scene);
-      mat.diffuseColor = new BABYLON.Color3(0.75, 0.78, 0.8);
-      mat.emissiveColor = mat.diffuseColor.scale(0.05);
-      master = BABYLON.MeshBuilder.CreateCylinder(
-        'bond_' + key,
-        { height: 1, diameter: 1, tessellation: 22 },
-        scene
-      );
-      master.isPickable = true;
-      master.thinInstanceEnablePicking = true;
-      registerMaster('bondMaster', master);
-    }
-    if (master && mat) master.material = mat;
-    const g = { master, mats: [], indices: [] };
-    store.set(key, g);
-    // (debug/backfill removed)
-    return g;
+  function createAtomMaster(el, mode, { pickable = true } = {}) {
+    const suffix = mode === MODE_SOFT ? '_soft' : '_solid';
+    const info = elInfo(el);
+    const mat = new BABYLON.StandardMaterial(`atom_${el}${suffix}_mat`, scene);
+    mat.diffuseColor = info.color.clone();
+    mat.emissiveColor = info.color.scale(mode === MODE_SOFT ? 0.02 : 0.06);
+    applyMaterialTransparency(mat, mode === MODE_SOFT, { usePrePass: mode === MODE_SOFT });
+    mat.alpha = mode === MODE_SOFT ? SOFT_ATOM_ALPHA : 1;
+    if (mode === MODE_SOFT) mat.backFaceCulling = false;
+    const segments = mode === MODE_SOFT ? 20 : 24;
+    const master = BABYLON.MeshBuilder.CreateSphere(
+      `atom_${el}${suffix}`,
+      { diameter: 1, segments },
+      scene
+    );
+    master.material = mat;
+    master.isPickable = !!pickable;
+    master.thinInstanceEnablePicking = !!pickable;
+    if (typeof master.setEnabled === 'function') master.setEnabled(false);
+    else master.isVisible = false;
+    wrapThinInstanceBuffer(master);
+    registerMaster(mode === MODE_SOFT ? 'atomSoftMaster' : 'atomMaster', master);
+    return master;
   }
-  const ensureAtomGroup = (el) => {
+
+  function ensureAtomGroup(el) {
     __count('moleculeView#ensureAtomGroup');
-    return ensureGroup(atomGroups, el, 'atom');
-  };
+    if (atomGroups.has(el)) return atomGroups.get(el);
+    const solidMaster = createAtomMaster(el, MODE_SOLID, { pickable: true });
+    const softMaster = createAtomMaster(el, MODE_SOFT, { pickable: true });
+    const group = {
+      key: el,
+      masters: {
+        [MODE_SOLID]: solidMaster,
+        [MODE_SOFT]: softMaster,
+      },
+      instances: {
+        [MODE_SOLID]: [],
+        [MODE_SOFT]: [],
+      },
+      ghostInstances: {
+        [MODE_SOLID]: [],
+        [MODE_SOFT]: [],
+      },
+      indices: [],
+      mats: [],
+    };
+    group.master = solidMaster;
+    group.softMaster = softMaster;
+    atomGroups.set(el, group);
+    atomMasterLookup.set(solidMaster, { group, mode: MODE_SOLID });
+    atomMasterLookup.set(softMaster, { group, mode: MODE_SOFT });
+    return group;
+  }
+
+  function createBondMaster(key, mode, { pickable = true } = {}) {
+    const suffix = mode === MODE_SOFT ? '_soft' : '_solid';
+    const mat = new BABYLON.StandardMaterial(`bond_${key}${suffix}_mat`, scene);
+    mat.diffuseColor = new BABYLON.Color3(0.75, 0.78, 0.8);
+    mat.emissiveColor = mat.diffuseColor.scale(mode === MODE_SOFT ? 0.02 : 0.05);
+    applyMaterialTransparency(mat, mode === MODE_SOFT, { usePrePass: mode === MODE_SOFT });
+    mat.alpha = mode === MODE_SOFT ? SOFT_BOND_ALPHA : 1;
+    const master = BABYLON.MeshBuilder.CreateCylinder(
+      `bond_${key}${suffix}`,
+      { height: 1, diameter: 1, tessellation: 22 },
+      scene
+    );
+    master.material = mat;
+    master.isPickable = !!pickable;
+    master.thinInstanceEnablePicking = !!pickable;
+    if (typeof master.setEnabled === 'function') master.setEnabled(false);
+    else master.isVisible = false;
+    wrapThinInstanceBuffer(master);
+    registerMaster(mode === MODE_SOFT ? 'bondSoftMaster' : 'bondMaster', master);
+    return master;
+  }
+
+  function ensureBondGroup(key) {
+    __count('moleculeView#ensureBondGroup');
+    if (bondGroups.has(key)) return bondGroups.get(key);
+    const solidMaster = createBondMaster(key, MODE_SOLID, { pickable: true });
+    const softMaster = createBondMaster(key, MODE_SOFT, { pickable: true });
+    const group = {
+      key,
+      masters: {
+        [MODE_SOLID]: solidMaster,
+        [MODE_SOFT]: softMaster,
+      },
+      instances: {
+        [MODE_SOLID]: [],
+        [MODE_SOFT]: [],
+      },
+      ghostInstances: {
+        [MODE_SOLID]: [],
+        [MODE_SOFT]: [],
+      },
+      indices: [],
+      mats: [],
+    };
+    group.master = solidMaster;
+    group.softMaster = softMaster;
+    bondGroups.set(key, group);
+    bondMasterLookup.set(solidMaster, { group, mode: MODE_SOLID });
+    bondMasterLookup.set(softMaster, { group, mode: MODE_SOFT });
+    return group;
+  }
+
   const ensureGhostAtomGroup = (el) => {
     __count('moleculeView#ensureGhostAtomGroup');
-    return ensureGroup(ghostAtomGroups, el, 'ghostAtom');
+    if (ghostAtomGroups.has(el)) return ghostAtomGroups.get(el);
+    const baseGroup = ensureAtomGroup(el);
+    const group = {
+      master: baseGroup.masters[MODE_SOFT],
+      baseGroup,
+      mats: [],
+      indices: [],
+    };
+    ghostAtomGroups.set(el, group);
+    return group;
   };
   const ensureGhostBondGroup = (key) => {
     __count('moleculeView#ensureGhostBondGroup');
-    return ensureGroup(ghostBondGroups, key, 'ghostBond');
-  };
-  const ensureBondGroup = (key) => {
-    __count('moleculeView#ensureBondGroup');
-    return ensureGroup(bondGroups, key, 'bond');
+    if (ghostBondGroups.has(key)) return ghostBondGroups.get(key);
+    const baseGroup = ensureBondGroup(key);
+    const group = {
+      master: baseGroup.masters[MODE_SOFT],
+      baseGroup,
+      mats: [],
+      indices: [],
+    };
+    ghostBondGroups.set(key, group);
+    return group;
   };
   function ensureForceGroup() {
     __count('moleculeView#ensureForceGroup');
@@ -198,6 +386,8 @@ export function createMoleculeView(scene, molState) {
     headMaster.material = mat;
     if (typeof headMaster.setEnabled === 'function') headMaster.setEnabled(false);
     else headMaster.isVisible = false;
+    wrapThinInstanceBuffer(shaftMaster);
+    wrapThinInstanceBuffer(headMaster);
 
     // Back-compat alias: some tests/reference code read g.master
     const g = {
@@ -216,27 +406,101 @@ export function createMoleculeView(scene, molState) {
   }
   function buildInitial() {
     __count('moleculeView#buildInitial');
-    for (let i = 0; i < molState.positions.length; i++) {
-      const el = molState.elements[i];
-      const g = ensureAtomGroup(el);
-      const info = elInfo(el);
-      const d = info.scale;
-      const p = molState.positions[i];
-      const mat = BABYLON.Matrix.Compose(
-        new BABYLON.Vector3(d, d, d),
-        BABYLON.Quaternion.Identity(),
-        new BABYLON.Vector3(p.x, p.y, p.z)
-      );
-      g.mats.push(mat);
-      g.indices.push(i);
-    }
-    for (const g of atomGroups.values()) {
-      g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
-      const on = g.mats.length > 0;
-      if (typeof g.master.setEnabled === 'function') g.master.setEnabled(on);
-      else g.master.isVisible = on;
-    }
+    const atomCount = molState.positions.length;
+    atomDefaultModes = new Array(atomCount).fill(MODE_SOLID);
+    atomCurrentModes = atomDefaultModes.slice();
+    rebuildAtoms();
     rebuildBonds();
+  }
+  function clearAtomInstances() {
+    for (const group of atomGroups.values()) {
+      for (const mode of MODE_LIST) {
+        group.instances[mode].length = 0;
+        if (group.ghostInstances && group.ghostInstances[mode]) {
+          group.ghostInstances[mode].length = 0;
+        }
+      }
+      group.indices = [];
+      group.mats = [];
+    }
+  }
+  function assignAtomInstance(atomIndex, mode) {
+    const el = molState.elements[atomIndex];
+    const group = ensureAtomGroup(el);
+    const inst = {
+      atomIndex,
+      matrix: createIdentityMatrix(),
+    };
+    const bucket = group.instances[mode];
+    bucket.push(inst);
+    atomRenderRefs[atomIndex] = {
+      group,
+      mode,
+      slot: bucket.length - 1,
+    };
+  }
+  function refreshAtomMatrices() {
+    for (const group of atomGroups.values()) {
+      const info = elInfo(group.key);
+      const scale = info.scale;
+      const combinedIndices = [];
+      const combinedMats = [];
+      for (const mode of MODE_LIST) {
+        const bucket = group.instances[mode];
+        const ghostBucket = group.ghostInstances?.[mode] || [];
+        const master = group.masters[mode];
+        if (!master) continue;
+        const totalCount = bucket.length + ghostBucket.length;
+        if (!totalCount) {
+          try {
+            master.thinInstanceSetBuffer('matrix', new Float32Array());
+          } catch {}
+          if (typeof master.setEnabled === 'function') master.setEnabled(false);
+          else master.isVisible = false;
+          continue;
+        }
+        const matrices = [];
+        for (const inst of bucket) {
+          const pos = molState.positions[inst.atomIndex] || { x: 0, y: 0, z: 0 };
+          inst.matrix = BABYLON.Matrix.Compose(
+            new BABYLON.Vector3(scale, scale, scale),
+            BABYLON.Quaternion.Identity(),
+            new BABYLON.Vector3(pos.x, pos.y, pos.z)
+          );
+          matrices.push(inst.matrix);
+          combinedIndices.push(inst.atomIndex);
+          combinedMats.push(inst.matrix);
+        }
+        for (const inst of ghostBucket) {
+          if (!inst.matrix) continue;
+          matrices.push(inst.matrix);
+          combinedMats.push(inst.matrix);
+        }
+        master.thinInstanceSetBuffer('matrix', flattenMatrices(matrices));
+        if (typeof master.setEnabled === 'function') master.setEnabled(true);
+        else master.isVisible = true;
+      }
+      group.indices = combinedIndices;
+      group.mats = combinedMats;
+    }
+  }
+  function rebuildAtoms() {
+    __count('moleculeView#rebuildAtoms');
+    const atomCount = molState.positions.length;
+    if (!Array.isArray(atomDefaultModes) || atomDefaultModes.length !== atomCount) {
+      atomDefaultModes = new Array(atomCount).fill(MODE_SOLID);
+    }
+    if (!Array.isArray(atomCurrentModes) || atomCurrentModes.length !== atomCount) {
+      atomCurrentModes = atomDefaultModes.slice();
+    }
+    atomRenderRefs.length = atomCount;
+    clearAtomInstances();
+    for (let i = 0; i < atomCount; i++) {
+      const mode = atomCurrentModes[i] || atomDefaultModes[i] || MODE_SOLID;
+      assignAtomInstance(i, mode);
+    }
+    refreshAtomMatrices();
+    if (activeOpacityMask) applyOpacityMask(activeOpacityMask, { reapply: true });
   }
   function flattenMatrices(mats) {
     const arr = new Float32Array(mats.length * 16);
@@ -262,235 +526,327 @@ export function createMoleculeView(scene, molState) {
     }
     return BABYLON.Matrix.Compose(new BABYLON.Vector3(radius * 2, len, radius * 2), rot, mid);
   }
-  function rebuildBonds(bondData) {
-    __count('moleculeView#rebuildBonds');
-    for (const g of bondGroups.values()) {
-      g.mats = [];
-      g.indices = [];
+  
+function rebuildBonds(bondData, options = {}) {
+  __count('moleculeView#rebuildBonds');
+  const opts =
+    options && typeof options === 'object' && !Array.isArray(options) ? options : {};
+  const refreshGhosts = opts.refreshGhosts !== false;
+  for (const group of bondGroups.values()) {
+    for (const mode of MODE_LIST) {
+      group.instances[mode].length = 0;
+      if (group.ghostInstances && group.ghostInstances[mode]) {
+        group.ghostInstances[mode].length = 0;
+      }
     }
-    const source = bondData || molState.bonds;
-    // Debug logging removed (previously controlled by debug=1 query param) to reduce console noise.
-    const ODBG_ENABLED = typeof window === 'undefined' ? false : window.O_BOND_DEBUG === true; // default OFF
-    const BOND_DBG =
-      typeof window !== 'undefined' &&
-      (window.BOND_DEBUG === true || /[?&]bondDebug=1/.test(window.location?.search || ''));
-    // Helper: compute diagnostic threshold for what counts as a "long" bond.
-    // If a cell is enabled, use half the box diagonal; otherwise fall back to a fixed default or user override.
-    function longThreshold() {
+  }
+  let source = bondData;
+  if (Array.isArray(bondData)) {
+    molState.bonds = bondData.map((b) => ({ ...b }));
+    source = molState.bonds;
+  } else {
+    source = molState.bonds;
+  }
+  const bondsArray = Array.isArray(source) ? source : [];
+  const DEBUG_STRETCH = bondStretchDebugEnabled();
+  const debugSamples = DEBUG_STRETCH ? [] : null;
+  bondDefaultModes = new Array(bondsArray.length).fill(MODE_SOLID);
+  bondCurrentModes = bondDefaultModes.slice();
+  bondRenderRefs.length = bondsArray.length;
+  bondIndexByKey.clear();
+  const ODBG_ENABLED = typeof window === 'undefined' ? false : window.O_BOND_DEBUG === true; // default OFF
+  const BOND_DBG =
+    typeof window !== 'undefined' &&
+    (window.BOND_DEBUG === true || /[?&]bondDebug=1/.test(window.location?.search || ''));
+  function longThreshold() {
+    try {
+      if (molState?.cell?.enabled && molState?.showCell) {
+        const a = molState.cell.a || { x: 0, y: 0, z: 0 },
+          b = molState.cell.b || { x: 0, y: 0, z: 0 },
+          c = molState.cell.c || { x: 0, y: 0, z: 0 };
+        const vx = a.x + b.x + c.x,
+          vy = a.y + b.y + c.y,
+          vz = a.z + b.z + c.z;
+        const diag = Math.hypot(vx, vy, vz) || 0;
+        const mul =
+          typeof window !== 'undefined' && window.BOND_DEBUG_MULT
+            ? Number(window.BOND_DEBUG_MULT)
+            : 0.5;
+        return diag * (Number.isFinite(mul) ? mul : 0.5);
+      }
+    } catch {}
+    const fallback =
+      typeof window !== 'undefined' && window.BOND_DEBUG_MINLEN
+        ? Number(window.BOND_DEBUG_MINLEN)
+        : 6.0;
+    return Number.isFinite(fallback) ? fallback : 6.0;
+  }
+  const LONG_THR = longThreshold();
+  let debugSoftDefaults = 0;
+  for (let idx = 0; idx < bondsArray.length; idx++) {
+    const bond = bondsArray[idx];
+    const key = keyOf(bond.i, bond.j);
+    const defaultMode =
+      typeof bond.opacity === 'number' && bond.opacity < SOFT_MODE_THRESHOLD
+        ? MODE_SOFT
+        : MODE_SOLID;
+    bondDefaultModes[idx] = defaultMode;
+    bondCurrentModes[idx] = defaultMode;
+    const mode = bondCurrentModes[idx];
+    const group = ensureBondGroup(key);
+    const canonicalKey = canonicalBondKey(bond.i, bond.j);
+    const mapList = bondIndexByKey.get(canonicalKey);
+    if (mapList) mapList.push(idx);
+    else bondIndexByKey.set(canonicalKey, [idx]);
+    const inst = {
+      bondIndex: idx,
+      bond,
+      matrix: createIdentityMatrix(),
+    };
+    const bucket = group.instances[mode];
+    bucket.push(inst);
+    bondRenderRefs[idx] = {
+      group,
+      mode,
+      slot: bucket.length - 1,
+    };
+    if (DEBUG_STRETCH) {
+      if (mode === MODE_SOFT) debugSoftDefaults++;
+      if (debugSamples.length < 10) {
+        debugSamples.push({
+          idx,
+          i: bond.i,
+          j: bond.j,
+          opacity:
+            typeof bond.opacity === 'number' && Number.isFinite(bond.opacity)
+              ? Number(bond.opacity.toFixed(4))
+              : null,
+          defaultMode: mode,
+        });
+      }
+    }
+    if (BOND_DBG) {
       try {
-        if (molState?.cell?.enabled && molState?.showCell) {
-          const a = molState.cell.a || { x: 0, y: 0, z: 0 },
-            b = molState.cell.b || { x: 0, y: 0, z: 0 },
-            c = molState.cell.c || { x: 0, y: 0, z: 0 };
-          const vx = a.x + b.x + c.x,
-            vy = a.y + b.y + c.y,
-            vz = a.z + b.z + c.z;
-          const diag = Math.hypot(vx, vy, vz) || 0;
-          const mul =
-            typeof window !== 'undefined' && window.BOND_DEBUG_MULT
-              ? Number(window.BOND_DEBUG_MULT)
-              : 0.5; // half-diagonal by default
-          return diag * (Number.isFinite(mul) ? mul : 0.5);
-        }
-      } catch {}
-      const fallback =
-        typeof window !== 'undefined' && window.BOND_DEBUG_MINLEN
-          ? Number(window.BOND_DEBUG_MINLEN)
-          : 6.0;
-      return Number.isFinite(fallback) ? fallback : 6.0;
-    }
-    const LONG_THR = longThreshold();
-    let oBondCount = 0;
-    for (const b of source) {
-      const g = ensureBondGroup(keyOf(b.i, b.j));
-      const pA = molState.positions[b.i];
-      const pB = molState.positions[b.j];
-      const mat = bondMatrix(pA, pB, 0.1);
-      g.mats.push(mat);
-      g.indices.push(b);
-      if (BOND_DBG) {
-        try {
+        const pA = molState.positions[bond.i];
+        const pB = molState.positions[bond.j];
+        if (pA && pB) {
           const L = Math.hypot(pB.x - pA.x, pB.y - pA.y, pB.z - pA.z);
           if (L > LONG_THR) {
-            const elI = molState.elements[b.i];
-            const elJ = molState.elements[b.j];
-            const c = molState.cell || {};
+            const elI = molState.elements[bond.i];
+            const elJ = molState.elements[bond.j];
+            const cell = molState.cell || {};
             console.log('[BOND-DBG-LONG][primary]', {
-              i: b.i,
-              j: b.j,
+              i: bond.i,
+              j: bond.j,
               elements: [elI, elJ],
               length: Number(L.toFixed(4)),
-              opacity: b.opacity != null ? b.opacity : 1,
-              atomA: {
-                x: Number(pA.x.toFixed(4)),
-                y: Number(pA.y.toFixed(4)),
-                z: Number(pA.z.toFixed(4)),
-              },
-              atomB: {
-                x: Number(pB.x.toFixed(4)),
-                y: Number(pB.y.toFixed(4)),
-                z: Number(pB.z.toFixed(4)),
-              },
               cell:
-                c && c.enabled ? { a: c.a, b: c.b, c: c.c, originOffset: c.originOffset } : null,
+                cell && cell.enabled
+                  ? { a: cell.a, b: cell.b, c: cell.c, originOffset: cell.originOffset }
+                  : null,
             });
-          }
-        } catch {}
-      }
-      if (ODBG_ENABLED) {
-        try {
-          const elI = molState.elements[b.i];
-          const elJ = molState.elements[b.j];
-          const involvesO = elI === 'O' || elJ === 'O';
-          if (involvesO) {
-            oBondCount++;
-            // Extract rotation & mid info from matrix for quick diagnostics
-            const midX = (pA.x + pB.x) / 2,
-              midY = (pA.y + pB.y) / 2,
-              midZ = (pA.z + pB.z) / 2;
-            console.log(
-              `[O-BOND-DBG][rebuildBonds] bond ${elI}-${elJ} i=${b.i} j=${b.j} key=${keyOf(b.i, b.j)} mid=(${midX.toFixed(3)},${midY.toFixed(3)},${midZ.toFixed(3)}) len=${Math.hypot(pB.x - pA.x, pB.y - pA.y, pB.z - pA.z).toFixed(3)} opacity=${b.opacity != null ? b.opacity : 1}`
-            );
-            // Additional request: for O-C bonds specifically, log local & world positions of both atoms.
-            if ((elI === 'O' && elJ === 'C') || (elI === 'C' && elJ === 'O')) {
-              try {
-                // Local positions are just pA / pB (molecule space)
-                const lpA = pA,
-                  lpB = pB;
-                let wpA = lpA,
-                  wpB = lpB;
-                // If atom masters exist & have world matrices (after scene graph build), transform local to world.
-                // We find the atom master for each element; thin instance positions are encoded in the matrix buffer;
-                // world position of a given thin instance = Transform(localPosition, masterWorldMatrix), but because we
-                // parent masters to moleculeRoot (and don't apply per-instance extra transforms beyond translation), we can approximate
-                // by applying moleculeRoot's world matrix if available.
-                const root = molState.moleculeRoot;
-                if (root && root.getWorldMatrix) {
-                  const wm = root.getWorldMatrix();
-                  const vA = BABYLON.Vector3.TransformCoordinates(
-                    new BABYLON.Vector3(lpA.x, lpA.y, lpA.z),
-                    wm
-                  );
-                  const vB = BABYLON.Vector3.TransformCoordinates(
-                    new BABYLON.Vector3(lpB.x, lpB.y, lpB.z),
-                    wm
-                  );
-                  wpA = { x: vA.x, y: vA.y, z: vA.z };
-                  wpB = { x: vB.x, y: vB.y, z: vB.z };
-                } else if (root && root._worldMatrix) {
-                  // fallback if using stub storing _worldMatrix
-                  try {
-                    const wm = root._worldMatrix;
-                    const vA = BABYLON.Vector3.TransformCoordinates(
-                      new BABYLON.Vector3(lpA.x, lpA.y, lpA.z),
-                      wm
-                    );
-                    const vB = BABYLON.Vector3.TransformCoordinates(
-                      new BABYLON.Vector3(lpB.x, lpB.y, lpB.z),
-                      wm
-                    );
-                    wpA = { x: vA.x, y: vA.y, z: vA.z };
-                    wpB = { x: vB.x, y: vB.y, z: vB.z };
-                  } catch {}
-                }
-                console.log(
-                  `[O-BOND-DBG][OC-pos] ${elI}-${elJ} i=${b.i} j=${b.j} ` +
-                    `localA=(${lpA.x.toFixed(3)},${lpA.y.toFixed(3)},${lpA.z.toFixed(3)}) ` +
-                    `localB=(${lpB.x.toFixed(3)},${lpB.y.toFixed(3)},${lpB.z.toFixed(3)}) ` +
-                    `worldA=(${wpA.x.toFixed(3)},${wpA.y.toFixed(3)},${wpA.z.toFixed(3)}) ` +
-                    `worldB=(${wpB.x.toFixed(3)},${wpB.y.toFixed(3)},${wpB.z.toFixed(3)})`
-                );
-              } catch (e) {
-                console.log('[O-BOND-DBG][OC-pos][error]', e);
-              }
-            }
-          }
-        } catch {}
-      }
-    }
-    for (const [key, g] of bondGroups) {
-      g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
-      // Build or reuse color buffer
-      const cols = new Float32Array(g.mats.length * 4);
-      for (let i = 0; i < g.indices.length; i++) {
-        const b = g.indices[i];
-        const alpha = b.opacity != null ? b.opacity : 1.0;
-        // Base diffuse color pulled from material diffuseColor
-        const dc = g.master.material.diffuseColor || { r: 0.75, g: 0.78, b: 0.8 };
-        cols[i * 4 + 0] = dc.r;
-        cols[i * 4 + 1] = dc.g;
-        cols[i * 4 + 2] = dc.b;
-        cols[i * 4 + 3] = alpha;
-      }
-      // Assign color buffer (Babylon expects 'color' for per-instance colors)
-      try {
-        g.master.thinInstanceSetBuffer('color', cols, 4);
-      } catch (e) {
-        /* ignore in stub */
-      }
-      // Ensure material blending if any alpha < 1
-      if (g.indices.some((b) => b.opacity != null && b.opacity < 0.999)) {
-        g.master.material.alpha = 1.0; // keep host opaque; per-instance alpha used
-        if (BABYLON.Material && typeof BABYLON.Material.MATERIAL_ALPHABLEND !== 'undefined') {
-          g.master.material.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND;
-        }
-      } else {
-        g.master.material.alpha = 1.0;
-      }
-      // Hide master mesh when it has zero instances to avoid stray default cylinder (legacy behavior parity)
-      if (g.mats.length === 0) {
-        if (typeof g.master.setEnabled === 'function') g.master.setEnabled(false);
-        else g.master.isVisible = false;
-      } else {
-        if (typeof g.master.setEnabled === 'function') g.master.setEnabled(true);
-        else g.master.isVisible = true;
-      }
-      // (debug log suppressed)
-    }
-    if (ODBG_ENABLED && oBondCount > 0) {
-      try {
-        // After rebuild, verify parenting & log rotationQuaternion of moleculeRoot & each O-* bond master
-        const rootQ = molState.moleculeRoot && molState.moleculeRoot.rotationQuaternion;
-        const rootRotStr = rootQ
-          ? `rootQ=(${rootQ.x.toFixed(4)},${rootQ.y.toFixed(4)},${rootQ.z.toFixed(4)},${rootQ.w.toFixed(4)})`
-          : 'rootQ=none';
-        for (const [key, g] of bondGroups) {
-          if (/O-/.test(key) || /-O/.test(key)) {
-            const parentOk = g.master.parent === molState.moleculeRoot;
-            const q = g.master.rotationQuaternion;
-            const qStr = q
-              ? `q=(${q.x.toFixed(4)},${q.y.toFixed(4)},${q.z.toFixed(4)},${q.w.toFixed(4)})`
-              : 'q=none';
-            // Also log Euler rotation if quaternion absent, and world matrix first row as a quick change signature
-            let eulerStr = '';
-            try {
-              if (!q && g.master.rotation) {
-                const r = g.master.rotation;
-                eulerStr = ` rotEuler=(${(r.x || 0).toFixed(3)},${(r.y || 0).toFixed(3)},${(r.z || 0).toFixed(3)})`;
-              }
-            } catch {}
-            let wmSig = '';
-            try {
-              const wm = g.master.getWorldMatrix && g.master.getWorldMatrix();
-              if (wm && wm.m)
-                wmSig = ` wm0=(${wm.m[0].toFixed(3)},${wm.m[1].toFixed(3)},${wm.m[2].toFixed(3)})`;
-            } catch {}
-            console.log(
-              `[O-BOND-DBG][postRebuild] key=${key} instances=${g.mats.length} parentOk=${parentOk} ${qStr} ${rootRotStr}${eulerStr}${wmSig}`
-            );
           }
         }
       } catch {}
     }
-    // After bonds are rebuilt, rebuild forces to stay in sync with transforms (shared masters for VR)
+  }
+  if (DEBUG_STRETCH) {
     try {
-      rebuildForces();
+      console.log('[MoleculeView][bondModes]', {
+        total: bondsArray.length,
+        defaultSoft: debugSoftDefaults,
+        defaultSolid: bondsArray.length - debugSoftDefaults,
+        sample: debugSamples,
+      });
+    } catch (err) {
+      console.warn('[MoleculeView][bondModes] debug log error', err);
+    }
+  }
+  refreshBondMatrices();
+  if (activeOpacityMask) applyOpacityMask(activeOpacityMask, { reapply: true });
+  if (ODBG_ENABLED && typeof molState?.moleculeRoot !== 'undefined') {
+    try {
+      const rootQ = molState.moleculeRoot && molState.moleculeRoot.rotationQuaternion;
+      const rootRotStr = rootQ
+        ? `rootQ=(${rootQ.x.toFixed(4)},${rootQ.y.toFixed(4)},${rootQ.z.toFixed(4)},${rootQ.w.toFixed(4)})`
+        : 'rootQ=none';
+      for (const [key, group] of bondGroups) {
+        const master = group.masters[MODE_SOLID];
+        if (!master || (!/O-/.test(key) && !/-O/.test(key))) continue;
+        const parentOk = master.parent === molState.moleculeRoot;
+        const q = master.rotationQuaternion;
+        const qStr = q
+          ? `q=(${q.x.toFixed(4)},${q.y.toFixed(4)},${q.z.toFixed(4)},${q.w.toFixed(4)})`
+          : 'q=none';
+        console.log(
+          `[O-BOND-DBG][postRebuild] key=${key} instances=${group.instances[MODE_SOLID].length} parentOk=${parentOk} ${qStr} ${rootRotStr}`
+        );
+      }
     } catch {}
   }
-  // Force vector thin instance matrix builder (arrow style)
-  // Returns orientation quaternion and convenience midpoints for shaft/head
+  try {
+    rebuildForces();
+  } catch {}
+  if (refreshGhosts) {
+    rebuildGhosts();
+  }
+}
+  function refreshBondMatrices() {
+    for (const group of bondGroups.values()) {
+      for (const mode of MODE_LIST) {
+        const bucket = group.instances[mode];
+        const ghostBucket = group.ghostInstances?.[mode] || [];
+        const master = group.masters[mode];
+        if (!master) continue;
+        const totalCount = bucket.length + ghostBucket.length;
+        if (!totalCount) {
+          try {
+            master.thinInstanceSetBuffer('matrix', new Float32Array());
+          } catch {}
+          if (typeof master.setEnabled === 'function') master.setEnabled(false);
+          else master.isVisible = false;
+          if (ghostDebugEnabled() && mode === MODE_SOFT) {
+            try {
+              console.log('[MoleculeView][refreshBondMatrices]', {
+                key: group.key,
+                mode,
+                totalCount,
+                instances: bucket.length,
+                ghostInstances: ghostBucket.length,
+                action: 'disable-master',
+              });
+            } catch {}
+          }
+          continue;
+        }
+        const matrices = [];
+        for (const inst of bucket) {
+          const bond = inst.bond;
+        const pA = molState.positions[bond.i] || { x: 0, y: 0, z: 0 };
+        const pB = molState.positions[bond.j] || { x: 0, y: 0, z: 0 };
+        inst.matrix = bondMatrix(pA, pB, 0.1);
+        matrices.push(inst.matrix);
+      }
+      for (const inst of ghostBucket) {
+        if (!inst.matrix) continue;
+        matrices.push(inst.matrix);
+        }
+        master.thinInstanceSetBuffer('matrix', flattenMatrices(matrices));
+        if (typeof master.setEnabled === 'function') master.setEnabled(true);
+        else master.isVisible = true;
+        if (ghostDebugEnabled() && mode === MODE_SOFT) {
+          try {
+            console.log('[MoleculeView][refreshBondMatrices]', {
+              key: group.key,
+              mode,
+              totalCount,
+              instances: bucket.length,
+              ghostInstances: ghostBucket.length,
+              matricesUploaded: matrices.length,
+            });
+          } catch {}
+        }
+      }
+      const combinedIndices = [];
+      const combinedMats = [];
+      for (const mode of MODE_LIST) {
+        const baseBucket = group.instances[mode];
+      for (const inst of baseBucket) {
+        combinedIndices.push(inst.bond);
+        combinedMats.push(inst.matrix);
+      }
+      const ghostBucket = group.ghostInstances?.[mode] || [];
+      for (const inst of ghostBucket) {
+        combinedMats.push(inst.matrix);
+      }
+    }
+    group.indices = combinedIndices;
+    group.mats = combinedMats;
+  }
+}
+
+  function setAtomMode(atomIndex, mode, { refresh = true } = {}) {
+    if (!MODE_LIST.includes(mode)) mode = MODE_SOLID;
+    if (!Number.isInteger(atomIndex) || atomIndex < 0 || atomIndex >= atomRenderRefs.length) {
+      return false;
+    }
+    const ref = atomRenderRefs[atomIndex];
+    if (!ref || ref.mode === mode) return false;
+    const fromBucket = ref.group.instances[ref.mode];
+    const inst = fromBucket[ref.slot];
+    const lastIndex = fromBucket.length - 1;
+    if (ref.slot !== lastIndex) {
+      const swapped = fromBucket[lastIndex];
+      fromBucket[ref.slot] = swapped;
+      if (swapped) {
+        const swappedRef = atomRenderRefs[swapped.atomIndex];
+        swappedRef.slot = ref.slot;
+      }
+    }
+    fromBucket.pop();
+    const toBucket = ref.group.instances[mode];
+    toBucket.push(inst);
+    ref.mode = mode;
+    ref.slot = toBucket.length - 1;
+    atomCurrentModes[atomIndex] = mode;
+    if (refresh) refreshAtomMatrices();
+    return true;
+  }
+
+  function setBondMode(bondIndex, mode, { refresh = true } = {}) {
+    if (!MODE_LIST.includes(mode)) mode = MODE_SOLID;
+    if (!Number.isInteger(bondIndex) || bondIndex < 0 || bondIndex >= bondRenderRefs.length) {
+      return false;
+    }
+    const ref = bondRenderRefs[bondIndex];
+    if (!ref || ref.mode === mode) return false;
+    const fromBucket = ref.group.instances[ref.mode];
+    const inst = fromBucket[ref.slot];
+    const lastIndex = fromBucket.length - 1;
+    if (ref.slot !== lastIndex) {
+      const swapped = fromBucket[lastIndex];
+      fromBucket[ref.slot] = swapped;
+      if (swapped) {
+        const swappedRef = bondRenderRefs[swapped.bondIndex];
+        swappedRef.slot = ref.slot;
+      }
+    }
+    fromBucket.pop();
+    const toBucket = ref.group.instances[mode];
+    toBucket.push(inst);
+    ref.mode = mode;
+    ref.slot = toBucket.length - 1;
+    bondCurrentModes[bondIndex] = mode;
+    if (refresh) refreshBondMatrices();
+    return true;
+  }
+
+  function resetToBaselineModes({ refresh = true } = {}) {
+    let changed = false;
+    for (let i = 0; i < atomDefaultModes.length; i++) {
+      if (setAtomMode(i, atomDefaultModes[i], { refresh: false })) changed = true;
+    }
+    for (let i = 0; i < bondDefaultModes.length; i++) {
+      if (setBondMode(i, bondDefaultModes[i], { refresh: false })) changed = true;
+    }
+    if (refresh && changed) {
+      refreshAtomMatrices();
+      refreshBondMatrices();
+    }
+    return changed;
+  }
+
+  function handlePositionsChanged() {
+    if (molState.showGhostCells && molState.showCell && molState.cell?.enabled) {
+      rebuildGhosts();
+    } else {
+      refreshAtomMatrices();
+      refreshBondMatrices();
+    }
+  }
+  molState.bus.on('positionsChanged', handlePositionsChanged);
+
   function forceArrowTransforms(p, f, length) {
-    // p: {x,y,z}; f: [fx,fy,fz]; length: fixed length for debug visualization
     const fx = f[0],
       fy = f[1],
       fz = f[2];
@@ -506,9 +862,8 @@ export function createMoleculeView(scene, molState) {
       const axis = BABYLON.Vector3.Cross(up, dir).normalize();
       rot = BABYLON.Quaternion.RotationAxis(axis, Math.acos(Math.min(1, Math.max(-1, dot))));
     }
-    // Midpoints along arrow axis
-    const shaftLen = length * 0.78; // proportion for shaft
-    const headLen = Math.max(length - shaftLen, length * 0.22); // ensure visible head
+    const shaftLen = length * 0.78;
+    const headLen = Math.max(length - shaftLen, length * 0.22);
     const shaftMid = new BABYLON.Vector3(
       p.x + (dir.x * shaftLen) / 2,
       p.y + (dir.y * shaftLen) / 2,
@@ -521,7 +876,8 @@ export function createMoleculeView(scene, molState) {
     );
     return { rot, shaftLen, headLen, shaftMid, headMid };
   }
-  function rebuildForces() {
+
+function rebuildForces() {
     __count('moleculeView#rebuildForces');
     const DBG =
       typeof window !== 'undefined' &&
@@ -689,186 +1045,226 @@ export function createMoleculeView(scene, molState) {
     }
     if (DBG) console.log('[Forces][rebuild] complete visible=', g.mats.length > 0);
   }
+  function clearGhostBuffers() {
+    for (const g of ghostAtomGroups.values()) {
+      g.mats.length = 0;
+      g.indices.length = 0;
+      if (g.baseGroup?.ghostInstances?.[MODE_SOFT]) {
+        g.baseGroup.ghostInstances[MODE_SOFT].length = 0;
+      }
+    }
+    for (const g of ghostBondGroups.values()) {
+      g.mats.length = 0;
+      g.indices.length = 0;
+      if (g.baseGroup?.ghostInstances?.[MODE_SOFT]) {
+        g.baseGroup.ghostInstances[MODE_SOFT].length = 0;
+      }
+    }
+  }
+
+  function shiftVectorFromCell(shift, cell) {
+    if (!cell || !cell.enabled || !Array.isArray(shift) || shift.length < 3) {
+      return { x: 0, y: 0, z: 0 };
+    }
+    const [sx, sy, sz] = shift.map((v) => Number(v) || 0);
+    const ax = cell.a?.x || 0;
+    const ay = cell.a?.y || 0;
+    const az = cell.a?.z || 0;
+    const bx = cell.b?.x || 0;
+    const by = cell.b?.y || 0;
+    const bz = cell.b?.z || 0;
+    const cx = cell.c?.x || 0;
+    const cy = cell.c?.y || 0;
+    const cz = cell.c?.z || 0;
+    return {
+      x: sx * ax + sy * bx + sz * cx,
+      y: sx * ay + sy * by + sz * cy,
+      z: sx * az + sy * bz + sz * cz,
+    };
+  }
+
   function rebuildGhosts() {
     __count('moleculeView#rebuildGhosts');
-    // Clear previous ghost buffers
-    for (const g of ghostAtomGroups.values()) {
-      g.mats.length = 0;
-      g.indices.length = 0;
+    const GDBG = ghostDebugEnabled();
+    if (GDBG) {
+      try {
+        console.log('[MoleculeView][rebuildGhosts:start]', {
+          showCell: !!molState.showCell,
+          showGhostCells: !!molState.showGhostCells,
+          cellEnabled: !!molState.cell?.enabled,
+          ghostImages: Array.isArray(molState.ghostImages) ? molState.ghostImages.length : 'n/a',
+          ghostBondMeta: Array.isArray(molState.ghostBondMeta) ? molState.ghostBondMeta.length : 'n/a',
+        });
+      } catch (err) {
+        console.warn('[MoleculeView][rebuildGhosts:start] log failed', err);
+      }
     }
-    for (const g of ghostBondGroups.values()) {
-      g.mats.length = 0;
-      g.indices.length = 0;
-    }
+    clearGhostBuffers();
     if (!molState.showGhostCells || !molState.showCell || !molState.cell?.enabled) {
-      for (const g of ghostAtomGroups.values()) {
+      if (GDBG) {
         try {
-          g.master.thinInstanceSetBuffer('matrix', new Float32Array());
+          console.log('[MoleculeView][rebuildGhosts:skip]', {
+            showCell: !!molState.showCell,
+            showGhostCells: !!molState.showGhostCells,
+            cellEnabled: !!molState.cell?.enabled,
+          });
         } catch {}
-        // Disable master when no instances to prevent a default sphere at origin
-        if (typeof g.master.setEnabled === 'function') g.master.setEnabled(false);
-        else g.master.isVisible = false;
       }
-      for (const g of ghostBondGroups.values()) {
-        try {
-          g.master.thinInstanceSetBuffer('matrix', new Float32Array());
-        } catch {}
-        // Disable master when no instances to prevent a default cylinder at origin
-        if (typeof g.master.setEnabled === 'function') g.master.setEnabled(false);
-        else g.master.isVisible = false;
-      }
+      refreshAtomMatrices();
+      refreshBondMatrices();
       return;
     }
-    const BOND_DBG =
-      typeof window !== 'undefined' &&
-      (window.BOND_DEBUG === true || /[?&]bondDebug=1/.test(window.location?.search || ''));
-    function longThreshold() {
-      try {
-        if (molState?.cell?.enabled) {
-          const a = molState.cell.a || { x: 0, y: 0, z: 0 },
-            b = molState.cell.b || { x: 0, y: 0, z: 0 },
-            c = molState.cell.c || { x: 0, y: 0, z: 0 };
-          const vx = a.x + b.x + c.x,
-            vy = a.y + b.y + c.y,
-            vz = a.z + b.z + c.z;
-          const diag = Math.hypot(vx, vy, vz) || 0;
-          const mul =
-            typeof window !== 'undefined' && window.BOND_DEBUG_MULT
-              ? Number(window.BOND_DEBUG_MULT)
-              : 0.5;
-          return diag * (Number.isFinite(mul) ? mul : 0.5);
-        }
-      } catch {}
-      const fallback =
-        typeof window !== 'undefined' && window.BOND_DEBUG_MINLEN
-          ? Number(window.BOND_DEBUG_MINLEN)
-          : 6.0;
-      return Number.isFinite(fallback) ? fallback : 6.0;
+    const cell = molState.cell;
+    const ghostAtoms = Array.isArray(molState.ghostImages) ? molState.ghostImages : [];
+    for (const ghost of ghostAtoms) {
+      const atomIndex = ghost?.atomIndex;
+      if (!Number.isInteger(atomIndex) || atomIndex < 0 || atomIndex >= molState.elements.length) {
+        continue;
+      }
+      const element = molState.elements[atomIndex];
+      if (!element) continue;
+      const group = ensureGhostAtomGroup(element);
+      const info = elInfo(element);
+      const scale = info.scale;
+      const positionArray = Array.isArray(ghost.position)
+        ? ghost.position
+        : [ghost.position?.x || 0, ghost.position?.y || 0, ghost.position?.z || 0];
+      const matrix = BABYLON.Matrix.Compose(
+        new BABYLON.Vector3(scale, scale, scale),
+        BABYLON.Quaternion.Identity(),
+        new BABYLON.Vector3(positionArray[0], positionArray[1], positionArray[2])
+      );
+      const inst = {
+        ghost: true,
+        baseIndex: atomIndex,
+        shift: Array.isArray(ghost.shift) ? ghost.shift.slice(0, 3) : [0, 0, 0],
+        matrix,
+      };
+      const baseGroup = group.baseGroup;
+      if (baseGroup?.ghostInstances?.[MODE_SOFT]) {
+        baseGroup.ghostInstances[MODE_SOFT].push(inst);
+      }
+      group.mats.push(matrix);
+      group.indices.push({ base: atomIndex, shift: inst.shift });
     }
-    const LONG_THR = longThreshold();
-    const { a, b, c } = molState.cell;
-    const shifts = [
-      { x: 0, y: 0, z: 0 },
-      { x: 1, y: 0, z: 0 },
-      { x: -1, y: 0, z: 0 },
-      { x: 0, y: 1, z: 0 },
-      { x: 0, y: -1, z: 0 },
-      { x: 0, y: 0, z: 1 },
-      { x: 0, y: 0, z: -1 },
-    ];
-    // Build augmented atom list (first block is original atoms at shift 0)
-    const augAtoms = [];
-    for (const S of shifts) {
-      for (let i = 0; i < molState.positions.length; i++) {
-        const base = molState.positions[i];
-        const pos = {
-          x: base.x + S.x * a.x + S.y * b.x + S.z * c.x,
-          y: base.y + S.x * a.y + S.y * b.y + S.z * c.y,
-          z: base.z + S.x * a.z + S.y * b.z + S.z * c.z,
-        };
-        augAtoms.push({ element: molState.elements[i], baseIndex: i, shift: S, pos });
-        if (S.x !== 0 || S.y !== 0 || S.z !== 0) {
-          // Only create thin instances for non-primary images (primary already rendered in main atom groups)
-          const g = ensureGhostAtomGroup(molState.elements[i]);
-          const info = elInfo(molState.elements[i]);
-          const d = info.scale;
-          const mat = BABYLON.Matrix.Compose(
-            new BABYLON.Vector3(d, d, d),
-            BABYLON.Quaternion.Identity(),
-            new BABYLON.Vector3(pos.x, pos.y, pos.z)
-          );
-          g.mats.push(mat);
-          g.indices.push({ base: i, shift: [S.x, S.y, S.z] });
+
+    const ghostBondMeta = Array.isArray(molState.ghostBondMeta) ? molState.ghostBondMeta : [];
+    for (const meta of ghostBondMeta) {
+      const baseI = meta?.base?.i;
+      const baseJ = meta?.base?.j;
+      if (
+        !Number.isInteger(baseI) ||
+        !Number.isInteger(baseJ) ||
+        baseI < 0 ||
+        baseJ < 0 ||
+        baseI >= molState.positions.length ||
+        baseJ >= molState.positions.length
+      ) {
+        continue;
+      }
+      const group = ensureGhostBondGroup(keyOf(baseI, baseJ));
+      const shiftA = Array.isArray(meta.shiftA) ? meta.shiftA.slice(0, 3) : [0, 0, 0];
+      const shiftB = Array.isArray(meta.shiftB) ? meta.shiftB.slice(0, 3) : [0, 0, 0];
+      const basePosA = molState.positions[baseI];
+      const basePosB = molState.positions[baseJ];
+      if (!basePosA || !basePosB) continue;
+      const vecA = shiftVectorFromCell(shiftA, cell);
+      const vecB = shiftVectorFromCell(shiftB, cell);
+      const pA = {
+        x: basePosA.x + vecA.x,
+        y: basePosA.y + vecA.y,
+        z: basePosA.z + vecA.z,
+      };
+      const pB = {
+        x: basePosB.x + vecB.x,
+        y: basePosB.y + vecB.y,
+        z: basePosB.z + vecB.z,
+      };
+      const matrix = bondMatrix(pA, pB, 0.1);
+      const inst = {
+        ghost: true,
+        matrix,
+        base: { i: baseI, j: baseJ },
+        shiftA,
+        shiftB,
+        imageDelta: Array.isArray(meta.imageDelta) ? meta.imageDelta.slice(0, 3) : [0, 0, 0],
+      };
+      if (GDBG || (typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_API === true)) {
+        try {
+          const dx = pB.x - pA.x;
+          const dy = pB.y - pA.y;
+          const dz = pB.z - pA.z;
+          const length = Math.hypot(dx, dy, dz);
+          console.log('[MoleculeView][ghostBondDebug]', {
+            base: inst.base,
+            shiftA: inst.shiftA,
+            shiftB: inst.shiftB,
+            positionA: pA,
+            positionB: pB,
+            length,
+          });
+        } catch (err) {
+          console.warn('[MoleculeView][ghostBondDebug] log failed', err);
         }
       }
-    }
-    for (const g of ghostAtomGroups.values()) {
-      g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
-      if (g.mats.length === 0) {
-        if (typeof g.master.setEnabled === 'function') g.master.setEnabled(false);
-        else g.master.isVisible = false;
-      } else {
-        if (typeof g.master.setEnabled === 'function') g.master.setEnabled(true);
-        else g.master.isVisible = true;
+      const baseGroup = group.baseGroup;
+      if (baseGroup?.ghostInstances?.[MODE_SOFT]) {
+        baseGroup.ghostInstances[MODE_SOFT].push(inst);
       }
-    }
-    // Run bond calculator over augmented list (stateless) and then extract bonds that involve at least one ghost image OR cross-image pair.
-    // We import lazily to avoid circular dependency; computeBondsNoState is already globally available in legacy path.
-    const augSimple = augAtoms.map((a) => ({
-      element: a.element,
-      pos: [a.pos.x, a.pos.y, a.pos.z],
-    }));
-    const augBonds = computeBondsNoState(augSimple);
-    // Build mapping from augmented atom index back to (baseIndex, shift)
-    // augmented index layout: for shift index si and local atom i => idx = si * nAtoms + i
-    const nAtoms = molState.positions.length;
-    function decode(idx) {
-      const si = Math.floor(idx / nAtoms);
-      const local = idx % nAtoms;
-      return { si, local, shift: shifts[si] };
-    }
-    for (const eb of augBonds) {
-      const A = decode(eb.i);
-      const B = decode(eb.j);
-      // Skip primary-primary (both shift 0) because those are already rendered as real bonds
-      if (A.si === 0 && B.si === 0) continue;
-      const baseI = A.local;
-      const baseJ = B.local;
-      const key = keyOf(baseI, baseJ);
-      const g = ensureGhostBondGroup(key);
-      const pA = augAtoms[eb.i].pos;
-      const pB = augAtoms[eb.j].pos;
-      const mat = bondMatrix(pA, pB, 0.1);
-      g.mats.push(mat);
-      g.indices.push({
+      group.mats.push(matrix);
+      group.indices.push({
         i: baseI,
         j: baseJ,
-        shiftA: [A.shift.x, A.shift.y, A.shift.z],
-        shiftB: [B.shift.x, B.shift.y, B.shift.z],
+        shiftA,
+        shiftB,
+        imageDelta: inst.imageDelta,
       });
-      if (BOND_DBG) {
-        try {
-          const L = Math.hypot(pB.x - pA.x, pB.y - pA.y, pB.z - pA.z);
-          if (L > LONG_THR) {
-            const elI = molState.elements[baseI];
-            const elJ = molState.elements[baseJ];
-            const c = molState.cell || {};
-            console.log('[BOND-DBG-LONG][ghost]', {
-              i: baseI,
-              j: baseJ,
-              elements: [elI, elJ],
-              length: Number(L.toFixed(4)),
-              atomA: {
-                x: Number(pA.x.toFixed(4)),
-                y: Number(pA.y.toFixed(4)),
-                z: Number(pA.z.toFixed(4)),
-              },
-              atomB: {
-                x: Number(pB.x.toFixed(4)),
-                y: Number(pB.y.toFixed(4)),
-                z: Number(pB.z.toFixed(4)),
-              },
-              shiftA: A.shift,
-              shiftB: B.shift,
-              cell:
-                c && c.enabled ? { a: c.a, b: c.b, c: c.c, originOffset: c.originOffset } : null,
-            });
-          }
-        } catch {}
+    }
+
+    refreshAtomMatrices();
+    refreshBondMatrices();
+    if (GDBG) {
+      try {
+        const renderedGhostAtoms = [...ghostAtomGroups.values()].reduce(
+          (sum, group) => sum + (group?.mats?.length || 0),
+          0
+        );
+        const renderedGhostBonds = [...ghostBondGroups.values()].reduce(
+          (sum, group) => sum + (group?.mats?.length || 0),
+          0
+        );
+        console.log('[MoleculeView][rebuildGhosts:complete]', {
+          ghostImagesRequested: ghostAtoms.length,
+          ghostBondMetaRequested: ghostBondMeta.length,
+          renderedGhostAtoms,
+          renderedGhostBonds,
+        });
+      } catch (err) {
+        console.warn('[MoleculeView][rebuildGhosts:complete] log failed', err);
       }
     }
-    for (const g of ghostBondGroups.values()) {
-      g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
-      if (g.mats.length === 0) {
-        if (typeof g.master.setEnabled === 'function') g.master.setEnabled(false);
-        else g.master.isVisible = false;
-      } else {
-        if (typeof g.master.setEnabled === 'function') g.master.setEnabled(true);
-        else g.master.isVisible = true;
+    if (typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_BONDS === true) {
+      const renderedGroups = [];
+      for (const [key, grp] of ghostBondGroups.entries()) {
+        renderedGroups.push({ key, count: grp?.mats?.length || 0 });
+      }
+      console.log('[MoleculeView][ghosts]', {
+        ghostAtoms: ghostAtoms.length,
+        ghostBondMeta: ghostBondMeta.length,
+        renderedGroups,
+      });
+      if (!ghostBondMeta.length) {
+        console.log('[MoleculeView][ghosts] missing ghost bonds – state snapshot', {
+          showCell: molState.showCell,
+          showGhostCells: molState.showGhostCells,
+          cell: molState.cell,
+          bonds: Array.isArray(molState.bonds) ? molState.bonds.length : 0,
+          sampleBond: molState.bonds?.slice?.(0, 5),
+        });
       }
     }
-    // (ghost bond debug removed)
   }
+
   function rebuildCellLines() {
     __count('moleculeView#rebuildCellLines');
     if (!molState.showCell || !molState.cell?.enabled) {
@@ -902,64 +1298,14 @@ export function createMoleculeView(scene, molState) {
     cellLines.color = new BABYLON.Color3(0.9, 0.8, 0.25);
     cellLines.isPickable = false;
   }
-  function rebuildAtoms() {
-    __count('moleculeView#rebuildAtoms');
-    // Clear current groups and rebuild from molState.elements/positions
-    for (const g of atomGroups.values()) {
-      g.mats.length = 0;
-      g.indices.length = 0;
-    }
-    for (let i = 0; i < molState.positions.length; i++) {
-      const el = molState.elements[i];
-      const g = ensureAtomGroup(el);
-      const info = elInfo(el);
-      const d = info.scale;
-      const p = molState.positions[i];
-      const mat = BABYLON.Matrix.Compose(
-        new BABYLON.Vector3(d, d, d),
-        BABYLON.Quaternion.Identity(),
-        new BABYLON.Vector3(p.x, p.y, p.z)
-      );
-      g.mats.push(mat);
-      g.indices.push(i);
-    }
-    for (const g of atomGroups.values()) {
-      g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
-      const on = g.mats.length > 0;
-      if (typeof g.master.setEnabled === 'function') g.master.setEnabled(on);
-      else g.master.isVisible = on;
-    }
-    // (debug log suppressed)
-  }
-  function updatePositions() {
-    __count('moleculeView#updatePositions');
-    for (const [el, g] of atomGroups) {
-      for (let k = 0; k < g.indices.length; k++) {
-        const idx = g.indices[k];
-        const p = molState.positions[idx];
-        if (!p) continue; // guard during transient molecule swap
-        const info = elInfo(el);
-        const d = info.scale;
-        g.mats[k] = BABYLON.Matrix.Compose(
-          new BABYLON.Vector3(d, d, d),
-          BABYLON.Quaternion.Identity(),
-          new BABYLON.Vector3(p.x, p.y, p.z)
-        );
-      }
-      g.master.thinInstanceSetBuffer('matrix', flattenMatrices(g.mats));
-    }
-  }
-  molState.bus.on('positionsChanged', updatePositions);
   molState.bus.on('bondsChanged', () => {
-    // If atom groups length total != positions length, we loaded a new molecule; rebuild atoms first.
-    const currentCount = Array.from(atomGroups.values()).reduce((s, g) => s + g.indices.length, 0);
-    const topologyChanged = currentCount !== molState.positions.length;
-    if (topologyChanged) rebuildAtoms();
+    const topologyChanged = atomCurrentModes.length !== molState.positions.length;
+    if (topologyChanged) {
+      atomDefaultModes = new Array(molState.positions.length).fill(MODE_SOLID);
+      atomCurrentModes = atomDefaultModes.slice();
+      rebuildAtoms();
+    }
     rebuildBonds();
-    rebuildGhosts();
-    try {
-      rebuildForces();
-    } catch {}
     // Decide if current selection is still valid
     let invalidate = false;
     if (molState.selection && molState.selection.kind) {
@@ -1058,123 +1404,80 @@ export function createMoleculeView(scene, molState) {
     }
   }
   function updateSelectionHighlight() {
-    __count('moleculeView#updateSelectionHighlight');
-    const SELDBG = typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_SELECT;
-    ensureHighlightMeshes();
-    const sel = molState.selection;
-    // Hide both first
-    highlight.atom.isVisible = false;
-    highlight.bond.isVisible = false;
-    // Also disable bond mesh so it cannot render with default scale at origin
-    // Avoid relying on setEnabled (in some stubs it may be missing); visibility alone controls rendering here.
-    if (!sel || !sel.kind) {
-      if (SELDBG)
-        try {
-          console.log('[view][highlight] none');
-        } catch {}
-      return;
-    }
-    if (sel.kind === 'atom') {
-      const idx = sel.data.index;
-      const p = molState.positions[idx];
-      const el = molState.elements[idx];
-      const info = elInfo(el);
-      // Slight enlargement to form a subtle shell (previously 2.2x which was visually bulky)
-      const scale = info.scale * 1.35;
-      // IMPORTANT (VR rotation fix): parent the highlight sphere to the atom master mesh so
-      // it inherits any scene-level rotations applied to masters (e.g. via WebXR controller).
-      // Previously the highlight sphere lived at world coordinates and did not rotate with
-      // the molecule, causing misalignment after user rotations in VR.
-      const group = atomGroups.get(el);
-      if (group && group.master) {
-        // Only (re)parent if different to avoid triggering Babylon matrix recomputation unnecessarily.
-        if (highlight.atom.parent !== group.master) {
-          highlight.atom.parent = group.master;
-        }
-        // Because we parent to the master (whose thin instances represent atoms), the highlight
-        // position must be expressed in the master's local coordinate system (identical to the
-        // atom's original position vector). Rotation/scaling of the master will now also affect
-        // the highlight automatically.
-        highlight.atom.position = new BABYLON.Vector3(p.x, p.y, p.z);
-      } else {
-        // Fallback: no master found (should not happen) – keep unparented world position path.
-        if (highlight.atom.parent) highlight.atom.parent = null;
-        highlight.atom.position = new BABYLON.Vector3(p.x, p.y, p.z);
-      }
-      highlight.atom.scaling = new BABYLON.Vector3(scale, scale, scale);
-      highlight.atom.isVisible = true;
-      if (SELDBG)
-        try {
-          console.log('[view][highlight] atom', idx, el, p);
-        } catch {}
-    } else if (sel.kind === 'bond') {
-      const { i, j } = sel.data;
-      const pA = molState.positions[i];
-      const pB = molState.positions[j];
-      if (!pA || !pB) return;
-      // VR Regression Fix: Previously bond highlight used world coordinates once at selection time
-      // and was never updated when masters rotated (after removing VR's own per-frame marker code).
-      // We now parent the bond highlight to the same master mesh that hosts the bond thin instances.
-      // This lets it inherit rotation/scale automatically just like the atoms/bonds.
-      let bondMaster = null;
-      for (const [_, g] of bondGroups) {
-        if (
-          g &&
-          g.indices &&
-          g.indices.some((b) => (b.i === i && b.j === j) || (b.i === j && b.j === i))
-        ) {
-          bondMaster = g.master;
-          break;
-        }
-      }
-      if (bondMaster && highlight.bond.parent !== bondMaster) {
-        highlight.bond.parent = bondMaster;
-      }
-      if (!bondMaster && highlight.bond.parent) {
-        // Fallback: detach if master vanished (e.g., molecule switch)
-        highlight.bond.parent = null;
-      }
-      // Compute local midpoint and vector using molecule-space coordinates (positions[] already local).
-      const midLocal = new BABYLON.Vector3((pA.x + pB.x) / 2, (pA.y + pB.y) / 2, (pA.z + pB.z) / 2);
-      const vLocal = new BABYLON.Vector3(pB.x - pA.x, pB.y - pA.y, pB.z - pA.z);
-      const lenLocal = vLocal.length();
-      const up = new BABYLON.Vector3(0, 1, 0);
-      let rotQ;
-      const d = vLocal.normalizeToNew();
-      const dot = BABYLON.Vector3.Dot(up, d);
-      if (dot > 0.9999) rotQ = BABYLON.Quaternion.Identity();
-      else if (dot < -0.9999)
-        rotQ = BABYLON.Quaternion.RotationAxis(new BABYLON.Vector3(1, 0, 0), Math.PI);
-      else {
-        const axis = BABYLON.Vector3.Cross(up, d).normalize();
-        rotQ = BABYLON.Quaternion.RotationAxis(axis, Math.acos(dot));
-      }
-      // Apply local transform; master rotation/scale (if any) will be inherited.
-      highlight.bond.position = midLocal;
-      highlight.bond.rotationQuaternion = rotQ;
-      const radius = 0.16; // local radius shell; master scaling will modify in world space
-      highlight.bond.scaling = new BABYLON.Vector3(radius * 2, lenLocal, radius * 2);
-      highlight.bond.isVisible = true;
-      if (SELDBG)
-        try {
-          console.log('[view][highlight] bond', i, j, 'mid=', midLocal, 'len=', lenLocal);
-        } catch {}
-      // O-* bond highlight debug
+  __count('moleculeView#updateSelectionHighlight');
+  const SELDBG = typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_SELECT;
+  ensureHighlightMeshes();
+  const sel = molState.selection;
+  highlight.atom.isVisible = false;
+  highlight.bond.isVisible = false;
+  if (!sel || !sel.kind) {
+    if (SELDBG)
       try {
-        const ODBG = typeof window === 'undefined' ? false : window.O_BOND_DEBUG === true;
-        if (ODBG) {
-          const elI = molState.elements[i];
-          const elJ = molState.elements[j];
-          if (elI === 'O' || elJ === 'O') {
-            const bm = bondMaster && bondMaster.name;
-            console.log(
-              `[O-BOND-DBG][highlight] sel ${elI}-${elJ} i=${i} j=${j} master=${bm} localLen=${lenLocal.toFixed(3)}`
-            );
-          }
-        }
+        console.log('[view][highlight] none');
       } catch {}
-    }
+    return;
   }
+  if (sel.kind === 'atom') {
+    const idx = sel.data?.index;
+    if (!Number.isInteger(idx) || idx < 0 || idx >= molState.positions.length) return;
+    const ref = atomRenderRefs[idx];
+    if (!ref) return;
+    const master = ref.group.masters[ref.mode];
+    const pos = molState.positions[idx] || { x: 0, y: 0, z: 0 };
+    const info = elInfo(ref.group.key);
+    const scale = info.scale * 1.35;
+    if (master && highlight.atom.parent !== master) highlight.atom.parent = master;
+    if (!master && highlight.atom.parent) highlight.atom.parent = null;
+    highlight.atom.position = new BABYLON.Vector3(pos.x, pos.y, pos.z);
+    highlight.atom.scaling = new BABYLON.Vector3(scale, scale, scale);
+    highlight.atom.isVisible = true;
+    if (SELDBG)
+      try {
+        console.log('[view][highlight] atom', idx, ref.group.key, pos);
+      } catch {}
+    return;
+  }
+  if (sel.kind === 'bond') {
+    const { i, j } = sel.data || {};
+    if (!Number.isInteger(i) || !Number.isInteger(j)) return;
+    const bondIndex = molState.bonds?.findIndex(
+      (b) => (b.i === i && b.j === j) || (b.i === j && b.j === i)
+    );
+    if (bondIndex == null || bondIndex < 0) return;
+    const ref = bondRenderRefs[bondIndex];
+    if (!ref) return;
+    const master = ref.group.masters[ref.mode];
+    if (master && highlight.bond.parent !== master) highlight.bond.parent = master;
+    if (!master && highlight.bond.parent) highlight.bond.parent = null;
+    const pA = molState.positions[i];
+    const pB = molState.positions[j];
+    if (!pA || !pB) return;
+    const midLocal = new BABYLON.Vector3((pA.x + pB.x) / 2, (pA.y + pB.y) / 2, (pA.z + pB.z) / 2);
+    const vLocal = new BABYLON.Vector3(pB.x - pA.x, pB.y - pA.y, pB.z - pA.z);
+    const lenLocal = vLocal.length();
+    const up = new BABYLON.Vector3(0, 1, 0);
+    let rotQ;
+    const d = vLocal.normalizeToNew();
+    const dot = BABYLON.Vector3.Dot(up, d);
+    if (dot > 0.9999) rotQ = BABYLON.Quaternion.Identity();
+    else if (dot < -0.9999)
+      rotQ = BABYLON.Quaternion.RotationAxis(new BABYLON.Vector3(1, 0, 0), Math.PI);
+    else {
+      const axis = BABYLON.Vector3.Cross(up, d).normalize();
+      rotQ = BABYLON.Quaternion.RotationAxis(axis, Math.acos(dot));
+    }
+    highlight.bond.position = midLocal;
+    highlight.bond.rotationQuaternion = rotQ;
+    const radius = 0.16;
+    highlight.bond.scaling = new BABYLON.Vector3(radius * 2, lenLocal, radius * 2);
+    highlight.bond.isVisible = true;
+    if (SELDBG)
+      try {
+        console.log('[view][highlight] bond', i, j, 'mid=', midLocal, 'len=', lenLocal);
+      } catch {}
+  }
+}
+
   molState.bus.on('selectionChanged', (s) => {
     const SELDBG = typeof window !== 'undefined' && !!window.__MLIPVIEW_DEBUG_SELECT;
     if (SELDBG)
@@ -1283,94 +1586,51 @@ export function createMoleculeView(scene, molState) {
     // (advanced rotation logging removed)
   });
   buildInitial();
+  if (molState.showGhostCells && molState.showCell && molState.cell?.enabled) {
+    try {
+      rebuildGhosts();
+    } catch {}
+  }
   // Initialize highlight once after initial build
   ensureHighlightMeshes();
   function resolveAtomPick(pick) {
     __count('moleculeView#resolveAtomPick');
     if (!pick?.hit || !pick.pickedMesh) return null;
-    for (const [el, g] of atomGroups) {
-      if (g.master === pick.pickedMesh) {
-        const idx = pick.thinInstanceIndex;
-        if (idx == null || idx < 0 || idx >= g.indices.length) return null;
-        const atomIndex = g.indices[idx];
-        return { kind: 'atom', index: atomIndex, element: el };
-      }
-    }
-    return null;
+    const entry = atomMasterLookup.get(pick.pickedMesh);
+    if (!entry) return null;
+    const { group, mode } = entry;
+    const list = group.instances[mode];
+    const idx = pick.thinInstanceIndex;
+    if (!Array.isArray(list) || idx == null || idx < 0 || idx >= list.length) return null;
+    const inst = list[idx];
+    return { kind: 'atom', index: inst.atomIndex, element: group.key };
   }
   function resolveBondPick(pick) {
     __count('moleculeView#resolveBondPick');
     if (!pick?.hit || !pick.pickedMesh) return null;
-    for (const [key, g] of bondGroups) {
-      if (g.master === pick.pickedMesh) {
-        const idx = pick.thinInstanceIndex;
-        if (idx == null || idx < 0 || idx >= g.indices.length) return null;
-        const b = g.indices[idx];
-        return { kind: 'bond', i: b.i, j: b.j, key, index: idx };
-      }
-    }
-    return null;
+    const entry = bondMasterLookup.get(pick.pickedMesh);
+    if (!entry) return null;
+    const { group, mode } = entry;
+    const list = group.instances[mode];
+    const idx = pick.thinInstanceIndex;
+    if (!Array.isArray(list) || idx == null || idx < 0 || idx >= list.length) return null;
+    const inst = list[idx];
+    const bond = inst.bond;
+    return { kind: 'bond', i: bond.i, j: bond.j, key: group.key, index: idx };
   }
 
-  let activeOpacityMask = null;
-
-  function clearOpacityMask() {
+  function clearOpacityMask({ refresh = true } = {}) {
     activeOpacityMask = null;
-    for (const [el, g] of atomGroups) {
-      if (!g?.master) continue;
-      const mat = g.master.material;
-      const info = elInfo(el);
-      const baseColor = info?.color || { r: 1, g: 1, b: 1 };
-      const count = g.indices.length;
-      if (!count) continue;
-      const cols = new Float32Array(count * 4);
-      for (let i = 0; i < count; i++) {
-        cols[i * 4 + 0] = baseColor.r;
-        cols[i * 4 + 1] = baseColor.g;
-        cols[i * 4 + 2] = baseColor.b;
-        cols[i * 4 + 3] = 1;
-      }
-      try { g.master.thinInstanceSetBuffer('color', cols, 4); } catch { }
-      if (mat) {
-        try {
-          mat.alpha = 1;
-          if (typeof BABYLON !== 'undefined' && BABYLON.Material) {
-            mat.transparencyMode = BABYLON.Material.MATERIAL_OPAQUE ?? null;
-          }
-        } catch { }
-      }
-    }
-    for (const [, g] of bondGroups) {
-      if (!g?.master) continue;
-      const mat = g.master.material;
-      const baseColor = mat?.diffuseColor || { r: 0.75, g: 0.78, b: 0.8 };
-      const count = g.indices.length;
-      if (!count) continue;
-      const cols = new Float32Array(count * 4);
-      for (let i = 0; i < count; i++) {
-        cols[i * 4 + 0] = baseColor.r;
-        cols[i * 4 + 1] = baseColor.g;
-        cols[i * 4 + 2] = baseColor.b;
-        cols[i * 4 + 3] = 1;
-      }
-      try { g.master.thinInstanceSetBuffer('color', cols, 4); } catch { }
-      if (mat) {
-        try {
-          mat.alpha = 1;
-          if (typeof BABYLON !== 'undefined' && BABYLON.Material) {
-            mat.transparencyMode = BABYLON.Material.MATERIAL_OPAQUE ?? null;
-          }
-        } catch { }
-      }
-    }
+    resetToBaselineModes({ refresh });
   }
 
-  function applyOpacityMask(mask) {
+  function applyOpacityMask(mask, { reapply = false } = {}) {
     if (!mask || typeof mask !== 'object') {
       clearOpacityMask();
       return;
     }
-    activeOpacityMask = mask;
+    if (!reapply) resetToBaselineModes({ refresh: false });
+
     const focusAtoms = new Set();
     if (Array.isArray(mask.focus?.atoms)) {
       for (const idx of mask.focus.atoms) {
@@ -1379,7 +1639,8 @@ export function createMoleculeView(scene, molState) {
       }
     }
     if (Number.isInteger(mask.focus?.atom)) focusAtoms.add(mask.focus.atom | 0);
-    const focusBondKeys = new Set();
+
+    const focusBondKeySet = new Set();
     if (Array.isArray(mask.focus?.bonds)) {
       for (const entry of mask.focus.bonds) {
         if (!entry) continue;
@@ -1392,79 +1653,69 @@ export function createMoleculeView(scene, molState) {
           j = Number(entry.j ?? entry[1]);
         }
         if (Number.isInteger(i) && Number.isInteger(j)) {
-          const key = [Math.min(i, j), Math.max(i, j)].join('-');
-          focusBondKeys.add(key);
+          focusBondKeySet.add(canonicalBondKey(i, j));
         }
       }
     }
+
     const includeConnected = mask.focus?.includeBonds !== 'none';
-    const focusAtomAlpha = clampAlpha(mask.focusOpacity?.atoms ?? mask.focusOpacity?.atom ?? 1, 1);
-    const focusBondAlpha = clampAlpha(mask.focusOpacity?.bonds ?? mask.focusOpacity?.bond ?? focusAtomAlpha, focusAtomAlpha);
-    const backgroundAtomAlpha = clampAlpha(mask.backgroundOpacity?.atoms ?? mask.backgroundOpacity?.atom ?? 1, 1);
-    const backgroundBondAlpha = clampAlpha(mask.backgroundOpacity?.bonds ?? mask.backgroundOpacity?.bond ?? backgroundAtomAlpha, backgroundAtomAlpha);
+    const modeSpec = mask.mode || {};
 
-    for (const [el, g] of atomGroups) {
-      if (!g?.master) continue;
-      const mat = g.master.material;
-      const info = elInfo(el);
-      const baseColor = info?.color || { r: 1, g: 1, b: 1 };
-      const count = g.indices.length;
-      if (!count) continue;
-      const cols = new Float32Array(count * 4);
-      let transparent = false;
-      for (let i = 0; i < count; i++) {
-        const idx = g.indices[i];
-        const alpha = focusAtoms.has(idx) ? focusAtomAlpha : backgroundAtomAlpha;
-        if (alpha < 0.999) transparent = true;
-        cols[i * 4 + 0] = baseColor.r;
-        cols[i * 4 + 1] = baseColor.g;
-        cols[i * 4 + 2] = baseColor.b;
-        cols[i * 4 + 3] = alpha;
+    const fetchMax = (op) => {
+      if (!op || typeof op !== 'object') return null;
+      const vals = [];
+      for (const key of ['atoms', 'atom', 'bonds', 'bond']) {
+        const val = op[key];
+        if (typeof val === 'number') vals.push(val);
       }
-      try { g.master.thinInstanceSetBuffer('color', cols, 4); } catch { }
-      if (mat) {
-        try {
-          mat.alpha = 1;
-          if (typeof BABYLON !== 'undefined' && BABYLON.Material) {
-            mat.transparencyMode = transparent ? BABYLON.Material.MATERIAL_ALPHABLEND : BABYLON.Material.MATERIAL_OPAQUE;
-            mat.needDepthPrePass = transparent;
-          }
-        } catch { }
+      return vals.length ? Math.max(...vals.map(Number)) : null;
+    };
+
+    const deriveMode = (spec, opacityObj, fallback) => {
+      if (typeof spec === 'string' && MODE_LIST.includes(spec)) return spec;
+      const maxVal = fetchMax(opacityObj);
+      if (maxVal != null && maxVal < SOFT_MODE_THRESHOLD) return MODE_SOFT;
+      return fallback;
+    };
+
+    const focusAtomMode = deriveMode(modeSpec.focusAtoms ?? modeSpec.focus, mask.focusOpacity, MODE_SOLID);
+    const backgroundAtomMode = deriveMode(modeSpec.backgroundAtoms ?? modeSpec.background, mask.backgroundOpacity, MODE_SOFT);
+    const focusBondMode = deriveMode(modeSpec.focusBonds ?? modeSpec.focus, mask.focusOpacity, MODE_SOLID);
+    const backgroundBondMode = deriveMode(modeSpec.backgroundBonds ?? modeSpec.background, mask.backgroundOpacity, MODE_SOFT);
+
+    const applyTo = mask.applyTo || {};
+    const applyAtoms = applyTo.primaryAtoms !== false;
+    const applyBonds = applyTo.primaryBonds !== false;
+
+    if (applyAtoms) {
+      for (let idx = 0; idx < molState.positions.length; idx++) {
+        const targetMode = focusAtoms.has(idx) ? focusAtomMode : backgroundAtomMode;
+        setAtomMode(idx, targetMode, { refresh: false });
       }
     }
 
-    for (const [, g] of bondGroups) {
-      if (!g?.master) continue;
-      const mat = g.master.material;
-      const baseColor = mat?.diffuseColor || { r: 0.75, g: 0.78, b: 0.8 };
-      const count = g.indices.length;
-      if (!count) continue;
-      const cols = new Float32Array(count * 4);
-      let transparent = false;
-      for (let i = 0; i < count; i++) {
-        const b = g.indices[i];
-        const key = [Math.min(b.i, b.j), Math.max(b.i, b.j)].join('-');
+    if (applyBonds) {
+      const focusBondIndices = new Set();
+      for (const key of focusBondKeySet) {
+        const list = bondIndexByKey.get(key);
+        if (!list) continue;
+        for (const idx of list) focusBondIndices.add(idx);
+      }
+      for (let idx = 0; idx < molState.bonds.length; idx++) {
+        const bond = molState.bonds[idx];
+        if (!bond) continue;
+        const key = canonicalBondKey(bond.i, bond.j);
         const isFocus =
-          focusBondKeys.has(key) ||
-          (includeConnected && focusAtoms.has(b.i) && focusAtoms.has(b.j));
-        const alpha = isFocus ? focusBondAlpha : backgroundBondAlpha;
-        if (alpha < 0.999) transparent = true;
-        cols[i * 4 + 0] = baseColor.r;
-        cols[i * 4 + 1] = baseColor.g;
-        cols[i * 4 + 2] = baseColor.b;
-        cols[i * 4 + 3] = alpha;
-      }
-      try { g.master.thinInstanceSetBuffer('color', cols, 4); } catch { }
-      if (mat) {
-        try {
-          mat.alpha = 1;
-          if (typeof BABYLON !== 'undefined' && BABYLON.Material) {
-            mat.transparencyMode = transparent ? BABYLON.Material.MATERIAL_ALPHABLEND : BABYLON.Material.MATERIAL_OPAQUE;
-            mat.needDepthPrePass = transparent;
-          }
-        } catch { }
+          focusBondIndices.has(idx) ||
+          (includeConnected && focusAtoms.has(bond.i) && focusAtoms.has(bond.j));
+        const targetMode = isFocus ? focusBondMode : backgroundBondMode;
+        setBondMode(idx, targetMode, { refresh: false });
       }
     }
+
+    refreshAtomMatrices();
+    refreshBondMatrices();
+    activeOpacityMask = mask;
   }
 
   function setOpacityMask(mask) {
@@ -1474,6 +1725,65 @@ export function createMoleculeView(scene, molState) {
       return;
     }
     applyOpacityMask(mask);
+  }
+
+  function getAtomMeshModes() {
+    return {
+      default: atomDefaultModes.slice(),
+      current: atomCurrentModes.slice(),
+    };
+  }
+
+  function getBondMeshModes() {
+    return {
+      default: bondDefaultModes.slice(),
+      current: bondCurrentModes.slice(),
+    };
+  }
+
+  function normalizeModeValue(value, fallback) {
+    return MODE_LIST.includes(value) ? value : fallback;
+  }
+
+  function applyMeshModes({ atomDefault, atomCurrent, bondDefault, bondCurrent } = {}) {
+    const atomCount = molState.positions.length;
+    const bondCount = molState.bonds.length;
+
+    if (Array.isArray(atomDefault) && atomDefault.length === atomCount) {
+      atomDefaultModes = atomDefault.map((mode) => normalizeModeValue(mode, MODE_SOLID));
+    }
+    if (!Array.isArray(atomDefaultModes) || atomDefaultModes.length !== atomCount) {
+      atomDefaultModes = new Array(atomCount).fill(MODE_SOLID);
+    }
+
+    const targetAtomModes = Array.isArray(atomCurrent) && atomCurrent.length === atomCount
+      ? atomCurrent.map((mode, idx) => normalizeModeValue(mode, atomDefaultModes[idx]))
+      : atomDefaultModes.slice();
+
+    for (let i = 0; i < atomCount; i++) {
+      setAtomMode(i, targetAtomModes[i], { refresh: false });
+      atomCurrentModes[i] = targetAtomModes[i];
+    }
+    refreshAtomMatrices();
+
+    if (Array.isArray(bondDefault) && bondDefault.length === bondCount) {
+      bondDefaultModes = bondDefault.map((mode) => normalizeModeValue(mode, MODE_SOLID));
+    }
+    if (!Array.isArray(bondDefaultModes) || bondDefaultModes.length !== bondCount) {
+      bondDefaultModes = new Array(bondCount).fill(MODE_SOLID);
+    }
+
+    const targetBondModes = Array.isArray(bondCurrent) && bondCurrent.length === bondCount
+      ? bondCurrent.map((mode, idx) => normalizeModeValue(mode, bondDefaultModes[idx]))
+      : bondDefaultModes.slice();
+
+    for (let i = 0; i < bondCount; i++) {
+      setBondMode(i, targetBondModes[i], { refresh: false });
+      bondCurrentModes[i] = targetBondModes[i];
+    }
+    refreshBondMatrices();
+
+    if (activeOpacityMask) applyOpacityMask(activeOpacityMask, { reapply: true });
   }
 
   return {
@@ -1491,5 +1801,11 @@ export function createMoleculeView(scene, molState) {
     resolveAtomPick,
     resolveBondPick,
     setOpacityMask,
+    clearOpacityMask,
+    resetToBaselineModes,
+    getAtomMeshModes,
+    getBondMeshModes,
+    applyMeshModes,
+    meshModes: { SOLID: MODE_SOLID, SOFT: MODE_SOFT },
   };
 }

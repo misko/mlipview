@@ -1,34 +1,121 @@
 // SessionStateManager centralises capture/restore of viewer, timeline, and websocket state.
 // Dependencies are injected so the manager stays agnostic of Babylon.js internals.
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 6;
+const VALID_MESH_MODES = new Set(['solid', 'soft']);
 
 function migrateSnapshotSchema(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') {
     throw new Error('Invalid session snapshot');
   }
-  if (snapshot.schemaVersion === SCHEMA_VERSION) {
-    return snapshot;
-  }
-  if (snapshot.schemaVersion === 3) {
-    const clone = deepClone(snapshot);
-    clone.schemaVersion = SCHEMA_VERSION;
-    if (clone.timeline && Array.isArray(clone.timeline.controlMessages)) {
-      clone.timeline.controlMessages = clone.timeline.controlMessages.map((msg, idx) => {
-        if (!msg || typeof msg !== 'object') return null;
-        const upgraded = { ...msg };
-        if (typeof upgraded.label !== 'string' || !upgraded.label) {
-          upgraded.label = typeof upgraded.id === 'string' ? upgraded.id : `control-${idx}`;
+  let current = deepClone(snapshot);
+  let version = Number(current.schemaVersion);
+  if (!Number.isFinite(version)) version = 3;
+
+  while (version < SCHEMA_VERSION) {
+    switch (version) {
+      case 3: {
+        if (current.timeline && Array.isArray(current.timeline.controlMessages)) {
+          current.timeline.controlMessages = current.timeline.controlMessages
+            .map((msg, idx) => {
+              if (!msg || typeof msg !== 'object') return null;
+              const upgraded = { ...msg };
+              if (typeof upgraded.label !== 'string' || !upgraded.label) {
+                upgraded.label = typeof upgraded.id === 'string' ? upgraded.id : `control-${idx}`;
+              }
+              if (typeof upgraded.notes !== 'string') {
+                delete upgraded.notes;
+              }
+              return upgraded;
+            })
+            .filter(Boolean);
         }
-        if (typeof upgraded.notes !== 'string') {
-          delete upgraded.notes;
+        version = 4;
+        current.schemaVersion = version;
+        break;
+      }
+      case 4: {
+        current.viewer = current.viewer || {};
+        const atomCount = Array.isArray(current.viewer.positions) ? current.viewer.positions.length : 0;
+        if (!current.viewer.meshAssignments || typeof current.viewer.meshAssignments !== 'object') {
+          current.viewer.meshAssignments = {
+            atoms: atomCount ? new Array(atomCount).fill('solid') : [],
+            bonds: [],
+          };
+        } else {
+          if (!Array.isArray(current.viewer.meshAssignments.atoms)) {
+            current.viewer.meshAssignments.atoms = atomCount ? new Array(atomCount).fill('solid') : [];
+          }
+          if (!Array.isArray(current.viewer.meshAssignments.bonds)) {
+            current.viewer.meshAssignments.bonds = [];
+          }
         }
-        return upgraded;
-      }).filter(Boolean);
+        current.render = current.render || {};
+        if (!current.render.overrides || typeof current.render.overrides !== 'object') {
+          current.render.overrides = {};
+        }
+        if (!current.render.overrides.atoms) current.render.overrides.atoms = {};
+        if (!current.render.overrides.bonds) current.render.overrides.bonds = {};
+        current.schemaVersion = 5;
+        break;
+      }
+      case 5: {
+        current.viewer = current.viewer || {};
+        if (!Array.isArray(current.viewer.periodicBonds)) {
+          current.viewer.periodicBonds = [];
+        } else {
+          current.viewer.periodicBonds = current.viewer.periodicBonds
+            .map((bond) => {
+              if (!bond || typeof bond !== 'object') return null;
+              const i = Number(bond.i);
+              const j = Number(bond.j);
+              if (!Number.isInteger(i) || !Number.isInteger(j)) return null;
+              const opacity =
+                typeof bond.opacity === 'number' && Number.isFinite(bond.opacity)
+                  ? bond.opacity
+                  : 1;
+              const imageDelta = Array.isArray(bond.imageDelta)
+                ? bond.imageDelta.slice(0, 3).map((v) =>
+                    Number.isFinite(Number(v)) ? Math.round(Number(v)) : 0
+                  )
+                : [0, 0, 0];
+              return {
+                i,
+                j,
+                opacity,
+                crossing: !!bond.crossing,
+                imageDelta,
+              };
+            })
+            .filter(Boolean);
+        }
+        if (!Array.isArray(current.viewer.ghostAtoms)) {
+          current.viewer.ghostAtoms = [];
+        }
+        if (!Array.isArray(current.viewer.ghostBondMeta)) {
+          current.viewer.ghostBondMeta = [];
+        }
+        current.viewer.bonds = normaliseLegacyPeriodicBonds(current.viewer.periodicBonds);
+        delete current.viewer.periodicBonds;
+        version = 6;
+        current.schemaVersion = version;
+        break;
+      }
+      default:
+        throw new Error(`Unsupported session snapshot schema: ${version}`);
     }
-    return clone;
   }
-  throw new Error(`Unsupported session snapshot schema: ${snapshot.schemaVersion}`);
+
+  // Even if already at SCHEMA_VERSION, ensure canonical bond array exists.
+  if (!Array.isArray(current.viewer?.bonds)) {
+    current.viewer = current.viewer || {};
+    current.viewer.bonds = normaliseLegacyPeriodicBonds(current.viewer?.periodicBonds);
+  }
+  if (current.viewer?.periodicBonds) {
+    delete current.viewer.periodicBonds;
+  }
+  current.schemaVersion = SCHEMA_VERSION;
+  return current;
 }
 
 function deepClone(obj) {
@@ -90,6 +177,40 @@ function normalizePlaybackConfig(playback = {}) {
   return Object.keys(cfg).length ? cfg : null;
 }
 
+function normaliseLegacyPeriodicBonds(periodicBonds) {
+  if (!Array.isArray(periodicBonds)) return [];
+  return periodicBonds
+    .map((bond) => {
+      if (!bond || typeof bond !== 'object') return null;
+      const i = Number(bond.i);
+      const j = Number(bond.j);
+      if (!Number.isInteger(i) || !Number.isInteger(j)) return null;
+      const imageDelta = Array.isArray(bond.imageDelta)
+        ? bond.imageDelta.slice(0, 3).map((v) => {
+            const num = Number(v);
+            if (!Number.isFinite(num)) return 0;
+            const rounded = Math.round(num);
+            return Number.isFinite(rounded) ? rounded : 0;
+          })
+        : [0, 0, 0];
+      return {
+        i,
+        j,
+        length: typeof bond.length === 'number' ? bond.length : null,
+        weight:
+          typeof bond.weight === 'number' && Number.isFinite(bond.weight) ? bond.weight : null,
+        opacity:
+          typeof bond.opacity === 'number' && Number.isFinite(bond.opacity) ? bond.opacity : 1,
+        inRing: !!bond.inRing,
+        crossing: !!bond.crossing,
+        imageDelta,
+        cellOffsetA: [0, 0, 0],
+        cellOffsetB: imageDelta,
+      };
+    })
+    .filter(Boolean);
+}
+
 export function createSessionStateManager(deps) {
   const {
     getViewerState,
@@ -121,6 +242,9 @@ export function createSessionStateManager(deps) {
     lastContinuousOpts,
     rememberResume,
     stopSimulation,
+    getMeshModes,
+    applyMeshModes,
+    clearOpacityMask,
     controlMessageEngine,
     timelinePlayback,
     getTimelinePlaybackSnapshot,
@@ -133,6 +257,46 @@ export function createSessionStateManager(deps) {
   let lastSource = { kind: 'init', label: 'initial' };
   let baselineSnapshot = null;
 
+  function sanitizeModeArray(array, fallback = 'solid', expectedLength) {
+    if (!Array.isArray(array)) return null;
+    if (
+      typeof expectedLength === 'number' &&
+      expectedLength >= 0 &&
+      array.length !== expectedLength
+    ) {
+      return null;
+    }
+    return array.map((value) => (VALID_MESH_MODES.has(value) ? value : fallback));
+  }
+
+  function buildOverrides(defaultModes = [], currentModes = []) {
+    const overrides = { soft: [], solid: [] };
+    if (!Array.isArray(defaultModes)) return overrides;
+    for (let i = 0; i < defaultModes.length; i++) {
+      const defaultMode = VALID_MESH_MODES.has(defaultModes[i]) ? defaultModes[i] : 'solid';
+      const currentMode = VALID_MESH_MODES.has(currentModes[i]) ? currentModes[i] : defaultMode;
+      if (currentMode !== defaultMode) overrides[currentMode].push(i);
+    }
+    return overrides;
+  }
+
+  function deriveCurrentModes(defaultModes, overrides) {
+    if (!Array.isArray(defaultModes)) return null;
+    const current = defaultModes.slice();
+    if (!overrides || typeof overrides !== 'object') return current;
+    for (const [mode, indices] of Object.entries(overrides)) {
+      if (!VALID_MESH_MODES.has(mode)) continue;
+      if (!Array.isArray(indices)) continue;
+      for (const idx of indices) {
+        const n = Number(idx);
+        if (Number.isInteger(n) && n >= 0 && n < current.length) {
+          current[n] = mode;
+        }
+      }
+    }
+    return current;
+  }
+
   function viewerToSnapshot(state = getViewerState()) {
     const elements = Array.isArray(state?.elements) ? state.elements.map(normalizeElement) : [];
     const positions = Array.isArray(state?.positions)
@@ -144,6 +308,93 @@ export function createSessionStateManager(deps) {
         : [Number(v?.x) || 0, Number(v?.y) || 0, Number(v?.z) || 0])
       : undefined;
     const cell = stateCellToArray ? stateCellToArray(state?.cell) : null;
+    const bonds = Array.isArray(state?.bonds)
+      ? state.bonds
+          .map((bond) => {
+            if (!bond) return null;
+            const i = Number(bond.i);
+            const j = Number(bond.j);
+            if (!Number.isInteger(i) || !Number.isInteger(j)) return null;
+            const opacity =
+              typeof bond.opacity === 'number' && Number.isFinite(bond.opacity) ? bond.opacity : 1;
+            const imageDelta = Array.isArray(bond.imageDelta)
+              ? bond.imageDelta.slice(0, 3).map((v) => {
+                  const num = Number(v);
+                  if (!Number.isFinite(num)) return 0;
+                  const rounded = Math.round(num);
+                  return Number.isFinite(rounded) ? rounded : 0;
+                })
+              : [0, 0, 0];
+            const entry = {
+              i,
+              j,
+              length: typeof bond.length === 'number' ? bond.length : null,
+              weight:
+                typeof bond.weight === 'number' && Number.isFinite(bond.weight) ? bond.weight : null,
+              opacity,
+              crossing: !!bond.crossing,
+              imageDelta,
+            };
+            entry.cellOffsetA = Array.isArray(bond.cellOffsetA)
+              ? bond.cellOffsetA.slice(0, 3).map((v) => {
+                  const num = Number(v);
+                  return Number.isFinite(num) ? Math.round(num) : 0;
+                })
+              : [0, 0, 0];
+            entry.cellOffsetB = Array.isArray(bond.cellOffsetB)
+              ? bond.cellOffsetB.slice(0, 3).map((v) => {
+                  const num = Number(v);
+                  return Number.isFinite(num) ? Math.round(num) : 0;
+                })
+              : [0, 0, 0];
+            entry.inRing = !!bond.inRing;
+            return entry;
+          })
+          .filter(Boolean)
+      : [];
+    const ghostAtoms = Array.isArray(state?.ghostImages)
+      ? state.ghostImages
+          .map((ghost) => {
+            if (!ghost || !Number.isInteger(ghost.atomIndex)) return null;
+            const position = Array.isArray(ghost.position)
+              ? ghost.position.slice(0, 3).map((v) => Number(v) || 0)
+              : [
+                  Number(ghost.position?.x) || 0,
+                  Number(ghost.position?.y) || 0,
+                  Number(ghost.position?.z) || 0,
+                ];
+            return {
+              atomIndex: ghost.atomIndex,
+              shift: Array.isArray(ghost.shift)
+                ? ghost.shift.slice(0, 3).map((v) => Number(v) || 0)
+                : [0, 0, 0],
+              position,
+            };
+          })
+          .filter(Boolean)
+      : [];
+    const ghostBondMeta = Array.isArray(state?.ghostBondMeta)
+      ? state.ghostBondMeta
+          .map((meta) => {
+            if (!meta || !meta.base) return null;
+            const i = Number(meta.base.i);
+            const j = Number(meta.base.j);
+            if (!Number.isInteger(i) || !Number.isInteger(j)) return null;
+            return {
+              base: { i, j },
+              shiftA: Array.isArray(meta.shiftA)
+                ? meta.shiftA.slice(0, 3).map((v) => Number(v) || 0)
+                : [0, 0, 0],
+              shiftB: Array.isArray(meta.shiftB)
+                ? meta.shiftB.slice(0, 3).map((v) => Number(v) || 0)
+                : [0, 0, 0],
+              imageDelta: Array.isArray(meta.imageDelta)
+                ? meta.imageDelta.slice(0, 3).map((v) => Number(v) || 0)
+                : [0, 0, 0],
+            };
+          })
+          .filter(Boolean)
+      : [];
     return {
       elements,
       positions,
@@ -151,6 +402,9 @@ export function createSessionStateManager(deps) {
       cell,
       showCell: !!state?.showCell,
       showGhostCells: !!state?.showGhostCells,
+      bonds,
+      ghostAtoms,
+      ghostBondMeta,
     };
   }
 
@@ -170,6 +424,32 @@ export function createSessionStateManager(deps) {
     const runningMode = mode === Mode?.MD ? 'md' : mode === Mode?.Relax ? 'relax' : 'idle';
     const playbackSnapshot = getTimelinePlaybackSnapshot?.() ?? timelinePlayback?.getSnapshot?.();
     const controlSnapshot = getTimelineControlSnapshot?.() ?? controlMessageEngine?.getSnapshot?.();
+    const meshModes = getMeshModes?.() || {};
+    const atomCount = viewer.positions.length;
+    const bondCount = Array.isArray(state?.bonds) ? state.bonds.length : 0;
+    const atomDefaults =
+      sanitizeModeArray(meshModes.atoms?.default, 'solid', atomCount) ||
+      (atomCount ? new Array(atomCount).fill('solid') : []);
+    const atomCurrents =
+      sanitizeModeArray(meshModes.atoms?.current, 'solid', atomCount) || atomDefaults.slice();
+    const bondDefaults =
+      sanitizeModeArray(meshModes.bonds?.default, 'solid', bondCount) ||
+      (bondCount ? new Array(bondCount).fill('solid') : []);
+    const bondCurrents =
+      sanitizeModeArray(meshModes.bonds?.current, 'solid', bondCount) || bondDefaults.slice();
+
+    const atomOverridesFull = buildOverrides(atomDefaults, atomCurrents);
+    const bondOverridesFull = buildOverrides(bondDefaults, bondCurrents);
+
+    const atomOverrides = {};
+    for (const mode of Object.keys(atomOverridesFull)) {
+      if (atomOverridesFull[mode].length) atomOverrides[mode] = atomOverridesFull[mode];
+    }
+    const bondOverrides = {};
+    for (const mode of Object.keys(bondOverridesFull)) {
+      if (bondOverridesFull[mode].length) bondOverrides[mode] = bondOverridesFull[mode];
+    }
+
     const snapshot = {
       schemaVersion: SCHEMA_VERSION,
       savedAt: new Date().toISOString(),
@@ -200,6 +480,17 @@ export function createSessionStateManager(deps) {
       },
     };
     snapshot.websocket.nextSeq = (snapshot.websocket.seq | 0) + 1;
+    snapshot.viewer.meshAssignments = {
+      atoms: atomDefaults,
+      bonds: bondDefaults,
+    };
+    if (!snapshot.render || typeof snapshot.render !== 'object') snapshot.render = {};
+    const overridesPayload = {};
+    if (Object.keys(atomOverrides).length) overridesPayload.atoms = atomOverrides;
+    if (Object.keys(bondOverrides).length) overridesPayload.bonds = bondOverrides;
+    if (Object.keys(overridesPayload).length) snapshot.render.overrides = overridesPayload;
+    else if (snapshot.render.overrides) delete snapshot.render.overrides;
+    if (snapshot.render && !Object.keys(snapshot.render).length) delete snapshot.render;
     return snapshot;
   }
 
@@ -220,6 +511,71 @@ export function createSessionStateManager(deps) {
         cell: clone.viewer?.cell || null,
         showCell: !!clone.viewer?.showCell,
         showGhostCells: !!clone.viewer?.showGhostCells,
+        bonds: Array.isArray(clone.viewer?.bonds)
+          ? clone.viewer.bonds.map((bond) => ({
+              i: Number(bond.i) || 0,
+              j: Number(bond.j) || 0,
+              length: Number(bond.length) || null,
+              weight:
+                typeof bond.weight === 'number' && Number.isFinite(bond.weight) ? bond.weight : null,
+              opacity:
+                typeof bond.opacity === 'number' && Number.isFinite(bond.opacity) ? bond.opacity : 1,
+              inRing: !!bond.inRing,
+              crossing: !!bond.crossing,
+              imageDelta: Array.isArray(bond.imageDelta)
+                ? bond.imageDelta.slice(0, 3).map((v) => {
+                    const num = Number(v);
+                    if (!Number.isFinite(num)) return 0;
+                    const rounded = Math.round(num);
+                    return Number.isFinite(rounded) ? rounded : 0;
+                  })
+                : [0, 0, 0],
+              cellOffsetA: Array.isArray(bond.cellOffsetA)
+                ? bond.cellOffsetA.slice(0, 3).map((v) => {
+                    const num = Number(v);
+                    return Number.isFinite(num) ? Math.round(num) : 0;
+                  })
+                : [0, 0, 0],
+              cellOffsetB: Array.isArray(bond.cellOffsetB)
+                ? bond.cellOffsetB.slice(0, 3).map((v) => {
+                    const num = Number(v);
+                    return Number.isFinite(num) ? Math.round(num) : 0;
+                  })
+                : [0, 0, 0],
+            }))
+          : [],
+        ghostAtoms: Array.isArray(clone.viewer?.ghostAtoms)
+          ? clone.viewer.ghostAtoms.map((ghost) => ({
+              atomIndex: Number(ghost.atomIndex) || 0,
+              shift: Array.isArray(ghost.shift)
+                ? ghost.shift.slice(0, 3).map((v) => Number(v) || 0)
+                : [0, 0, 0],
+              position: Array.isArray(ghost.position)
+                ? ghost.position.slice(0, 3).map((v) => Number(v) || 0)
+                : [
+                    Number(ghost.position?.x) || 0,
+                    Number(ghost.position?.y) || 0,
+                    Number(ghost.position?.z) || 0,
+                  ],
+            }))
+          : [],
+        ghostBondMeta: Array.isArray(clone.viewer?.ghostBondMeta)
+          ? clone.viewer.ghostBondMeta.map((meta) => ({
+              base: {
+                i: Number(meta.base?.i) || 0,
+                j: Number(meta.base?.j) || 0,
+              },
+              shiftA: Array.isArray(meta.shiftA)
+                ? meta.shiftA.slice(0, 3).map((v) => Number(v) || 0)
+                : [0, 0, 0],
+              shiftB: Array.isArray(meta.shiftB)
+                ? meta.shiftB.slice(0, 3).map((v) => Number(v) || 0)
+                : [0, 0, 0],
+              imageDelta: Array.isArray(meta.imageDelta)
+                ? meta.imageDelta.slice(0, 3).map((v) => Number(v) || 0)
+                : [0, 0, 0],
+            }))
+          : [],
       };
       installBaseline?.(baseline, { reason: reason || clone.source?.kind || 'baseline' });
     } catch { }
@@ -290,7 +646,93 @@ export function createSessionStateManager(deps) {
       state.showCell = !!snap.viewer?.showCell;
       state.showGhostCells = !!snap.viewer?.showGhostCells;
       state.markCellChanged?.();
+      state.ghostImages = Array.isArray(snap.viewer?.ghostAtoms)
+        ? snap.viewer.ghostAtoms.map((ghost) => ({
+            atomIndex: Number(ghost.atomIndex) || 0,
+            shift: Array.isArray(ghost.shift)
+              ? ghost.shift.slice(0, 3).map((v) => Number(v) || 0)
+              : [0, 0, 0],
+            position: Array.isArray(ghost.position)
+              ? ghost.position.slice(0, 3).map((v) => Number(v) || 0)
+              : [
+                  Number(ghost.position?.x) || 0,
+                  Number(ghost.position?.y) || 0,
+                  Number(ghost.position?.z) || 0,
+                ],
+          }))
+        : [];
+      state.ghostBondMeta = Array.isArray(snap.viewer?.ghostBondMeta)
+        ? snap.viewer.ghostBondMeta.map((meta) => ({
+            base: {
+              i: Number(meta.base?.i) || 0,
+              j: Number(meta.base?.j) || 0,
+            },
+            shiftA: Array.isArray(meta.shiftA)
+              ? meta.shiftA.slice(0, 3).map((v) => Number(v) || 0)
+              : [0, 0, 0],
+            shiftB: Array.isArray(meta.shiftB)
+              ? meta.shiftB.slice(0, 3).map((v) => Number(v) || 0)
+              : [0, 0, 0],
+            imageDelta: Array.isArray(meta.imageDelta)
+              ? meta.imageDelta.slice(0, 3).map((v) => Number(v) || 0)
+              : [0, 0, 0],
+          }))
+        : [];
+      if (Array.isArray(snap.viewer?.bonds)) {
+        state.bonds = snap.viewer.bonds.map((bond) => ({
+          i: Number(bond.i) || 0,
+          j: Number(bond.j) || 0,
+          length: Number(bond.length) || null,
+          weight:
+            typeof bond.weight === 'number' && Number.isFinite(bond.weight) ? bond.weight : null,
+          opacity:
+            typeof bond.opacity === 'number' && Number.isFinite(bond.opacity) ? bond.opacity : 1,
+          inRing: !!bond.inRing,
+          crossing: !!bond.crossing,
+          imageDelta: Array.isArray(bond.imageDelta)
+            ? bond.imageDelta.slice(0, 3).map((v) => {
+                const num = Number(v);
+                if (!Number.isFinite(num)) return 0;
+                const rounded = Math.round(num);
+                return Number.isFinite(rounded) ? rounded : 0;
+              })
+            : [0, 0, 0],
+          cellOffsetA: Array.isArray(bond.cellOffsetA)
+            ? bond.cellOffsetA.slice(0, 3).map((v) => {
+                const num = Number(v);
+                return Number.isFinite(num) ? Math.round(num) : 0;
+              })
+            : [0, 0, 0],
+          cellOffsetB: Array.isArray(bond.cellOffsetB)
+            ? bond.cellOffsetB.slice(0, 3).map((v) => {
+                const num = Number(v);
+                return Number.isFinite(num) ? Math.round(num) : 0;
+              })
+            : [0, 0, 0],
+        }));
+        state.markBondsChanged?.();
+      }
     }
+
+    clearOpacityMask?.({ refresh: true });
+    const meshAssignments = snap.viewer?.meshAssignments || {};
+    const overrides = snap.render?.overrides || {};
+    const atomCount = Array.isArray(snap.viewer?.positions) ? snap.viewer.positions.length : 0;
+    const bondCount = Array.isArray(meshAssignments.bonds) ? meshAssignments.bonds.length : 0;
+    const atomDefaults =
+      sanitizeModeArray(meshAssignments.atoms, 'solid', atomCount) ||
+      (atomCount ? new Array(atomCount).fill('solid') : []);
+    const bondDefaults =
+      sanitizeModeArray(meshAssignments.bonds, 'solid', bondCount) ||
+      (bondCount ? new Array(bondCount).fill('solid') : []);
+    const atomCurrents = deriveCurrentModes(atomDefaults, overrides.atoms);
+    const bondCurrents = deriveCurrentModes(bondDefaults, overrides.bonds);
+    applyMeshModes?.({
+      atomDefault: atomDefaults || undefined,
+      atomCurrent: atomCurrents || undefined,
+      bondDefault: bondDefaults || undefined,
+      bondCurrent: bondCurrents || undefined,
+    });
 
     energyPlot?.importSeries?.(snap.energyPlot || {});
     applyTimelineImport(snap);

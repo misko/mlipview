@@ -325,6 +325,16 @@ viewerApi.simulateWsDrop = ({ failAttempts = 0 } = {}) => {
 
 ---
 
+## Global Debug Toggles
+
+Not every diagnostic warrants its own hook—some are easier to expose via opt-in globals so manual QA can toggle them quickly:
+
+- `window.__MLIP_DEBUG_STRETCH = true` (or `?bondStretchDebug=1` on the URL) enables detailed logging from the bond service and molecule view. Each recompute prints opacity ranges together with the number of bonds routed to the translucent mesh. Reset the flag (or reload without the query) once you have the output you need.
+
+Keep these toggles behind explicit opt-in so automated suites stay quiet by default.
+
+---
+
 ### Authoring Notes
 
 - Keep hook implementations colocated with viewer bootstrap (`public/index.js`) so they can access the live `view` and `state`.

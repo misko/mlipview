@@ -7,6 +7,9 @@ npm run test:py        # Python parity checks under fairchem_local_server2/tests
 npm run test:e2e       # Playwright WebSocket/DOM end-to-end coverage (serial execution)
 ```
 
+# Diagnostic Flags
+- `window.__MLIP_DEBUG_STRETCH = true` (or append `?bondStretchDebug=1` to the viewer URL) prints bond-opacity summaries from both the bond service and the dual-mesh renderer. Use this when validating stretched-bond translucency in live mode; disable it once finished to keep the console quiet.
+
 # Ported Test Catalogue
 
 This catalogue tracks only the suites that are fully ported to the protobuf/WebSocket stack. Entries are grouped hierarchically so related coverage is easy to locate. For each test, the intent captures what the suite safeguards, and the implementation notes summarise how the current code exercises that behaviour.
@@ -41,7 +44,12 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
   - `ws-timeline-energy-marker.spec.js`: Enters timeline playback and asserts the energy plot displays (and clears) the playback marker.
   - `ws-timeline-slider-select.spec.js`: Clicks a single slider position and waits for timeline mode to activate on the requested offset (guards against the historical double-click requirement).
   - `ws-session-save-load.spec.js`: Captures a JSON snapshot, mutates geometry, loads the snapshot, verifies reset-to-last-load rehydrates the state/counters, and asserts MD runs resume after exiting timeline playback.
+- `ws-timeline-mesh-mode.spec.js`: Drives a historical selection, applies an opacity mask, and asserts atom/bond instances migrate to soft masters during the fade then return to their baseline solid/soft split when the mask clears.
+- `timelineEditorPanel.callout.spec.js`: Exercises the authoring UI, editing anchor atoms and offsets, and confirms the saved control-message payload retains the updated values.
 - `ws-session-playback-resume.spec.js`: Runs MD on ROY, captures a JSON snapshot, reloads it, scrubs five frames back, then plays forward until live mode resumes—asserting at least 18 and at most 170 new MD frames arrive before the viewer reattaches to the live stream (protects against both stalls and runaway playback).
+
+- **Ghost & Transparency Modes**
+  - `ws-ghost-periodic.spec.js`: Loads a periodic XYZ, toggles ghost cells, and confirms ghost atoms/bonds live on the soft masters during live streaming and timeline playback (no regression to opaque pools).
 
 ## Session Snapshot Fixtures (manual QA)
 
@@ -72,6 +80,7 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
   - `x-visual-integration.spec.js`: Snapshot-style check that atom and bond thin-instance buffers match expected counts/material IDs for benzene.
   - `x-lighting-consistency.spec.js`: Inspects material colour coefficients on masters to ensure they match the tuned palette.
   - `x-red-sphere-switch.spec.js`: Toggles highlight modes and confirms the atom highlight mesh remains cyan (no regression to red).
+  - `moleculeView.meshModes.spec.js`: Builds thin-instance groups with the dual-master renderer and verifies baseline assignments plus migrations keep buffers and counts in sync.
 
 - **Parsers, Importers, and Prefills**
   - `x-base64Utf8.spec.js`: Exercises Base64⇄UTF-8 helpers and ensures XYZ comments yield temperature/cell metadata.
@@ -87,6 +96,7 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
   - `x-highlight.spec.js`: Selects an atom and validates the highlight mesh translation mirrors the atom position.
   - `x-highlight-visibility.spec.js`: Ensures the highlight mesh starts hidden and becomes visible only when selection exists.
   - `x-highlight-stray-cylinder.spec.js`: Selects and clears a bond, verifying the bond highlight mesh hides and buffers zero out.
+  - `moleculeView.ghostBonds.spec.js`: Calls `createMoleculeView`, runs the bond service, and asserts `rebuildBonds()` now refreshes ghost thin instances automatically—no manual `rebuildGhosts()` calls required.
   - `x-ghost-bonds.spec.js`: Enables ghosts, rebuilds, and asserts ghost bond matrices match expected neighbour counts.
   - `x-ghost-crossing-bonds.spec.js`: Similar coverage focused on cross-cell bonds to prevent duplicate instances.
   - `x-ghost-selection.spec.js`: Picks a ghost and confirms the selection resolves to the primary atom with highlight repositioned.
@@ -196,3 +206,6 @@ This catalogue tracks only the suites that are fully ported to the protobuf/WebS
   - `timelinePlaybackController.spec.js`: Exercises the standalone playback scheduler, validating fps cadence, overrides, snapshot helpers, and the new setter utilities for auto-play/loop configuration.
 
 > _Cross-reference_: Tests listed only once above cover all ported `x-*` suites. If you add a new suite, update this hierarchy so related coverage stays discoverable.
+- `ws-library-sn2-autoplay.spec.js`: Loads the SN2 narrated session from the built-in library, verifies timeline playback kicks in, and asserts that returning to live mode resumes MD streaming (checks live WS frames continue beyond the library snapshot).
+- `ws-library-sn2-opacity.spec.js`: Loads `sn2` from the library, pauses timeline playback immediately, and walks the earliest four buffered frames to ensure every atom remains on the solid mesh (no premature translucency before the opacity control message fires).
+- `ws-library-query.spec.js`: Opens the viewer with `?library=sn2`, confirms the session auto-loads, timeline data is buffered, and the status banner reflects the library source.

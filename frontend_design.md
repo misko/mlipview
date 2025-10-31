@@ -9,7 +9,7 @@
 ## Domain services & event flow
 - **Event bus**: the Molecule state exposes `bus` with `positionsChanged`, `forcesChanged`, `bondsChanged`, `selectionChanged`, etc. All render/UI modules subscribe to these events.
 - **Bond/selection/manipulation**:
-  - `createBondService()` recomputes bonds based on current positions, handling periodic wrapping and opacity heuristics.
+  - `createBondService()` delegates to the modular bonding pipeline in `public/domain/bonding/` (`computeBonds`, `periodicAugment`) to recompute bonds, ghost instances, and ring metadata on every position change.
   - `createSelectionService()` maintains `state.selection` and emits selection events.
   - `createManipulationService()` handles drag and bond-rotation transforms, updating positions and emitting bus events.
 - **Picking & UI**: `createPickingService()` orchestrates Babylon picking, forwards drag gestures to the manipulation wrapper, and invokes energy recomputes. Desktop and VR interactions layer on top via `ui/touchControls.js`, `vr/setup.js`, and `vr/vr-picker.js`.

@@ -61,6 +61,24 @@ function sanitizeAction(action) {
       if (action.backgroundOpacity && typeof action.backgroundOpacity === 'object') {
         payload.backgroundOpacity = clone(action.backgroundOpacity);
       }
+      const allowedModes = new Set(['solid', 'soft']);
+      if (action.mode && typeof action.mode === 'object') {
+        const cleaned = {};
+        const keys = ['focus', 'background', 'focusAtoms', 'backgroundAtoms', 'focusBonds', 'backgroundBonds'];
+        for (const key of keys) {
+          const val = action.mode[key];
+          if (typeof val === 'string' && allowedModes.has(val)) cleaned[key] = val;
+        }
+        if (Object.keys(cleaned).length) payload.mode = cleaned;
+      } else if (typeof action.mode === 'string' && allowedModes.has(action.mode)) {
+        payload.mode = { focus: action.mode, background: action.mode };
+      }
+      if (action.applyTo && typeof action.applyTo === 'object') {
+        const cleanedApply = {};
+        if (typeof action.applyTo.primaryAtoms === 'boolean') cleanedApply.primaryAtoms = action.applyTo.primaryAtoms;
+        if (typeof action.applyTo.primaryBonds === 'boolean') cleanedApply.primaryBonds = action.applyTo.primaryBonds;
+        if (Object.keys(cleanedApply).length) payload.applyTo = cleanedApply;
+      }
       if (Number.isFinite(action.transitionMs)) payload.transitionMs = Math.max(0, Math.floor(action.transitionMs));
       return { type, ...payload };
     }
@@ -188,6 +206,7 @@ export function createControlMessageEngine(resolvers = {}) {
       return {
         speed: null,
         callout: null,
+        callouts: [],
         opacity: null,
         activeMessages: [],
       };
@@ -199,6 +218,7 @@ export function createControlMessageEngine(resolvers = {}) {
       return {
         speed: null,
         callout: null,
+        callouts: [],
         opacity: null,
         activeMessages: [],
       };
@@ -213,6 +233,7 @@ export function createControlMessageEngine(resolvers = {}) {
     const result = {
       speed: null,
       callout: null,
+      callouts: [],
       opacity: null,
       activeMessages: sorted.map((msg) => ({
         id: msg.id,
@@ -223,11 +244,20 @@ export function createControlMessageEngine(resolvers = {}) {
       })),
     };
     for (const msg of sorted) {
-      for (const action of msg.actions) {
+      for (let actionIdx = 0; actionIdx < msg.actions.length; actionIdx++) {
+        const action = msg.actions[actionIdx];
         if (action.type === 'timeline.playbackSpeed' && !result.speed) {
           result.speed = { ...action, sourceId: msg.id, priority: msg.priority, label: msg.label || null };
-        } else if (action.type === 'overlay.callout' && !result.callout) {
-          result.callout = { ...action, sourceId: msg.id, priority: msg.priority, label: msg.label || null };
+        } else if (action.type === 'overlay.callout') {
+          const payload = {
+            ...action,
+            sourceId: msg.id,
+            priority: msg.priority,
+            label: msg.label || null,
+            key: `${msg.id}:${actionIdx}`,
+          };
+          if (!result.callout) result.callout = payload;
+          result.callouts.push(payload);
         } else if (action.type === 'visual.opacityFocus' && !result.opacity) {
           result.opacity = { ...action, sourceId: msg.id, priority: msg.priority, label: msg.label || null };
         }

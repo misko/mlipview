@@ -132,19 +132,54 @@
   buildDesktopPanel({ attachTo: document.getElementById('app') });
 
   // (Bond rotation controls now live in the Selection panel)
+      const libraryId = urlParams.get('library');
+      let loadedLabel = null;
       try {
-  const { file } = await loadDefault(viewerApi);
-  // Reset energy series to a single initial point (avoid multiple startup entries)
-  try { viewerApi.baselineEnergy?.(); } catch {}
-  document.getElementById('status').textContent = `Loaded ${file}`;
-  try { const sel = document.getElementById('moleculeSelect'); if (sel) sel.value = file; } catch{}
-  if (DEBUG) console.log('[debug] default molecule loaded', file, 'atoms=', viewerApi.state.positions.length, 'energySeriesLen=1');
+        if (libraryId) {
+          await viewerApi.session.loadFromLibrary(libraryId);
+          loadedLabel = `library:${libraryId}`;
+          if (DEBUG) {
+            console.log('[debug] library entry loaded', libraryId, 'atoms=', viewerApi.state.positions.length);
+          }
+        } else {
+          const { file } = await loadDefault(viewerApi);
+          // Reset energy series to a single initial point (avoid multiple startup entries)
+          try { viewerApi.baselineEnergy?.(); } catch {}
+          loadedLabel = file;
+          try {
+            const sel = document.getElementById('moleculeSelect');
+            if (sel) sel.value = file;
+          } catch {}
+          if (DEBUG) {
+            console.log('[debug] default molecule loaded', file, 'atoms=', viewerApi.state.positions.length, 'energySeriesLen=1');
+          }
+        }
+
+        if (!loadedLabel) {
+          throw new Error('Unknown load result');
+        }
+
+        document.getElementById('status').textContent = `Loaded ${loadedLabel}`;
+      } catch (primaryError) {
+        console.error('[loader] load failed', primaryError);
+        if (libraryId) {
+          try {
+            console.warn('[loader] falling back to default molecule after library failure');
+            const { file } = await loadDefault(viewerApi);
+            try { viewerApi.baselineEnergy?.(); } catch {}
+            loadedLabel = file;
+            document.getElementById('status').textContent = `Loaded ${file}`;
+            try { showErrorBanner(`Library "${libraryId}" failed to load: ${primaryError?.message || primaryError} — reverted to ${file}`); } catch {}
+          } catch (fallbackError) {
+            document.getElementById('status').textContent = 'Load failed';
+            try { showErrorBanner('Load failed: ' + (fallbackError?.message || fallbackError)); } catch {}
+          }
+        } else {
+          document.getElementById('status').textContent = 'Load failed';
+          try { showErrorBanner('Load failed: ' + (primaryError?.message || primaryError)); } catch {}
+        }
+      } finally {
         window.__MLIP_DEFAULT_LOADED = true;
-      } catch (e) {
-        document.getElementById('status').textContent = 'Load failed';
-        try { showErrorBanner('Load failed: '+ (e?.message||e)); } catch {}
-        console.error(e);
-        window.__MLIP_DEFAULT_LOADED = true; // still allow tests to proceed
       }
     })();
   // Relax controls (step / run-toggle) — legacy hidden buttons may be created later by desktopPanel

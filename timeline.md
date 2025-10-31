@@ -24,6 +24,7 @@ The timeline system lets users pause a live UMA Fairchem stream, inspect any of 
 - **Control message engine** (`public/core/controlMessageEngine.js`)
   - Preprocesses the session’s `timeline.controlMessages[]` and determines, per frame, which actions should fire (speed override, callout, opacity mask).
   - Supplies the playback controller, callout layer, and molecule opacity mask with the active directives.
+  - `visual.opacityFocus` results are fed into the dual-mesh renderer: focus targets stay on the solid masters while background targets migrate to their translucent (“soft”) counterparts instead of tweaking per-instance alpha.
 - **Callout layer** (`public/render/calloutLayer.js`)
   - Renders floating annotations as Babylon billboards that always face the viewer and anchor to world/atom/bond positions.
 - **Viewer orchestration** (`public/index.js`)

@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 3,
+  "savedAt": "2025-02-20T00:00:00.000Z",
+  "source": {
+    "kind": "xyz",
+    "label": "molecules/water.xyz"
+  },
+  "viewer": {
+    "elements": [
+      "O",
+      "H",
+      "H"
+    ],
+    "positions": [
+      [
+        0,
+        0,
+        0
+      ],
+      [
+        0.9584,
+        0,
+        0
+      ],
+      [
+        -0.239,
+        0.927,
+        0
+      ]
+    ],
+    "velocities": [
+      [
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0
+      ]
+    ],
+    "cell": null,
+    "showCell": false,
+    "showGhostCells": false
+  },
+  "energyPlot": {
+    "series": [
+      {
+        "energy": -76.4012,
+        "kind": "idle"
+      }
+    ],
+    "markerIndex": null
+  },
+  "timeline": {
+    "capacity": 500,
+    "frames": [],
+    "lastLiveMode": "idle",
+    "wasRunning": false,
+    "playback": {
+      "autoPlay": false,
+      "loop": false,
+      "defaultFps": 20
+    },
+    "controlMessages": []
+  },
+  "websocket": {
+    "seq": 4,
+    "nextSeq": 5,
+    "clientAck": 4,
+    "userInteractionCount": 2,
+    "totalInteractionCount": 2,
+    "simStep": 0
+  }
+}

@@ -9,8 +9,8 @@ function injectStyles() {
     #timelineEditorStatus {
       position: absolute;
       left: 50%;
-      bottom: 12px;
-      transform: translateX(-50%);
+      top: calc(env(safe-area-inset-top, 0px) + 16px);
+      transform: translate(-50%, 0);
       display: flex;
       align-items: center;
       gap: 24px;

@@ -175,6 +175,13 @@ export function applyParsedToViewer(viewerApi, parsed, sourceMeta = null) {
   } catch {}
   viewerApi.recomputeBonds();
   try {
+    Promise.resolve().then(() => {
+      try {
+        viewerApi.view?.rebuildGhosts?.();
+      } catch {}
+    });
+  } catch {}
+  try {
     if (sourceMeta && viewerApi?.session?.noteSource) {
       viewerApi.session.noteSource(sourceMeta);
     }

@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "allowJs": true,
+    "checkJs": false,
+    "jsx": "react-jsx",
+    "moduleResolution": "Bundler",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["vite/client"]
+  },
+  "include": [
+    "src",
+    "public",
+    "tests",
+    "tests-e2e",
+    "tests-browser",
+    "vite.config.js",
+    "vite.proto.config.js",
+    "playwright.config.js"
+  ],
+  "exclude": [
+    "dist",
+    "legacy_proto",
+    "node_modules",
+    "mlipview_venv",
+    "public/vendor"
+  ]
+}

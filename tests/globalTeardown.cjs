@@ -10,6 +10,14 @@ module.exports = async () => {
   // Clear global watchdog if present
   try { if(global.__MLIPVIEW_WATCHDOG){ clearInterval(global.__MLIPVIEW_WATCHDOG); delete global.__MLIPVIEW_WATCHDOG; } } catch {}
 
+  // Detach log listeners before closing stream
+  try {
+    if (global.__MLIP_NODE_SERVER?.stdout) global.__MLIP_NODE_SERVER.stdout.removeAllListeners('data');
+    if (global.__MLIP_NODE_SERVER?.stderr) global.__MLIP_NODE_SERVER.stderr.removeAllListeners('data');
+    if (global.__MLIP_PY_SERVER?.stdout) global.__MLIP_PY_SERVER.stdout.removeAllListeners('data');
+    if (global.__MLIP_PY_SERVER?.stderr) global.__MLIP_PY_SERVER.stderr.removeAllListeners('data');
+  } catch {}
+
   // Close log stream if open (open fs WriteStream prevents process exit)
   try { if(global.__MLIP_LOG_STREAM){
     const s = global.__MLIP_LOG_STREAM;
