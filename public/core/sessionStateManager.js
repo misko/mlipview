@@ -9,8 +9,11 @@ function migrateSnapshotSchema(snapshot) {
     throw new Error('Invalid session snapshot');
   }
   let current = deepClone(snapshot);
-  while (current.schemaVersion !== SCHEMA_VERSION) {
-    switch (current.schemaVersion) {
+  let version = Number(current.schemaVersion);
+  if (!Number.isFinite(version)) version = 3;
+
+  while (version < SCHEMA_VERSION) {
+    switch (version) {
       case 3: {
         if (current.timeline && Array.isArray(current.timeline.controlMessages)) {
           current.timeline.controlMessages = current.timeline.controlMessages
@@ -27,7 +30,8 @@ function migrateSnapshotSchema(snapshot) {
             })
             .filter(Boolean);
         }
-        current.schemaVersion = 4;
+        version = 4;
+        current.schemaVersion = version;
         break;
       }
       case 4: {
@@ -91,40 +95,26 @@ function migrateSnapshotSchema(snapshot) {
         if (!Array.isArray(current.viewer.ghostBondMeta)) {
           current.viewer.ghostBondMeta = [];
         }
-        current.schemaVersion = 6;
-        break;
-      }
-      case 6: {
-        current.viewer = current.viewer || {};
-        const fallbackBonds = Array.isArray(current.viewer.periodicBonds)
-          ? current.viewer.periodicBonds
-          : [];
-        current.viewer.bonds = fallbackBonds.map((bond) => ({
-          i: Number(bond.i) || 0,
-          j: Number(bond.j) || 0,
-          length: typeof bond.length === 'number' ? bond.length : null,
-          weight:
-            typeof bond.weight === 'number' && Number.isFinite(bond.weight) ? bond.weight : null,
-          opacity:
-            typeof bond.opacity === 'number' && Number.isFinite(bond.opacity) ? bond.opacity : 1,
-          inRing: !!bond.inRing,
-          crossing: !!bond.crossing,
-          imageDelta: Array.isArray(bond.imageDelta)
-            ? bond.imageDelta.slice(0, 3).map((v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : 0))
-            : [0, 0, 0],
-          cellOffsetA: [0, 0, 0],
-          cellOffsetB: Array.isArray(bond.imageDelta)
-            ? bond.imageDelta.slice(0, 3).map((v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : 0))
-            : [0, 0, 0],
-        }));
+        current.viewer.bonds = normaliseLegacyPeriodicBonds(current.viewer.periodicBonds);
         delete current.viewer.periodicBonds;
-        current.schemaVersion = SCHEMA_VERSION;
+        version = 6;
+        current.schemaVersion = version;
         break;
       }
       default:
-        throw new Error(`Unsupported session snapshot schema: ${current.schemaVersion}`);
+        throw new Error(`Unsupported session snapshot schema: ${version}`);
     }
   }
+
+  // Even if already at SCHEMA_VERSION, ensure canonical bond array exists.
+  if (!Array.isArray(current.viewer?.bonds)) {
+    current.viewer = current.viewer || {};
+    current.viewer.bonds = normaliseLegacyPeriodicBonds(current.viewer?.periodicBonds);
+  }
+  if (current.viewer?.periodicBonds) {
+    delete current.viewer.periodicBonds;
+  }
+  current.schemaVersion = SCHEMA_VERSION;
   return current;
 }
 
@@ -185,6 +175,40 @@ function normalizePlaybackConfig(playback = {}) {
   }
   if (Number.isFinite(playback.defaultFps)) cfg.defaultFps = Math.max(1, Math.round(playback.defaultFps));
   return Object.keys(cfg).length ? cfg : null;
+}
+
+function normaliseLegacyPeriodicBonds(periodicBonds) {
+  if (!Array.isArray(periodicBonds)) return [];
+  return periodicBonds
+    .map((bond) => {
+      if (!bond || typeof bond !== 'object') return null;
+      const i = Number(bond.i);
+      const j = Number(bond.j);
+      if (!Number.isInteger(i) || !Number.isInteger(j)) return null;
+      const imageDelta = Array.isArray(bond.imageDelta)
+        ? bond.imageDelta.slice(0, 3).map((v) => {
+            const num = Number(v);
+            if (!Number.isFinite(num)) return 0;
+            const rounded = Math.round(num);
+            return Number.isFinite(rounded) ? rounded : 0;
+          })
+        : [0, 0, 0];
+      return {
+        i,
+        j,
+        length: typeof bond.length === 'number' ? bond.length : null,
+        weight:
+          typeof bond.weight === 'number' && Number.isFinite(bond.weight) ? bond.weight : null,
+        opacity:
+          typeof bond.opacity === 'number' && Number.isFinite(bond.opacity) ? bond.opacity : 1,
+        inRing: !!bond.inRing,
+        crossing: !!bond.crossing,
+        imageDelta,
+        cellOffsetA: [0, 0, 0],
+        cellOffsetB: imageDelta,
+      };
+    })
+    .filter(Boolean);
 }
 
 export function createSessionStateManager(deps) {

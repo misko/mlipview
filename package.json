@@ -12,6 +12,7 @@
     "test:py": "./mlipview_venv/bin/python -m pytest -q",
     "format": "prettier --write \"**/*.{js,jsx,ts,tsx,json,css,md}\"",
     "format:check": "prettier --check \"**/*.{js,jsx,ts,tsx,json,css,md}\"",
+    "typecheck": "tsc --noEmit",
     "gen:proto:js": "protoc --plugin=protoc-gen-es=./node_modules/.bin/protoc-gen-es --es_out=public/proto --es_opt=target=js fairchem_local_server2/session.proto && mkdir -p legacy_proto/fairchem_local_server2 && cp public/proto/fairchem_local_server2/session_pb.js legacy_proto/fairchem_local_server2/session_pb.js",
     "predev": "npm run gen:proto:js",
     "prebuild": "npm run gen:proto:js",
@@ -26,13 +27,20 @@
     "babylonjs-gui": "^7.54.3",
     "babylonjs-loaders": "^7.54.3",
     "express": "^4.19.2",
-    "jsdom": "^22.1.0"
+    "jsdom": "^22.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@babel/core": "^7.23.0",
     "@babel/preset-env": "^7.23.0",
     "@bufbuild/protobuf": "^2.9.0",
     "@bufbuild/protoc-gen-es": "^2.9.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.5",
+    "@typescript-eslint/eslint-plugin": "^8.15.0",
+    "@typescript-eslint/parser": "^8.15.0",
+    "@vitejs/plugin-react": "^4.3.4",
     "@playwright/test": "^1.55.1",
     "babel-jest": "^29.7.0",
     "canvas": "^2.11.2",
@@ -43,6 +51,7 @@
     "prettier": "^3.3.3",
     "protoc-gen-js": "^3.21.4-4",
     "supertest": "^6.3.4",
+    "typescript": "^5.6.3",
     "vite": "^7.1.7"
   },
   "engines": {

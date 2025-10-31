@@ -1,0 +1,207 @@
+{
+  "schemaVersion": 3,
+  "savedAt": "2025-02-20T00:05:00.000Z",
+  "source": {
+    "kind": "md",
+    "label": "molecules/benzene.xyz",
+    "params": {
+      "temperature": 600
+    }
+  },
+  "viewer": {
+    "elements": [
+      "C",
+      "C",
+      "C",
+      "C",
+      "C",
+      "C",
+      "H",
+      "H",
+      "H",
+      "H",
+      "H",
+      "H"
+    ],
+    "positions": [
+      [
+        1.396,
+        0,
+        0
+      ],
+      [
+        0.698,
+        1.209,
+        0
+      ],
+      [
+        -0.698,
+        1.209,
+        0
+      ],
+      [
+        -1.396,
+        0,
+        0
+      ],
+      [
+        -0.698,
+        -1.209,
+        0
+      ],
+      [
+        0.698,
+        -1.209,
+        0
+      ],
+      [
+        2.479,
+        0,
+        0
+      ],
+      [
+        1.24,
+        2.148,
+        0
+      ],
+      [
+        -1.24,
+        2.148,
+        0
+      ],
+      [
+        -2.479,
+        0,
+        0
+      ],
+      [
+        -1.24,
+        -2.148,
+        0
+      ],
+      [
+        1.24,
+        -2.148,
+        0
+      ]
+    ],
+    "velocities": null,
+    "cell": null,
+    "showCell": false,
+    "showGhostCells": false
+  },
+  "energyPlot": {
+    "series": [
+      {
+        "energy": -232.1184,
+        "kind": "md"
+      },
+      {
+        "energy": -231.9042,
+        "kind": "md"
+      },
+      {
+        "energy": -231.771,
+        "kind": "md"
+      }
+    ],
+    "markerIndex": 2
+  },
+  "timeline": {
+    "capacity": 500,
+    "frames": [
+      {
+        "kind": "md",
+        "seq": 112,
+        "simStep": 18,
+        "userInteractionCount": 9,
+        "timestamp": 1739990700000,
+        "energy": -232.1184,
+        "temperature": 598.4,
+        "energyIndex": 0,
+        "positions": [
+          [
+            1.3958,
+            -0.0012,
+            0.0005
+          ],
+          [
+            0.6975,
+            1.2094,
+            -0.0003
+          ]
+        ],
+        "id": "frame-00001",
+        "numericId": 1
+      },
+      {
+        "kind": "md",
+        "seq": 113,
+        "simStep": 19,
+        "userInteractionCount": 9,
+        "timestamp": 1739990700160,
+        "energy": -231.9042,
+        "temperature": 604.1,
+        "energyIndex": 1,
+        "positions": [
+          [
+            1.3951,
+            -0.0021,
+            0.0007
+          ],
+          [
+            0.6963,
+            1.2101,
+            -0.0006
+          ]
+        ],
+        "id": "frame-00002",
+        "numericId": 2
+      },
+      {
+        "kind": "md",
+        "seq": 114,
+        "simStep": 20,
+        "userInteractionCount": 9,
+        "timestamp": 1739990700320,
+        "energy": -231.771,
+        "temperature": 612.3,
+        "energyIndex": 2,
+        "positions": [
+          [
+            1.3946,
+            -0.003,
+            0.001
+          ],
+          [
+            0.6958,
+            1.2109,
+            -0.0008
+          ]
+        ],
+        "id": "frame-00003",
+        "numericId": 3
+      }
+    ],
+    "lastLiveMode": "md",
+    "wasRunning": true,
+    "pendingSimParams": {
+      "temperature": 600,
+      "steps": 200
+    },
+    "playback": {
+      "autoPlay": false,
+      "loop": false,
+      "defaultFps": 20
+    },
+    "controlMessages": []
+  },
+  "websocket": {
+    "seq": 120,
+    "nextSeq": 121,
+    "clientAck": 118,
+    "userInteractionCount": 9,
+    "totalInteractionCount": 11,
+    "simStep": 20
+  }
+}

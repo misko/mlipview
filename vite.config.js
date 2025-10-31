@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
 import fs from 'fs';
 
 // Attempt to load localhost TLS certs for HTTPS dev (optional)
@@ -88,6 +89,7 @@ export default defineConfig({
     host: '0.0.0.0',
   },
   plugins: [
+    react(),
     rootRedirectPlugin(),
     // Ensure runtime-loaded assets like molecules/*.xyz exist in dist for preview server
     {
