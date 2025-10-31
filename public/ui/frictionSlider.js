@@ -1,6 +1,6 @@
 // Friction slider initialization for MD integrator.
 // Controls window.__MLIP_CONFIG.mdFriction; default from constants. Range [0, 2.0] with 0.01 step.
-import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS } from '../util/constants.js';
+import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS } from '../util/constants.ts';
 
 function shouldEnableFrictionUI() {
   if (typeof window === 'undefined') return true;

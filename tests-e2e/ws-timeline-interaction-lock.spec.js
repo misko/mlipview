@@ -29,7 +29,14 @@ test('timeline mode locks interactions until live resumes', async ({ page, loadV
     node.dispatchEvent(new Event('change', { bubbles: true }));
   });
 
-  await page.waitForFunction(() => window.viewerApi.timeline.getState().active, null, { timeout: 10_000 });
+  await page.waitForFunction(() => {
+    const timeline = window.viewerApi.timeline;
+    const status =
+      (timeline && typeof timeline.getStatus === 'function' && timeline.getStatus()) ||
+      (timeline && typeof timeline.getState === 'function' && timeline.getState()) ||
+      null;
+    return !!status && !!status.active;
+  }, null, { timeout: 10_000 });
 
   const beginDuringTimeline = await page.evaluate(() => window.viewerApi.manipulation.beginDrag(
     () => ({ x: 0, y: 0, z: 0 }),
@@ -38,7 +45,14 @@ test('timeline mode locks interactions until live resumes', async ({ page, loadV
   expect(beginDuringTimeline).toBe(false);
 
   await page.click('[data-testid="timeline-live"]');
-  await page.waitForFunction(() => !window.viewerApi.timeline.getState().active, null, { timeout: 20_000 });
+  await page.waitForFunction(() => {
+    const timeline = window.viewerApi.timeline;
+    const status =
+      (timeline && typeof timeline.getStatus === 'function' && timeline.getStatus()) ||
+      (timeline && typeof timeline.getState === 'function' && timeline.getState()) ||
+      null;
+    return !!status && !status.active;
+  }, null, { timeout: 20_000 });
 
   const beginAfterLive = await page.evaluate(() => window.viewerApi.manipulation.beginDrag(
     () => ({ x: 0, y: 0, z: 0 }),

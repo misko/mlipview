@@ -29,8 +29,12 @@ test('timeline playback surfaces an energy marker', async ({ page, loadViewerPag
 
   await page.waitForFunction(
     () => {
-      const state = window.viewerApi.timeline.getState();
-      return state.active && state.offset <= -15;
+      const timeline = window.viewerApi.timeline;
+      const status =
+        (timeline && typeof timeline.getStatus === 'function' && timeline.getStatus()) ||
+        (timeline && typeof timeline.getState === 'function' && timeline.getState()) ||
+        null;
+      return status && status.active && status.offset <= -15;
     },
     null,
     { timeout: 10_000 },
@@ -49,7 +53,14 @@ test('timeline playback surfaces an energy marker', async ({ page, loadViewerPag
 
   await page.click('[data-testid="timeline-live"]');
   await page.waitForFunction(
-    () => !window.viewerApi.timeline.getState().active,
+    () => {
+      const timeline = window.viewerApi.timeline;
+      const status =
+        (timeline && typeof timeline.getStatus === 'function' && timeline.getStatus()) ||
+        (timeline && typeof timeline.getState === 'function' && timeline.getState()) ||
+        null;
+      return status && !status.active;
+    },
     null,
     { timeout: 20_000 },
   );

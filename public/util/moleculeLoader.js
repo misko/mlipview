@@ -1,5 +1,5 @@
 import { parseXYZ, applyXYZToState } from './xyzLoader.js';
-import { __count } from './funcCount.js';
+import { __count } from './funcCount.ts';
 import { validateParsedXYZ } from './constraints.js';
 import { smilesToXYZ, isLikelySmiles } from './smilesLoader.js';
 import { base64DecodeUtf8 } from '../ui/moleculeSelect.js';

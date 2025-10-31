@@ -1,7 +1,7 @@
 import { createMoleculeState } from '../public/domain/moleculeState.js';
-import { createSelectionService } from '../public/domain/selectionService.js';
+import { createSelectionService } from '../public/domain/selectionService.ts';
 import { createMoleculeView } from '../public/render/moleculeView.js';
-import { createManipulationService } from '../public/domain/manipulationService.js';
+import { createManipulationService } from '../public/domain/manipulationService.ts';
 
 // Reuse BABYLON stubs if not present (shared with other highlight tests).
 if (!global.BABYLON) global.BABYLON = {};

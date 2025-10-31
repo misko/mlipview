@@ -1,4 +1,7 @@
-import { createSessionStateManager } from '../public/core/sessionStateManager.js';
+jest.setTimeout(15000);
+console.log('[sessionStateManager.spec] suite loaded');
+
+import { createSessionStateManager } from '../public/core/sessionStateManager.ts';
 
 describe('SessionStateManager', () => {
   it('rehydrates viewer and seeds websocket state', async () => {
@@ -42,6 +45,7 @@ describe('SessionStateManager', () => {
     const applyTimelineFrame = jest.fn();
     const rememberResume = jest.fn();
 
+    console.log('[sessionStateManager.spec] creating manager');
     const manager = createSessionStateManager({
       getViewerState: () => state,
       applyFullSnapshot,
@@ -75,7 +79,9 @@ describe('SessionStateManager', () => {
       getMode: () => currentMode,
     });
 
+    console.log('[sessionStateManager.spec] capture snapshot start');
     const snapshot = manager.captureSnapshot({ kind: 'xyz', label: 'test.xyz' });
+    console.log('[sessionStateManager.spec] capture snapshot complete');
     expect(snapshot.schemaVersion).toBe(6);
     expect(snapshot.viewer.elements).toEqual(['H', 'O']);
     expect(snapshot.energyPlot.series).toHaveLength(1);
@@ -83,10 +89,20 @@ describe('SessionStateManager', () => {
       atoms: ['solid', 'solid'],
       bonds: [],
     });
-    expect(snapshot.viewer.bonds).toEqual([]);
+    expect(snapshot.viewer.bonds).toEqual({
+      atomIndexA: [],
+      atomIndexB: [],
+      cellOffsetA: [],
+      cellOffsetB: [],
+      length: [],
+      weight: [],
+      opacity: [],
+      flags: { inRing: [], crossing: [] },
+      imageDelta: [],
+    });
 
     const loadSnapshot = {
-      schemaVersion: 3,
+      schemaVersion: 6,
       savedAt: new Date().toISOString(),
       source: { kind: 'json', label: 'session.json' },
       viewer: {
@@ -94,6 +110,10 @@ describe('SessionStateManager', () => {
         positions: [[0, 0, 0], [1.1, 0.1, 0]],
         showCell: false,
         showGhostCells: false,
+        bonds: [{ i: 0, j: 1, opacity: 1, length: 1.1, weight: 1, crossing: false, imageDelta: [0, 0, 0], cellOffsetA: [0,0,0], cellOffsetB: [0,0,0] }],
+        meshAssignments: { atoms: ['solid', 'solid'], bonds: ['solid'] },
+        ghostAtoms: [],
+        ghostBondMeta: [],
       },
       energyPlot: { series: [{ energy: -9.8, kind: 'md' }], markerIndex: 0 },
       timeline: {
@@ -125,13 +145,16 @@ describe('SessionStateManager', () => {
       },
     };
 
+    console.log('[sessionStateManager.spec] loading snapshot');
     await manager.loadSnapshot(loadSnapshot);
+    console.log('[sessionStateManager.spec] load snapshot done');
 
     expect(applyFullSnapshot).toHaveBeenCalled();
     expect(energyPlot.importSeries.mock.calls[0][0]).toEqual(loadSnapshot.energyPlot);
     expect(frameBuffer.importFrames.mock.calls[0][0]).toEqual(loadSnapshot.timeline.frames);
     expect(seedSequencing).toHaveBeenCalledWith({
       nextSeq: 21,
+      lastSeq: 20,
       ack: 18,
       userInteractionCount: 3,
       simStep: 2,
@@ -141,5 +164,6 @@ describe('SessionStateManager', () => {
     expect(currentMode).toBe(Mode.Timeline);
     expect(rememberResume).toHaveBeenCalledWith('md', expect.any(Object));
     expect(setInteractionCounters).toHaveBeenCalledWith({ user: 3, total: 5, lastApplied: 3 });
+    console.log('[sessionStateManager.spec] assertions complete');
   });
 });

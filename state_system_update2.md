@@ -51,7 +51,7 @@ Key rules:
 - Ensure ghost bond creation marks instances as “soft baseline” so timeline clears won’t push them into the solid pool.
 
 ### 5. Session State & Snapshots
-- Extend `SessionStateManager` (`public/core/sessionStateManager.js`) to persist which instances default to soft vs solid:
+- Extend `SessionStateManager` (`public/core/sessionStateManager.ts`) to persist which instances default to soft vs solid:
   - Add `viewer.meshAssignments` with arrays `atoms: 'solid' | 'soft'`, `bonds: 'solid' | 'soft'`.
   - Record the most recent timeline override set so playback restores the same distribution on load.
 - Bump snapshot `schemaVersion` to **5**. Migrate v4 snapshots by defaulting all atoms/bonds to `solid` unless a bond stored `opacity < 0.99` (then seed `soft`).
@@ -74,7 +74,7 @@ Key rules:
 - **Unit**
   - `tests/moleculeView.meshModes.spec.js` – ensure build assigns proper masters and migration swaps buffers without leaks.
   - `tests/controlMessageEngine.spec.js` – cover `mode.focus/mode.background` defaults and threshold derivation.
-- `tests/sessionStateManager.spec.js` – verify schema v6 round-trips mesh assignments and upgrades v4 snapshots.
+- `tests/sessionStateManager.spec.js` – verify schema v6 round-trips mesh assignments and counters.
 - **Playwright**
   - `ws-timeline-mesh-mode.spec.js` – confirm timeline fades move instances between solid/soft pools and return correctly.
   - `ws-ghost-periodic.spec.js` – scrape `viewerApi.debugGhostSnapshot()` ensuring ghost bonds stay soft in both live and timeline modes.

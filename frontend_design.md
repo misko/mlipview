@@ -73,6 +73,23 @@
 - `util/` includes molecule loading, periodic boundary helpers (`pbc.js`), constants, and element metadata. These utilities are consumed by the orchestrator, domain services, and UI.
 - `proto/` hosts the compiled protobuf schemas consumed by `fairchem_ws_client.js`.
 
+## Session State & WebSocket Coordination
+- The viewer maintains a single `Mode` enum (`Idle`, `MD`, `Relax`, `Timeline`) plus derived booleans (`running.kind`, `timelineState.active`, `timelineState.playing`). UI controls read these fields to enable/disable actions; backend parity is kept via `SessionState.running` and `SessionState.sim_type`.
+- WebSocket connection phases surface through `viewerApi.ws.addStateListener` (“connecting”, “open”, “reconnect-scheduled”, “close”, “error”). The React shell mirrors the same events via `WsContext`; in legacy mode the reconnect banner toggles directly. These states map 1:1 with the backend ingress lifecycle described in `backend_design.md` (`WSIngress.ws`: reader/recv/sim loops) and the counters maintained on `SessionState`.
+- MD/Relax buttons call `startContinuous(kind)` which forces an idle `full_update` (`UserInteractionSparse.full_update=true`), waits for `waitForEnergy`, then issues `ClientAction.start_simulation`. Entering MD or Relax transitions the viewer `Mode` from Idle → `{MD|Relax}`; stopping transitions back to Idle and emits `ClientAction.stop`. Backend `SessionState.running` reflects the same switch so Playwright/pytest can assert parity.
+- Manual user edits (drags, bond rotations) increment `userInteractionVersion` and schedule sparse `USER_INTERACTION` messages. While MD/Relax is running the UI stages them, mirroring backend `_stage_sparse_ui()`/`_apply_pending()` before each simulation step. Idle edits trigger an immediate `run_simple` via `_handle_user_interaction`.
+- Timeline mode transition: calling `handleTimelineOffsetRequest` captures the latest live frame, sends STOP (only if running), sets `Mode.Timeline`, and acknowledges the last server seq before entering read-only mode. `resumeLiveFromTimeline` is the sole exit path back to Idle → `{MD|Relax}` (depending on `timelineState.resumeMode`). Backend backpressure expects this flow: the client must ACK the live frame so `server_seq - client_ack < max_unacked` when streaming restarts.
+- Allowed transitions:
+  - `Idle → MD` (via Start MD) and `Idle → Relax` (via Start Relax); both require an open WebSocket and a recent `full_update`.
+  - `MD ↔ Relax` only through `stopSimulation()` → Idle → new `startContinuous`; direct toggles are prevented to keep server loops predictable.
+  - `Idle|MD|Relax → Timeline` occurs when playback is requested and there is at least one cached frame; the UI blocks geometry edits while in Timeline.
+  - `Timeline → Idle` (no resume) happens when the viewer has no stored frame or the session loads a JSON snapshot without recorded runs; otherwise `Timeline → {MD|Relax}` is driven by `resumeLiveFromTimeline` based on `timelineState.resumeMode`.
+- Connection resilience:
+  - When the socket drops, `viewerApi.ws` schedules reconnect attempts (tracking `attempts`, `nextAttemptAt`). UI surfaces this and keeps `Mode` unchanged but suppresses energy updates.
+  - Backend notices (`WAITING_FOR_ACK`, `ACK_CLEARED`, `SIMULATION_STOPPED`) are delivered as frames; the client logs them when `MLIPVIEW_RESUME_DEBUG` is enabled and adjusts UI state (e.g., pause buttons) accordingly.
+- State capture:
+  - `SessionStateManager` serialises the viewer `Mode`, timeline playback flags, and websocket counters (`seq`, `nextSeq`, `ack`, `userInteractionCount`, `simStep`). On restore it reseeds the WebSocket client before pushing a dense `full_update`, guaranteeing backend `SessionState.server_seq/client_ack` stay in sync with the frontend counters.
+
 ## Error handling & diagnostics
 - Viewer logs to the console when `window.__MLIPVIEW_DEBUG_API` or `?debug=1` is set (positions, velocities, counter updates).
 - WS notices (`WAITING_FOR_ACK`, `SIMULATION_STOPPED`, `COMPUTE_ERROR`) propagate through `handleStreamFrame` so the UI can pause loops and show banners when needed.

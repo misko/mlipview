@@ -2,23 +2,23 @@
 // Refactored: unified streaming loop, idle listener, predictable throttle, lighter debounces.
 
 import { createMoleculeState } from './domain/moleculeState.js';
-import { createBondService } from './domain/bondService.js';
-import { createSelectionService } from './domain/selectionService.js';
+import { createBondService } from './domain/bondService.ts';
+import { createSelectionService } from './domain/selectionService.ts';
 import { createScene } from './render/scene.js';
 import { createMoleculeView } from './render/moleculeView.js';
 import { createPickingService } from './core/pickingService.js';
 import installTouchControls from './ui/touchControls.js';
-import { createManipulationService } from './domain/manipulationService.js';
+import { createManipulationService } from './domain/manipulationService.ts';
 import { createVRSupport } from './vr/setup.js';
 import { createVRPicker } from './vr/vr-picker.js';
-import { __count } from './util/funcCount.js';
-import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS, MAX_STEP } from './util/constants.js';
+import { __count } from './util/funcCount.ts';
+import { DEFAULT_MD_FRICTION, DEFAULT_MIN_STEP_INTERVAL_MS, MAX_STEP } from './util/constants.ts';
 import { getWS } from './fairchem_ws_client.js';
 import { showErrorBanner, hideErrorBanner } from './ui/errorBanner.js';
 import { SYMBOL_TO_Z, Z_TO_SYMBOL, OMOL25_ELEMENTS } from './data/periodicTable.js';
 import { createFrameBuffer } from './core/frameBuffer.js';
 import { installTimeline } from './ui/timeline.js';
-import { createSessionStateManager } from './core/sessionStateManager.js';
+import { createSessionStateManager } from './core/sessionStateManager.ts';
 import { createTimelinePlaybackController } from './core/timelinePlaybackController.js';
 import { createControlMessageEngine } from './core/controlMessageEngine.js';
 import { createCalloutLayer } from './render/calloutLayer.js';
@@ -106,6 +106,9 @@ function addWsStateListener(fn) {
   if (typeof fn === 'function') wsStateListeners.add(fn);
   return () => wsStateListeners.delete(fn);
 }
+function removeWsStateListener(fn) {
+  wsStateListeners.delete(fn);
+}
 
 function dispatchWsState(evt) {
   const snapshot = { ...(evt || {}), timestamp: Date.now() };
@@ -142,6 +145,8 @@ try {
     wsConnectTimeoutMs: TUNABLES.WS_CONNECT_TIMEOUT_MS,
   });
 } catch { }
+
+const timelineListeners = new Set();
 
 /* ──────────────────────────────────────────────────────────────────────────
    Utils
@@ -624,7 +629,6 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (Number.isFinite(lastApplied)) lastAppliedUIC = lastApplied | 0;
     else lastAppliedUIC = Math.max(lastAppliedUIC, userInteractionVersion);
   };
-  let timelineOverlay = null;
   const timelineState = {
     active: false,
     playing: false,
@@ -632,6 +636,83 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     resumeMode: null,
     suppressEnergy: false,
   };
+
+  let timelineOverlay = null;
+
+  const DEFAULT_TARGET_TEMPERATURE = 1500;
+
+  const clampTemperature = (value, fallback = DEFAULT_TARGET_TEMPERATURE) => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return fallback;
+    return Math.max(0, Math.min(5000, num));
+  };
+
+  const clampFriction = (value, fallback = DEFAULT_MD_FRICTION) => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return fallback;
+    return Math.max(0, Math.min(5, num));
+  };
+
+  let targetTemperature = (() => {
+    if (typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) {
+      const num = Number(window.__MLIP_TARGET_TEMPERATURE);
+      if (Number.isFinite(num)) return clampTemperature(num, DEFAULT_TARGET_TEMPERATURE);
+    }
+    return DEFAULT_TARGET_TEMPERATURE;
+  })();
+
+  let mdFrictionValue = (() => {
+    const raw = Number(cfg.mdFriction);
+    return clampFriction(raw, DEFAULT_MD_FRICTION);
+  })();
+
+  if (typeof window !== 'undefined') {
+    window.__MLIP_TARGET_TEMPERATURE = targetTemperature;
+    window.__MLIP_CONFIG ||= {};
+    window.__MLIP_CONFIG.mdFriction = mdFrictionValue;
+  }
+
+  function getTimelineStatusSnapshot() {
+    const offset = Number.isFinite(timelineState.offset) ? timelineState.offset : null;
+    const resolvedMode = (() => {
+      if (mode === Mode.Timeline) {
+        return timelineState.playing ? 'playing' : 'paused';
+      }
+      return typeof mode === 'string' ? mode : timelineState.active ? 'timeline' : null;
+    })();
+    return {
+      mode: resolvedMode,
+      active: !!timelineState.active,
+      playing: !!timelineState.playing,
+      offset,
+      resumeMode: timelineState.resumeMode,
+      suppressEnergy: !!timelineState.suppressEnergy,
+    };
+  }
+  function emitTimelineState(reason = 'update') {
+    try {
+      if (timelinePlayback?.isPlaying) {
+        timelineState.playing = !!timelinePlayback.isPlaying();
+      }
+    } catch { /* ignore sync errors */ }
+    const payload = {
+      type: 'status',
+      reason,
+      status: getTimelineStatusSnapshot(),
+      timestamp: Date.now(),
+    };
+    for (const fn of timelineListeners) {
+      try { fn(payload); } catch { }
+    }
+  }
+  function addTimelineListener(fn) {
+    if (typeof fn !== 'function') return () => {};
+    timelineListeners.add(fn);
+    return () => timelineListeners.delete(fn);
+  }
+  function removeTimelineListener(fn) {
+    timelineListeners.delete(fn);
+  }
   const playbackRuntime = {
     startOffset: null,
     loopStart: null,
@@ -719,6 +800,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     onPlaybackStateChange: ({ playing }) => {
       timelineState.playing = !!playing;
       if (timelineUi) timelineUi.setMode(playing ? 'playing' : 'paused');
+      emitTimelineState('playback-change');
     },
   });
 
@@ -845,6 +927,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (env.apiOn()) dbg.log('[version][sim]', { reason, userInteractionVersion, totalInteractionVersion, structureVersion });
   };
 
+  const markDynamicsChanged = () => {
+    try {
+      state.markDynamicsChanged?.();
+    } catch {}
+  };
+
   const updateForces = (forces, { reason } = {}) => {
     const DBG = (typeof window !== 'undefined') && (window.FORCE_DEBUG || /[?&]forceDebug=1/.test(window.location?.search || ''));
     if (Array.isArray(forces) && forces.length) {
@@ -855,11 +943,56 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   };
 
   const updateEnergyForces = ({ energy, forces, stress = null, reason }) => {
-    if (typeof energy === 'number') { state.dynamics ||= {}; state.dynamics.energy = energy; }
+    state.dynamics ||= {};
+    let dynamicsChanged = false;
+    if (typeof energy === 'number' && Number.isFinite(energy)) {
+      if (state.dynamics.energy !== energy) {
+        state.dynamics.energy = energy;
+        dynamicsChanged = true;
+      }
+    }
+    if (Array.isArray(forces) && forces.length) {
+      let maxForce = 0;
+      for (const f of forces) {
+        if (!f) continue;
+        const fx = Number.isFinite(f[0]) ? Number(f[0]) : Number(f.x) || 0;
+        const fy = Number.isFinite(f[1]) ? Number(f[1]) : Number(f.y) || 0;
+        const fz = Number.isFinite(f[2]) ? Number(f[2]) : Number(f.z) || 0;
+        const mag = Math.sqrt(fx * fx + fy * fy + fz * fz);
+        if (Number.isFinite(mag) && mag > maxForce) maxForce = mag;
+      }
+      if (maxForce > 0 && state.dynamics.maxForce !== maxForce) {
+        state.dynamics.maxForce = maxForce;
+        dynamicsChanged = true;
+      }
+    }
+    if (stress != null) {
+      const collect = [];
+      if (Array.isArray(stress)) {
+        for (const entry of stress) {
+          if (Array.isArray(entry)) collect.push(...entry);
+          else if (entry && typeof entry === 'object') collect.push(...Object.values(entry));
+          else collect.push(entry);
+        }
+      } else if (stress && typeof stress === 'object') {
+        collect.push(...Object.values(stress));
+      }
+      const magnitudes = collect
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value));
+      if (magnitudes.length) {
+        const maxStress = magnitudes.reduce((acc, val) => Math.max(acc, Math.abs(val)), 0);
+        if (Number.isFinite(maxStress) && state.dynamics.maxStress !== maxStress) {
+          state.dynamics.maxStress = maxStress;
+          dynamicsChanged = true;
+        }
+      }
+    }
     const effectiveForces = Array.isArray(forces) ? forces : (state.forces || []);
     if (Array.isArray(forces)) updateForces(forces, { reason });
     state.forceCache = { version: structureVersion, energy: state.dynamics?.energy, forces: effectiveForces, stress, stale: false };
     if (env.apiOn()) dbg.log('[forces-cache]', reason, { n: effectiveForces.length, E: state.forceCache.energy });
+    if (dynamicsChanged) markDynamicsChanged();
   };
 
   const velocitiesToArray = (vels, count) => {
@@ -1539,7 +1672,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   async function baselineEnergy() {
     __count('index#baselineEnergy');
     interactions.length = 0; energyPlot.reset();
-    let res; try { res = await ff.computeForces({ sync: !!window?.__FORCE_SYNC_REMOTE__ }); state.dynamics ||= {}; state.dynamics.energy = res.energy; }
+    let res; try { res = await ff.computeForces({ sync: !!window?.__FORCE_SYNC_REMOTE__ }); state.dynamics ||= {}; state.dynamics.energy = res.energy; markDynamicsChanged(); }
     catch { res = { energy: NaN, forces: [] }; }
     window.__RELAX_FORCES = res.forces || [];
     if (res.forces?.length) updateForces(res.forces, { reason: 'baselineEnergy' });
@@ -1589,13 +1722,29 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   // RPS counter
   const rps = { samples: [], windowMs: TUNABLES.RPS_WINDOW_MS, value: 0 };
-  const resetRPS = () => { rps.samples.length = 0; rps.value = 0; setText('rpsLabel', 'RPS: --'); };
+  const resetRPS = () => {
+    rps.samples.length = 0;
+    rps.value = 0;
+    setText('rpsLabel', 'RPS: --');
+    if (state?.dynamics) {
+      if (state.dynamics.rps !== undefined) {
+        state.dynamics.rps = undefined;
+        markDynamicsChanged();
+      }
+    }
+  };
   const noteReqDone = () => {
     const now = env.now();
     rps.samples.push(now);
     while (rps.samples.length && now - rps.samples[0] > rps.windowMs) rps.samples.shift();
     rps.value = (rps.samples.length >= 2) ? ((rps.samples.length - 1)) * 1000 / (rps.samples[rps.samples.length - 1] - rps.samples[0]) : 0;
     setText('rpsLabel', 'RPS: ' + rps.value.toFixed(1));
+    if (state?.dynamics) {
+      if (state.dynamics.rps !== rps.value) {
+        state.dynamics.rps = rps.value;
+        markDynamicsChanged();
+      }
+    }
   };
 
   // Focus helpers (kept for completeness; not used here)
@@ -1648,7 +1797,11 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
         state.dynamics ||= {}; state.dynamics.velocities = r.velocities;
       }
       if (typeof r.temperature === 'number' && isFinite(r.temperature)) {
-        state.dynamics ||= {}; state.dynamics.temperature = r.temperature;
+        state.dynamics ||= {};
+        if (state.dynamics.temperature !== r.temperature) {
+          state.dynamics.temperature = r.temperature;
+          markDynamicsChanged();
+        }
         setText('instTemp', 'T: ' + r.temperature.toFixed(1) + ' K');
       }
     }
@@ -1669,14 +1822,17 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     __count('index#mdStep');
     if (!ensureTimelineEditable('mdStep')) return { blocked: true };
     try {
-      let temperature = opts.temperature;
-      try { if ((temperature == null || !Number.isFinite(temperature)) && typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) temperature = Number(window.__MLIP_TARGET_TEMPERATURE); } catch { }
+      let temperature = Number.isFinite(opts.temperature) ? Number(opts.temperature) : getTargetTemperatureInternal();
+      temperature = clampTemperature(temperature, getTargetTemperatureInternal());
+      const friction = Number.isFinite(opts.friction) ? clampFriction(opts.friction, getMDFrictionInternal()) : getMDFrictionInternal();
       const r = await doOneStepViaWS('md', {
         calculator: opts.calculator || 'uma',
         temperature,
         timestep_fs: opts.timestep_fs,
-        friction: (Number.isFinite(opts.friction) ? opts.friction : cfg.mdFriction),
+        friction,
       });
+      setTargetTemperatureInternal(temperature, { notify: false });
+      setMDFrictionInternal(friction, { notify: false });
       if (r?.applied) { recordInteraction('mdStep'); energyPlot.push(state.dynamics?.energy, 'md'); }
       return r;
     } catch (e) { dbg.warn('[mdStep] failed', e); return { error: e?.message || String(e) }; }
@@ -1747,7 +1903,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       }
       if (typeof frame.temperature === 'number' && Number.isFinite(frame.temperature)) {
         state.dynamics ||= {};
-        state.dynamics.temperature = frame.temperature;
+        if (state.dynamics.temperature !== frame.temperature) {
+          state.dynamics.temperature = frame.temperature;
+          markDynamicsChanged();
+        }
         setText('instTemp', 'T: ' + frame.temperature.toFixed(1) + ' K');
       } else if (!isLive && typeof state.dynamics?.temperature === 'number') {
         setText('instTemp', 'T: ' + state.dynamics.temperature.toFixed(1) + ' K');
@@ -1799,6 +1958,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   function ensureTimelineOverlay() {
     if (typeof document === 'undefined') return;
+    if (typeof window !== 'undefined' && window.__MLIPVIEW_REACT_UI_ACTIVE) return;
     if (timelineOverlay) return;
     const host = document.getElementById('app') || canvas?.parentElement || document.body;
     if (!host) return;
@@ -1820,6 +1980,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   }
 
   function setTimelineOverlayVisible(on) {
+    if (typeof window !== 'undefined' && window.__MLIPVIEW_REACT_UI_ACTIVE) return;
     ensureTimelineOverlay();
     if (!timelineOverlay) return;
     timelineOverlay.style.display = on ? 'block' : 'none';
@@ -1950,6 +2111,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (EDIT_MODE) {
       try { refreshEditorFrame(offset); } catch { }
     }
+    emitTimelineState('frame-applied');
     return true;
   }
 
@@ -2018,6 +2180,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       timelineUi.setMode('paused');
       timelineUi.refresh();
     }
+    emitTimelineState('enter');
     return true;
   }
 
@@ -2068,6 +2231,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   function pauseTimelinePlayback() {
     clearTimelinePlayback();
     if (timelineUi) timelineUi.setMode('paused');
+    emitTimelineState('pause');
   }
 
   async function resumeLiveFromTimeline() {
@@ -2081,7 +2245,6 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     clearTimelinePlayback();
     timelineState.active = false;
     timelineState.suppressEnergy = false;
-    setTimelineOverlayVisible(false);
     setTimelineInteractionLock(false);
     energyPlot.clearMarker();
     timelineState.offset = -1;
@@ -2105,8 +2268,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       timelineUi.setMode('live');
       timelineUi.setActiveOffset(-1);
     }
+    emitTimelineState('resume-live');
     setMode(Mode.Idle);
     if (timelineUi) timelineUi.refresh();
+    setTimelineOverlayVisible(false);
     try {
       await ensureWsInit({ allowOffline: false });
       try {
@@ -2148,6 +2313,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     pauseTimelinePlayback();
     applyTimelineFrame(clamped);
     if (timelineUi) timelineUi.setMode('paused');
+    emitTimelineState('offset');
   }
 
   function handleTimelinePlayRequest(offset) {
@@ -2155,6 +2321,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (clamped == null) return;
     enterTimelineMode(clamped);
     timelinePlayback.start();
+    emitTimelineState('play');
   }
 
   function handleTimelinePauseRequest() {
@@ -2200,6 +2367,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       return;
     }
     reconnectState.bannerVisible = true;
+    if (typeof window !== 'undefined' && window.__MLIPVIEW_REACT_UI_ACTIVE) {
+      clearReconnectCountdown();
+      return;
+    }
     showErrorBanner('', {
       persist: true,
       className: 'ws-reconnect-banner',
@@ -2383,7 +2554,12 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     if (mode === Mode.Relax && next !== Mode.Relax) clearRelaxStreamListener();
     mode = next;
     if (mode !== Mode.MD && mode !== Mode.Timeline) {
-      try { if (state?.dynamics) state.dynamics.temperature = undefined; } catch { }
+      try {
+        if (state?.dynamics && state.dynamics.temperature !== undefined) {
+          state.dynamics.temperature = undefined;
+          markDynamicsChanged();
+        }
+      } catch {}
       setText('instTemp', TEMP_PLACEHOLDER);
     }
     if (mode === Mode.Idle) {
@@ -2401,6 +2577,7 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       running.kind = (mode === Mode.MD) ? 'md' : 'relax';
       detachIdleWSListener();
     }
+    emitTimelineState('mode-change');
   }
 
   async function startContinuous(kind, opts = {}) {
@@ -2505,23 +2682,36 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       relaxStreamUnsub = makeTrackedUnsub('relax', unsub);
     }
 
-    // live temperature from global target if present (MD)
-    let temperature = isMD ? (opts.temperature ?? 1500) : undefined;
-    try { if (isMD && typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) temperature = Number(window.__MLIP_TARGET_TEMPERATURE); } catch { }
-    if (isMD && Number.isFinite(temperature)) {
-      const tempValue = Number(temperature);
-      state.dynamics ||= {};
-      state.dynamics.temperature = tempValue;
-      setText('instTemp', `T: ${tempValue.toFixed(1)} K`);
+    let temperature = undefined;
+    let friction = undefined;
+    if (isMD) {
+      const desiredTemperature = Number.isFinite(opts.temperature)
+        ? Number(opts.temperature)
+        : getTargetTemperatureInternal();
+      temperature = clampTemperature(desiredTemperature, getTargetTemperatureInternal());
+      friction = Number.isFinite(opts.friction)
+        ? clampFriction(opts.friction, getMDFrictionInternal())
+        : getMDFrictionInternal();
+      setTargetTemperatureInternal(temperature, { notify: false });
+      setMDFrictionInternal(friction, { notify: false });
+      if (Number.isFinite(temperature)) {
+        const tempValue = Number(temperature);
+        state.dynamics ||= {};
+        state.dynamics.temperature = tempValue;
+        markDynamicsChanged();
+        setText('instTemp', `T: ${tempValue.toFixed(1)} K`);
+      } else {
+        setText('instTemp', TEMP_PLACEHOLDER);
+      }
     }
 
     ws.startSimulation({
       type: isMD ? 'md' : 'relax',
       params: isMD
-        ? { calculator: opts.calculator || 'uma', temperature, timestep_fs: opts.timestep_fs ?? 1.0, friction: (Number.isFinite(opts.friction) ? opts.friction : cfg.mdFriction) }
+        ? { calculator: opts.calculator || 'uma', temperature, timestep_fs: opts.timestep_fs ?? 1.0, friction }
         : { calculator: 'uma', fmax: state?.optimizer?.fmax || 0.05, max_step: MAX_STEP, optimizer: 'bfgs' },
     });
-    if (env.apiOn()) dbg.log(`[${kind}WS][start]`, isMD ? { temperature, timestep_fs: opts.timestep_fs ?? 1.0 } : {});
+    if (env.apiOn()) dbg.log(`[${kind}WS][start]`, isMD ? { temperature, timestep_fs: opts.timestep_fs ?? 1.0, friction } : {});
     return { streaming: true };
   }
 
@@ -2535,24 +2725,52 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     setMode(Mode.Idle); resetRPS();
   }
 
+  function setTargetTemperatureInternal(value, { notify = false } = {}) {
+    const next = clampTemperature(value, targetTemperature);
+    targetTemperature = next;
+    if (typeof window !== 'undefined') {
+      window.__MLIP_TARGET_TEMPERATURE = next;
+    }
+    state.dynamics ||= {};
+    state.dynamics.targetTemperature = next;
+    if (notify && mode === Mode.MD) {
+      sendLiveMDParamsUpdate();
+    }
+    return next;
+  }
+
+  function setMDFrictionInternal(value, { notify = false } = {}) {
+    const next = clampFriction(value, mdFrictionValue);
+    mdFrictionValue = next;
+    cfg.mdFriction = next;
+    if (notify && mode === Mode.MD) {
+      sendLiveMDParamsUpdate();
+    }
+    return next;
+  }
+
+  function getTargetTemperatureInternal() {
+    return targetTemperature;
+  }
+
+  function getMDFrictionInternal() {
+    return mdFrictionValue;
+  }
+
   function sendLiveMDParamsUpdate() {
     try {
       if (mode !== Mode.MD) return;
       const ws = getWS();
-      let T = 1500;
-      try {
-        if (typeof window !== 'undefined' && window.__MLIP_TARGET_TEMPERATURE != null) {
-          const tRaw = Number(window.__MLIP_TARGET_TEMPERATURE);
-          if (Number.isFinite(tRaw)) T = tRaw;
-        }
-      } catch { }
-      const fr = (typeof window !== 'undefined' && Number.isFinite(window.__MLIP_CONFIG?.mdFriction))
-        ? Number(window.__MLIP_CONFIG.mdFriction) : DEFAULT_MD_FRICTION;
+      const T = clampTemperature(targetTemperature, DEFAULT_TARGET_TEMPERATURE);
+      const fr = clampFriction(mdFrictionValue, DEFAULT_MD_FRICTION);
       const dt = 1.0;
       if (Number.isFinite(T)) {
         const tempValue = Number(T);
         state.dynamics ||= {};
-        state.dynamics.temperature = tempValue;
+        if (state.dynamics.temperature !== tempValue) {
+          state.dynamics.temperature = tempValue;
+          markDynamicsChanged();
+        }
         setText('instTemp', `T: ${tempValue.toFixed(1)} K`);
       } else {
         setText('instTemp', TEMP_PLACEHOLDER);
@@ -2564,8 +2782,20 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
 
   try {
     if (typeof window !== 'undefined') {
-      window.addEventListener('mlip:temperature-changed', sendLiveMDParamsUpdate);
-      window.addEventListener('mlip:friction-changed', sendLiveMDParamsUpdate);
+      const handleLegacyTemp = () => {
+        if (window.__MLIP_TARGET_TEMPERATURE != null) {
+          setTargetTemperatureInternal(window.__MLIP_TARGET_TEMPERATURE, { notify: false });
+          if (mode === Mode.MD) sendLiveMDParamsUpdate();
+        }
+      };
+      const handleLegacyFriction = () => {
+        const raw = window.__MLIP_CONFIG?.mdFriction;
+        if (raw != null) {
+          setMDFrictionInternal(raw, { notify: mode === Mode.MD });
+        }
+      };
+      window.addEventListener('mlip:temperature-changed', handleLegacyTemp);
+      window.addEventListener('mlip:friction-changed', handleLegacyFriction);
     }
   } catch { }
 
@@ -2576,7 +2806,25 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     } catch { }
   }
 
-  function getMetrics() { __count('index#getMetrics'); return { energy: state.dynamics?.energy, running: running.kind }; }
+  function getMetrics() {
+    __count('index#getMetrics');
+    const dyn = state.dynamics || {};
+    return {
+      energy: Number.isFinite(dyn.energy) ? Number(dyn.energy) : null,
+      running: running.kind,
+      temperature: Number.isFinite(dyn.temperature) ? Number(dyn.temperature) : null,
+      rps: Number.isFinite(dyn.rps) ? Number(dyn.rps) : null,
+      maxForce: Number.isFinite(dyn.maxForce) ? Number(dyn.maxForce) : null,
+      maxStress: Number.isFinite(dyn.maxStress) ? Number(dyn.maxStress) : null,
+    };
+  }
+  function getEnergySeries() {
+    try {
+      return energyPlot.exportSeries();
+    } catch {
+      return { series: [], markerIndex: null };
+    }
+  }
   function debugEnergySeriesLength() { return energyPlot.length(); }
   function debugRecordInteraction(kind) { recordInteraction(kind || 'debug'); }
   function getForceCacheVersion() { return state.forceCache?.version; }
@@ -3025,6 +3273,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
   // Attach idle listener for idle mode
   try { attachIdleWSListener().catch(() => { }); } catch { }
 
+  emitTimelineState('init');
+
   return {
     state,
     bondService,
@@ -3035,6 +3285,19 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     view,
     picking,
     vr,
+    ws: {
+      client: getWS(),
+      getState: () => {
+        try { return getWS()?.getState?.() || null; }
+        catch { return null; }
+      },
+      addStateListener: (fn) => addWsStateListener(fn),
+      removeStateListener: (fn) => removeWsStateListener(fn),
+      reconnectNow: () => {
+        try { getWS().reconnectNow?.(); return true; }
+        catch { return false; }
+      },
+    },
     applyFullSnapshot,
     addAtom,
     removeAtoms,
@@ -3046,15 +3309,25 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
     stopSimulation,
     setForceProvider,
     getMetrics,
+    getTargetTemperature: () => getTargetTemperatureInternal(),
+    setTargetTemperature: (value) => setTargetTemperatureInternal(value, { notify: mode === Mode.MD }),
+    getMDFriction: () => getMDFrictionInternal(),
+    setMDFriction: (value) => setMDFrictionInternal(value, { notify: mode === Mode.MD }),
+    setTimelineInteractionLock: (on) => {
+      setTimelineInteractionLock(!!on);
+      return !!on;
+    },
     resetToInitialPositions,
     refreshResetBaseline,
     debugEnergySeriesLength,
     getEnergyMarker: () => energyPlot.getMarker(),
+    getEnergySeries,
     debugRecordInteraction,
     manipulation: wrappedManipulation,
     scene,
     engine,
     camera,
+    getMode: () => mode,
     baselineEnergy,
     addAtomAtOrigin,
     addAtomAtPosition,
@@ -3094,7 +3367,8 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
       play: (offset) => { handleTimelinePlayRequest(offset ?? timelineState.offset); return timelineState.offset; },
       pause: () => { handleTimelinePauseRequest(); return timelineState.offset; },
       live: () => { handleTimelineLiveRequest(); return timelineState.offset; },
-      getState: () => ({ ...(timelineUi?.getState?.() || {}), active: !!timelineState.active, playing: !!timelineState.playing, offset: timelineState.offset }),
+      getState: () => ({ ...(timelineUi?.getState?.() || {}), active: !!timelineState.active, playing: !!timelineState.playing, offset: timelineState.offset, mode: typeof mode === 'string' ? mode : null }),
+      getStatus: () => getTimelineStatusSnapshot(),
       getSignature: (offset) => frameBuffer.getSignature(offset ?? timelineState.offset),
       bufferStats: () => frameBuffer.stats(),
       getOffsets: () => frameBuffer.listOffsets(),
@@ -3111,6 +3385,42 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
           frameIndex: offsetToFrameIndex(off),
         };
       },
+      setDefaultFps: (fps) => {
+        timelinePlayback.setDefaultFps(fps);
+        emitTimelineState('playback-config');
+        return timelinePlayback.getSnapshot();
+      },
+      setLoop: (enabled) => {
+        timelinePlayback.setLoop(!!enabled);
+        emitTimelineState('loop');
+        return timelinePlayback.getLoopConfig();
+      },
+      setLoopRange: (range) => {
+        timelinePlayback.setLoopRange(range || null);
+        emitTimelineState('loop-range');
+        return timelinePlayback.getLoopConfig();
+      },
+      clearLoopRange: () => {
+        timelinePlayback.setLoopRange(null);
+        emitTimelineState('loop-range');
+        return timelinePlayback.getLoopConfig();
+      },
+      setPlaybackSpeed: (payload) => {
+        timelinePlayback.setSpeedOverride(payload || null);
+        emitTimelineState('speed');
+        return { effectiveFps: timelinePlayback.getEffectiveFps() };
+      },
+      clearPlaybackSpeed: () => {
+        timelinePlayback.clearOverrides();
+        emitTimelineState('speed');
+        return { effectiveFps: timelinePlayback.getEffectiveFps() };
+      },
+      getLoopConfig: () => timelinePlayback.getLoopConfig(),
+      getPlaybackSnapshot: () => timelinePlayback.getSnapshot(),
+      getEffectiveFps: () => timelinePlayback.getEffectiveFps(),
+      subscribe: (fn) => addTimelineListener(fn),
+      addListener: (fn) => addTimelineListener(fn),
+      removeListener: (fn) => removeTimelineListener(fn),
     },
     timelineEditor: EDIT_MODE ? {
       refresh: () => { timelineEditorPanel?.refresh?.(); return true; },
@@ -3122,6 +3432,10 @@ export async function initNewViewer(canvas, { elements, positions, bonds }) {
         selection: editorStatusSelection,
       }),
     } : null,
+    addWsStateListener,
+    removeWsStateListener,
+    addTimelineListener,
+    removeTimelineListener,
   };
 }
 

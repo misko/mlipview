@@ -1,5 +1,5 @@
 import { createMoleculeState } from '../public/domain/moleculeState.js';
-import { createManipulationService } from '../public/domain/manipulationService.js';
+import { createManipulationService } from '../public/domain/manipulationService.ts';
 
 describe('x-bond rotation soft bond exclusion', () => {
   function makeChain() {

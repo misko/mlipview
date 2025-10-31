@@ -1,6 +1,6 @@
 import { createMoleculeState } from '../public/domain/moleculeState.js';
-import { createManipulationService } from '../public/domain/manipulationService.js';
-import { createBondService } from '../public/domain/bondService.js';
+import { createManipulationService } from '../public/domain/manipulationService.ts';
+import { createBondService } from '../public/domain/bondService.ts';
 
 function makeState() {
   return createMoleculeState({

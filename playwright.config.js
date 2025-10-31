@@ -17,4 +17,14 @@ export default defineConfig({
   },
   retries: 0,
   reporter: [['list']],
+  projects: [
+    {
+      name: 'legacy',
+      metadata: { uiMode: 'legacy' },
+    },
+    {
+      name: 'react',
+      metadata: { uiMode: 'react' },
+    },
+  ],
 });

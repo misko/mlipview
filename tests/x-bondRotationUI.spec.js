@@ -1,6 +1,6 @@
 import { createMoleculeState } from '../public/domain/moleculeState.js';
-import { createSelectionService } from '../public/domain/selectionService.js';
-import { createManipulationService } from '../public/domain/manipulationService.js';
+import { createSelectionService } from '../public/domain/selectionService.ts';
+import { createManipulationService } from '../public/domain/manipulationService.ts';
 
 describe('x-bond rotation manipulation', () => {
   test('rotateBond increments positions version', () => {

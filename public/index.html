@@ -15,12 +15,6 @@
     /* Removed standalone VR/AR buttons; unified AR transparency toggle lives in HUD */
     .hud .inline-toggle { display:inline-flex; align-items:center; gap:4px; margin-left:4px; }
   </style>
-  <!-- Load Babylon globally so legacy-style modules that reference global BABYLON work -->
-  <script src="/vendor/babylon/babylon.js"></script>
-  <!-- Loaders plugin for glTF/glb (controllers, hand meshes) -->
-  <script src="/vendor/babylon/babylon.loaders.js"></script>
-  <!-- Babylon GUI for XR HUD overlay -->
-  <script src="/vendor/babylon/babylon.gui.js"></script>
   <script>
     // Predeclare global so console commands entered early don't throw ReferenceError
     (function(){ try { if(typeof window!=='undefined' && !('viewerApi' in window)) window.viewerApi = null; } catch{} })();
@@ -102,167 +96,30 @@
     <div class="footer">FAIRChem UMA viewer</div>
   </div>
   <script type="module">
-    import { initNewViewer } from './index.js';
-    import { loadDefault } from './util/moleculeLoader.js';
-  import { buildDesktopPanel } from './ui/desktopPanel.js';
-  import { installTouchControls } from './ui/touchControls.js';
-    import { initForcesToggle } from './ui/forcesToggle.js';
-    import { initCellToggle } from './ui/cellToggle.js';
-    import { showErrorBanner } from './ui/errorBanner.js';
-    const urlParams = new URLSearchParams(location.search);
-    const DEBUG = urlParams.get('debug') === '1';
-    const canvas=document.getElementById('viewer');
-    let viewerApi;
-    // Desktop initialization (runs immediately; we keep always-on desktop mode and allow VR overlay switch)
-    (async()=>{
-      // Start with empty molecule; loader will populate.
-      viewerApi = await initNewViewer(canvas,{ elements:[], positions:[], bonds:[] });
-      // Always expose viewer globally for VR reuse (was previously behind DEBUG flag)
-      window._viewer = viewerApi;
-      try {
-        window.viewerApi = viewerApi;
-        window.dispatchEvent(new CustomEvent('mlipviewer-ready',{ detail:{ when: Date.now() }}));
-      } catch {}
-      window.vrScene = viewerApi.scene; // redundancy for VR module
-      window.vrEngine = viewerApi.engine;
-      // Install touch controls for mobile (pinch zoom, single-finger orbit, touch drag)
-      try { installTouchControls({ canvas, scene: viewerApi.scene, camera: viewerApi.camera, picking: viewerApi.picking }); } catch {}
-      if (DEBUG) console.log('[debug] viewer initialized');
-  // Build left-side control panel (collapsible sections)
-  buildDesktopPanel({ attachTo: document.getElementById('app') });
+    await import('@src/babylonLegacy.ts');
+    const urlParams = new URLSearchParams(location.search || '');
+    const useReactShell = urlParams.get('ui') === 'react';
 
-  // (Bond rotation controls now live in the Selection panel)
-      const libraryId = urlParams.get('library');
-      let loadedLabel = null;
-      try {
-        if (libraryId) {
-          await viewerApi.session.loadFromLibrary(libraryId);
-          loadedLabel = `library:${libraryId}`;
-          if (DEBUG) {
-            console.log('[debug] library entry loaded', libraryId, 'atoms=', viewerApi.state.positions.length);
-          }
-        } else {
-          const { file } = await loadDefault(viewerApi);
-          // Reset energy series to a single initial point (avoid multiple startup entries)
-          try { viewerApi.baselineEnergy?.(); } catch {}
-          loadedLabel = file;
-          try {
-            const sel = document.getElementById('moleculeSelect');
-            if (sel) sel.value = file;
-          } catch {}
-          if (DEBUG) {
-            console.log('[debug] default molecule loaded', file, 'atoms=', viewerApi.state.positions.length, 'energySeriesLen=1');
-          }
-        }
-
-        if (!loadedLabel) {
-          throw new Error('Unknown load result');
-        }
-
-        document.getElementById('status').textContent = `Loaded ${loadedLabel}`;
-      } catch (primaryError) {
-        console.error('[loader] load failed', primaryError);
-        if (libraryId) {
-          try {
-            console.warn('[loader] falling back to default molecule after library failure');
-            const { file } = await loadDefault(viewerApi);
-            try { viewerApi.baselineEnergy?.(); } catch {}
-            loadedLabel = file;
-            document.getElementById('status').textContent = `Loaded ${file}`;
-            try { showErrorBanner(`Library "${libraryId}" failed to load: ${primaryError?.message || primaryError} — reverted to ${file}`); } catch {}
-          } catch (fallbackError) {
-            document.getElementById('status').textContent = 'Load failed';
-            try { showErrorBanner('Load failed: ' + (fallbackError?.message || fallbackError)); } catch {}
-          }
-        } else {
-          document.getElementById('status').textContent = 'Load failed';
-          try { showErrorBanner('Load failed: ' + (primaryError?.message || primaryError)); } catch {}
-        }
-      } finally {
-        window.__MLIP_DEFAULT_LOADED = true;
+    try {
+      if (useReactShell) {
+        await import('@src/main.tsx');
+      } else {
+        const { bootstrapLegacyViewer } = await import('./bootstrapLegacyViewer.js');
+        await bootstrapLegacyViewer({
+          canvas: document.getElementById('viewer'),
+          appRoot: document.getElementById('app'),
+          statusElement: document.getElementById('status'),
+          urlParams,
+        });
       }
-    })();
-  // Relax controls (step / run-toggle) — legacy hidden buttons may be created later by desktopPanel
-  const relaxStepBtn = document.getElementById('btnRelax');
-  const relaxRunBtn = document.getElementById('btnRelaxRun');
-  function isRelaxRunning(){ try { return !!(viewerApi && viewerApi.getMetrics().running === 'relax'); } catch { return false; } }
-  function applyRunningDisable(){
-    const runningKind = viewerApi && viewerApi.getMetrics().running;
-    const disabled = !!runningKind;
-    // Disable all four when anything running
-    // But only keep the active run button enabled (for stopping) when running
-  if (relaxStepBtn) relaxStepBtn.disabled = disabled;
-  if (mdStepBtn) mdStepBtn.disabled = disabled;
-  if (relaxRunBtn) relaxRunBtn.disabled = false; // toggling logic inside
-  if (mdRunBtn) mdRunBtn.disabled = false;
-    if(runningKind === 'relax'){
-      if (mdRunBtn) mdRunBtn.disabled = true;
-      if (mdStepBtn) mdStepBtn.disabled = true;
-    } else if(runningKind === 'md') {
-      if (relaxRunBtn) relaxRunBtn.disabled = true;
-      if (relaxStepBtn) relaxStepBtn.disabled = true;
+    } catch (err) {
+      console.error('[bootstrap] failed', err);
+      const statusEl = document.getElementById('status');
+      if (statusEl) statusEl.textContent = 'Bootstrap failed';
+      if (typeof window !== 'undefined') {
+        try { window.__MLIP_BOOTSTRAP_ERROR__ = err; } catch {}
+      }
     }
-  }
-  if (relaxStepBtn) relaxStepBtn.onclick = async ()=>{ if(!viewerApi || isRelaxRunning() || isMdRunning()) return; await viewerApi.relaxStep(); document.getElementById('status').textContent='Relax step'; };
-  if (relaxRunBtn) relaxRunBtn.onclick = async ()=>{
-    if(!viewerApi) return;
-    if(!isRelaxRunning()){
-      if (relaxRunBtn) relaxRunBtn.textContent='stop'; document.getElementById('status').textContent='Relax running';
-      applyRunningDisable();
-      viewerApi.startRelaxContinuous({ maxSteps:500 }).then(r=>{ if (relaxRunBtn) relaxRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent = r?.converged? 'Relax converged':'Relax stopped'; });
-    } else {
-      viewerApi.stopSimulation(); if (relaxRunBtn) relaxRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='Relax stopped';
-    }
-  };
-  // MD controls (step / run-toggle)
-  const mdStepBtn = document.getElementById('btnMD');
-  const mdRunBtn = document.getElementById('btnMDRun');
-  // Derive MD running state from viewerApi.getMetrics() so auto-start logic stays in sync.
-  function isMdRunning(){ try { return !!(viewerApi && viewerApi.getMetrics().running === 'md'); } catch { return false; } }
-  if (mdStepBtn) mdStepBtn.onclick = ()=>{ if(!viewerApi || isMdRunning() || isRelaxRunning()) return; const T = window.__MLIP_TARGET_TEMPERATURE ?? 1500; viewerApi.mdStep({ temperature:T }); document.getElementById('status').textContent=`MD step tgt=${T}K inst=${viewerApi.state.dynamics.temperature.toFixed(1)}`; };
-  if (mdRunBtn) mdRunBtn.onclick = ()=>{
-    if(!viewerApi) return;
-    if(!isMdRunning()){
-  const T = window.__MLIP_TARGET_TEMPERATURE ?? 1500;
-      if (mdRunBtn) mdRunBtn.textContent='stop'; document.getElementById('status').textContent='MD running @'+T+'K';
-      applyRunningDisable();
-      viewerApi.startMDContinuous({ steps:500, temperature:T }).then(()=>{ if(!isMdRunning()) { if (mdRunBtn) mdRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='MD stopped'; } });
-    } else {
-      viewerApi.stopSimulation(); if (mdRunBtn) mdRunBtn.textContent='run'; applyRunningDisable(); document.getElementById('status').textContent='MD stopped';
-    }
-  };
-  {
-    const sel = document.getElementById('forceProviderSel');
-    if (sel) sel.onchange = (e)=>{ if(!viewerApi) return; const kind=e.target.value; viewerApi.setForceProvider(kind); document.getElementById('status').textContent='Provider '+kind; };
-  }
-
-  // Periodic metrics HUD updater
-  setInterval(()=>{ if(!viewerApi) return; const m=viewerApi.getMetrics(); applyRunningDisable(); if(!m.running) return; const parts=[]; if(m.energy!=null) parts.push('E='+m.energy.toFixed(3)); if(m.maxForce!=null) parts.push('Fmax='+m.maxForce.toExponential(2)); if(m.maxStress!=null) parts.push('Smax='+m.maxStress.toExponential(2)); document.getElementById('status').textContent = (m.running||'idle')+' '+parts.join(' '); }, 500);
-  // Unified Cell toggle controls both cell and ghost states
-  initCellToggle({ getViewer: ()=> viewerApi });
-  // Forces toggle wiring (button text and state)
-  initForcesToggle({ getViewer: ()=> viewerApi });
-
-    // XR dropdown wiring (now static in markup for reliability)
-  const xrSel = document.getElementById('xrModeSelect');
-    if (xrSel) xrSel.addEventListener('change', async ()=> {
-      if(!viewerApi) return;
-      const v = xrSel.value;
-      if(v==='none'){ await viewerApi.vr.switchXR('none'); }
-      else if(v==='vr'){ await viewerApi.vr.switchXR('vr'); }
-      else if(v==='ar'){ await viewerApi.vr.switchXR('ar'); }
-    });
-    setInterval(()=>{
-      if(!viewerApi) return;
-      if(!xrSel) return;
-      try {
-        const info=viewerApi.vr.debugInfo();
-        let mode='none';
-        if(info.sessionMode.includes('ar')) mode='ar';
-        else if(info.sessionMode.includes('vr')||info.hasXRHelper && info.sessionMode!=='unknown') mode='vr';
-        if(xrSel && xrSel.value!==mode) xrSel.value=mode;
-      } catch{}
-    }, 2000);
   </script>
 </body>
 </html>

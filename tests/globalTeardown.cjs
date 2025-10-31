@@ -10,6 +10,12 @@ module.exports = async () => {
   // Clear global watchdog if present
   try { if(global.__MLIPVIEW_WATCHDOG){ clearInterval(global.__MLIPVIEW_WATCHDOG); delete global.__MLIPVIEW_WATCHDOG; } } catch {}
 
+  const keepShared = global.__MLIP_SHARED_KEEP === true;
+  if (keepShared) {
+    console.log('[globalTeardown] Preserving shared test server instance.');
+    return;
+  }
+
   // Detach log listeners before closing stream
   try {
     if (global.__MLIP_NODE_SERVER?.stdout) global.__MLIP_NODE_SERVER.stdout.removeAllListeners('data');

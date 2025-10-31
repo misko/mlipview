@@ -1,5 +1,5 @@
 import { createMoleculeState } from '../public/domain/moleculeState.js';
-import { createBondService } from '../public/domain/bondService.js';
+import { createBondService } from '../public/domain/bondService.ts';
 
 describe('x-bond service periodic', () => {
   test('detects bond across periodic boundary', () => {

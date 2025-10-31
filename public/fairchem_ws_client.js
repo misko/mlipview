@@ -1,7 +1,7 @@
 // fairchem_ws_client.js — thin WebSocket client for fairchem_local_server2
 // Refactored: single subscribe API, batched ACKs, no dragLock mutation.
 
-import { __count } from './util/funcCount.js';
+import { __count } from './util/funcCount.ts';
 import { create, toBinary, fromBinary } from '@bufbuild/protobuf';
 import {
   ClientActionSchema,
@@ -174,9 +174,14 @@ export function createFairchemWS() {
     if (Number.isFinite(userInteractionCount)) lastCounters.userInteractionCount = userInteractionCount | 0;
     if (Number.isFinite(simStep)) lastCounters.simStep = simStep | 0;
   }
-  function seedSequencing({ nextSeq, ack, userInteractionCount, simStep } = {}) {
-    if (Number.isFinite(nextSeq)) {
-      seq = nextSeq | 0;
+  function seedSequencing({ nextSeq, lastSeq, ack, userInteractionCount, simStep } = {}) {
+    const hasLastSeq = Number.isFinite(lastSeq);
+    const hasNextSeq = Number.isFinite(nextSeq);
+    if (hasLastSeq || hasNextSeq) {
+      const rawSeed = hasLastSeq ? (lastSeq | 0) : ((nextSeq | 0) - 1);
+      const seed = Math.max(0, rawSeed);
+      seq = seed;
+      lastClientSeq = Math.max(lastClientSeq, seed);
     }
     let ackVal = null;
     if (Number.isFinite(ack)) {

@@ -42,7 +42,7 @@ function rotateVec(q, v) {
 
 // Apply incremental yaw (world Y) and pitch (camera right axis) to accumulated quaternion.
 // dYaw/dPitch are raw small deltas (already sign-adjusted by caller). Sensitivity & clamps applied here.
-import { __count } from '../util/funcCount.js';
+import { __count } from '../util/funcCount.ts';
 export function applyIncrement(accQ, dYaw, dPitch, cameraRight, opts = {}) {
   __count('vrRotation#applyIncrement');
   const sens = opts.sens != null ? opts.sens : 0.9;

@@ -50,6 +50,9 @@ export function base64DecodeUtf8(b64) {
  * @param {{ hudEl: HTMLElement, windowRef?: Window, documentRef?: Document }} opts
  */
 export function installMoleculeSelector(opts) {
+  if (!opts?.windowRef && typeof window !== 'undefined' && window.__MLIPVIEW_REACT_UI_ACTIVE) {
+    return { selectEl: null };
+  }
   const { hudEl } = opts;
   const windowRef = opts.windowRef || window;
   const documentRef = opts.documentRef || document;

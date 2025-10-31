@@ -12,7 +12,7 @@
 //  - Else (miss) attempt expanded radius heuristic: sample a few forward offsets along ray and re-run pick (cheap) to mitigate race near cylinder tips.
 //  - Provide separate helpers pickBondWithRay(ray) / pickAtomWithRay(ray) mirroring legacy naming for easier integration.
 
-import { __count } from '../util/funcCount.js';
+import { __count } from '../util/funcCount.ts';
 export function createVRPicker({ scene, view }) {
   __count('vrPicker#createVRPicker');
   if (!scene || typeof scene.pickWithRay !== 'function')

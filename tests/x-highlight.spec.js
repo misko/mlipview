@@ -1,5 +1,5 @@
 import { createMoleculeState } from '../public/domain/moleculeState.js';
-import { createSelectionService } from '../public/domain/selectionService.js';
+import { createSelectionService } from '../public/domain/selectionService.ts';
 
 describe('selection highlight plumbing', () => {
   test('atom selection updates selection state', () => {

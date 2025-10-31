@@ -1,7 +1,7 @@
 import { jest } from '@jest/globals';
 import { installBabylonStub } from './helpers/installBabylonStub.js';
 import { createMoleculeState } from '../public/domain/moleculeState.js';
-import { createManipulationService } from '../public/domain/manipulationService.js';
+import { createManipulationService } from '../public/domain/manipulationService.ts';
 import { createPickingService } from '../public/core/pickingService.js';
 
 describe('x-atom drag screen plane', () => {

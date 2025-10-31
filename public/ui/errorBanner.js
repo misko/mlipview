@@ -31,7 +31,21 @@ function ensureBanner() {
   return __bannerEl;
 }
 
+function getReactBridge() {
+  try {
+    if (typeof window !== 'undefined' && window.__MLIPVIEW_ERROR_BANNER) {
+      return window.__MLIPVIEW_ERROR_BANNER;
+    }
+  } catch {}
+  return null;
+}
+
 export function hideErrorBanner() {
+  const bridge = getReactBridge();
+  if (bridge) {
+    bridge.hide();
+    return;
+  }
   if (!__bannerEl) return;
   try {
     __bannerEl.style.transform = 'translateY(-100%)';
@@ -42,6 +56,11 @@ export function hideErrorBanner() {
 }
 
 export function showErrorBanner(message, opts = {}) {
+  const bridge = getReactBridge();
+  if (bridge) {
+    bridge.show(message, opts);
+    return;
+  }
   try {
     const el = ensureBanner();
     if (!el) return;

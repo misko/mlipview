@@ -81,43 +81,56 @@ async function freePort(port, timeout = 10000) {
   throw new Error(`Could not free port ${port}`);
 }
 
+const SKIP_BACKEND = process.env.MLIPVIEW_SKIP_SERVERS === '1';
+
 export default async function globalSetup() {
   process.env.NO_VITE_HTTPS = '1';
 
-  // 1) Start backend (WS/FastAPI) on 8000
-  const pyEnv = process.env.MLIPVIEW_PYTHON || process.cwd() + '/mlipview_venv/bin/python';
-  const wsLog = fs.createWriteStream('./test-ws-e2e.log');
-  // Ensure port 8000 is free before launching
-  await freePort(8000).catch(() => { });
-  const port8000Busy = await isPortOpen(8000);
-  if (!port8000Busy) {
-    const env = { ...process.env };
-    // Enable backend WS debug to surface WAITING_FOR_ACK and frame logs during tests
-    env.WS_DEBUG = env.WS_DEBUG || '1';
-    // Pass through UMA geom debug toggle to backend if set
-    if (process.env.UMA_GEOM_DEBUG == null && process.env.BACKEND_DEBUG_GEOM) {
-      env.UMA_GEOM_DEBUG = process.env.BACKEND_DEBUG_GEOM;
+  // 1) Start or verify backend (WS/FastAPI) on 8000
+  if (SKIP_BACKEND) {
+    console.log('[playwright][setup] MLIPVIEW_SKIP_SERVERS=1 — reusing existing backend on :8000');
+    // Ensure the external backend is ready before continuing.
+    await waitForPort(8000).catch((err) => {
+      throw new Error(`Expected backend on port 8000 when MLIPVIEW_SKIP_SERVERS=1, but it was not reachable: ${err?.message || err}`);
+    });
+  } else {
+    const pyEnv = process.env.MLIPVIEW_PYTHON || process.cwd() + '/mlipview_venv/bin/python';
+    const wsLog = fs.createWriteStream('./test-ws-e2e.log');
+    // Ensure port 8000 is free before launching
+    await freePort(8000).catch(() => { });
+    const port8000Busy = await isPortOpen(8000);
+    if (!port8000Busy) {
+      const env = { ...process.env };
+      // Enable backend WS debug to surface WAITING_FOR_ACK and frame logs during tests
+      env.WS_DEBUG = env.WS_DEBUG || '1';
+      // Pass through UMA geom debug toggle to backend if set
+      if (process.env.UMA_GEOM_DEBUG == null && process.env.BACKEND_DEBUG_GEOM) {
+        env.UMA_GEOM_DEBUG = process.env.BACKEND_DEBUG_GEOM;
+      }
+      const py = spawn(
+        pyEnv,
+        [
+          '-m',
+          'fairchem_local_server2.serve_ws_app',
+          '--ngpus',
+          '1',
+          '--ncpus',
+          '2',
+          '--nhttp',
+          '1',
+          '--http-port',
+          '8000',
+        ],
+        { env }
+      );
+      py.stdout.pipe(wsLog);
+      py.stderr.pipe(wsLog);
+      process.env.__WS_PID__ = String(py.pid);
+      await waitForPort(8000);
+    } else {
+      console.log('[playwright][setup] Port 8000 already in use; assuming compatible backend is running');
+      await waitForPort(8000);
     }
-    const py = spawn(
-      pyEnv,
-      [
-        '-m',
-        'fairchem_local_server2.serve_ws_app',
-        '--ngpus',
-        '1',
-        '--ncpus',
-        '2',
-        '--nhttp',
-        '1',
-        '--http-port',
-        '8000',
-      ],
-      { env }
-    );
-    py.stdout.pipe(wsLog);
-    py.stderr.pipe(wsLog);
-    process.env.__WS_PID__ = String(py.pid);
-    await waitForPort(8000);
   }
 
   // 2) Build frontend

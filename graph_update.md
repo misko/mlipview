@@ -3,7 +3,7 @@
 ## Current Gaps
 - **Cross-cell bonds are filtered out.** The augmentation already considers the primary cell plus the six axis-aligned neighbours, but we drop any candidate when either endpoint lives in a shifted cell because `bondMap` only accepts `isPrimary` pairs ([public/domain/bonding/periodicAugment.js:254](public/domain/bonding/periodicAugment.js:254)). As a result, bonds that should connect atoms across the `±x`, `±y`, or `±z` images never reach rendering.
 - **State surfaces don’t expose canonical offsets.** `createBondService()` stores `imageDelta` without the explicit `(atomIndex, cellOffset)` tuples ([public/domain/bondService.js:67](public/domain/bondService.js:67)), so `rebuildGhosts()` reconstructs transforms indirectly ([public/render/moleculeView.js:1090](public/render/moleculeView.js:1090)) and other consumers cannot reason about which cell an atom belongs to.
-- **State sync fragmentation.** Interaction/version counters still live in `stateStore` ([public/core/stateStore.js:6](public/core/stateStore.js:6)), while snapshot capture/migration is handled in the session manager ([public/core/sessionStateManager.js:4](public/core/sessionStateManager.js:4)). Backend `SessionState` mirrors only flat geometry ([fairchem_local_server2/session_models.py:63](fairchem_local_server2/session_models.py:63)), so periodic graph metadata is lost when sessions round-trip through JSON.
+- **State sync fragmentation.** Snapshot capture/migration lives in `SessionStateManager` ([public/core/sessionStateManager.ts:4](public/core/sessionStateManager.ts:4)), yet backend `SessionState` still mirrors only flat geometry ([fairchem_local_server2/session_models.py:63](fairchem_local_server2/session_models.py:63)), so periodic graph metadata is lost when sessions round-trip through JSON.
 
 ## Proposed `compute_bonds` Core
 We will replace the current augmentation helper with a pure function that matches the requested signature:
@@ -53,7 +53,7 @@ Non-periodic callers skip steps 1–4, derive weights directly from Euclidean di
 - **Backend parity.**
   - Mirror `bond_offsets_a/b` fields on `SessionState` so saved sessions survive a round-trip through `/serve` (add optional validation when dense snapshots arrive).
   - If we ever ship backend-rendered graphs, the same data is ready for protobuf extensions.
-- **State store cleanup.** Move interaction counters into the session manager (or expose a delegation hook) so JSON snapshots don’t have to stitch `createSharedStateStore()` data manually. This removes the current implicit dependency where counters reset separately from the rest of the viewer state.
+- **Session manager consolidation.** Keep interaction counters and drag gating under the session manager so JSON snapshots remain self-contained, avoiding hidden singletons that might skip resets during restore.
 
 ## Rendering & Ghosts
 - With per-end offsets available, `rebuildGhosts()` can compute ghost transforms directly from the canonical tuples instead of walking `ghostBondMeta`. That reduces duplication and ensures ghost meshes stay in sync with whatever `compute_bonds` emits.

@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { parseXYZ, applyXYZToState } from '../public/util/xyzLoader.js';
 import { createMoleculeState } from '../public/domain/moleculeState.js';
-import { createSelectionService } from '../public/domain/selectionService.js';
+import { createSelectionService } from '../public/domain/selectionService.ts';
 import { createMoleculeView } from '../public/render/moleculeView.js';
 
 // Minimal BABYLON scaffolding shared with other highlight-oriented x-tests.

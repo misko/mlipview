@@ -9,7 +9,7 @@
 ## Current Architecture Findings
 - The viewer is orchestrated from `public/index.js`, which owns the Babylon scene, energy plot, WebSocket client, timeline buffer, and reset baseline (`seedResetBaseline`) without an external coordinator (`public/index.js:356-455`, `public/index.js:520-581`).  
 - Timeline replay is purely client-side: frames are cached in a circular buffer as `Float32Array`s and replayed by the viewer while interactions are locked (`public/core/frameBuffer.js:82-157`, `timeline.md:11-49`).  
-- Interaction counters and latch state live in an ad-hoc singleton (`public/core/stateStore.js:6-96`), and the WebSocket client owns sequencing/ACK bookkeeping with no way to seed values from persisted state (`public/fairchem_ws_client.js:170-242`).  
+- Interaction counters and latch state previously lived in an ad-hoc singleton, while the WebSocket client owned sequencing/ACK bookkeeping with no way to seed values from persisted state (`public/fairchem_ws_client.js:170-242`).  
 - Backend session state mirrors client counters and tracks `server_seq`, `client_seq`, pending full updates, and simulation parameters (`fairchem_local_server2/session_models.py:27-118`).  
 - XYZ/SMILES imports feed through `applyParsedToViewer`, which refreshes the reset baseline and toggles periodic-cell flags (`public/util/moleculeLoader.js:90-178`). Existing docs emphasise a 500-frame timeline and resume semantics (`README.md:3-9`, `frontend_design.md:25-48`, `backend_design.md:11-33`, `timeline.md:5-24`).  
 - Regression coverage already exercises timeline controls, energy markers, and molecule loaders (`testing.md:40-75`), providing scaffolding for new persistence tests.
@@ -23,7 +23,7 @@
 - Backend has no notion of persisted timelines, so full snapshots must preserve `server_seq`/`client_ack` alignment to avoid triggering the server’s backpressure guard (`backend_design.md:21-33`).
 
 ## Proposed Unified Session State Layer
-Create a `SessionStateManager` module under `public/core/sessionStateManager.js` that centralises “authoritative” client session data and exposes a stable API consumed by `index.js`, loaders, and UI.
+Create a `SessionStateManager` module under `public/core/sessionStateManager.ts` that centralises “authoritative” client session data and exposes a stable API consumed by `index.js`, loaders, and UI.
 
 ### Responsibilities
 1. **Snapshot management** – capture, serialize, and restore molecule geometry, dynamics, energy history, and timeline frames.  
@@ -83,7 +83,7 @@ Key helpers:
 - Factor the energy plot closure into `energyPlotStore` with `getSeries()`, `setSeries(series, marker?)`, and `reset()` so it can be serialized and restored (`public/index.js:356-455`).  
 - Wrap `createFrameBuffer` with an adapter exposing `exportFrames()` and `importFrames(frames)` that internally writes to the existing buffer (`public/core/frameBuffer.js:82-195`).  
 - Replace direct touches of `state.__resetBaseline` with `sessionStateManager.setResetBaseline(snapshot)` so JSON loads and XYZ loads share the same path (`public/index.js:520-552`).  
-- Extend the WS client with `seedSequencing({ seq, ack, userInteractionCount, simStep })` (idempotent setter + bounds checks) and expose it through `viewerApi` so JSON loads can align counters before `ensureWsInit()` resumes streaming (`public/fairchem_ws_client.js:170-176`).
+- Extend the WS client with `seedSequencing({ nextSeq, lastSeq?, ack, userInteractionCount, simStep })` (idempotent setter + bounds checks) and expose it through `viewerApi` so JSON loads can align counters before `ensureWsInit()` resumes streaming (`public/fairchem_ws_client.js:170-196`).
 
 ### Backend Coordination
 - Persist `server_seq` and `client_ack` in the JSON. On hydrate, call the new `seedSequencing` and immediately send a `userInteraction` full snapshot with the saved `nextSeq` to reset the server’s state. The backend already resets cached forces when it sees `full_update=true` (`backend_design.md:28-33`), so no schema change is required.  
@@ -146,7 +146,7 @@ Example payload (pretty-printed for readability):
 1. **State manager scaffolding** – introduce `SessionStateManager`, factor energy plot/frame buffer adapters, and expose serialization hooks through `viewerApi`.  
 2. **Loader integration** – update `applyParsedToViewer` and XYZ/SMILES loaders to call `SessionStateManager.loadXYZ` (or `.loadFromSource('smiles')`), ensuring reset baselines and last-source metadata stay in sync (`public/util/moleculeLoader.js:90-200`).  
 3. **JSON persistence UI** – add `saveTimeline()` / `loadTimeline()` entry points (e.g., desktop panel buttons, CLI hook) that call `SessionStateManager.saveToFile()` and `.loadFromFile()`.  
-4. **WebSocket seeding** – extend `fairchem_ws_client` with `seedSequencing` and ensure `ensureWsInit` reuses the seeded counters before sending `full_update`.  
+4. **WebSocket seeding** – extend `fairchem_ws_client` with `seedSequencing` (accepting `nextSeq`, optional `lastSeq`, ACK + counters) and ensure `ensureWsInit` reuses the seeded counters before sending `full_update`.  
 5. **Timeline replay alignment** – when hydrating, push the most recent frame to the viewer via `applyFramePayload(..., { forceAll: true, allowEnergyPlot: true })`, set the energy marker, and conditionally queue `startContinuous` after playback if `wasRunning` was recorded.  
 6. **Reset button hookup** – swap the current reset implementation to `SessionStateManager.resetToLastSource()` so it works uniformly for XYZ/SMILES/JSON loads (`public/index.js:2265-2284`, `public/ui/desktopPanel.js:1686-1714`).  
 7. **Server parity checks** – verify that rehydrated sessions keep `server_seq - client_ack < max_unacked` by watching Playwright logs and adjust if a preflight ACK is needed.

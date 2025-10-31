@@ -1,4 +1,4 @@
-import { computeBaseBonds } from './domain/bonding/baseBonds.js';
+import { computeBaseBonds } from './domain/bonding/baseBonds.ts';
 
 export function computeBondsNoState(atoms) {
   if (!Array.isArray(atoms) || !atoms.length) return [];

@@ -1,4 +1,4 @@
-import { __count } from '../util/funcCount.js';
+import { __count } from '../util/funcCount.ts';
 export function createForceField(
   molState,
   { kBond = 200, r0 = 1.1, ljEpsilon = 0.02, ljSigma = 3.4 } = {}

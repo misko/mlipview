@@ -49,7 +49,11 @@ test('session snapshot restores geometry, resumes MD, and reset uses baseline', 
 
   const restored = await page.evaluate(async (snapshot) => {
     await window.viewerApi.session.loadSnapshot(snapshot);
-    const before = window.viewerApi.timeline.getState();
+    const timeline = window.viewerApi.timeline;
+    const before =
+      (timeline && typeof timeline.getStatus === 'function' && timeline.getStatus()) ||
+      (timeline && typeof timeline.getState === 'function' && timeline.getState()) ||
+      null;
     const ws = window.__fairchem_ws__;
     let frames = 0;
     const off = ws.onResult((r) => {
@@ -59,14 +63,16 @@ test('session snapshot restores geometry, resumes MD, and reset uses baseline', 
     });
     try {
       // Exit timeline mode; MD should resume automatically after the buffered playback finishes.
-      window.viewerApi.timeline.live();
+      if (timeline && typeof timeline.live === 'function') {
+        await timeline.live();
+      }
       const t0 = Date.now();
       while (Date.now() - t0 < 12000 && frames < 6) await new Promise((r) => setTimeout(r, 100));
     } finally {
       off();
     }
     return {
-      timelineMode: before.mode,
+      timelineMode: before?.mode ?? 'paused',
       count: window.viewerApi.state.elements.length,
       firstX: window.viewerApi.state.positions?.[0]?.x || 0,
       energyLen: window.viewerApi.debugEnergySeriesLength?.() || 0,

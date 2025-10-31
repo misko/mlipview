@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { parseXYZ, applyXYZToState } from '../public/util/xyzLoader.js';
 import { createMoleculeState } from '../public/domain/moleculeState.js';
-import { createBondService } from '../public/domain/bondService.js';
+import { createBondService } from '../public/domain/bondService.ts';
 import { createMoleculeView } from '../public/render/moleculeView.js';
 
 global.BABYLON = global.BABYLON || {};

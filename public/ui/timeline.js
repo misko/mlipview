@@ -161,7 +161,7 @@ export function installTimeline({
   onRequestPause,
   onRequestLive,
 }) {
-  if (typeof document === 'undefined') {
+  if (typeof document === 'undefined' || (typeof window !== 'undefined' && window.__MLIPVIEW_REACT_UI_ACTIVE)) {
     return {
       refresh() { },
       setMode() { },

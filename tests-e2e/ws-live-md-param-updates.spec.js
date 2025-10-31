@@ -51,11 +51,19 @@ test('ws live MD param updates (temperature + friction)', async ({ page, loadVie
         const got15 = await waitFrames(15);
 
         // check HUD temperature populated (T: <number> K)
+        const useReactUI = window.__MLIPVIEW_REACT_UI_ACTIVE === true;
+
         let tempHudOkBefore = false;
         try {
-            const el = document.getElementById('instTemp');
-            const txt = (el && (el.textContent || el.innerText || '')).trim();
-            tempHudOkBefore = /^T:\s*\d+(?:\.\d+)?\s*K$/i.test(txt);
+            if (useReactUI) {
+                const el = document.querySelector('[data-testid="metric-temperature"]');
+                const txt = (el && (el.textContent || el.innerText || '')).trim();
+                tempHudOkBefore = !!txt && txt !== '—';
+            } else {
+                const el = document.getElementById('instTemp');
+                const txt = (el && (el.textContent || el.innerText || '')).trim();
+                tempHudOkBefore = /^T:\s*\d+(?:\.\d+)?\s*K$/i.test(txt);
+            }
         } catch { }
 
         // mark current index before issuing the change so we don't miss a fast START message
@@ -64,11 +72,23 @@ test('ws live MD param updates (temperature + friction)', async ({ page, loadVie
         // change temperature slider to max
         let tempChanged = false;
         try {
-            const slider = document.getElementById('mdTempSlider');
-            if (slider) {
-                slider.value = String(slider.max);
-                slider.dispatchEvent(new Event('input', { bubbles: true }));
-                tempChanged = true;
+            if (useReactUI) {
+                const sliderEl = document.querySelector('[data-testid="temperature-slider"]');
+                if (sliderEl instanceof HTMLInputElement) {
+                    const maxValue = sliderEl.max && sliderEl.max !== ''
+                        ? sliderEl.max
+                        : sliderEl.getAttribute('max') || sliderEl.value || '0';
+                    sliderEl.value = maxValue;
+                    sliderEl.dispatchEvent(new Event('input', { bubbles: true }));
+                    tempChanged = true;
+                }
+            } else {
+                const slider = document.getElementById('mdTempSlider');
+                if (slider) {
+                    slider.value = String(slider.max);
+                    slider.dispatchEvent(new Event('input', { bubbles: true }));
+                    tempChanged = true;
+                }
             }
         } catch { }
 
@@ -96,9 +116,15 @@ test('ws live MD param updates (temperature + friction)', async ({ page, loadVie
         // check HUD temperature again after live update
         let tempHudOkAfter = false;
         try {
-            const el = document.getElementById('instTemp');
-            const txt = (el && (el.textContent || el.innerText || '')).trim();
-            tempHudOkAfter = /^T:\s*\d+(?:\.\d+)?\s*K$/i.test(txt);
+            if (useReactUI) {
+                const el = document.querySelector('[data-testid="metric-temperature"]');
+                const txt = (el && (el.textContent || el.innerText || '')).trim();
+                tempHudOkAfter = !!txt && txt !== '—';
+            } else {
+                const el = document.getElementById('instTemp');
+                const txt = (el && (el.textContent || el.innerText || '')).trim();
+                tempHudOkAfter = /^T:\s*\d+(?:\.\d+)?\s*K$/i.test(txt);
+            }
         } catch { }
 
         // stop simulation and see a stop notice

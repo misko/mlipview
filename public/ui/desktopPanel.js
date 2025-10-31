@@ -16,7 +16,14 @@ import { isLikelySmiles } from '../util/smilesLoader.js';
 import { elInfo } from '../elements.js';
 import { defaultMassForZ } from '../physics/sim-model.js';
 import { getCellParameters, buildCellFromParameters } from '../util/pbc.js';
-import { OMOL25_ELEMENTS } from '../data/periodicTable.js';
+import { OMOL25_ELEMENTS, SYMBOL_TO_Z, Z_TO_SYMBOL } from '../data/periodicTable.js';
+import {
+  ELEMENT_COLORS,
+  getElementName,
+  getElementMass,
+} from '../data/elementCatalog.js';
+
+const OMOL25_SET = new Set(Array.isArray(OMOL25_ELEMENTS) ? OMOL25_ELEMENTS : []);
 
 const PERIOD_ROWS = [
   ['H', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 'He'],
@@ -199,6 +206,25 @@ function makeToggle({ id, labelOn, labelOff, title }) {
 }
 
 export function buildDesktopPanel({ attachTo } = {}) {
+  try {
+    if (typeof window !== 'undefined' && window.__MLIPVIEW_REACT_UI_ACTIVE) {
+      const panel = typeof document !== 'undefined' ? document.createElement('div') : null;
+      if (panel) {
+        panel.id = 'controlPanel';
+        panel.style.display = 'none';
+        if (attachTo && attachTo.appendChild) attachTo.appendChild(panel);
+      }
+      return {
+        panelEl: panel,
+        containers: {
+          live: panel,
+          selection: panel,
+          simulation: panel,
+          system: panel,
+        },
+      };
+    }
+  } catch {}
   const host = attachTo || document.getElementById('app') || document.body;
 
   // Root panel
@@ -498,664 +524,103 @@ export function buildDesktopPanel({ attachTo } = {}) {
       document.head.appendChild(s);
     }
 
-    // Color palette for common elements (CSS colors; approximate Babylon colors)
-    const EL_COLORS = {
-      H: '#f2f7ff',
-      C: '#383d47',
-      N: '#6290f7',
-      O: '#f25454',
-      S: '#f7d64a',
-      Cl: '#7bd47b',
-      F: '#8ef06f',
-      P: '#ffa94d',
-      Br: '#a3552e',
-      I: '#8a2be2',
-      Si: '#f7786b',
-      Fe: '#c44e4e',
-      Co: '#cc6699',
-      Ni: '#6fbf73',
-      Cu: '#b87333',
-      Zn: '#9bb5c1',
-      Ag: '#c0c0c0',
-      Au: '#ffd700',
-      Na: '#abdee6',
-      K: '#ffc8dd',
-      Ca: '#ffe1a8',
-      Li: '#cdeac0',
-      He: '#c7d2fe',
-      Ne: '#a7f3d0',
-    };
-    const EL_NAMES = {
-      H: 'Hydrogen',
-      C: 'Carbon',
-      N: 'Nitrogen',
-      O: 'Oxygen',
-      S: 'Sulfur',
-      Cl: 'Chlorine',
-      F: 'Fluorine',
-      P: 'Phosphorus',
-      Br: 'Bromine',
-      I: 'Iodine',
-      Si: 'Silicon',
-      Fe: 'Iron',
-      Co: 'Cobalt',
-      Ni: 'Nickel',
-      Cu: 'Copper',
-      Zn: 'Zinc',
-      Ag: 'Silver',
-      Au: 'Gold',
-      Na: 'Sodium',
-      K: 'Potassium',
-      Ca: 'Calcium',
-      Li: 'Lithium',
-      He: 'Helium',
-      Ne: 'Neon',
-    };
-    const SYMBOL_TO_Z = {
-      H: 1,
-      He: 2,
-      Li: 3,
-      Be: 4,
-      B: 5,
-      C: 6,
-      N: 7,
-      O: 8,
-      F: 9,
-      Ne: 10,
-      Na: 11,
-      Mg: 12,
-      Al: 13,
-      Si: 14,
-      P: 15,
-      S: 16,
-      Cl: 17,
-      Ar: 18,
-      K: 19,
-      Ca: 20,
-    };
-    const Z_TO_SYMBOL = Object.fromEntries(Object.entries(SYMBOL_TO_Z).map(([k, v]) => [v, k]));
-    function getSymbol(el) {
-      if (!el) return 'X';
-      if (typeof el === 'string') return el;
-      if (typeof el === 'number') return Z_TO_SYMBOL[el] || 'X';
-      return el.symbol || el.sym || el.S || Z_TO_SYMBOL[el.Z || el.z || el.atomicNumber] || 'X';
-    }
-    function fmtPos(p) {
-      if (!p) return '(-,-,-)';
-      return `(${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)})`;
-    }
-    function dist(a, b) {
-      const dx = a.x - b.x,
-        dy = a.y - b.y,
-        dz = a.z - b.z;
-      return Math.sqrt(dx * dx + dy * dy + dz * dz);
-    }
-
-    // UI structure — spheres moved into header (smaller) and not shown in content
-    const selHeader = selSec.section.querySelector('.panel-header');
+    const header = selSec.section.querySelector('.panel-header');
     const headerSpheres = document.createElement('div');
     headerSpheres.className = 'header-spheres';
-    const headerName = document.createElement('div');
-    headerName.id = 'selElementName';
-    headerName.className = 'sel-name';
-    headerName.textContent = '—';
     const sphereA = document.createElement('div');
+    sphereA.id = 'selSphereA';
     sphereA.className = 'atom-sphere';
     sphereA.style.display = 'none';
-    sphereA.id = 'selSphereA';
     const sphereB = document.createElement('div');
+    sphereB.id = 'selSphereB';
     sphereB.className = 'atom-sphere';
     sphereB.style.display = 'none';
-    sphereB.id = 'selSphereB';
     headerSpheres.append(sphereA, sphereB);
-    if (selHeader) {
-      selHeader.appendChild(headerName);
-      selHeader.appendChild(headerSpheres);
-    }
-    // Helper: shrink header name text to fit available width
-    function fitHeaderName(node) {
-      try {
-        if (!node) return;
-        // Reset to base size (inherit) before measuring
-        node.style.fontSize = '';
-        const maxLoops = 8;
-        let loops = 0;
-        let size = parseFloat(getComputedStyle(node).fontSize) || 13;
-        while (node.scrollWidth > node.clientWidth && size > 10 && loops < maxLoops) {
-          size -= 1;
-          loops += 1;
-          node.style.fontSize = size + 'px';
-        }
-      } catch {}
-    }
+    if (header) header.appendChild(headerSpheres);
+
+    const selName = document.createElement('span');
+    selName.id = 'selElementName';
+    selName.className = 'sel-name';
+    selName.textContent = '—';
+    if (header) header.appendChild(selName);
 
     const info = document.createElement('div');
     info.className = 'info';
-    info.innerHTML = `
-      <div><span class="label">Position:</span><span id="selPosition">(-,-,-)</span></div>
-      <div><span class="label">Atomic weight (amu):</span><span id="selAtomicWeight">—</span></div>
-      <div><span class="label">vdW radius (Å):</span><span id="selVdw">—</span></div>
-      <div id="bondRow" class="row">
-        <span class="label">Bond:</span>
-        <span id="bondLength" class="mono" style="display:inline-block; width:8ch; text-align:right; background:#171717; border:1px solid var(--border); border-radius:8px; padding:4px 6px;">N/A</span>
-        <span id="bondRotateWrap" style="display:none; gap:6px; align-items:center;">
-          <button id="bondRotMinus" class="btn" title="Rotate counter-clockwise">↺</button>
-          <button id="bondRotPlus" class="btn" title="Rotate clockwise">↻</button>
-        </span>
-      </div>
-    `;
 
-    // Legacy test alias: some older tests expect an element with id "rotateBtns" to toggle visibility
-    // alongside the new #bondRotateWrap. Create a lightweight sibling that mirrors display state.
-    try {
-      const bondRowEl = info.querySelector('#bondRow');
-      const rotWrapEl = info.querySelector('#bondRotateWrap');
-      if (bondRowEl && rotWrapEl && !info.querySelector('#rotateBtns')) {
-        const legacy = document.createElement('span');
-        legacy.id = 'rotateBtns';
-        legacy.style.display = 'none';
-        legacy.style.gap = '6px';
-        legacy.style.alignItems = 'center';
-        bondRowEl.insertBefore(legacy, rotWrapEl.nextSibling);
-      }
-    } catch {}
+    const positionRow = document.createElement('div');
+    positionRow.className = 'row';
+    const positionLabel = document.createElement('span');
+    positionLabel.className = 'label';
+    positionLabel.textContent = 'Position';
+    const positionValue = document.createElement('span');
+    positionValue.id = 'selPosition';
+    positionValue.className = 'value mono';
+    positionValue.textContent = '(-,-,-)';
+    positionRow.append(positionLabel, positionValue);
 
-    // Full periodic table layout as a fixed HTML table (18 columns).
-    // Lanthanides/Actinides shown as separate indented rows. Using a table ensures consistent cell sizing and
-    // visible grid lines for rows/columns.
-    const mini = document.createElement('table');
+    const weightRow = document.createElement('div');
+    weightRow.className = 'row';
+    const weightLabel = document.createElement('span');
+    weightLabel.className = 'label';
+    weightLabel.textContent = 'Atomic weight';
+    const weightValue = document.createElement('span');
+    weightValue.id = 'selAtomicWeight';
+    weightValue.className = 'value mono';
+    weightValue.textContent = '—';
+    weightRow.append(weightLabel, weightValue);
+
+    const vdwRow = document.createElement('div');
+    vdwRow.className = 'row';
+    const vdwLabel = document.createElement('span');
+    vdwLabel.className = 'label';
+    vdwLabel.textContent = 'vdW radius';
+    const vdwValue = document.createElement('span');
+    vdwValue.id = 'selVdw';
+    vdwValue.className = 'value mono';
+    vdwValue.textContent = '—';
+    vdwRow.append(vdwLabel, vdwValue);
+
+    const bondRow = document.createElement('div');
+    bondRow.id = 'bondRow';
+    bondRow.className = 'row';
+    bondRow.style.display = 'none';
+    const bondLabel = document.createElement('span');
+    bondLabel.className = 'label';
+    bondLabel.textContent = 'Bond length';
+    const bondValue = document.createElement('span');
+    bondValue.id = 'bondLength';
+    bondValue.className = 'value mono';
+    bondValue.textContent = '—';
+    const bondRotateWrap = document.createElement('div');
+    bondRotateWrap.id = 'rotateBtns';
+    bondRotateWrap.className = 'rotate-wrap';
+    bondRotateWrap.style.display = 'none';
+    const bondRotMinus = document.createElement('button');
+    bondRotMinus.id = 'bondRotMinus';
+    bondRotMinus.type = 'button';
+    bondRotMinus.className = 'btn';
+    bondRotMinus.textContent = '⟲';
+    const bondRotPlus = document.createElement('button');
+    bondRotPlus.id = 'bondRotPlus';
+    bondRotPlus.type = 'button';
+    bondRotPlus.className = 'btn';
+    bondRotPlus.textContent = '⟳';
+    bondRotateWrap.append(bondRotMinus, bondRotPlus);
+    bondRow.append(bondLabel, bondValue, bondRotateWrap);
+
+    info.append(positionRow, weightRow, vdwRow, bondRow);
+
+    const mini = document.createElement('div');
     mini.id = 'miniPeriodic';
-    mini.setAttribute('role', 'grid');
+    const miniTable = document.createElement('table');
+    miniTable.className = 'mini-table';
     const miniBody = document.createElement('tbody');
-    mini.appendChild(miniBody);
-    // Table structure styles
-    const ptStyleId = 'miniPeriodicStyles';
-    if (!document.getElementById(ptStyleId)) {
-      const st = document.createElement('style');
-      st.id = ptStyleId;
-      st.textContent = `
-        #miniPeriodic { width:100%; table-layout: fixed; border-collapse: collapse; margin-top:6px; background:#232831; border:1px solid rgba(255,255,255,0.08); }
-        #miniPeriodic tr { height:18px; }
-        #miniPeriodic td.pt-el { text-align:center; padding:0; height:18px; line-height:18px; font-size:10px; color: var(--text); background:#1b2027; border:1px solid rgba(255,255,255,0.08); box-sizing:border-box; cursor:pointer; user-select:none; }
-        #miniPeriodic td.pt-el.empty { background:#232831; border:none; }
-        #miniPeriodic td.pt-el.highlight { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-        #miniPeriodic td.pt-el.omol25 {
-          background: linear-gradient(135deg, rgba(134, 174, 252, 0.28), rgba(79, 139, 255, 0.08)) , #1f2531;
-          color: #f2f6ff;
-          border-color: rgba(134, 174, 252, 0.7);
-          box-shadow: inset 0 0 0 1px rgba(134, 174, 252, 0.45);
-        }
-      `;
-      document.head.appendChild(st);
-    }
+    miniTable.appendChild(miniBody);
+    mini.appendChild(miniTable);
 
-    const OMOL25_SET = new Set(OMOL25_ELEMENTS);
-    const dragAddState = {
-      active: false,
-      pointerId: null,
-      symbol: null,
-      startX: 0,
-      startY: 0,
-      currentX: 0,
-      currentY: 0,
-      dragging: false,
-      sourceCell: null,
-    };
-    const previewId = 'periodicElementPreview';
-    let previewEl = typeof document !== 'undefined' ? document.getElementById(previewId) : null;
-
-    function ensurePreview() {
-      if (previewEl) return previewEl;
-      if (typeof document === 'undefined') return null;
-      const el = document.createElement('div');
-      el.id = previewId;
-      el.style.display = 'none';
-      el.style.position = 'fixed';
-      el.style.pointerEvents = 'none';
-      el.style.zIndex = '2000';
-      el.style.transform = 'translate(-50%, -50%)';
-      el.style.padding = '6px 10px';
-      el.style.borderRadius = '999px';
-      el.style.background = 'rgba(37,44,54,0.9)';
-      el.style.color = '#f0f6ff';
-      el.style.fontSize = '12px';
-      el.style.border = '1px solid rgba(160,190,255,0.4)';
-      el.style.boxShadow = '0 4px 10px rgba(0,0,0,0.3)';
-      document.body.appendChild(el);
-      previewEl = el;
-      return previewEl;
-    }
-
-    function hidePreview() {
-      if (previewEl) previewEl.style.display = 'none';
-    }
-
-    function showPreview(sym, x, y) {
-      const el = ensurePreview();
-      if (!el) return;
-      el.textContent = sym;
-      el.style.left = `${x}px`;
-      el.style.top = `${y}px`;
-      el.style.display = 'block';
-    }
-
-    function updatePreviewPosition(x, y) {
-      if (!previewEl) return;
-      previewEl.style.left = `${x}px`;
-      previewEl.style.top = `${y}px`;
-    }
-
-    function resetDragAddState() {
-      dragAddState.active = false;
-      dragAddState.pointerId = null;
-      dragAddState.symbol = null;
-      dragAddState.startX = 0;
-      dragAddState.startY = 0;
-      dragAddState.currentX = 0;
-      dragAddState.currentY = 0;
-      dragAddState.dragging = false;
-      dragAddState.sourceCell = null;
-    }
-
-    function projectToScene(clientX, clientY) {
-      try {
-        const api = window.viewerApi || window._viewer || null;
-        if (!api || !api.scene || !api.camera) return null;
-        const engine =
-          api.scene.getEngine && typeof api.scene.getEngine === 'function'
-            ? api.scene.getEngine()
-            : null;
-        const canvas = engine && typeof engine.getRenderingCanvas === 'function'
-          ? engine.getRenderingCanvas()
-          : null;
-        if (!canvas) return null;
-        const rect = canvas.getBoundingClientRect();
-        const inside =
-          clientX >= rect.left &&
-          clientX <= rect.right &&
-          clientY >= rect.top &&
-          clientY <= rect.bottom;
-        const px = clientX - rect.left;
-        const py = clientY - rect.top;
-        const camera = api.camera;
-        const scene = api.scene;
-        const ray = scene.createPickingRay(px, py, BABYLON.Matrix.Identity(), camera);
-        const camPos = camera.position
-          ? camera.position
-          : camera.getFrontPosition
-            ? camera.getFrontPosition(0)
-            : { x: 0, y: 0, z: -10 };
-        const target = camera.target || { x: 0, y: 0, z: 0 };
-        const normal = new BABYLON.Vector3(
-          target.x - camPos.x,
-          target.y - camPos.y,
-          target.z - camPos.z
-        );
-        if (normal.lengthSquared() < 1e-6) {
-          normal.x = 0;
-          normal.y = 1;
-          normal.z = 0;
-        }
-        normal.normalize();
-        const planePoint = new BABYLON.Vector3(target.x, target.y, target.z);
-        const denom = BABYLON.Vector3.Dot(normal, ray.direction);
-        let point = planePoint;
-        if (Math.abs(denom) >= 1e-6) {
-          const t = BABYLON.Vector3.Dot(planePoint.subtract(ray.origin), normal) / denom;
-          if (Number.isFinite(t)) {
-            point = ray.origin.add(ray.direction.scale(t));
-          }
-        }
-        return {
-          inside,
-          point: { x: point.x, y: point.y, z: point.z },
-        };
-      } catch {
-        return null;
-      }
-    }
-
-    function addAtomAtOrigin(sym) {
-      try {
-        const api = window.viewerApi || window._viewer || null;
-        if (!api) return;
-        if (typeof api.addAtomAtOrigin === 'function') {
-          Promise.resolve(api.addAtomAtOrigin(sym)).catch(() => {});
-        } else if (typeof api.addAtom === 'function') {
-          Promise.resolve(api.addAtom({ element: sym })).catch(() => {});
-        }
-      } catch {}
-    }
-
-    function addAtomAtPoint(sym, point) {
-      try {
-        const api = window.viewerApi || window._viewer || null;
-        if (!api) return;
-        if (typeof api.addAtomAtPosition === 'function') {
-          Promise.resolve(api.addAtomAtPosition(sym, point)).catch(() => {});
-        } else {
-          addAtomAtOrigin(sym);
-        }
-      } catch {}
-    }
-
-    function handleAddMove(e) {
-      if (!dragAddState.active || dragAddState.pointerId !== e.pointerId) return;
-      dragAddState.currentX = e.clientX;
-      dragAddState.currentY = e.clientY;
-      const dx = dragAddState.currentX - dragAddState.startX;
-      const dy = dragAddState.currentY - dragAddState.startY;
-      if (!dragAddState.dragging) {
-        const dist = Math.hypot(dx, dy);
-        if (dist >= 6) {
-          dragAddState.dragging = true;
-          dragAddState.sourceCell?.classList?.add('drag-source');
-          showPreview(dragAddState.symbol, dragAddState.currentX, dragAddState.currentY);
-        }
-      } else {
-        updatePreviewPosition(dragAddState.currentX, dragAddState.currentY);
-      }
-      if (typeof e?.preventDefault === 'function') e.preventDefault();
-    }
-
-    function endAddSession(e) {
-      if (!dragAddState.active || dragAddState.pointerId !== e.pointerId) return;
-      window.removeEventListener('pointermove', handleAddMove, true);
-      window.removeEventListener('pointerup', endAddSession, true);
-      window.removeEventListener('pointercancel', cancelAddSession, true);
-      dragAddState.sourceCell?.classList?.remove('drag-source');
-      hidePreview();
-      const sym = dragAddState.symbol;
-      const dragging = dragAddState.dragging;
-      const currentX = dragAddState.currentX;
-      const currentY = dragAddState.currentY;
-      resetDragAddState();
-      if (!sym) return;
-      if (!dragging) {
-        addAtomAtOrigin(sym);
-        return;
-      }
-      const projection = projectToScene(currentX, currentY);
-      if (projection && projection.inside && projection.point) {
-        addAtomAtPoint(sym, projection.point);
-      } else {
-        addAtomAtOrigin(sym);
-      }
-    }
-
-    function cancelAddSession(e) {
-      if (dragAddState.pointerId !== e.pointerId) return;
-      window.removeEventListener('pointermove', handleAddMove, true);
-      window.removeEventListener('pointerup', endAddSession, true);
-      window.removeEventListener('pointercancel', cancelAddSession, true);
-      dragAddState.sourceCell?.classList?.remove('drag-source');
-      hidePreview();
-      resetDragAddState();
-    }
-
-    function beginAddSession(e, sym, cell) {
-      if (!OMOL25_SET.has(sym)) return;
-      ensurePreview();
-      dragAddState.active = true;
-      dragAddState.pointerId = e.pointerId;
-      dragAddState.symbol = sym;
-      dragAddState.startX = e.clientX;
-      dragAddState.startY = e.clientY;
-      dragAddState.currentX = e.clientX;
-      dragAddState.currentY = e.clientY;
-      dragAddState.dragging = false;
-      dragAddState.sourceCell = cell;
-      window.addEventListener('pointermove', handleAddMove, true);
-      window.addEventListener('pointerup', endAddSession, true);
-      window.addEventListener('pointercancel', cancelAddSession, true);
-      if (typeof e?.preventDefault === 'function') e.preventDefault();
-    }
-    // Periods 1..7 layout defined at module scope (PERIOD_ROWS, LANTH, ACTIN)
-    // Symbol->full name map (118). For brevity, keep names concise.
-    const SYMBOL_TO_NAME = {
-      H: 'Hydrogen',
-      He: 'Helium',
-      Li: 'Lithium',
-      Be: 'Beryllium',
-      B: 'Boron',
-      C: 'Carbon',
-      N: 'Nitrogen',
-      O: 'Oxygen',
-      F: 'Fluorine',
-      Ne: 'Neon',
-      Na: 'Sodium',
-      Mg: 'Magnesium',
-      Al: 'Aluminum',
-      Si: 'Silicon',
-      P: 'Phosphorus',
-      S: 'Sulfur',
-      Cl: 'Chlorine',
-      Ar: 'Argon',
-      K: 'Potassium',
-      Ca: 'Calcium',
-      Sc: 'Scandium',
-      Ti: 'Titanium',
-      V: 'Vanadium',
-      Cr: 'Chromium',
-      Mn: 'Manganese',
-      Fe: 'Iron',
-      Co: 'Cobalt',
-      Ni: 'Nickel',
-      Cu: 'Copper',
-      Zn: 'Zinc',
-      Ga: 'Gallium',
-      Ge: 'Germanium',
-      As: 'Arsenic',
-      Se: 'Selenium',
-      Br: 'Bromine',
-      Kr: 'Krypton',
-      Rb: 'Rubidium',
-      Sr: 'Strontium',
-      Y: 'Yttrium',
-      Zr: 'Zirconium',
-      Nb: 'Niobium',
-      Mo: 'Molybdenum',
-      Tc: 'Technetium',
-      Ru: 'Ruthenium',
-      Rh: 'Rhodium',
-      Pd: 'Palladium',
-      Ag: 'Silver',
-      Cd: 'Cadmium',
-      In: 'Indium',
-      Sn: 'Tin',
-      Sb: 'Antimony',
-      Te: 'Tellurium',
-      I: 'Iodine',
-      Xe: 'Xenon',
-      Cs: 'Cesium',
-      Ba: 'Barium',
-      La: 'Lanthanum',
-      Ce: 'Cerium',
-      Pr: 'Praseodymium',
-      Nd: 'Neodymium',
-      Pm: 'Promethium',
-      Sm: 'Samarium',
-      Eu: 'Europium',
-      Gd: 'Gadolinium',
-      Tb: 'Terbium',
-      Dy: 'Dysprosium',
-      Ho: 'Holmium',
-      Er: 'Erbium',
-      Tm: 'Thulium',
-      Yb: 'Ytterbium',
-      Lu: 'Lutetium',
-      Hf: 'Hafnium',
-      Ta: 'Tantalum',
-      W: 'Tungsten',
-      Re: 'Rhenium',
-      Os: 'Osmium',
-      Ir: 'Iridium',
-      Pt: 'Platinum',
-      Au: 'Gold',
-      Hg: 'Mercury',
-      Tl: 'Thallium',
-      Pb: 'Lead',
-      Bi: 'Bismuth',
-      Po: 'Polonium',
-      At: 'Astatine',
-      Rn: 'Radon',
-      Fr: 'Francium',
-      Ra: 'Radium',
-      Ac: 'Actinium',
-      Th: 'Thorium',
-      Pa: 'Protactinium',
-      U: 'Uranium',
-      Np: 'Neptunium',
-      Pu: 'Plutonium',
-      Am: 'Americium',
-      Cm: 'Curium',
-      Bk: 'Berkelium',
-      Cf: 'Californium',
-      Es: 'Einsteinium',
-      Fm: 'Fermium',
-      Md: 'Mendelevium',
-      No: 'Nobelium',
-      Lr: 'Lawrencium',
-      Rf: 'Rutherfordium',
-      Db: 'Dubnium',
-      Sg: 'Seaborgium',
-      Bh: 'Bohrium',
-      Hs: 'Hassium',
-      Mt: 'Meitnerium',
-      Ds: 'Darmstadtium',
-      Rg: 'Roentgenium',
-      Cn: 'Copernicium',
-      Nh: 'Nihonium',
-      Fl: 'Flerovium',
-      Mc: 'Moscovium',
-      Lv: 'Livermorium',
-      Ts: 'Tennessine',
-      Og: 'Oganesson',
-    };
-
+    // Color palette for common elements (CSS colors; approximate Babylon colors)
     // Approximate standard atomic weights (amu) keyed by symbol (for UI display).
     // Values are representative; for synthetic/unstable elements, common isotopic masses are used.
-    const MASS_BY_SYMBOL = {
-      H: 1.008,
-      He: 4.0026,
-      Li: 6.94,
-      Be: 9.0122,
-      B: 10.81,
-      C: 12.011,
-      N: 14.007,
-      O: 15.999,
-      F: 18.998,
-      Ne: 20.18,
-      Na: 22.99,
-      Mg: 24.305,
-      Al: 26.982,
-      Si: 28.085,
-      P: 30.974,
-      S: 32.06,
-      Cl: 35.45,
-      Ar: 39.948,
-      K: 39.0983,
-      Ca: 40.078,
-      Sc: 44.9559,
-      Ti: 47.867,
-      V: 50.9415,
-      Cr: 51.9961,
-      Mn: 54.938,
-      Fe: 55.845,
-      Co: 58.933,
-      Ni: 58.693,
-      Cu: 63.546,
-      Zn: 65.38,
-      Ga: 69.723,
-      Ge: 72.63,
-      As: 74.922,
-      Se: 78.971,
-      Br: 79.904,
-      Kr: 83.798,
-      Rb: 85.468,
-      Sr: 87.62,
-      Y: 88.906,
-      Zr: 91.224,
-      Nb: 92.906,
-      Mo: 95.95,
-      Tc: 98,
-      Ru: 101.07,
-      Rh: 102.905,
-      Pd: 106.42,
-      Ag: 107.868,
-      Cd: 112.414,
-      In: 114.818,
-      Sn: 118.71,
-      Sb: 121.76,
-      Te: 127.6,
-      I: 126.904,
-      Xe: 131.293,
-      Cs: 132.905,
-      Ba: 137.327,
-      La: 138.905,
-      Ce: 140.116,
-      Pr: 140.908,
-      Nd: 144.242,
-      Pm: 145,
-      Sm: 150.36,
-      Eu: 151.964,
-      Gd: 157.25,
-      Tb: 158.925,
-      Dy: 162.5,
-      Ho: 164.93,
-      Er: 167.259,
-      Tm: 168.934,
-      Yb: 173.045,
-      Lu: 174.967,
-      Hf: 178.49,
-      Ta: 180.948,
-      W: 183.84,
-      Re: 186.207,
-      Os: 190.23,
-      Ir: 192.217,
-      Pt: 195.084,
-      Au: 196.96657,
-      Hg: 200.592,
-      Tl: 204.38,
-      Pb: 207.2,
-      Bi: 208.98,
-      Po: 209,
-      At: 210,
-      Rn: 222,
-      Fr: 223,
-      Ra: 226,
-      Ac: 227,
-      Th: 232.0377,
-      Pa: 231.0359,
-      U: 238.0289,
-      Np: 237,
-      Pu: 244,
-      Am: 243,
-      Cm: 247,
-      Bk: 247,
-      Cf: 251,
-      Es: 252,
-      Fm: 257,
-      Md: 258,
-      No: 259,
-      Lr: 266,
-      Rf: 267,
-      Db: 268,
-      Sg: 269,
-      Bh: 270,
-      Hs: 277,
-      Mt: 278,
-      Ds: 281,
-      Rg: 282,
-      Cn: 285,
-      Nh: 286,
-      Fl: 289,
-      Mc: 290,
-      Lv: 293,
-      Ts: 294,
-      Og: 294,
-    };
-
     // Build DOM rows
     function makeRow(symbols) {
       const tr = document.createElement('tr');
@@ -1225,19 +690,68 @@ export function buildDesktopPanel({ attachTo } = {}) {
         if (el) el.classList.add('highlight');
       });
     }
+    function fitHeaderName(node) {
+      if (!node) return;
+      try {
+        node.style.fontSize = '';
+        node.style.whiteSpace = 'nowrap';
+      } catch {}
+    }
     function setSphere(el, sym) {
       if (!sym) {
         el.style.display = 'none';
         return;
       }
       el.style.display = 'block';
-      const color = EL_COLORS[sym] || '#9aa0a6';
+      const color = ELEMENT_COLORS[sym] || '#9aa0a6';
       el.style.background = `radial-gradient( circle at 30% 30%, #ffffff66, transparent 40%), ${color}`;
+    }
+    function getSymbol(el) {
+      if (!el) return 'X';
+      if (typeof el === 'string') return el;
+      if (typeof el === 'number') return Z_TO_SYMBOL[el] || 'X';
+      if (typeof el === 'object') {
+        if (typeof el.symbol === 'string') return el.symbol;
+        if (typeof el.sym === 'string') return el.sym;
+        if (typeof el.S === 'string') return el.S;
+        const z = el.Z ?? el.z ?? el.atomicNumber;
+        if (typeof z === 'number') return Z_TO_SYMBOL[z] || 'X';
+      }
+      return 'X';
+    }
+    function fmtPos(p) {
+      if (
+        !p ||
+        typeof p.x !== 'number' ||
+        typeof p.y !== 'number' ||
+        typeof p.z !== 'number'
+      ) {
+        return '(-,-,-)';
+      }
+      return `(${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)})`;
+    }
+    function dist(a, b) {
+      if (
+        !a ||
+        !b ||
+        typeof a.x !== 'number' ||
+        typeof a.y !== 'number' ||
+        typeof a.z !== 'number' ||
+        typeof b.x !== 'number' ||
+        typeof b.y !== 'number' ||
+        typeof b.z !== 'number'
+      ) {
+        return NaN;
+      }
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      const dz = a.z - b.z;
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
     // If a periodic table element was clicked, we set an override symbol and clear it when a real selection happens.
     let __overrideElementSym = null;
     function symbolToName(sym) {
-      return EL_NAMES[sym] || SYMBOL_TO_NAME[sym] || sym;
+      return getElementName(sym);
     }
     function ensureSelectionOpenOnce() {
       try {
@@ -1267,8 +781,9 @@ export function buildDesktopPanel({ attachTo } = {}) {
       const vdwNode = selSec.content.querySelector('#selVdw');
       const bondRow = selSec.content.querySelector('#bondRow');
       const bondLenNode = selSec.content.querySelector('#bondLength');
-      const rotWrap = selSec.content.querySelector('#bondRotateWrap');
-      const rotWrapLegacy = selSec.content.querySelector('#rotateBtns');
+      const rotWrap =
+        selSec.content.querySelector('#rotateBtns') ||
+        selSec.content.querySelector('#bondRotateWrap');
       const rotMinus = selSec.content.querySelector('#bondRotMinus');
       const rotPlus = selSec.content.querySelector('#bondRotPlus');
       // Bind handlers once
@@ -1290,11 +805,12 @@ export function buildDesktopPanel({ attachTo } = {}) {
         rotPlus.__bound = true;
       }
       function weightForSym(sym) {
-        if (MASS_BY_SYMBOL[sym] != null) return MASS_BY_SYMBOL[sym];
+        const explicit = getElementMass(sym);
+        if (explicit != null) return explicit;
         const Z = SYMBOL_TO_Z[sym];
         if (!Z) return null;
         const m = defaultMassForZ(Z);
-        return typeof m === 'number' && isFinite(m) ? m : null;
+        return typeof m === 'number' && Number.isFinite(m) ? m : null;
       }
       function vdwForSym(sym) {
         const info = elInfo(sym);
@@ -1314,8 +830,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
         vdwNode.textContent = rv != null ? rv.toFixed(2) : '—';
         bondRow.style.display = 'block';
         bondLenNode.textContent = 'N/A';
-        rotWrap.style.display = 'none';
-        if (rotWrapLegacy) rotWrapLegacy.style.display = 'none';
+        if (rotWrap) rotWrap.style.display = 'none';
         highlight([__overrideElementSym]);
       } else if (sel.kind === 'atom') {
         ensureSelectionOpenOnce();
@@ -1334,8 +849,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
         vdwNode.textContent = rv != null ? rv.toFixed(2) : '—';
         bondRow.style.display = 'block';
         bondLenNode.textContent = 'N/A';
-        rotWrap.style.display = 'none';
-        if (rotWrapLegacy) rotWrapLegacy.style.display = 'none';
+        if (rotWrap) rotWrap.style.display = 'none';
         highlight([sym]);
       } else if (sel.kind === 'bond') {
         ensureSelectionOpenOnce();
@@ -1361,8 +875,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
         const L = dist(posA, posB);
         bondRow.style.display = 'block';
         bondLenNode.textContent = `${L.toFixed(2)} Å`;
-        rotWrap.style.display = 'inline-flex';
-        if (rotWrapLegacy) rotWrapLegacy.style.display = 'inline-flex';
+        if (rotWrap) rotWrap.style.display = 'inline-flex';
         try {
           if (typeof window !== 'undefined' && window.__MLIPVIEW_DEBUG_UI)
             console.log('[panel] showing rotate buttons for bond', i, j, 'L=', L.toFixed(3));
@@ -1378,7 +891,7 @@ export function buildDesktopPanel({ attachTo } = {}) {
         vdwNode.textContent = '—';
         bondRow.style.display = 'block';
         bondLenNode.textContent = 'N/A';
-        rotWrap.style.display = 'none';
+        if (rotWrap) rotWrap.style.display = 'none';
         highlight([]);
       }
     }

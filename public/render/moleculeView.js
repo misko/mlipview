@@ -1,6 +1,6 @@
 import { elInfo } from '../elements.js';
 import { computeBondsNoState } from '../bond_render.js';
-import { __count } from '../util/funcCount.js';
+import { __count } from '../util/funcCount.ts';
 
 const MATERIAL_FALLBACKS = {
   MATERIAL_ALPHABLEND: 2,

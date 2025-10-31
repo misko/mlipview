@@ -1,5 +1,5 @@
 import { createEmptySelection } from '../public/selection-model.js';
-import { createSelectionService } from '../public/domain/selectionService.js';
+import { createSelectionService } from '../public/domain/selectionService.ts';
 
 function makeMolState() {
   return {

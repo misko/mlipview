@@ -69,12 +69,19 @@ function buildQuery(defaults, overrides) {
 // Shared fixture to mirror browser console, page errors, and failed requests
 // to the test runner output for all tests that import from this module.
 export const test = base.extend({
+  uiMode: [async ({}, use, testInfo) => {
+    const metaMode = (testInfo?.project?.metadata && testInfo.project.metadata.uiMode) || null;
+    const envMode = process.env.MLIPVIEW_UI_MODE || null;
+    const mode = (metaMode || envMode || 'legacy').toString().toLowerCase();
+    await use(mode === 'react' ? 'react' : 'legacy');
+  }, { scope: 'test' }],
+
   context: async ({ context }, use) => {
     attachLogging(context);
     await use(context);
   },
 
-  loadViewerPage: async ({ page, baseURL }, use) => {
+  loadViewerPage: async ({ page, baseURL, uiMode }, use) => {
   const loader = async (
     {
       query = {},
@@ -97,7 +104,11 @@ export const test = base.extend({
         await page.addInitScript(extraInit);
       }
 
-      const qs = buildQuery({ debug: 1 }, query);
+      const baseQuery = { debug: 1 };
+      if (uiMode === 'react' && (query.ui === undefined || query.ui === null)) {
+        baseQuery.ui = 'react';
+      }
+      const qs = buildQuery(baseQuery, query);
       const target = `${baseURL || ''}/index.html${qs ? `?${qs}` : ''}`;
       await page.goto(target);
 
@@ -124,7 +135,7 @@ export const test = base.extend({
     await use(loader);
   },
 
-  loadWsHarnessPage: async ({ page, baseURL }, use) => {
+  loadWsHarnessPage: async ({ page, baseURL, uiMode }, use) => {
     const loader = async (
       {
         query = {},
@@ -147,7 +158,11 @@ export const test = base.extend({
         await page.addInitScript(extraInit);
       }
 
-      const qs = buildQuery({ debug: 1 }, query);
+      const baseQuery = { debug: 1 };
+      if (uiMode === 'react' && (query.ui === undefined || query.ui === null)) {
+        baseQuery.ui = 'react';
+      }
+      const qs = buildQuery(baseQuery, query);
       const target = `${baseURL || ''}/ws-test.html${qs ? `?${qs}` : ''}`;
       await page.goto(target);
 

@@ -3,7 +3,7 @@
 ## Findings From The Review (Steps 1 & 2)
 - **Bond/Timestep Rendering:** `createBondService` performs periodic bond detection with fractional wrapping, but `molState.bonds` stores only `{ i, j, opacity }`, so downstream renderers lose the periodic metadata needed to rebuild ghost links (`public/domain/bondService.js`, `public/render/moleculeView.js`).
 - **Ghost Rendering Pipeline:** Ghost atoms/bonds are generated inside `moleculeView.rebuildGhosts()`. The current augmentation only samples 7 lattice shifts (0, ±a, ±b, ±c) and depends on a fresh `computeBondsNoState` run, which can miss diagonal minimum-image connections once atoms move (`public/render/moleculeView.js:1008‑1160`).
-- **State Surfaces:** The frontend routes all mutation through `SessionStateManager` and `stateStore`, while the backend keeps authoritative counters in `SessionState`. Snapshot schema v6 captures mesh assignments, playback config, and WebSocket sequencing, but no field records periodic bond offsets, so ghosts cannot be reconstructed from saved state (`public/core/sessionStateManager.js`, `fairchem_local_server2/session_models.py`).
+- **State Surfaces:** The frontend now routes mutation through `SessionStateManager`, while the backend keeps authoritative counters in `SessionState`. Snapshot schema v6 captures mesh assignments, playback config, and WebSocket sequencing; older schema versions are no longer accepted (`public/core/sessionStateManager.ts`, `fairchem_local_server2/session_models.py`).
 - **Docs Sync:** The Markdown guides (README, frontend/backend design, state system updates, timeline guide, testing catalog, VR setup) are consistent with the current code; they emphasize the dual-mesh renderer, timeline schema v6, and the requirement to keep logging/searchability via the provided debug flags. No conflicting instructions were found.
 
 ## Ghost Bond Regression (Step 3)
@@ -57,7 +57,7 @@ Adopt **Option A**. It centralises periodic knowledge, keeps JSON snapshots aut
 ## State Management Touchpoints
 - **Frontend**
   - After Option A, `SessionStateManager.captureSnapshot()` must copy `bond.imageDelta` into `snapshot.viewer.meshAssignments` (or a dedicated `viewer.bonds` array) and reapply it in `loadSnapshot`.
-  - `stateStore` should expose a helper to reset `latchedUntil` when rehydrating periodic modes so ghost visibility stays in sync after a load.
+  - The viewer’s drag/latch bookkeeping should expose a helper to reset `latchedUntil` when rehydrating periodic modes so ghost visibility stays in sync after a load.
 - **Backend**
   - `SessionState` can optionally cache the last `imageDelta` per bond to validate client uploads or to inform future server-side ghost exports.
   - Add targeted logging (behind `MLIPVIEW_RESUME_DEBUG` or a new flag) enumerating how many periodic bonds were generated per frame; this will aid regression triage.
@@ -164,7 +164,7 @@ This structure stays backward-compatible: older snapshots lacking `bonds` will s
 - **Unit**
   - New tests for `bondService.computePeriodicBonds()` verifying it emits `imageDelta` for crossing bonds and persists zero offsets for non-periodic ones.
   - `moleculeView` spec that feeds in periodic bonds with deltas and asserts ghost links survive a simulated timestep.
-  - `SessionStateManager` round-trip covering schema v6 migration and legacy v5/v4 upgrades.
+- `SessionStateManager` round-trip covering schema v6 snapshot capture/restore.
 - **Playwright**
   - Extend `ws-ghost-periodic.spec.js` to run a single MD step and confirm `viewerApi.debugGhostSnapshot()` still reports ghost bonds.
   - Update authoring-mode suite to check the relocated status bar and verify selection text updates while at the top.

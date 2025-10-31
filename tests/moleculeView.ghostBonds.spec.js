@@ -1,5 +1,5 @@
 import { createMoleculeState } from '../public/domain/moleculeState.js';
-import { createBondService } from '../public/domain/bondService.js';
+import { createBondService } from '../public/domain/bondService.ts';
 import { createMoleculeView } from '../public/render/moleculeView.js';
 
 function vec(x, y, z) {

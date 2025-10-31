@@ -1,2 +1,2 @@
-export { computeBonds } from './computeBonds.js';
-export { computeBaseBonds } from './baseBonds.js';
+export { computeBonds } from './computeBonds.ts';
+export { computeBaseBonds } from './baseBonds.ts';

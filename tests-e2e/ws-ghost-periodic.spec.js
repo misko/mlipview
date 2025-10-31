@@ -1,4 +1,10 @@
 import { test, expect } from './fixtures.js';
+import {
+  waitForTimelineBuffer,
+  computeTimelineOffset,
+  selectTimelineOffset,
+  waitForTimelineState,
+} from './utils/timeline.js';
 
 async function ensureGhostsEnabled(page) {
   await page.evaluate(() => {
@@ -25,24 +31,6 @@ async function ghostSummary(page) {
   });
 }
 
-async function waitForTimelineFrames(page, target) {
-  await page.waitForFunction(
-    (min) => window.viewerApi.timeline.bufferStats().size >= min,
-    target,
-    { timeout: 45_000 }
-  );
-}
-
-async function selectHistoricalOffset(page) {
-  return await page.evaluate(() => {
-    const offsets = window.viewerApi.timeline.getOffsets();
-    if (!offsets || !offsets.length) return null;
-    const candidates = offsets.filter((o) => o < -1);
-    if (!candidates.length) return offsets[offsets.length - 1];
-    return candidates[Math.floor(candidates.length / 2)];
-  });
-}
-
 test.describe('ghost periodic meshes', () => {
   test('ghost bonds reuse soft masters during live and timeline playback', async ({ page, loadViewerPage }) => {
     test.setTimeout(180_000);
@@ -60,13 +48,24 @@ test.describe('ghost periodic meshes', () => {
     await page.evaluate(() => {
       window.viewerApi.startMDContinuous({ steps: 220, temperature: 1400 });
     });
-    await waitForTimelineFrames(page, 30);
+    await waitForTimelineBuffer(page, 30, { label: 'ghost-buffer' });
 
-    const offset = await selectHistoricalOffset(page);
+    const offset = await computeTimelineOffset(page, { mode: 'middle' });
     expect(offset).not.toBeNull();
 
-    await page.evaluate((value) => window.viewerApi.timeline.select(value), offset);
-    await page.waitForFunction(() => window.viewerApi.timeline.getState().active, null, { timeout: 12_000 });
+    await selectTimelineOffset(page, offset, { label: 'ghost-select' });
+    await waitForTimelineState(
+      page,
+      () => {
+        const status =
+          window.viewerApi?.timeline?.getStatus?.() ??
+          window.viewerApi?.timeline?.getState?.() ??
+          null;
+        return !!status && !!status.active;
+      },
+      null,
+      { label: 'ghost-active' }
+    );
 
     await page.evaluate(() => window.viewerApi.view.rebuildGhosts?.());
 
@@ -74,8 +73,21 @@ test.describe('ghost periodic meshes', () => {
     expect(timelineSnapshot.size).toBeGreaterThan(0);
     expect(timelineSnapshot.allSoft).toBe(true);
 
-    await page.evaluate(() => window.viewerApi.timeline.live());
-    await page.waitForFunction(() => !window.viewerApi.timeline.getState().active, null, { timeout: 12_000 });
+    await page.evaluate(async () => {
+      await (window.viewerApi.timeline.live?.() || Promise.resolve());
+    });
+    await waitForTimelineState(
+      page,
+      () => {
+        const status =
+          window.viewerApi?.timeline?.getStatus?.() ??
+          window.viewerApi?.timeline?.getState?.() ??
+          null;
+        return !!status && !status.active;
+      },
+      null,
+      { label: 'ghost-return-live' }
+    );
     await page.evaluate(() => window.viewerApi.stopSimulation());
   });
 });

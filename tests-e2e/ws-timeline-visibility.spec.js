@@ -1,4 +1,11 @@
 import { test, expect } from './fixtures.js';
+import {
+  waitForTimelineBuffer,
+  hoverTimelinePanel,
+  selectTimelineOffset,
+  waitForTimelineState,
+  computeTimelineOffset,
+} from './utils/timeline.js';
 
 test('timeline dock visibility and overlay styling', async ({ page, loadViewerPage }) => {
   test.setTimeout(120_000);
@@ -8,30 +15,40 @@ test('timeline dock visibility and overlay styling', async ({ page, loadViewerPa
     window.viewerApi.startMDContinuous({ steps: 150, temperature: 1200 });
   });
 
-  await page.waitForFunction((target) => {
-    const stats = window.viewerApi.timeline.bufferStats();
-    return stats.size >= target;
-  }, 30, { timeout: 40_000 });
+  await waitForTimelineBuffer(page, 30, { label: 'visibility-buffer' });
 
   await page.evaluate(() => window.viewerApi.stopSimulation());
 
   const panel = page.locator('[data-testid="timeline-panel"]');
   await panel.waitFor({ state: 'attached' });
-  const initialState = await page.evaluate(() => window.viewerApi.timeline.getState());
-  expect(initialState.visible).toBe(false);
+  const initialState = await page.evaluate(() => {
+    const timeline = window.viewerApi.timeline;
+    return (
+      (timeline && typeof timeline.getStatus === 'function' && timeline.getStatus()) ||
+      (timeline && typeof timeline.getState === 'function' && timeline.getState()) ||
+      null
+    );
+  });
+  expect(initialState?.visible ?? false).toBe(false);
 
-  const hitbox = page.locator('[data-testid="timeline-hitbox"]');
-  await hitbox.hover();
+  await hoverTimelinePanel(page, 'visibility-hover');
   await expect(panel).toBeVisible();
 
-  const slider = page.locator('[data-testid="timeline-slider"]');
-  await slider.evaluate((node) => {
-    node.value = '-8';
-    node.dispatchEvent(new Event('input', { bubbles: true }));
-    node.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-
-  await page.waitForFunction(() => window.viewerApi.timeline.getState().active, null, { timeout: 10_000 });
+  const offset = await computeTimelineOffset(page, { offset: -8 });
+  expect(offset).not.toBeNull();
+  await selectTimelineOffset(page, offset, { label: 'visibility-select' });
+  await waitForTimelineState(
+    page,
+    () => {
+      const status =
+        window.viewerApi?.timeline?.getStatus?.() ??
+        window.viewerApi?.timeline?.getState?.() ??
+        null;
+      return !!status && !!status.active;
+    },
+    null,
+    { label: 'visibility-active' }
+  );
 
   const overlayFilter = await page.locator('[data-testid="timeline-overlay"]').evaluate((el) => {
     const styles = getComputedStyle(el);
@@ -40,5 +57,16 @@ test('timeline dock visibility and overlay styling', async ({ page, loadViewerPa
   expect(overlayFilter === '' || overlayFilter.toLowerCase() === 'none').toBeTruthy();
 
   await page.click('[data-testid="timeline-live"]');
-  await page.waitForFunction(() => !window.viewerApi.timeline.getState().active, null, { timeout: 20_000 });
+  await waitForTimelineState(
+    page,
+    () => {
+      const status =
+        window.viewerApi?.timeline?.getStatus?.() ??
+        window.viewerApi?.timeline?.getState?.() ??
+        null;
+      return !!status && !status.active;
+    },
+    null,
+    { label: 'visibility-return-live' }
+  );
 });

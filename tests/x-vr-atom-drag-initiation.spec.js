@@ -1,6 +1,6 @@
 import { createMoleculeState } from '../public/domain/moleculeState.js';
-import { createSelectionService } from '../public/domain/selectionService.js';
-import { createManipulationService } from '../public/domain/manipulationService.js';
+import { createSelectionService } from '../public/domain/selectionService.ts';
+import { createManipulationService } from '../public/domain/manipulationService.ts';
 import { createVRSupport } from '../public/vr/setup.js';
 
 if (!global.BABYLON) global.BABYLON = {};

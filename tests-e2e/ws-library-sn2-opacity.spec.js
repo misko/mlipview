@@ -23,7 +23,9 @@ test.describe('library SN2 opacity', () => {
       const api = window.viewerApi;
       if (!api?.session?.loadFromLibrary) throw new Error('loadFromLibrary unavailable');
       await api.session.loadFromLibrary('sn2');
-      api.timeline.pause();
+      if (typeof api.timeline.pause === 'function') {
+        await api.timeline.pause();
+      }
     });
 
     await waitForOffsets(page, 4);
@@ -44,7 +46,14 @@ test.describe('library SN2 opacity', () => {
       }, offset);
 
       await page.waitForFunction(
-        (expected) => window.viewerApi.timeline.getState().offset === expected,
+        (expected) => {
+          const timeline = window.viewerApi.timeline;
+          const status =
+            (timeline && typeof timeline.getStatus === 'function' && timeline.getStatus()) ||
+            (timeline && typeof timeline.getState === 'function' && timeline.getState()) ||
+            null;
+          return status && status.offset === expected;
+        },
         offset,
         { timeout: 10_000 }
       );
@@ -54,7 +63,8 @@ test.describe('library SN2 opacity', () => {
         const modes = api.view?.getAtomMeshModes?.();
         return {
           atomModes: Array.isArray(modes?.current) ? modes.current.slice() : [],
-          offsetConfirmed: api.timeline.getState().offset,
+          offsetConfirmed:
+            (api.timeline.getStatus?.()?.offset ?? api.timeline.getState?.()?.offset ?? null),
         };
       });
 

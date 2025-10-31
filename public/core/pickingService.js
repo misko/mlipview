@@ -13,7 +13,7 @@
 // wraps operations to recompute forces + recordInteraction. However, user desktop drags flow
 // through this pickingService path. To keep energy plot consistent, we optionally accept
 // an energyHook({ kind }) callback invoked on drag move/end when geometry changes.
-import { __count } from '../util/funcCount.js';
+import { __count } from '../util/funcCount.ts';
 // Consolidated Interaction Controller: picking + drag + rotation entry points
 export function createPickingService(
   scene,

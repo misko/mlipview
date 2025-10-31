@@ -1,5 +1,7 @@
 import { execSync } from 'child_process';
 
+const SKIP_BACKEND = process.env.MLIPVIEW_SKIP_SERVERS === '1';
+
 async function isPortOpen(port) {
   return new Promise((resolve) => {
     const net = require('net');
@@ -35,7 +37,29 @@ function killPort(port) {
 }
 
 export default async function globalTeardown() {
-  for (const key of ['__WS_PID__', '__VITE_PREVIEW_PID__']) {
+  if (!SKIP_BACKEND) {
+    const wsPid = Number(process.env.__WS_PID__);
+    if (wsPid) {
+      try {
+        process.kill(wsPid, 'SIGTERM');
+      } catch {}
+    }
+    killPort(8000);
+  } else {
+    console.log('[playwright][teardown] MLIPVIEW_SKIP_SERVERS=1 — leaving backend on :8000 running');
+  }
+
+  const previewPid = Number(process.env.__VITE_PREVIEW_PID__);
+  if (previewPid) {
+    try {
+      process.kill(previewPid, 'SIGTERM');
+    } catch {}
+  }
+  // Best-effort: ensure preview port is freed (frontend always managed by tests)
+  killPort(5174);
+
+  // Best-effort cleanup for any other tracked processes
+  for (const key of ['__VITE_PREVIEW_PID__']) {
     const pid = Number(process.env[key]);
     if (pid) {
       try {
@@ -43,9 +67,7 @@ export default async function globalTeardown() {
       } catch {}
     }
   }
-  // Best-effort: ensure ports are freed
-  killPort(8000);
-  killPort(5174);
+
   // small wait to let processes exit
   await new Promise((r) => setTimeout(r, 500));
 }

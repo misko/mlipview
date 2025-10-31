@@ -1,4 +1,11 @@
 import { test, expect } from './fixtures.js';
+import {
+  waitForTimelineBuffer,
+  hoverTimelinePanel,
+  selectTimelineOffset,
+  waitForTimelineState,
+  computeTimelineOffset,
+} from './utils/timeline.js';
 
 test('timeline mode keeps camera rotation and zoom responsive', async ({ page, loadViewerPage }) => {
   test.setTimeout(120_000);
@@ -8,24 +15,26 @@ test('timeline mode keeps camera rotation and zoom responsive', async ({ page, l
     window.viewerApi.startMDContinuous({ steps: 220, temperature: 1400 });
   });
 
-  await page.waitForFunction((target) => {
-    const stats = window.viewerApi.timeline.bufferStats();
-    return stats.size >= target;
-  }, 50, { timeout: 45_000 });
+  await waitForTimelineBuffer(page, 50, { label: 'camera-buffer' });
 
   await page.evaluate(() => window.viewerApi.stopSimulation());
 
-  const hitbox = page.locator('[data-testid="timeline-hitbox"]');
-  await hitbox.hover();
-
-  const slider = page.locator('[data-testid="timeline-slider"]');
-  await slider.evaluate((node) => {
-    node.value = '-12';
-    node.dispatchEvent(new Event('input', { bubbles: true }));
-    node.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-
-  await page.waitForFunction(() => window.viewerApi.timeline.getState().active, null, { timeout: 12_000 });
+  await hoverTimelinePanel(page, 'camera-hover');
+  const offset = await computeTimelineOffset(page, { offset: -12 });
+  expect(offset).not.toBeNull();
+  await selectTimelineOffset(page, offset, { label: 'camera-select' });
+  await waitForTimelineState(
+    page,
+    () => {
+      const status =
+        window.viewerApi?.timeline?.getStatus?.() ??
+        window.viewerApi?.timeline?.getState?.() ??
+        null;
+      return !!status && !!status.active;
+    },
+    null,
+    { label: 'camera-active' }
+  );
 
   const dragMeta = await page.evaluate(() => {
     const api = window.viewerApi;
@@ -69,5 +78,16 @@ test('timeline mode keeps camera rotation and zoom responsive', async ({ page, l
   expect(dragAttempt).toBe(false);
 
   await page.click('[data-testid="timeline-live"]');
-  await page.waitForFunction(() => !window.viewerApi.timeline.getState().active, null, { timeout: 20_000 });
+  await waitForTimelineState(
+    page,
+    () => {
+      const status =
+        window.viewerApi?.timeline?.getStatus?.() ??
+        window.viewerApi?.timeline?.getState?.() ??
+        null;
+      return !!status && !status.active;
+    },
+    null,
+    { label: 'camera-return-live' }
+  );
 });

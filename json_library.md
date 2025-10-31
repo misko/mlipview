@@ -80,16 +80,10 @@ Contains the instantaneous rendering state.
 | `flags.inRing` | `1` when the bond participates in an aromatic/small ring. |
 | `flags.crossing` | `1` when the bond crosses the periodic boundary. |
 | `length` | Cached bond length in Å. |
+| `weight` | Optional numeric weight used by the bond service (typically `null` unless diagnostics are enabled). |
+| `imageDelta` | Integer lattice delta (`shiftB - shiftA`) retained for diagnostics and future tooling. |
 
-For schema v6 exports (older snapshots) you may encounter the legacy shape:
-
-```jsonc
-"bondsLegacy": [
-  { "i": 0, "j": 1, "opacity": 1, "imageDelta": [0, 0, 0] }
-]
-```
-
-When loading, the viewer upgrades this into the canonical arrays (setting `cellOffsetA = [0,0,0]`, `cellOffsetB = imageDelta`).
+Snapshots must already use schema v6; earlier schema versions are rejected during load.
 
 ### Ghost metadata
 - `ghostAtoms`: instanced clones generated for periodic visualization.  `shift` is the integer lattice translation; `position` is the already-shifted world coordinate used for rendering.

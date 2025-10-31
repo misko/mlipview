@@ -1,25 +1,10 @@
 import { test, expect } from './fixtures.js';
-
-async function waitForTimelineBuffer(page, targetSize) {
-  await page.waitForFunction(
-    (target) => {
-      const stats = window.viewerApi.timeline.bufferStats();
-      return stats && stats.size >= target;
-    },
-    targetSize,
-    { timeout: 45_000 }
-  );
-}
-
-async function pickHistoricalOffset(page) {
-  return await page.evaluate(() => {
-    const offsets = window.viewerApi.timeline.getOffsets();
-    if (!offsets || !offsets.length) return null;
-    const candidates = offsets.filter((o) => o < -1);
-    if (!candidates.length) return offsets[offsets.length - 1];
-    return candidates[Math.floor(candidates.length / 2)];
-  });
-}
+import {
+  waitForTimelineBuffer,
+  computeTimelineOffset,
+  selectTimelineOffset,
+  waitForTimelineState,
+} from './utils/timeline.js';
 
 test.describe('timeline mesh mode transitions', () => {
   test('fades migrate instances to soft masters and restore on clear', async ({ page, loadViewerPage }) => {
@@ -31,13 +16,24 @@ test.describe('timeline mesh mode transitions', () => {
       window.viewerApi.startMDContinuous({ steps: 240, temperature: 1600 });
     });
 
-    await waitForTimelineBuffer(page, 40);
+    await waitForTimelineBuffer(page, 40, { label: 'mesh-buffer' });
 
-    const offset = await pickHistoricalOffset(page);
+    const offset = await computeTimelineOffset(page, { mode: 'middle' });
     expect(offset).not.toBeNull();
 
-    await page.evaluate((value) => window.viewerApi.timeline.select(value), offset);
-    await page.waitForFunction(() => window.viewerApi.timeline.getState().active, null, { timeout: 12_000 });
+    await selectTimelineOffset(page, offset, { label: 'mesh-select' });
+    await waitForTimelineState(
+      page,
+      () => {
+        const status =
+          window.viewerApi?.timeline?.getStatus?.() ??
+          window.viewerApi?.timeline?.getState?.() ??
+          null;
+        return !!status && !!status.active;
+      },
+      null,
+      { label: 'mesh-active' }
+    );
 
     const baselineModes = await page.evaluate(() => ({
       atoms: window.viewerApi.view.getAtomMeshModes(),
@@ -90,8 +86,21 @@ test.describe('timeline mesh mode transitions', () => {
       { timeout: 5_000 }
     );
 
-    await page.evaluate(() => window.viewerApi.timeline.live());
-    await page.waitForFunction(() => !window.viewerApi.timeline.getState().active, null, { timeout: 12_000 });
+    await page.evaluate(async () => {
+      await (window.viewerApi.timeline.live?.() || Promise.resolve());
+    });
+    await waitForTimelineState(
+      page,
+      () => {
+        const status =
+          window.viewerApi?.timeline?.getStatus?.() ??
+          window.viewerApi?.timeline?.getState?.() ??
+          null;
+        return !!status && !status.active;
+      },
+      null,
+      { label: 'mesh-return-live' }
+    );
 
     const finalModes = await page.evaluate(() => ({
       atoms: window.viewerApi.view.getAtomMeshModes().current,

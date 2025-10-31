@@ -111,11 +111,11 @@ describe('VR bond joystick rotation', () => {
     createMoleculeView(scene, st);
 
     // Minimal selection service compatible with VR createVRSupport usage
-    const selectionServiceModule = await import('../public/domain/selectionService.js');
+    const selectionServiceModule = await import('../public/domain/selectionService.ts');
     const selectionService = selectionServiceModule.createSelectionService(st);
 
     // Manipulation service used by VR should be the real one so rotateBond alters positions
-    const manipulationModule = await import('../public/domain/manipulationService.js');
+    const manipulationModule = await import('../public/domain/manipulationService.ts');
     const manipulation = manipulationModule.createManipulationService(st, {});
 
     // Initialize VR feature loop directly with a stub xrHelper so frame handler is installed

@@ -93,36 +93,63 @@ async function cudaPreflight(pyEnv){
   });
 }
 
+async function waitForServeHealth({ timeout = 5000, interval = 300 } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    try {
+      const res = await fetch('http://127.0.0.1:8000/serve/health');
+      if (res.ok) {
+        const payload = await res.json();
+        if (payload && payload.model_loaded === true) {
+          return { ok: true, payload };
+        }
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, interval));
+  }
+  return { ok: false };
+}
+
 module.exports = async () => {
-  if (process.env.MLIPVIEW_FAST_JSDOM === '1') {
-    // Ultra-light setup path for pure jsdom unit tests that fully mock fetch.
+  const sharedServerMode = process.env.MLIPVIEW_SHARED_SERVER === '1';
+  const assignBaseUrls = () => {
     global.__MLIP_BASE_URL = 'http://localhost:4000';
     global.__MLIP_API_URL = 'http://localhost:8000';
+  };
+  assignBaseUrls();
+  if (process.env.MLIPVIEW_FAST_JSDOM === '1') {
     return;
   }
   if (process.env.MLIPVIEW_SKIP_SERVERS === '1') {
-    // Lightweight path for unit tests that don't need backend / CUDA.
-    global.__MLIP_BASE_URL = 'http://localhost:4000';
-    global.__MLIP_API_URL = 'http://localhost:8000';
     return; // skip heavy setup
+  }
+  if (sharedServerMode) {
+    const health = await waitForServeHealth({ timeout: 5000 });
+    if (health.ok) {
+      console.log('[globalSetup] Reusing existing shared test server.');
+      global.__MLIP_SHARED_KEEP = true;
+      return;
+    }
   }
   const log = fs.createWriteStream('./test-server.log');
   // Expose log stream for teardown so it can be closed (open fs handle can keep Node alive).
   global.__MLIP_LOG_STREAM = log;
   const pyEnv = process.env.MLIPVIEW_PYTHON || process.cwd()+ '/mlipview_venv/bin/python';
   // Install global watchdog (moved from per-test setup to avoid open handle at test end)
-  const MAX_WALL_MS = parseInt(process.env.MLIPVIEW_JEST_WALL_TIMEOUT || '90000', 10); // 90s default
-  if(!global.__MLIPVIEW_WATCHDOG){
-    const start = Date.now();
-    global.__MLIPVIEW_WATCHDOG = setInterval(()=>{
-      const elapsed = Date.now() - start;
-      if(elapsed > MAX_WALL_MS){
-        console.error(`[jest-watchdog] Exceeded wall timeout ${MAX_WALL_MS}ms; forcing exit.`);
-        try { clearInterval(global.__MLIPVIEW_WATCHDOG); } catch{}
-        try { const cleanups = global.__MLIPVIEW_CLEANUP; if(Array.isArray(cleanups)){ for(const fn of cleanups){ try{ fn(); } catch{} } } } catch {}
-        process.exit(0);
-      }
-    }, 3000);
+  if (!sharedServerMode) {
+    const MAX_WALL_MS = parseInt(process.env.MLIPVIEW_JEST_WALL_TIMEOUT || '90000', 10); // 90s default
+    if(!global.__MLIPVIEW_WATCHDOG){
+      const start = Date.now();
+      global.__MLIPVIEW_WATCHDOG = setInterval(()=>{
+        const elapsed = Date.now() - start;
+        if(elapsed > MAX_WALL_MS){
+          console.error(`[jest-watchdog] Exceeded wall timeout ${MAX_WALL_MS}ms; forcing exit.`);
+          try { clearInterval(global.__MLIPVIEW_WATCHDOG); } catch{}
+          try { const cleanups = global.__MLIPVIEW_CLEANUP; if(Array.isArray(cleanups)){ for(const fn of cleanups){ try{ fn(); } catch{} } } } catch {}
+          process.exit(0);
+        }
+      }, 3000);
+    }
   }
   // Preflight CUDA
   const pre = await cudaPreflight(pyEnv).catch(e=>{ console.error('[globalSetup] CUDA preflight failed', e); return null; });
@@ -208,4 +235,7 @@ module.exports = async () => {
   // Provide base URLs for tests
   global.__MLIP_BASE_URL = 'http://localhost:4000';
   global.__MLIP_API_URL = 'http://localhost:8000';
+  if (sharedServerMode) {
+    global.__MLIP_SHARED_KEEP = true;
+  }
 };

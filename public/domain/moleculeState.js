@@ -1,6 +1,6 @@
 import { createEventBus } from './eventBus.js';
 import { computeOrthoCellFromPositions, wrapPositionsInPlace } from '../util/pbc.js';
-import { __count } from '../util/funcCount.js';
+import { __count } from '../util/funcCount.ts';
 
 export function createMoleculeState({
   elements = [],

@@ -1,4 +1,4 @@
-import { computeBonds } from '../../public/domain/bonding/computeBonds.js';
+import { computeBonds } from '../../public/domain/bonding/computeBonds.ts';
 
 function vec(x, y, z) {
   return [x, y, z];

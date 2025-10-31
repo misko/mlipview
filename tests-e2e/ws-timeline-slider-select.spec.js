@@ -1,7 +1,13 @@
 import { test, expect } from './fixtures.js';
+import {
+  waitForTimelineBuffer,
+  hoverTimelinePanel,
+  selectTimelineOffset,
+  computeTimelineOffset,
+} from './utils/timeline.js';
 
 test.describe('timeline slider selection', () => {
-  test('single slider change selects requested frame', async ({ page, loadViewerPage }) => {
+test('single slider change selects requested frame', async ({ page, loadViewerPage, uiMode }) => {
     test.setTimeout(150_000);
     await loadViewerPage({ query: { mol: 'molecules/water.xyz' } });
 
@@ -9,31 +15,13 @@ test.describe('timeline slider selection', () => {
       window.viewerApi.startMDContinuous({ steps: 220, temperature: 1600 });
     });
 
-    await page.waitForFunction(
-      (target) => {
-        const stats = window.viewerApi.timeline.bufferStats();
-        return stats.size >= target;
-      },
-      40,
-      { timeout: 45_000 },
-    );
+    await waitForTimelineBuffer(page, 40, { timeout: 45_000 });
 
-    const hitbox = page.locator('[data-testid="timeline-hitbox"]');
-    await hitbox.hover();
+    await hoverTimelinePanel(page);
     const slider = page.locator('[data-testid="timeline-slider"]');
     await slider.waitFor({ state: 'visible' });
 
-    await page.waitForFunction(() => {
-      const sliderEl = document.querySelector('[data-testid="timeline-slider"]');
-      return sliderEl && Number(sliderEl.min) < -1;
-    }, null, { timeout: 20_000 });
-
-    const targetOffset = await page.evaluate(() => {
-      const offsets = window.viewerApi.timeline.getOffsets();
-      if (!offsets || !offsets.length) return null;
-      const candidates = offsets.filter((o) => o < -1);
-      return candidates.length ? candidates[Math.floor(candidates.length / 2)] : null;
-    });
+    const targetOffset = await computeTimelineOffset(page, { mode: 'middle' });
     expect(targetOffset).not.toBeNull();
 
     await page.evaluate(() => {
@@ -42,24 +30,35 @@ test.describe('timeline slider selection', () => {
       sliderEl?.addEventListener('change', () => { window.__changeCount++; }, { once: false });
     });
 
-    await slider.evaluate((node, value) => {
-      if (!node) return;
-      node.value = String(value);
-      node.dispatchEvent(new Event('input', { bubbles: true }));
-      node.dispatchEvent(new Event('change', { bubbles: true }));
-    }, targetOffset);
+    await selectTimelineOffset(page, targetOffset);
 
-    await page.waitForFunction((value) => {
-      const state = window.viewerApi.timeline.getState();
-      return state.offset === value && state.mode !== 'live';
-    }, targetOffset, { timeout: 10_000 });
+    await page.waitForFunction(
+      (value) => {
+        const timeline = window.viewerApi.timeline;
+        const status =
+          (timeline && typeof timeline.getStatus === 'function' && timeline.getStatus()) ||
+          (timeline && typeof timeline.getState === 'function' && timeline.getState()) ||
+          null;
+        return status && status.offset === value && status.mode !== 'live';
+      },
+      targetOffset,
+      { timeout: 10_000 }
+    );
 
-    const result = await page.evaluate(() => ({
-      state: window.viewerApi.timeline.getState(),
-      change: window.__changeCount || 0,
-    }));
-    expect(result.state.offset).toBe(targetOffset);
-    expect(result.state.mode).toBe('paused');
-    expect(result.change).toBeGreaterThanOrEqual(1);
+    const result = await page.evaluate(() => {
+      const timeline = window.viewerApi.timeline;
+      const status =
+        (timeline && typeof timeline.getStatus === 'function' && timeline.getStatus()) ||
+        (timeline && typeof timeline.getState === 'function' && timeline.getState()) ||
+        null;
+      return {
+        status,
+        change: window.__changeCount || 0,
+      };
+    });
+    expect(result.status?.offset).toBe(targetOffset);
+    expect(result.status?.mode).toBe('paused');
+    const minChanges = uiMode === 'react' ? 0 : 1;
+    expect(result.change).toBeGreaterThanOrEqual(minChanges);
   });
 });

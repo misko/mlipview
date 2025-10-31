@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js';
+import { waitForTimelineState } from './utils/timeline.js';
 
 test.describe('library SN2 playback', () => {
   test('loads SN2 session and resumes MD after playback', async ({ page, loadViewerPage }) => {
@@ -12,17 +13,28 @@ test.describe('library SN2 playback', () => {
       await api.session.loadFromLibrary('sn2');
     });
 
-    await page.waitForFunction(
+    await waitForTimelineState(
+      page,
       () => {
-        const state = window.viewerApi?.timeline?.getState?.();
-        return state && state.mode === 'playing';
+        const status =
+          window.viewerApi?.timeline?.getStatus?.() ??
+          window.viewerApi?.timeline?.getState?.() ??
+          null;
+        return status?.mode === 'playing';
       },
       null,
-      { timeout: 15_000 }
+      { timeout: 15_000, label: 'sn2-playing' }
     );
 
-    const initialTimeline = await page.evaluate(() => window.viewerApi.timeline.getState());
-    expect(initialTimeline.mode).toBe('playing');
+    const initialTimeline = await page.evaluate(() => {
+      const timeline = window.viewerApi.timeline;
+      return (
+        (timeline && typeof timeline.getStatus === 'function' && timeline.getStatus()) ||
+        (timeline && typeof timeline.getState === 'function' && timeline.getState()) ||
+        null
+      );
+    });
+    expect(initialTimeline?.mode).toBe('playing');
 
     const liveFrames = await page.evaluate(async () => {
       const ws = window.__fairchem_ws__;

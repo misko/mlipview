@@ -1,7 +1,7 @@
 import { createMoleculeState } from '../public/domain/moleculeState.js';
-import { createManipulationService } from '../public/domain/manipulationService.js';
-import { createBondService } from '../public/domain/bondService.js';
-import { createSelectionService } from '../public/domain/selectionService.js';
+import { createManipulationService } from '../public/domain/manipulationService.ts';
+import { createBondService } from '../public/domain/bondService.ts';
+import { createSelectionService } from '../public/domain/selectionService.ts';
 
 function buildLinearChain() {
   return createMoleculeState({
